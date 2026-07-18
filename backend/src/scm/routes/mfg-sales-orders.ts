@@ -31,7 +31,7 @@ import { buildCompartmentsFromModuleLines } from '../lib/compartments-from-modul
    (customer + address + delivery date + ≥50% paid) we stamp proceeded_at at
    create so the order lands in Proceed without a manual click. Same gate the
    POS "Move to Proceed" button uses, so the two never drift. */
-import { meetsProceedGate, meetsProcessingDatePaymentGate } from '../shared/order-rules';
+import { meetsProceedGate } from '../shared/order-rules';
 /* SO-SKU spec P2 — every charge is a SKU line. Predicates from P1; the
    fee/addon → SERVICE-line decomposition builders are pure + shared. */
 import {
@@ -122,7 +122,10 @@ import {
   loadProductAndModel,
   loadProductsAndModels,
 } from '../lib/allowed-options-check';
-import { findIncompleteVariantLines } from '../lib/so-variant-check';
+import { findIncompleteVariantLines, type VariantOffender } from '../lib/so-variant-check';
+/* Aggregate ALL Processing-Date/save gate failures into one response instead of
+   returning on the first (owner 2026-07-18). Pure — no I/O. */
+import { collectProcessingGateProblems, validationFailedBody } from '../shared/so-save-problems';
 /* Variants-vocabulary unification (port of 2990 73aeeb1e, 2026-06-26):
    POS-handover sofa lines speak `depth`/`sofaLegHeight`/`fabricColor`, Backend
    editors read `seatHeight`/`legHeight`/`fabricCode`. canonicalizeVariants
@@ -2834,53 +2837,41 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
   {
     const procDate  = (body.internalExpectedDd  as string | null | undefined) || null;
     const delivDate = (body.customerDeliveryDate as string | null | undefined) || null;
+    /* Processing + Delivery are all-or-nothing (both set or both empty). Kept as
+       a SHORT-CIRCUIT (not aggregated): an unpaired date is a structurally-
+       incomplete input, not one of several field-level fixes. */
     if (Boolean(procDate) !== Boolean(delivDate)) {
       return c.json({
         error: 'processing_delivery_must_pair',
         reason: 'Processing Date and Delivery Date must be set together (or both left empty).',
       }, 400);
     }
-    /* Owner 2026-06-03 — Process Date is the factory start; it cannot fall after
-       the Delivery Date (you can't start building after the day you promised to
-       deliver). Both are plain ISO YYYY-MM-DD, so a string compare is correct. */
-    if (procDate && delivDate && procDate > delivDate) {
-      return c.json({
-        error: 'processing_after_delivery',
-        reason: 'Processing Date cannot be later than the Delivery Date.',
-      }, 400);
-    }
-    /* Commander 2026-05-29 — a Processing Date means "ready to build", so every
-       line must carry its category-mandatory variants. This guard existed on
-       the PATCH header path + the UI but the CREATE path skipped it, so a direct
-       POST with a processing date + blank bedframe/sofa variants slipped through
-       (found while seeding test SOs). Shared helper keeps POST/PATCH/UI in sync. */
-    if (procDate) {
-      const offenders = findIncompleteVariantLines(
-        items.map((it) => ({
-          itemCode: String(it.itemCode ?? ''),
-          group:    (it.itemGroup as string | null | undefined) ?? null,
-          variants: (it.variants as Record<string, unknown> | null) ?? null,
-        })),
-      );
-      if (offenders.length > 0) {
-        return c.json({
-          error: 'variants_incomplete',
-          message: 'Processing Date requires all category-mandatory variants on every line.',
-          offenders,
-        }, 409);
-      }
-    }
-    /* Commander 2026-05-28 — Processing Date + Delivery Date can only be today
-       or in the future; a past date is rejected. "Today" is Malaysia time
-       (UTC+8) so an early-UTC request near midnight doesn't wrongly reject a
-       valid MY today. */
+    /* Aggregate the remaining Processing-Date gates into ONE response instead of
+       returning on the first (owner 2026-07-18): the category-mandatory variants
+       (Commander 2026-05-29 — a Processing Date means "ready to build", so every
+       line must carry its variants; the CREATE path once skipped this, letting a
+       direct POST slip through), the past-date rule (Malaysia UTC+8 "today" so an
+       early-UTC request near midnight isn't wrongly rejected), and
+       processing-≤-delivery (Owner 2026-06-03). The 30% deposit gate can't join
+       here — the order total isn't priced until later — so it emits the SAME
+       aggregated shape at its own site below. All dates are NEW on create, so no
+       grandfather originals are passed. Fast-fail, before any PWP claim burns. */
     const todayMY = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
-    if (procDate && procDate < todayMY) {
-      return c.json({ error: 'processing_date_past', reason: 'Processing Date cannot be in the past — today or a future date only.' }, 400);
-    }
-    if (delivDate && delivDate < todayMY) {
-      return c.json({ error: 'delivery_date_past', reason: 'Delivery Date cannot be in the past — today or a future date only.' }, 400);
-    }
+    const createProblems = collectProcessingGateProblems({
+      procDate,
+      delivDate,
+      todayMY,
+      variantOffenders: procDate
+        ? findIncompleteVariantLines(
+            items.map((it) => ({
+              itemCode: String(it.itemCode ?? ''),
+              group:    (it.itemGroup as string | null | undefined) ?? null,
+              variants: (it.variants as Record<string, unknown> | null) ?? null,
+            })),
+          )
+        : [],
+    });
+    if (createProblems.length > 0) return c.json(validationFailedBody(createProblems), 422);
     if (items.length > 0) {
       const lineCodes = items.map((it) => String(it.itemCode ?? '')).filter(Boolean);
       const metaByCode = new Map<string, { category: string }>();
@@ -4367,11 +4358,23 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      total — both already in scope from the autoProceed block above. */
   {
     const procDateOnCreate = (body.internalExpectedDd as string | null | undefined) || null;
-    if (procDateOnCreate && !meetsProcessingDatePaymentGate(depositTotalCenti, grandTotal)) {
-      return c.json({
-        error: 'processing_date_unpaid',
-        reason: 'A Processing Date can only be set once at least 30% of the order total is paid.',
-      }, 400);
+    /* Emits the SAME aggregated `validation_failed` shape as the early gate block
+       (owner 2026-07-18) so the client renders every Processing-Date failure the
+       same way — this gate simply can't live up there because the order total
+       isn't priced until now. Single-problem list here, but consistent shape.
+       rollbackPwpClaims first: a rejected order must not burn a voucher (matches
+       every other bail in this pricing block). */
+    const depositProblems = procDateOnCreate
+      ? collectProcessingGateProblems({
+          procDate: procDateOnCreate,
+          delivDate: (body.customerDeliveryDate as string | null | undefined) || null,
+          todayMY: new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10),
+          deposit: { paidCenti: depositTotalCenti, totalCenti: grandTotal },
+        })
+      : [];
+    if (depositProblems.length > 0) {
+      await rollbackPwpClaims();
+      return c.json(validationFailedBody(depositProblems), 422);
     }
   }
 
@@ -5679,6 +5682,17 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
 
   if (Object.keys(updates).length === 1) return c.json({ ok: true, changed: 0 });
 
+  /* Aggregate EVERY Processing-Date save gate into ONE response (owner
+     2026-07-18) — the routes used to `return` on the FIRST failing gate, so the
+     coordinator fixed one thing, saved, hit the next. Collect each gate's facts
+     as it computes them below, then report them all at once via
+     collectProcessingGateProblems. The permission (remove-forbidden), lock, and
+     Proceed gates KEEP their own short-circuit returns: they are authz / a
+     wholesale lock / a different action, not "fix this field and re-save" input
+     problems, and each carries a distinct HTTP status. */
+  let variantOffenders: VariantOffender[] = [];
+  let depositFacts: { paidCenti: number; totalCenti: number } | null = null;
+
   /* PR — Commander 2026-05-28 — Server-side variant rule enforcement.
      When the caller sets internalExpectedDd (Processing Date) to a non-null
      value, EVERY non-cancelled line for this SO must have its category-
@@ -5687,26 +5701,19 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      sofa needs seatHeight+legHeight+fabricCode). Without this guard, the
      coordinator can ignore the red banner and still hit the API directly.
 
-     Bedframes + sofas with incomplete variants block the request with HTTP
-     409 + a list of offending lines so the UI can re-render the warning. */
+     Collected (not returned) — the aggregated report at the end of the gate
+     block turns the offender list into per-line+axis problems. */
   if (body['internalExpectedDd'] !== undefined && body['internalExpectedDd'] !== null && body['internalExpectedDd'] !== '') {
     const { data: liveItems } = await sb
       .from('mfg_sales_order_items')
       .select('id, item_code, item_group, variants, cancelled')
       .eq('doc_no', docNo);
     // Shared with the POST create path (so-variant-check) — one rule, no drift.
-    const offenders = findIncompleteVariantLines(
+    variantOffenders = findIncompleteVariantLines(
       ((liveItems ?? []) as Array<{ id: string; item_code: string; item_group: string; variants: Record<string, unknown> | null; cancelled: boolean }>)
         .filter((it) => !it.cancelled)
         .map((it) => ({ id: it.id, itemCode: it.item_code, group: it.item_group, variants: it.variants })),
     );
-    if (offenders.length > 0) {
-      return c.json({
-        error: 'variants_incomplete',
-        message: 'Processing Date requires all category-mandatory variants on every line.',
-        offenders,
-      }, 409);
-    }
   }
 
   // PR-D — snapshot the row before update so we can emit a field-level diff
@@ -5797,12 +5804,9 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
         const totalCenti = Number((totRow as { local_total_centi?: number } | null)?.local_total_centi ?? 0);
         const paidCenti = ((pays ?? []) as Array<{ amount_centi?: number | null }>)
           .reduce((s, p) => s + Number(p.amount_centi ?? 0), 0);
-        if (!meetsProcessingDatePaymentGate(paidCenti, totalCenti)) {
-          return c.json({
-            error: 'processing_date_unpaid',
-            reason: 'A Processing Date can only be set once at least 30% of the order total is paid.',
-          }, 400);
-        }
+        // Collected (not returned) — the aggregated report weighs this alongside
+        // any variant / date problems and reports the concrete amount + threshold.
+        depositFacts = { paidCenti, totalCenti };
       }
     }
   }
@@ -5858,26 +5862,18 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     const deliv = body['customerDeliveryDate'];
     const origProc = (beforeRow?.['internal_expected_dd'] as string | null) ?? null;
     const origDeliv = (beforeRow?.['customer_delivery_date'] as string | null) ?? null;
-    if (typeof proc === 'string' && proc && proc < todayMY && proc !== origProc) {
-      return c.json({ error: 'processing_date_past', reason: 'Processing Date cannot be in the past — today or a future date only.' }, 400);
-    }
-    if (typeof deliv === 'string' && deliv && deliv < todayMY && deliv !== origDeliv) {
-      return c.json({ error: 'delivery_date_past', reason: 'Delivery Date cannot be in the past — today or a future date only.' }, 400);
-    }
     /* Owner 2026-06-03 — Process Date ≤ Delivery Date (factory start can't be
        after the promised delivery). Use the EFFECTIVE values: the patch value
        when this request sets the key, else the stored value — so editing only
        one date still validates against the other already on the row. */
     const effProc  = typeof proc  === 'string' ? (proc  || null) : origProc;
     const effDeliv = typeof deliv === 'string' ? (deliv || null) : origDeliv;
-    if (effProc && effDeliv && effProc > effDeliv) {
-      return c.json({ error: 'processing_after_delivery', reason: 'Processing Date cannot be later than the Delivery Date.' }, 400);
-    }
     /* Owner 2026-07-04 — Processing + Delivery are all-or-nothing (both set or
-       both empty), same as the CREATE path. The CREATE guard existed but the
-       edit path skipped it, so a PATCH could set one date without the other and
-       bypass the rule. Only fires when THIS request touches a date — a patch
-       that doesn't touch dates grandfathers any legacy unpaired row through. */
+       both empty). Kept as a SHORT-CIRCUIT (not aggregated): an unpaired date is a
+       structurally-incomplete input, not one of several field-level fixes — there
+       is no meaningful "and also" to report against half a date pair. Only fires
+       when THIS request touches a date; a patch that doesn't touch dates
+       grandfathers any legacy unpaired row through. */
     const touchesDates = typeof proc === 'string' || typeof deliv === 'string';
     if (touchesDates && Boolean(effProc) !== Boolean(effDeliv)) {
       return c.json({
@@ -5885,6 +5881,22 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
         reason: 'Processing Date and Delivery Date must be set together (or both left empty).',
       }, 400);
     }
+    /* The aggregated report — variants (collected above), the 30% deposit
+       (collected above), and the past-date / processing-≤-delivery date rules,
+       ALL in one response so the coordinator fixes them in a single pass. The
+       helper re-derives the past-date grandfather + processing-≤-delivery from the
+       effective + original dates, exactly matching the checks this block used to
+       `return` on one at a time. */
+    const problems = collectProcessingGateProblems({
+      procDate: effProc,
+      delivDate: effDeliv,
+      todayMY,
+      origProcDate: origProc,
+      origDelivDate: origDeliv,
+      variantOffenders,
+      deposit: depositFacts,
+    });
+    if (problems.length > 0) return c.json(validationFailedBody(problems), 422);
   }
 
   /* Loo 2026-06-13 — POS "Save" opt-in (recustomer:true). Re-resolve customer_id

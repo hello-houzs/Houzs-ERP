@@ -50,6 +50,9 @@ import {
   loadProductAndModel,
 } from '../lib/allowed-options-check';
 import { findIncompleteVariantLines } from '../lib/so-variant-check';
+/* Aggregate ALL Processing-Date gate failures into one response (owner
+   2026-07-18) — mirrors the SO path. Pure — no I/O. */
+import { collectProcessingGateProblems, validationFailedBody } from '../shared/so-save-problems';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
@@ -643,41 +646,32 @@ consignmentOrders.post('/', async (c) => {
   {
     const procDate  = (body.internalExpectedDd  as string | null | undefined) || null;
     const delivDate = (body.customerDeliveryDate as string | null | undefined) || null;
+    /* must-pair stays a short-circuit (structurally-incomplete date pair). */
     if (Boolean(procDate) !== Boolean(delivDate)) {
       return c.json({
         error: 'processing_delivery_must_pair',
         reason: 'Processing Date and Delivery Date must be set together (or both left empty).',
       }, 400);
     }
-    if (procDate && delivDate && procDate > delivDate) {
-      return c.json({
-        error: 'processing_after_delivery',
-        reason: 'Processing Date cannot be later than the Delivery Date.',
-      }, 400);
-    }
-    if (procDate) {
-      const offenders = findIncompleteVariantLines(
-        items.map((it) => ({
-          itemCode: String(it.itemCode ?? ''),
-          group:    (it.itemGroup as string | null | undefined) ?? null,
-          variants: (it.variants as Record<string, unknown> | null) ?? null,
-        })),
-      );
-      if (offenders.length > 0) {
-        return c.json({
-          error: 'variants_incomplete',
-          message: 'Processing Date requires all category-mandatory variants on every line.',
-          offenders,
-        }, 409);
-      }
-    }
+    /* Aggregate the rest (variants / past-date / processing-≤-delivery) into ONE
+       response — mirrors the SO create path. No deposit gate on the consignment
+       mirror, so `deposit` is omitted. All dates are new on create. */
     const todayMY = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
-    if (procDate && procDate < todayMY) {
-      return c.json({ error: 'processing_date_past', reason: 'Processing Date cannot be in the past — today or a future date only.' }, 400);
-    }
-    if (delivDate && delivDate < todayMY) {
-      return c.json({ error: 'delivery_date_past', reason: 'Delivery Date cannot be in the past — today or a future date only.' }, 400);
-    }
+    const coProblems = collectProcessingGateProblems({
+      procDate,
+      delivDate,
+      todayMY,
+      variantOffenders: procDate
+        ? findIncompleteVariantLines(
+            items.map((it) => ({
+              itemCode: String(it.itemCode ?? ''),
+              group:    (it.itemGroup as string | null | undefined) ?? null,
+              variants: (it.variants as Record<string, unknown> | null) ?? null,
+            })),
+          )
+        : [],
+    });
+    if (coProblems.length > 0) return c.json(validationFailedBody(coProblems), 422);
     if (items.length > 0) {
       const lineCodes = items.map((it) => String(it.itemCode ?? '')).filter(Boolean);
       const metaByCode = new Map<string, { category: string }>();
@@ -1229,25 +1223,23 @@ consignmentOrders.patch('/:docNo', async (c) => {
 
   if (Object.keys(updates).length === 1) return c.json({ ok: true, changed: 0 });
 
+  /* Collect every Processing-Date gate and report them together (owner
+     2026-07-18) — mirrors the SO header PATCH path. */
+  let coVariantOffenders: ReturnType<typeof findIncompleteVariantLines> = [];
+
   /* Processing Date set → every non-cancelled line must carry its category-
-     required variants. */
+     required variants. Collected (not returned) — aggregated with the date rules
+     below. */
   if (body['internalExpectedDd'] !== undefined && body['internalExpectedDd'] !== null && body['internalExpectedDd'] !== '') {
     const { data: liveItems } = await sb
       .from('consignment_sales_order_items')
       .select('id, item_code, item_group, variants, cancelled')
       .eq('doc_no', docNo);
-    const offenders = findIncompleteVariantLines(
+    coVariantOffenders = findIncompleteVariantLines(
       ((liveItems ?? []) as Array<{ id: string; item_code: string; item_group: string; variants: Record<string, unknown> | null; cancelled: boolean }>)
         .filter((it) => !it.cancelled)
         .map((it) => ({ id: it.id, itemCode: it.item_code, group: it.item_group, variants: it.variants })),
     );
-    if (offenders.length > 0) {
-      return c.json({
-        error: 'variants_incomplete',
-        message: 'Processing Date requires all category-mandatory variants on every line.',
-        offenders,
-      }, 409);
-    }
   }
 
   // Snapshot the row before update for the audit diff + the date / lock guards.
@@ -1255,7 +1247,9 @@ consignmentOrders.patch('/:docNo', async (c) => {
   const { data: before } = await sb.from('consignment_sales_orders').select(beforeCols).eq('doc_no', docNo).maybeSingle();
 
   /* Processing & Delivery Date may only be today or a future date, BUT an
-     already-past value the edit does NOT change is grandfathered through. */
+     already-past value the edit does NOT change is grandfathered through. The
+     helper re-derives past-date + processing-≤-delivery from the effective +
+     original dates and folds in the variant offenders collected above. */
   {
     const beforeRow = (before as unknown as Record<string, unknown> | null);
     const todayMY = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
@@ -1263,17 +1257,17 @@ consignmentOrders.patch('/:docNo', async (c) => {
     const deliv = body['customerDeliveryDate'];
     const origProc = (beforeRow?.['internal_expected_dd'] as string | null) ?? null;
     const origDeliv = (beforeRow?.['customer_delivery_date'] as string | null) ?? null;
-    if (typeof proc === 'string' && proc && proc < todayMY && proc !== origProc) {
-      return c.json({ error: 'processing_date_past', reason: 'Processing Date cannot be in the past — today or a future date only.' }, 400);
-    }
-    if (typeof deliv === 'string' && deliv && deliv < todayMY && deliv !== origDeliv) {
-      return c.json({ error: 'delivery_date_past', reason: 'Delivery Date cannot be in the past — today or a future date only.' }, 400);
-    }
     const effProc  = typeof proc  === 'string' ? (proc  || null) : origProc;
     const effDeliv = typeof deliv === 'string' ? (deliv || null) : origDeliv;
-    if (effProc && effDeliv && effProc > effDeliv) {
-      return c.json({ error: 'processing_after_delivery', reason: 'Processing Date cannot be later than the Delivery Date.' }, 400);
-    }
+    const coProblems = collectProcessingGateProblems({
+      procDate: effProc,
+      delivDate: effDeliv,
+      todayMY,
+      origProcDate: origProc,
+      origDelivDate: origDeliv,
+      variantOffenders: coVariantOffenders,
+    });
+    if (coProblems.length > 0) return c.json(validationFailedBody(coProblems), 422);
   }
 
   /* Partial header lock. Once a non-cancelled DO / SI exists, the IDENTITY +

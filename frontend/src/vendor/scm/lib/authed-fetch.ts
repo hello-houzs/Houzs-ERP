@@ -272,10 +272,37 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
   return (await res.json()) as T;
 }
 
+/** One reason a save was rejected, as the backend's aggregated `validation_failed`
+ *  response carries them (backend so-save-problems.ts). `line` is the offending
+ *  item code; `field` the concrete input to fix. */
+export type SaveProblem = { code: string; message: string; line?: string; field?: string };
+
+/** Pull the aggregated problem list out of an API error body (the raw JSON string
+ *  authed-fetch stashes on `err.body`). Returns null when the body isn't a
+ *  `validation_failed` envelope — callers then fall back to the single message.
+ *  Lets a surface render EVERY reason at once (owner 2026-07-18) instead of the
+ *  one-at-a-time sequence the backend used to return. */
+export function parseSaveProblems(body: string | undefined | null): SaveProblem[] | null {
+  if (!body) return null;
+  try {
+    const j = JSON.parse(body) as { problems?: unknown };
+    if (!Array.isArray(j.problems) || j.problems.length === 0) return null;
+    return j.problems
+      .filter((p): p is SaveProblem => !!p && typeof (p as SaveProblem).message === 'string')
+      .map((p) => ({ code: String(p.code ?? ''), message: p.message, line: p.line, field: p.field }));
+  } catch {
+    return null;
+  }
+}
+
 /** Build an operator-friendly message from an API failure. Surfaces the
  *  server's own reason ONLY when it's already a plain sentence; otherwise maps
  *  the HTTP status to plain words. Never leaks JSON / SQL / status codes. */
 const ERROR_CODE_MESSAGES: Record<string, string> = {
+  // Aggregated save gate (backend so-save-problems.ts). A surface that renders
+  // the `problems` list itself never reaches this; it's the single-line fallback
+  // for surfaces that only read the message.
+  validation_failed: 'Some details need fixing before this can be saved.',
   // The idempotency middleware's in-flight 409 (backend/src/middleware/
   // idempotency.ts): the SAME key is already running, i.e. this exact write is
   // mid-flight. That is NOT an error and must never read like one — without this
@@ -323,6 +350,16 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
 
 export function humanApiError(status: number, body: string): string {
   try {
+    // 0. Aggregated save gate (validation_failed) — surface EVERY reason at once
+    //    as its own line, so a surface that only shows a single string (mobile
+    //    error line, PDF, a plain banner) still lists them all instead of one.
+    //    Surfaces that render a real list use parseSaveProblems directly.
+    const problems = parseSaveProblems(body);
+    if (problems && problems.length > 0) {
+      return problems.length === 1
+        ? problems[0]!.message
+        : problems.map((p) => `• ${p.message}`).join('\n');
+    }
     const j = JSON.parse(body) as { error?: unknown; reason?: unknown; message?: unknown };
     // 1. Known error code → curated plain message.
     if (typeof j.error === 'string') {

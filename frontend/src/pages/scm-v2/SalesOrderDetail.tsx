@@ -58,6 +58,8 @@ import {
   amendmentEligible as soAmendmentEligible,
 } from '../../vendor/scm/lib/so-detail-gates';
 import { soDateGuardError, soErrorText } from '../../vendor/scm/lib/so-form-validate';
+import { parseSaveProblems } from '../../vendor/scm/lib/authed-fetch';
+import { SaveProblemsList, saveProblemsTitle } from '../../vendor/scm/components/SaveProblemsList';
 import {
   buildAmendmentHeaderChanges,
   hasAmendmentHeaderChanges,
@@ -723,7 +725,15 @@ export const SalesOrderDetail = () => {
       .then(() => new Promise<void>((resolve, rejectSave) => {
         handle.save({
           onSuccess: () => resolve(),
-          onError: (msg) => rejectSave(new Error(msg)),
+          // Carry the raw Error's `.body` forward so the catch can pull the
+          // server's aggregated `problems` list off it.
+          onError: (msg, raw) => {
+            const err = new Error(msg) as Error & { body?: string };
+            if (raw && typeof raw === 'object' && 'body' in raw) {
+              err.body = (raw as { body?: string }).body;
+            }
+            rejectSave(err);
+          },
         });
       }))
       .then(() => {
@@ -732,7 +742,20 @@ export const SalesOrderDetail = () => {
       })
       .catch((e) => {
         setSavingOrder(false);
-        setSaveError(e instanceof Error ? e.message : String(e));
+        /* An aggregated save-gate failure (validation_failed) — show EVERY reason
+           at once in a POPUP the owner can't miss (owner 2026-07-18: he wanted a
+           modal listing all reasons, not a banner to scroll to). Anything else
+           keeps the inline banner. */
+        const problems = parseSaveProblems((e as { body?: string } | undefined)?.body);
+        if (problems && problems.length > 0) {
+          notify({
+            title: saveProblemsTitle(problems.length),
+            body: <SaveProblemsList problems={problems} />,
+            tone: 'error',
+          });
+        } else {
+          setSaveError(e instanceof Error ? e.message : String(e));
+        }
       });
   };
 
@@ -910,7 +933,7 @@ export const SalesOrderDetail = () => {
      never changes inside one mounted page. */
   const stableDocNo = docNo ?? '';
   const handleHeaderSave = useCallback(
-    (patch: Record<string, unknown>, cb?: { onSuccess?: () => void; onError?: (msg: string) => void }) => {
+    (patch: Record<string, unknown>, cb?: { onSuccess?: () => void; onError?: (msg: string, raw?: unknown) => void }) => {
       /* `patch` arrives already diffed to the dirty fields, so an empty one means
          the operator changed nothing this PATCH persists. Skip the request: an
          all-unchanged body still re-fires the server's delivery-date cascade
@@ -935,7 +958,8 @@ export const SalesOrderDetail = () => {
         { docNo: stableDocNo, ...patch, ...(Object.keys(__verify).length ? { __verify } : {}) },
         {
           onSuccess: () => cb?.onSuccess?.(),
-          onError:   (e) => cb?.onError?.(e instanceof Error ? e.message : String(e)),
+          // Pass the raw Error too — its `.body` carries the aggregated problems.
+          onError:   (e) => cb?.onError?.(e instanceof Error ? e.message : String(e), e),
         },
       );
     },
@@ -2121,7 +2145,10 @@ type CustomerCardHandle = {
       lines / note in the same payload still save immediately. The changed frozen
       values ride the amendment instead (getLockedHeaderChanges below). */
   save: (
-    cb: { onSuccess: () => void; onError: (msg: string) => void },
+    // `raw` (optional 2nd arg) carries the original Error, whose `.body` holds
+    // the server's aggregated `problems` list — so the page Save can show EVERY
+    // reason at once (owner 2026-07-18), not just the first line.
+    cb: { onSuccess: () => void; onError: (msg: string, raw?: unknown) => void },
     opts?: { keepLockedColsAsOriginal?: boolean },
   ) => void;
   reset: () => void;
@@ -2146,7 +2173,7 @@ type CustomerCardProps = {
       without callbacks. */
   onSave: (
     patch: Record<string, unknown>,
-    cb?: { onSuccess?: () => void; onError?: (msg: string) => void },
+    cb?: { onSuccess?: () => void; onError?: (msg: string, raw?: unknown) => void },
   ) => void;
   saving: boolean;
   /** When true, disable input editing — accepted but consumer must show
@@ -2560,7 +2587,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
   };
 
   const trySave = (
-    cb?: { onSuccess?: () => void; onError?: (msg: string) => void },
+    cb?: { onSuccess?: () => void; onError?: (msg: string, raw?: unknown) => void },
     opts?: { keepLockedColsAsOriginal?: boolean },
   ) => {
     const err = validateDates();

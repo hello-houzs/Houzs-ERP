@@ -45,7 +45,8 @@ import {
   useUploadSoItemPhoto, useMfgSalesOrderDetail,
   type DebtorSuggestion,
 } from '../../vendor/scm/lib/sales-order-queries';
-import { authedFetch, humanApiError } from '../../vendor/scm/lib/authed-fetch';
+import { authedFetch, humanApiError, parseSaveProblems } from '../../vendor/scm/lib/authed-fetch';
+import { SaveProblemsList, saveProblemsTitle } from '../../vendor/scm/components/SaveProblemsList';
 import { useIdempotencyKey } from '../../lib/idempotency';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { todayMyt } from '../../vendor/scm/lib/dates';
@@ -1538,7 +1539,16 @@ export const SalesOrderNew = () => {
           }
           navigate(`/scm/sales-orders/${res.docNo}`);
         },
-        onError:   (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+        onError:   (err) => {
+          /* Aggregated save-gate failure → list every reason (owner 2026-07-18),
+             same popup as the SO Detail + mobile paths. */
+          const problems = parseSaveProblems((err as { body?: string } | undefined)?.body);
+          if (problems && problems.length > 0) {
+            void notify({ title: saveProblemsTitle(problems.length), body: <SaveProblemsList problems={problems} />, tone: 'error' });
+          } else {
+            void notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+          }
+        },
       },
     );
   };
