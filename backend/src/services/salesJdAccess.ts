@@ -82,7 +82,11 @@ import type { AccessLevel } from "./pageAccess";
  *  prefix as the fallback for anyone filed outside a Sales department. */
 const SALES_POSITION = /^sales/i;
 
-function isSalesCohort(u: {
+/** The Sales-cohort detection, exported so positionPolicy classifies the cohort
+ *  with the SAME rule rather than a second copy. ONE detection rule is what stops
+ *  a Sales position from resolving to full-access by accident (positionPolicy's
+ *  header states this); sharing the predicate makes it literal, not aspirational. */
+export function isSalesCohort(u: {
   position_name?: string | null;
   department_name?: string | null;
 }): boolean {
@@ -115,7 +119,7 @@ function isSalesCohort(u: {
  *  / consignment / finance ALL `none` on his row, so the returns deny costs him
  *  nothing elsewhere -- measured, not assumed.
  */
-const SALES_JD: Readonly<Record<string, AccessLevel>> = {
+export const SALES_JD: Readonly<Record<string, AccessLevel>> = {
   // Owner 2026-07-17: "销售部门原本就是卖东西、开 SO 的。如果他们没有开 SO，
   // 后面的人怎么去操作呢？" -- they sell; the SO is theirs to raise + confirm.
   "scm.sales.orders": "edit",
@@ -197,6 +201,20 @@ export function salesJdDenial(
 
 /**
  * Apply the Sales JD over a hydrated page-access map.
+ *
+ * SINCE THE FOLD (positionPolicy now owns positioned sales): SALES_JD is the ONE
+ * definition of the sales SCM leaf levels, and positionPolicy.ts imports it to
+ * build the sales cohort's page-access rows. So for a POSITIONED sales user this
+ * override is now IDEMPOTENT -- the policy already produced orders=edit /
+ * delivery=view / invoices=view / returns=none, and re-spreading the same values
+ * changes nothing (pinned in positionPolicy.test.ts). It is retained on the auth
+ * chain for exactly ONE case the position policy structurally cannot reach: a
+ * user in a Sales DEPARTMENT with NO position_id, who hydrates from the legacy
+ * role matrix (auth.ts positionless branch) and so never runs resolvePositionPolicy.
+ * That fallback is the reason this is not deleted -- removing it would drop the JD
+ * levels (and the FE quick-action they drive) for a positionless Sales-department
+ * user. The DENY half (salesJdDenial) is department-keyed and independent of this,
+ * so a positionless user's returns denial is preserved either way.
  *
  * The `*` wildcard (Owner / IT) is exempt and returns UNTOUCHED: it arrives
  * here as fullAccessMap(), and narrowing it would lock the owner out of his own
