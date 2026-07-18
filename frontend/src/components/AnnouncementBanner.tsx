@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Megaphone,
   AlertTriangle,
@@ -13,11 +13,14 @@ import {
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { cn } from "../lib/utils";
-import {
-  AnnouncementMedia,
-  type AnnAttachment,
-  type AnnMediaLayout,
-} from "./AnnouncementMedia";
+import type { AnnAttachment, AnnMediaLayout } from "./AnnouncementMedia";
+
+// Lazy so the media gallery (+ MediaLightbox + its icons) stays OUT of the
+// initial bundle — the banner mounts at the app root, but most notices are
+// text-only, so the media code only loads when a notice actually carries media.
+const AnnouncementMedia = lazy(() =>
+  import("./AnnouncementMedia").then((m) => ({ default: m.AnnouncementMedia })),
+);
 
 // ────────────────────────────────────────────────────────────────────────────
 // AnnouncementBanner — top-of-app strip that surfaces the latest active
@@ -350,12 +353,14 @@ export function AnnouncementBanner() {
             </p>
           )}
           {current.attachments && current.attachments.length > 0 && (
-            <AnnouncementMedia
-              annId={current.id}
-              attachments={current.attachments}
-              layout={current.mediaLayout ?? null}
-              className="mt-3"
-            />
+            <Suspense fallback={null}>
+              <AnnouncementMedia
+                annId={current.id}
+                attachments={current.attachments}
+                layout={current.mediaLayout ?? null}
+                className="mt-3"
+              />
+            </Suspense>
           )}
           <div className="mt-4 flex justify-end gap-2">
             <button
