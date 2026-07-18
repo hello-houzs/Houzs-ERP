@@ -39,6 +39,46 @@ const EMPTY: MailLocalState = {
 
 let state: MailLocalState = load();
 
+/* WHY EVERY ELEMENT IS VALIDATED, NOT JUST THE ARRAY.
+   `Array.isArray(parsed.drafts)` proves the CONTAINER is well-formed and says
+   nothing about what is inside it. A single element missing `updatedAt` was
+   enough to unmount the whole Mail Center, because the Drafts list fed that
+   value straight into `new Date(x).toISOString()` — which throws RangeError on
+   an invalid date rather than returning a falsy value the renderer could skip.
+   HOOKKA lost two pages to this exact shape (BUG-2026-04-22-001 crash on a
+   shared localStorage key written in two incompatible shapes, and
+   BUG-2026-05-12-008 toISOString on an undefined field).
+
+   Persisted JSON is UNTRUSTED INPUT: it outlives the code that wrote it, it is
+   editable by hand, and it is replayed verbatim into a tab running a newer
+   build. The sibling module mail-prefs.ts already validates field-by-field on
+   load; this brings drafts to the same bar. A malformed draft is DROPPED rather
+   than repaired — a draft we cannot read is not a draft we can let the user
+   resume, and silently keeping the readable ones beats crashing on all of them. */
+export function sanitizeDrafts(value: unknown): MailDraft[] {
+  if (!Array.isArray(value)) return [];
+  const out: MailDraft[] = [];
+  for (const d of value) {
+    if (!d || typeof d !== "object") continue;
+    const r = d as Record<string, unknown>;
+    // id is the only field with no sane fallback: it keys save/delete, so a
+    // draft without one can never be resumed or discarded.
+    if (typeof r.id !== "string" || !r.id) continue;
+    // A draft that predates a field, or carries a wrong type, is still a
+    // usable draft — the text fields degrade to empty rather than dropping it.
+    const updatedAt = typeof r.updatedAt === "number" && Number.isFinite(r.updatedAt) ? r.updatedAt : 0;
+    out.push({
+      id: r.id,
+      to: typeof r.to === "string" ? r.to : "",
+      subject: typeof r.subject === "string" ? r.subject : "",
+      body: typeof r.body === "string" ? r.body : "",
+      fromAddress: typeof r.fromAddress === "string" ? r.fromAddress : "",
+      updatedAt,
+    });
+  }
+  return out;
+}
+
 function load(): MailLocalState {
   if (typeof window === "undefined") return { ...EMPTY };
   try {
@@ -46,7 +86,7 @@ function load(): MailLocalState {
     if (!raw) return { ...EMPTY };
     const parsed = JSON.parse(raw) as Partial<MailLocalState>;
     return {
-      drafts: Array.isArray(parsed.drafts) ? parsed.drafts : [],
+      drafts: sanitizeDrafts(parsed.drafts),
     };
   } catch {
     return { ...EMPTY };

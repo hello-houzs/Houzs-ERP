@@ -41,6 +41,49 @@ describe("audit trail", () => {
     ).resolves.toBeUndefined();
   });
 
+  test("a swallowed insert still names the row it lost, so it can be replayed", async () => {
+    /* Swallowing is correct — audit must never break the mutation it records —
+       but a payload-free "insert failed" line makes the gap unrecoverable AND
+       invisible. HOOKKA shipped a column-type mismatch that failed EVERY insert
+       from one deploy onward and nobody noticed, because the only trace said
+       nothing about what was lost (BUG-2026-04-27-007 / BUG-2026-05-12-007).
+       The identifying fields must reach the log so the row is reconstructable. */
+    const errors: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    try {
+      await writeAudit(env, {
+        action: undefined as unknown as string, // violates NOT NULL -> insert fails
+        entityType: "role",
+        entityId: 5,
+        summary: "would have recorded a role edit",
+        actorId: 7,
+        actorEmail: "actor@test.local",
+        meta: { before: 1, after: 2 },
+      });
+    } finally {
+      console.error = original;
+    }
+
+    expect(errors.length).toBe(1);
+    const [message, payload] = errors[0] as [string, Record<string, unknown>];
+    // The greppable prefix is what an alert would key on.
+    expect(String(message)).toContain("[audit] insert failed");
+    expect(payload).toMatchObject({
+      entityType: "role",
+      entityId: "5",
+      summary: "would have recorded a role edit",
+      actorId: 7,
+      actorEmail: "actor@test.local",
+    });
+    // meta can be large and can carry customer data — presence only, never the
+    // blob itself, because this sink has a wider audience than audit_events.
+    expect(payload.hasMeta).toBe(true);
+    expect(JSON.stringify(payload)).not.toContain("after");
+    // And the failure reason is carried, not just the fact of failure.
+    expect(String(payload.error)).toBeTruthy();
+  });
+
   test("GET /api/audit lists events and filters by action prefix", async () => {
     // Seed a spread of events directly (the mutating routes themselves run on
     // Drizzle, which has no DB in this harness — the read path is raw env.DB).
