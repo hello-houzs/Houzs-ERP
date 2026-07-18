@@ -522,7 +522,12 @@ export default function App() {
             area, and the report returns every colleague's pay — it must not ride
             the broad scm.access umbrella. Same two keys the backend checks.
             Settings takes scm.hr.manage alone: without it every control on the
-            page 403s, so a read-only holder gets the report instead. */}
+            page 403s, so a read-only holder gets the report instead.
+
+            scm.hr.close / scm.hr.reopen are NOT route keys. They gate the two
+            payout-approval buttons inside the Commission page and are checked
+            there; a holder of either still needs scm.hr.read to get in, because
+            the API will not show them the period to approve. */}
         <Route path="/scm/hr/commission" element={<Guard anyPerm={["*", "scm.hr.read", "scm.hr.manage"]}><Scm2990Shell><ScmHrCommission /></Scm2990Shell></Guard>} />
         <Route path="/scm/hr/settings" element={<Guard anyPerm={["*", "scm.hr.manage"]}><Scm2990Shell><ScmHrSettings /></Scm2990Shell></Guard>} />
         {/* TEMP — vendored 2990's PR / Inventory / Stock Card / Supplier Detail /
