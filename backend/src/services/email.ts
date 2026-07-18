@@ -64,6 +64,18 @@ export interface SendOptions {
   // Center reply/compose). `content` is base64. NOT persisted to the outbox row
   // (email_outbox has no attachment column), so a drained retry sends body-only.
   attachments?: Array<{ filename: string; content: string }>;
+  // Whether a FAILED immediate send may be retried by the 5-minute cron drain.
+  // Default true (the historical behaviour, and the right one for a body-only
+  // message: a durable retry is strictly better than a lost email).
+  //
+  // Pass FALSE when the message's value depends on an ATTACHMENT. email_outbox
+  // has no attachment column (see `attachments` above), so a drained retry
+  // re-sends the BODY ALONE — for a document email that means the supplier or
+  // customer receives a covering note for a document that isn't there, while the
+  // operator, having been told "not sent", sends a second complete copy. The row
+  // is still written (so the failure is visible in the outbox and email_log); it
+  // is just marked terminal instead of pending.
+  outboxRetry?: boolean;
   // Which company's identity the outbound mail carries ('HOUZS' | '2990').
   // Drives the From DISPLAY NAME (the address itself stays the verified Resend
   // sender — see deliverViaResend). Persisted to email_outbox.company_code so
@@ -303,6 +315,13 @@ export async function sendEmail(env: Env, opts: SendOptions): Promise<SendResult
   try {
     if (result.status === "sent") {
       await env.DB.prepare(`UPDATE email_outbox SET status='sent', sent_at=datetime('now') WHERE id=?`).bind(id).run();
+    } else if (opts.outboxRetry === false) {
+      // Attachment-bearing message: mark terminal so the cron never re-delivers
+      // it body-only (see SendOptions.outboxRetry). The row and the reason stay
+      // for the ops trace — this suppresses the RETRY, not the record.
+      await env.DB.prepare(`UPDATE email_outbox SET status='failed', last_error=? WHERE id=?`)
+        .bind(`${result.reason ?? "send failed"} [not retried: message carried an attachment the outbox cannot store]`, id)
+        .run();
     } else {
       await env.DB.prepare(`UPDATE email_outbox SET last_error=? WHERE id=?`).bind(result.reason ?? null, id).run();
     }

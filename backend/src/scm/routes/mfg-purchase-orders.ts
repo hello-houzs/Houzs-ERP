@@ -44,7 +44,16 @@ import {
 } from '../lib/lead-time';
 import { groupKeyFor } from '../lib/po-grouping';
 import { loadLeadBuffers } from '../../services/agents/procurement-learning';
-import { sendEmail, documentEmailHtml, isChannelEnabled } from '../../services/email';
+import { sendEmail, isChannelEnabled } from '../../services/email';
+import { getBrandingForCompany } from '../../services/branding';
+import {
+  buildPurchaseOrderEmail,
+  isSendableEmail,
+  poSendRefusalForStatus,
+  validatePoAttachment,
+  PO_RESEND_WINDOW_MS,
+  type PoEmailRow,
+} from '../lib/po-email';
 import { getSupabaseService } from '../../db/supabase';
 import { supabaseAuth } from '../middleware/auth';
 import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
@@ -2931,14 +2940,22 @@ mfgPurchaseOrders.patch('/:id/confirm', async (c) => {
 /* ── POST /:id/send-to-supplier — email the PO to its supplier (HUMAN action) ──
    The Procurement agent only ever raises a DRAFT PO; a person confirms it and,
    separately, chooses to send it. This is that send. It is NOT automatic and NOT
-   the agent's — an operator triggers it from the PO page.
+   the agent's — an operator triggers it from the PO page. Nothing in this file
+   calls this handler; there is no scheduled caller and there must never be one.
 
    The PO PDF is rendered in the BROWSER (the owner bars a backend PDF engine), so
    the frontend posts the rendered PDF as base64 and this attaches it. Without a
    pdf, a summary-only email still goes (documentEmailHtml).
 
    FAIL-CLOSED: the `purchase_order` channel is seeded OFF (mig 0132) — a PO leaves
-   for an external supplier only when the owner has turned the channel on. */
+   for an external supplier only when the owner has turned the channel on.
+
+   ── THE ORDER OF THE GUARDS IS THE DESIGN ──
+   Every refusal below happens BEFORE the claim, which happens BEFORE the send.
+   The claim is a WRITE, so a refusal that ran after it would leave a "sent"
+   stamp on a PO nobody emailed. Authorization is upstream: scm/index.ts mounts
+   this router behind scmAreaGuard('scm.procurement.po'), so a POST here already
+   required `edit` on the Procurement PO area. */
 mfgPurchaseOrders.post('/:id/send-to-supplier', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
@@ -2946,59 +2963,157 @@ mfgPurchaseOrders.post('/:id/send-to-supplier', async (c) => {
   let body: { pdfBase64?: unknown; message?: unknown } = {};
   try { body = (await c.req.json()) as typeof body; } catch { body = {}; }
 
+  /* THE CHANNEL GATE IS FIRST, before the PO is even read — same posture as
+     do-email.ts. With the channel off this endpoint must do literally nothing:
+     no read, no claim, no audit row, no email_log entry about a switched-off
+     feature. Checked again independently inside sendEmail. */
+  if (!(await isChannelEnabled(c.env, 'purchase_order'))) {
+    return c.json({ error: 'channel_off', message: 'The purchase-order email channel is off. Turn it on in email settings to send.' }, 409);
+  }
+
   const { data: po, error } = await supabase
     .from('purchase_orders')
-    .select('id, po_number, status, total_centi, currency, po_date, supplier:suppliers(name, email)')
+    .select('id, po_number, status, total_centi, currency, po_date, company_id, po_email_sent_at, po_email_sent_to, supplier:suppliers(name, email)')
     .eq('id', id)
     .maybeSingle();
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   if (!po) return c.json({ error: 'not_found' }, 404);
 
-  const row = po as {
-    po_number?: string; status?: string; total_centi?: number; currency?: string; po_date?: string;
-    supplier?: { name?: string | null; email?: string | null } | null;
+  const row = po as unknown as PoEmailRow & {
+    company_id?: number | null;
+    po_email_sent_at?: string | null;
+    po_email_sent_to?: string | null;
   };
-  const supplierEmail = row.supplier?.email ?? null;
+
+  /* Status. Bars DRAFT (uncommitted) and CANCELLED (telling a supplier to ship
+     goods the company has decided not to buy) — see poSendRefusalForStatus. */
+  const statusRefusal = poSendRefusalForStatus(row.status);
+  if (statusRefusal) return c.json({ error: 'not_sendable', message: statusRefusal }, 409);
+
+  /* Recipient. Checked as a real address, not just "contains @" — this is the
+     last point before an external send. */
+  const supplierEmail = (row.supplier?.email ?? '').trim();
   if (!supplierEmail) {
     return c.json({ error: 'no_supplier_email', message: 'This supplier has no email address on file.' }, 400);
   }
-  // Sending a DRAFT to a supplier would put an unconfirmed order in front of them.
-  if (String(row.status ?? '') === 'DRAFT') {
-    return c.json({ error: 'not_confirmed', message: 'Confirm the PO before sending it to the supplier.' }, 409);
-  }
-  if (!(await isChannelEnabled(c.env, 'purchase_order'))) {
-    return c.json({ error: 'channel_off', message: 'The purchase-order email channel is off. Turn it on in email settings to send.' }, 409);
+  if (!isSendableEmail(supplierEmail)) {
+    return c.json({
+      error: 'bad_supplier_email',
+      message: `The supplier's email address (${supplierEmail}) is not a valid address. Fix it on the supplier record, then send again.`,
+    }, 400);
   }
 
+  /* Attachment, validated BEFORE anything is claimed or sent: absent is legal
+     (summary-only), present-but-wrong is refused with a readable reason. */
   const poNo = row.po_number ?? id;
-  const total = ((Number(row.total_centi ?? 0)) / 100).toFixed(2);
-  const cur = row.currency ?? 'MYR';
-  const html = documentEmailHtml({
-    docTypeLabel: 'Purchase Order',
-    docNo: poNo,
-    recipientName: row.supplier?.name ?? 'Supplier',
-    rows: [
-      { label: 'PO No.', value: poNo },
-      { label: 'Date', value: String(row.po_date ?? '').slice(0, 10) || '-' },
-      { label: 'Total', value: `${cur} ${total}` },
-    ],
-    note: typeof body.message === 'string' && body.message.trim() ? body.message.trim() : null,
-  });
+  const attachmentCheck = validatePoAttachment(body.pdfBase64, poNo);
+  if (!attachmentCheck.ok) {
+    return c.json({ error: 'bad_attachment', message: attachmentCheck.message }, 400);
+  }
 
-  const attachments = typeof body.pdfBase64 === 'string' && body.pdfBase64.length > 0
-    ? [{ filename: `${poNo}.pdf`, content: body.pdfBase64 }]
-    : undefined;
+  const branding = await getBrandingForCompany(c.env, row.company_id ?? null);
+  const msg = buildPurchaseOrderEmail(
+    row,
+    branding.companyName,
+    typeof body.message === 'string' ? body.message : null,
+  );
+  /* Unreachable given the recipient check above — buildPurchaseOrderEmail's only
+     null is a bad address. Handled rather than asserted: the two checks are in
+     different files and a future edit could separate them. */
+  if (!msg) {
+    return c.json({ error: 'no_supplier_email', message: 'This supplier has no usable email address on file.' }, 400);
+  }
+
+  /* ── THE CLAIM: the double-click guard ──
+     Two clicks (or a click and the browser's retry of a slow request) can both
+     pass every check above and both send. Claim the row atomically: Postgres
+     serialises the two UPDATEs and the filter means exactly one gets a row back.
+
+     The filter is "never sent, OR last sent more than a minute ago", so this
+     blocks the accident WITHOUT making the send once-only — a deliberate resend
+     is a normal, supported action (see PO_RESEND_WINDOW_MS for why HOOKKA's
+     one-shot design had to be undone).
+
+     String comparison on po_email_sent_at is sound because every value in the
+     column is written by toISOString() here: same length, same UTC 'Z' suffix,
+     so lexical order is chronological order. The column is text to match the
+     text-timestamp rule mig 0008 established for this schema. */
+  const claimedAt = new Date().toISOString();
+  const windowStart = new Date(Date.now() - PO_RESEND_WINDOW_MS).toISOString();
+  const previousSentAt = row.po_email_sent_at ?? null;
+  const previousSentTo = row.po_email_sent_to ?? null;
+
+  const { data: claimed } = await supabase
+    .from('purchase_orders')
+    .update({ po_email_sent_at: claimedAt, po_email_sent_to: supplierEmail })
+    .eq('id', id)
+    .or(`po_email_sent_at.is.null,po_email_sent_at.lt.${windowStart}`)
+    .select('id')
+    .maybeSingle();
+  if (!claimed) {
+    return c.json({
+      error: 'already_sending',
+      message: 'This PO was just emailed to the supplier. Wait a moment before sending it again.',
+    }, 409);
+  }
 
   const res = await sendEmail(c.env, {
-    to: supplierEmail,
-    subject: `Purchase Order ${poNo}`,
-    html,
+    to: msg.to,
+    subject: msg.subject,
+    html: msg.html,
     purpose: 'purchase_order',
     refType: 'purchase_order',
     // po id is a uuid; email_log.ref_id is INTEGER, so identity lives in the subject.
-    companyCode: null,
-    attachments,
+    companyCode: row.company_id != null ? String(row.company_id) : null,
+    attachments: attachmentCheck.attachment ? [attachmentCheck.attachment] : undefined,
+    /* NO CRON RETRY when a PDF is attached. email_outbox has no attachment
+       column (services/email.ts SendOptions.attachments), so a drained retry
+       would deliver the PO body WITHOUT the order document — and the operator,
+       having already seen "not sent", would send again, leaving the supplier
+       with a bodyless copy plus a real one. Better that the failure stays a
+       failure the operator can act on. A summary-only send has nothing to lose
+       and keeps the durable retry. */
+    outboxRetry: attachmentCheck.attachment == null,
   });
+
+  if (res.status !== 'sent') {
+    /* NOT sent -> RELEASE the claim back to its previous value, so the stamp
+       only ever means "this supplier was successfully emailed at this time" and
+       the operator can retry immediately instead of waiting out the window. */
+    await supabase
+      .from('purchase_orders')
+      .update({ po_email_sent_at: previousSentAt, po_email_sent_to: previousSentTo })
+      .eq('id', id)
+      .eq('po_email_sent_at', claimedAt);
+  }
+
+  /* ── WHO SENT IT ──
+     Recorded for BOTH outcomes, and that is deliberate: a failed send to an
+     external party is exactly as much a fact about who did what as a successful
+     one, and the attempt is the thing a later question ("did anyone email this
+     supplier?") is really asking about. recordEntityAudit is best-effort and
+     never throws (lib/entity-audit.ts), so it cannot turn a delivered email into
+     a 500. The actor is c.get('houzsUser') — the REAL person; c.get('user') is
+     the pinned scm.staff system identity shared by every caller. */
+  await recordEntityAudit(supabase, {
+    entityType: 'PURCHASE_ORDER',
+    entityId: id,
+    entityDocNo: row.po_number ?? null,
+    action: 'SEND',
+    actor: c.get('houzsUser'),
+    companyId: row.company_id ?? activeCompanyId(c),
+    statusSnapshot: row.status ?? null,
+    fieldChanges: compactChanges([
+      fieldChange('emailedTo', previousSentTo, supplierEmail),
+      fieldChange('emailStatus', null, res.status),
+      fieldChange('emailAttachment', null, attachmentCheck.attachment ? 'PDF' : 'summary only'),
+      ...(res.status === 'sent' ? [] : [fieldChange('emailError', null, res.reason ?? null)]),
+    ]),
+    note: res.status === 'sent'
+      ? `Purchase Order emailed to ${supplierEmail}`
+      : `Purchase Order email to ${supplierEmail} did not go out`,
+  });
+
   return c.json({ sent: res.status === 'sent', result: res, to: supplierEmail });
 });
 

@@ -9,7 +9,7 @@
 //       useSubmitPurchaseOrder / useConfirmPurchaseOrder / useReopenPurchaseOrder
 //       (vendored suppliers-queries slice).
 
-import { Suspense, lazy, useMemo, type ReactNode } from "react";
+import { Suspense, lazy, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { lineIdentity } from "@2990s/shared";
 import {
@@ -48,6 +48,7 @@ import {
 import { useWarehouses } from "../../vendor/scm/lib/inventory-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { cn } from "../../lib/utils";
 
@@ -374,6 +375,9 @@ function PurchaseOrderDetailV2ReadOnly() {
   const cancelPo = useCancelPurchaseOrder();
   const reopenPo = useReopenPurchaseOrder();
   const notify = useNotify();
+  const confirm = useConfirm();
+  // In-flight guard for the supplier send — see doSendToSupplier.
+  const [sendingToSupplier, setSendingToSupplier] = useState(false);
 
   /* Nick 2026-07-09 — Ship-to warehouse cell was rendering the raw
      `purchase_location_id` UUID because the field only carries the id;
@@ -455,10 +459,35 @@ function PurchaseOrderDetailV2ReadOnly() {
   /* Email this PO to its supplier — a HUMAN action (the agent only drafts). The
      PDF is rendered here in the browser (the backend has no PDF engine) and posted
      as base64; the backend attaches it and sends via the gated purchase_order
-     channel. Confirm first — it goes to an external party. */
+     channel. Confirm first — it goes to an external party.
+
+     The confirm SHOWS THE ADDRESS, because "send to the supplier" is not the
+     decision the operator is actually making: the supplier record may carry a
+     stale or wrong contact, and the moment to catch that is before the send, not
+     from the audit trail afterwards. */
   const doSendToSupplier = async () => {
     if (!id || !purchaseOrder) return;
-    if (!window.confirm(`Email PO ${purchaseOrder.po_number} to the supplier now?`)) return;
+    if (sendingToSupplier) return;
+    const recipient = purchaseOrder.supplier?.email?.trim();
+    if (!recipient) {
+      notify({
+        title: "No supplier email",
+        body: "This supplier has no email address on file. Add one on the supplier record, then send.",
+        tone: "error",
+      });
+      return;
+    }
+    const ok = await confirm({
+      title: `Email PO ${purchaseOrder.po_number} to the supplier?`,
+      body: `It will be sent to ${recipient} with the PO attached as a PDF. Check the address is the right one for this supplier.`,
+      confirmLabel: "Send to supplier",
+    });
+    if (!ok) return;
+    /* Guard the double-click at the source as well as at the backend claim. The
+       backend refusal is the one that is authoritative (a second tab, a retried
+       request); this only spares the operator a confusing error for the common
+       case of clicking twice on a slow send. */
+    setSendingToSupplier(true);
     try {
       const wh = (warehousesQ.data ?? []).find((w) => w.id === purchaseOrder.purchase_location_id);
       const headerForPdf = {
@@ -480,7 +509,13 @@ function PurchaseOrderDetailV2ReadOnly() {
         notify({ title: "Not sent", body: res.result?.reason ?? "The email channel may be off — check email settings.", tone: "error" });
       }
     } catch (e) {
+      /* The backend's refusals (cancelled PO, bad address, oversize PDF, a send
+         moments ago) reach here already in plain language: authedFetch runs the
+         response through humanApiError and throws an Error carrying that
+         sentence, so e.message is the operator-facing text. */
       notify({ title: "Send failed", body: e instanceof Error ? e.message : String(e), tone: "error" });
+    } finally {
+      setSendingToSupplier(false);
     }
   };
 
@@ -748,8 +783,13 @@ function PurchaseOrderDetailV2ReadOnly() {
               Print PDF
             </Button>
             {purchaseOrder.status !== "DRAFT" && purchaseOrder.status !== "CANCELLED" && (
-              <Button variant="secondary" icon={<Mail size={14} />} onClick={doSendToSupplier}>
-                Send to supplier
+              <Button
+                variant="secondary"
+                icon={<Mail size={14} />}
+                onClick={doSendToSupplier}
+                disabled={sendingToSupplier}
+              >
+                {sendingToSupplier ? "Sending..." : "Send to supplier"}
               </Button>
             )}
             {canCancel && (

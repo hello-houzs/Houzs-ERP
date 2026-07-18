@@ -2,6 +2,14 @@ import { env, fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { documentEmailHtml, sendEmail } from "../src/services/email";
 import { buildDeliveryOrderEmail, type DoEmailRow } from "../src/scm/lib/do-email";
+import {
+  base64DecodedBytes,
+  buildPurchaseOrderEmail,
+  isSendableEmail,
+  poSendRefusalForStatus,
+  validatePoAttachment,
+  type PoEmailRow,
+} from "../src/scm/lib/po-email";
 
 // Document-email TEMPLATE + customer-channel gating (mig 098/0009) + the
 // Delivery Order message builder.
@@ -161,5 +169,214 @@ describe("customer channel gating", () => {
       purpose: "delivery_order",
     });
     expect(res.status).toBe("skipped");
+  });
+
+  // The PO channel is supplier-facing and is in the same FAIL_CLOSED_PURPOSES
+  // set. Asserted separately from the DO because mig 0145 turns this one ON in
+  // production: the fail-closed posture must survive that flip, so that a
+  // restored database without the row still refuses to email a supplier.
+  test("the purchase_order channel FAILS CLOSED when the toggle row is missing", async () => {
+    await env.DB.exec(`DELETE FROM app_settings WHERE key='email.purchase_order'`);
+    const res = await sendEmail(liveEnv, {
+      to: "supplier@example.com",
+      subject: "x",
+      html: "<p>x</p>",
+      purpose: "purchase_order",
+    });
+    expect(res.status).toBe("skipped");
+    expect(res.reason).toBe("channel disabled");
+  });
+});
+
+/* ── Purchase Order -> supplier ────────────────────────────────────────────────
+   The pure half of the send path (scm/lib/po-email.ts). The route's claim /
+   release / audit glue needs a PostgREST client and is not covered here, same
+   split as maybeSendDeliveryOrderEmail above. */
+
+const poRow = (over: Partial<PoEmailRow> = {}): PoEmailRow => ({
+  id: "22222222-2222-2222-2222-222222222222",
+  po_number: "PO-2607-014",
+  status: "SUBMITTED",
+  total_centi: 1234500,
+  currency: "MYR",
+  po_date: "2026-07-19T00:00:00.000Z",
+  supplier: { name: "Kilang Kayu Sdn Bhd", email: "sales@kilangkayu.com" },
+  ...over,
+});
+
+/* A base64 blob of a known decoded size, for the cap tests. 4 base64 chars per
+   3 bytes, no padding when the byte count divides by 3. */
+const base64OfBytes = (bytes: number): string => "A".repeat(Math.ceil(bytes / 3) * 4);
+
+describe("purchase order email builder", () => {
+  test("renders the PO number, supplier, date and total", () => {
+    const msg = buildPurchaseOrderEmail(poRow(), "Houzs Century")!;
+    expect(msg.to).toBe("sales@kilangkayu.com");
+    expect(msg.subject).toBe("Houzs Century — Purchase Order PO-2607-014");
+    expect(msg.html).toContain("PO-2607-014");
+    expect(msg.html).toContain("Kilang Kayu Sdn Bhd");
+    expect(msg.html).toContain("2026-07-19");
+    // Money is integer SEN in this codebase; the email must show currency units.
+    expect(msg.html).toContain("MYR 12345.00");
+  });
+
+  test("no usable supplier address => null (the caller refuses, never sends)", () => {
+    expect(buildPurchaseOrderEmail(poRow({ supplier: { name: "X", email: null } }), "Houzs")).toBeNull();
+    expect(buildPurchaseOrderEmail(poRow({ supplier: { name: "X", email: "   " } }), "Houzs")).toBeNull();
+    expect(buildPurchaseOrderEmail(poRow({ supplier: null }), "Houzs")).toBeNull();
+  });
+
+  test("a supplier name carrying markup is escaped, not interpolated raw", () => {
+    const msg = buildPurchaseOrderEmail(
+      poRow({ supplier: { name: "<script>alert(1)</script>", email: "s@x.com" } }),
+      "Houzs Century",
+    )!;
+    expect(msg.html).not.toContain("<script>");
+    expect(msg.html).toContain("&lt;script&gt;");
+  });
+});
+
+describe("supplier recipient validation", () => {
+  test("accepts a real address", () => {
+    expect(isSendableEmail("sales@kilangkayu.com")).toBe(true);
+    expect(isSendableEmail("  sales@kilangkayu.com  ")).toBe(true);
+  });
+
+  /* sendEmail's own check is only `includes("@")`, which passes all of these.
+     This is the last gate before an external send, so it must be stricter. */
+  test("rejects shapes that pass a bare '@' check but no mail server will take", () => {
+    for (const bad of ["", "   ", "@", "a@b", "no-at-sign.com", "Name <a@b.com>", "a@b.com, c@d.com", "a b@c.com"]) {
+      expect(isSendableEmail(bad)).toBe(false);
+    }
+  });
+});
+
+describe("PO status gate", () => {
+  test("a confirmed PO may be sent", () => {
+    for (const s of ["SUBMITTED", "PARTIALLY_RECEIVED", "RECEIVED"]) {
+      expect(poSendRefusalForStatus(s)).toBeNull();
+    }
+  });
+
+  test("a DRAFT is refused — an uncommitted order must not reach a supplier", () => {
+    expect(poSendRefusalForStatus("DRAFT")).toContain("Confirm the PO");
+  });
+
+  /* The gap this closes: the route previously checked ONLY for DRAFT, so a
+     CANCELLED PO could be emailed — telling a supplier to ship goods the company
+     had already decided not to buy. The frontend hides the button, but the API
+     is reachable directly and the status can change under a loaded page. */
+  test("a CANCELLED PO is refused", () => {
+    expect(poSendRefusalForStatus("CANCELLED")).toContain("cancelled");
+  });
+
+  test("an unknown status is refused rather than allowed through", () => {
+    expect(poSendRefusalForStatus("SOMETHING_NEW")).not.toBeNull();
+    expect(poSendRefusalForStatus(null)).not.toBeNull();
+  });
+});
+
+describe("PO attachment validation", () => {
+  test("absent is legal — a summary-only PO email still goes", () => {
+    for (const absent of [undefined, null, "", "   "]) {
+      const r = validatePoAttachment(absent, "PO-1");
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.attachment).toBeNull();
+    }
+  });
+
+  test("a valid PDF becomes an attachment named after the PO", () => {
+    const r = validatePoAttachment(base64OfBytes(200 * 1024), "PO-2607-014");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.attachment?.filename).toBe("PO-2607-014.pdf");
+  });
+
+  test("an empty or truncated payload is refused, not sent as a 0-byte PDF", () => {
+    const r = validatePoAttachment(base64OfBytes(64), "PO-1");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain("empty or incomplete");
+  });
+
+  /* HOOKKA's BUG-2026-06-11-015: an oversize PDF was dropped silently and the
+     email still claimed an attachment. Houzs refuses instead, so the operator
+     learns before the supplier does. */
+  test("an oversize PDF is refused with the size and the limit", () => {
+    const r = validatePoAttachment(base64OfBytes(6 * 1024 * 1024), "PO-1");
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toContain("too large");
+      expect(r.message).toContain("5 MB");
+    }
+  });
+
+  test("a non-base64 body is refused before it reaches the provider", () => {
+    const r = validatePoAttachment("data:application/pdf;base64,%%%not-base64%%%", "PO-1");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain("not a valid PDF");
+  });
+
+  test("a non-string payload is refused rather than stringified", () => {
+    expect(validatePoAttachment({ nope: true }, "PO-1").ok).toBe(false);
+    expect(validatePoAttachment(12345, "PO-1").ok).toBe(false);
+  });
+
+  test("size is measured without decoding (base64 maths, not a Buffer)", () => {
+    expect(base64DecodedBytes("")).toBe(0);
+    expect(base64DecodedBytes("QQ==")).toBe(1);
+    expect(base64DecodedBytes("QUJD")).toBe(3);
+    // Whitespace from a wrapped payload must not inflate the count.
+    expect(base64DecodedBytes("QUJD\n")).toBe(3);
+  });
+});
+
+describe("attachment-bearing sends are not retried body-only", () => {
+  /* email_outbox has no attachment column, so a cron-drained retry would deliver
+     the covering note WITHOUT the PO document. outboxRetry:false marks the row
+     terminal instead — the record stays, the retry does not. */
+  test("a failed send with outboxRetry:false leaves a FAILED row, not a pending one", async () => {
+    await env.DB.exec(`DELETE FROM app_settings WHERE key='email.purchase_order'`);
+    await env.DB.prepare(`INSERT INTO app_settings (key, value) VALUES ('email.purchase_order', '{"value":true}')`).run();
+    fetchMock
+      .get("https://api.resend.com")
+      .intercept({ path: "/emails", method: "POST" })
+      .reply(500, "provider exploded");
+
+    const res = await sendEmail(liveEnv, {
+      to: "supplier@example.com",
+      subject: "Purchase Order PO-1",
+      html: "<p>x</p>",
+      purpose: "purchase_order",
+      attachments: [{ filename: "PO-1.pdf", content: "QUJD" }],
+      outboxRetry: false,
+    });
+    expect(res.status).toBe("error");
+
+    const row = await env.DB.prepare(
+      `SELECT status, last_error FROM email_outbox WHERE to_address = 'supplier@example.com'`,
+    ).first<{ status: string; last_error: string }>();
+    expect(row?.status).toBe("failed");
+    expect(row?.last_error).toContain("not retried");
+  });
+
+  test("a failed send WITHOUT an attachment stays pending for the cron drain", async () => {
+    await env.DB.exec(`DELETE FROM app_settings WHERE key='email.purchase_order'`);
+    await env.DB.prepare(`INSERT INTO app_settings (key, value) VALUES ('email.purchase_order', '{"value":true}')`).run();
+    fetchMock
+      .get("https://api.resend.com")
+      .intercept({ path: "/emails", method: "POST" })
+      .reply(500, "provider exploded");
+
+    const res = await sendEmail(liveEnv, {
+      to: "supplier2@example.com",
+      subject: "Purchase Order PO-2",
+      html: "<p>x</p>",
+      purpose: "purchase_order",
+    });
+    expect(res.status).toBe("error");
+
+    const row = await env.DB.prepare(
+      `SELECT status FROM email_outbox WHERE to_address = 'supplier2@example.com'`,
+    ).first<{ status: string }>();
+    expect(row?.status).toBe("pending");
   });
 });
