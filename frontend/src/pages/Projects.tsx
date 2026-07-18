@@ -9222,6 +9222,7 @@ function PhasePhotoThumb({
   onDeleted: () => void;
 }) {
   const dialog = useDialog();
+  const toast = useToast();
   const isImage = (photo.content_type || "").startsWith("image/");
   const isVideo = (photo.content_type || "").startsWith("video/");
   const [url, setUrl] = useState<string | null>(null);
@@ -9311,7 +9312,17 @@ function PhasePhotoThumb({
               danger: true,
             });
             if (!ok) return;
-            await api.del(`/api/projects/phase-photos/${photo.id}`).catch(() => {});
+            // The refresh must not run unless the delete actually happened.
+            // It used to be `.catch(() => {})` followed by an unconditional
+            // onDeleted(): a denied or failed delete re-rendered the grid with
+            // the file still in it and said nothing, so the operator read the
+            // reappearing tile as the UI being slow and clicked again.
+            try {
+              await api.del(`/api/projects/phase-photos/${photo.id}`);
+            } catch (e: any) {
+              toast.error(e?.message || "Couldn't delete this file. It is still there — please try again.");
+              return;
+            }
             onDeleted();
           }}
         >

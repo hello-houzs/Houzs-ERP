@@ -50,6 +50,7 @@ import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
+import { resolveFxRate } from './fx-rate';
 
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -453,7 +454,7 @@ export const PurchaseInvoiceNew = () => {
         // forces 1 (server enforces too); a blank/invalid foreign rate → 1.
         currency,
         exchangeRate:       isForeign
-          ? ((Number(exchangeRate) > 0 && Number.isFinite(Number(exchangeRate))) ? Number(exchangeRate) : 1)
+          ? resolveFxRate(exchangeRate)
           : 1,
         // PI-level freight allocation (Phase 1-A) — the freight "平摊" basis.
         allocationMethod,
@@ -647,7 +648,7 @@ export const PurchaseInvoiceNew = () => {
               onCurrencyChange={setCurrencyOverride}
               exchangeRate={exchangeRate}
               onRateChange={(v) => { setRateTouched(true); setExchangeRate(v); }}
-              rateHint={<>≈ {fmtRm(Math.round(subtotalCenti * (Number(exchangeRate) || 0)), 'MYR')} posted to GL</>}
+              rateHint={<>≈ {fmtRm(Math.round(subtotalCenti * resolveFxRate(exchangeRate)), 'MYR')} posted to GL</>}
               styles={styles}
             />
           </div>

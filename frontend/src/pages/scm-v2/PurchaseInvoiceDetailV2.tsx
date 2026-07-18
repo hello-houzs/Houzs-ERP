@@ -37,6 +37,7 @@ import {
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { cn } from "../../lib/utils";
+import { resolveFxRate } from "./fx-rate";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -263,7 +264,7 @@ function OwedHeroCard({ header }: { header: PiHeader }) {
   const isPaid = outstanding === 0;
   // Multi-currency (Phase 1-A) — MYR-equivalent for a foreign PI (no-op for MYR).
   const isForeign = String(header.currency ?? "MYR").toUpperCase() !== "MYR";
-  const rate = Number(header.exchange_rate ?? 1) || 0;
+  const rate = resolveFxRate(header.exchange_rate);
   return (
     <div className="rounded-lg bg-sidebar px-5 py-5 text-sidebar-ink shadow-stone">
       <div className="font-mono text-[10px] font-semibold uppercase tracking-brand text-sidebar-ink-muted">
@@ -291,7 +292,7 @@ function OwedHeroCard({ header }: { header: PiHeader }) {
         <HeroLine k="Owed" v={fmtMoney(outstanding, header.currency)} tone={outstanding > 0 ? "err" : "success"} strong />
         {isForeign && (
           <>
-            <HeroLine k={`Rate (MYR / 1 ${header.currency})`} v={String(header.exchange_rate ?? 1)} />
+            <HeroLine k={`Rate (MYR / 1 ${header.currency})`} v={String(rate)} />
             <HeroLine k="Posted to GL (MYR)" v={fmtMoney(Math.round(total * rate), "MYR")} />
           </>
         )}
@@ -705,7 +706,7 @@ function PurchaseInvoiceDetailV2ReadOnly() {
                 {/* Multi-currency / landed cost (Phase 1-A) — shown only for a
                     foreign PI; an MYR invoice is byte-for-byte the old layout. */}
                 {String(purchaseInvoice.currency ?? "MYR").toUpperCase() !== "MYR" && (
-                  <Field label={`Exchange rate (MYR / 1 ${purchaseInvoice.currency})`} value={String(purchaseInvoice.exchange_rate ?? 1)} mono />
+                  <Field label={`Exchange rate (MYR / 1 ${purchaseInvoice.currency})`} value={String(resolveFxRate(purchaseInvoice.exchange_rate))} mono />
                 )}
                 <Field label="Charge allocation" value={ALLOC_LABEL[String(purchaseInvoice.allocation_method ?? "QTY")] ?? "By quantity"} />
               </div>

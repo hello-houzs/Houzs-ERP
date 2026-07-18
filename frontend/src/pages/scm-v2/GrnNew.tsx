@@ -48,6 +48,7 @@ import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import type { GrnFromPoPick } from './GrnFromPo';
 import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
+import { resolveFxRate } from './fx-rate';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -465,7 +466,7 @@ export const GrnNew = () => {
      only for a foreign-currency receipt. An MYR GRN posts 1:1 (rate 1), so the
      lot cost / COGS are unchanged (strict no-op). */
   const isForeign  = String(currency).toUpperCase() !== 'MYR';
-  const rateNum    = (Number(exchangeRate) > 0 && Number.isFinite(Number(exchangeRate))) ? Number(exchangeRate) : 0;
+  const rateNum    = resolveFxRate(exchangeRate);
   /* Auto-fill the rate from the currencies MASTER when the GRN settles on a
      foreign currency (still editable). MYR resets to 1; a manual edit wins. */
   const currenciesQ = useActiveCurrencies();
@@ -629,7 +630,7 @@ export const GrnNew = () => {
            rate (MYR per 1 unit) converts the FIFO lot cost to MYR. MYR forces 1
            server-side, so a manual MYR receipt is unaffected (no-op). */
         currency,
-        exchangeRate:    isForeign ? (rateNum > 0 ? rateNum : 1) : 1,
+        exchangeRate:    isForeign ? rateNum : 1,
         // Landed-cost allocation (Phase 1-A) — the freight "平摊" basis.
         allocationMethod,
         items: realLines.map((l) => ({
