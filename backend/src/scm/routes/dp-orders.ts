@@ -22,8 +22,95 @@ import {
   snapshotFromProject, snapshotFromAssr, type DpJobType, type DpPartySnapshot,
 } from '../lib/dp-party';
 import { mintDpNo } from '../lib/dp-no';
+import {
+  resolveDeliveryScope, scopeMatchesAssignment,
+  type CrewAssignment, type DeliveryScope,
+} from '../lib/deliveryScope';
 
 export const dpOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// ── Per-assignee row scope (owner rule, Lim Wei Siang) ──────────────────────
+// A Driver / Helper may see and act on ONLY the delivery jobs assigned to them.
+// PR #756 gave this treatment to the SO / trip / board rows but deliberately
+// left the standalone DP-order surfaces (this router's list + write endpoints)
+// unscoped, because this file was being written at the same time. This closes
+// that gap by reusing the SAME resolveDeliveryScope / scopeMatchesAssignment
+// primitives — no parallel mechanism. A DP order carries no crew of its own; its
+// driver/helpers are the crew of the TRIP it was scheduled onto (dp_orders.trip_id
+// → trips.driver_id / helper_1_id / helper_2_id), which is exactly how the board's
+// applyDeliveryRowScope resolves a DP row. An unscheduled DP order (no trip) has
+// no crew, so it never matches a self scope — same as any unassigned board row.
+
+/** Plain-language 403 for a field-crew caller touching a job that is not theirs. */
+const NOT_YOUR_JOB = 'You can only act on a delivery job assigned to you.';
+
+const EMPTY_CREW: CrewAssignment = { driverIds: [], helperIds: [] };
+
+/** Batch-load trip crew for a bounded set of trip ids (never the whole table).
+ *  Dual-reads camelCase/snake_case for parity with the rest of the module. */
+async function tripCrewByIds(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sb: any,
+  tripIds: Array<string | null | undefined>,
+): Promise<Map<string, CrewAssignment>> {
+  const out = new Map<string, CrewAssignment>();
+  const ids = [...new Set(tripIds.filter((x): x is string => !!x))];
+  if (ids.length === 0) return out;
+  const { data } = await sb.from('trips')
+    .select('id, driver_id, helper_1_id, helper_2_id')
+    .in('id', ids);
+  for (const t of (data ?? []) as Array<Record<string, unknown>>) {
+    const id = String(t.id ?? '');
+    if (!id) continue;
+    out.set(id, {
+      driverIds: [(t.driverId ?? t.driver_id) as string | null],
+      helperIds: [(t.helper1Id ?? t.helper_1_id) as string | null, (t.helper2Id ?? t.helper_2_id) as string | null],
+    });
+  }
+  return out;
+}
+
+/** The minimal DP-row shape the scope filter reads — just the trip link. */
+export interface DpRowLike { trip_id?: string | null; tripId?: string | null }
+
+/** Keep only the DP orders visible to `scope`. `all` (every ops/dispatcher/
+ *  management caller) → rows unchanged. `self` (a linked Driver/Helper) → only
+ *  the rows whose trip crew includes the caller's fleet id; a DP order with no
+ *  trip never matches. Pure + exported so the visibility rule is unit-testable. */
+export function filterDpOrdersByScope<T extends DpRowLike>(
+  scope: DeliveryScope,
+  rows: T[],
+  tripCrewById: Map<string, CrewAssignment>,
+): T[] {
+  if (scope.mode === 'all') return rows;
+  return rows.filter((r) => {
+    const tid = (r.trip_id ?? r.tripId) ?? null;
+    const crew = (tid && tripCrewById.get(String(tid))) || EMPTY_CREW;
+    return scopeMatchesAssignment(scope, crew);
+  });
+}
+
+/** Write-ownership guard for the single-record write endpoints: a self-scoped
+ *  caller may act on a DP order ONLY when its trip crew is theirs. Returns a 403
+ *  Response to short-circuit, or null to proceed. Fails OPEN (null) for an `all`
+ *  scope and for a row that does not exist (the handler's own not-found path then
+ *  answers) — belt-and-braces on top of the area guard, which already needs
+ *  `edit` on scm.transportation to reach any of these at all. */
+async function denyIfNotOwnDpJob(
+  c: Ctx,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sb: any,
+  id: string,
+): Promise<Response | null> {
+  const scope = await resolveDeliveryScope(sb, c.get('houzsUser'));
+  if (scope.mode === 'all') return null;
+  const { data } = await sb.from('dp_orders').select('trip_id').eq('id', id).maybeSingle();
+  if (!data) return null;
+  const tid = ((data as DpRowLike).trip_id ?? (data as DpRowLike).tripId) ?? null;
+  const crew = (tid && (await tripCrewByIds(sb, [tid])).get(String(tid))) || EMPTY_CREW;
+  if (scopeMatchesAssignment(scope, crew)) return null;
+  return c.json({ error: NOT_YOUR_JOB }, 403);
+}
 
 const JOB_TYPES = ['DELIVERY', 'PICKUP', 'SERVICE', 'SETUP', 'DISMANTLE', 'SUPPLIER_PICKUP'] as const;
 
@@ -140,7 +227,15 @@ dpOrders.get('/', async (c) => {
   if (companyId != null) q = q.eq('company_id', companyId);
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ dpOrders: data ?? [] });
+
+  // Per-assignee row scope: a self-scoped Driver/Helper keeps only their own
+  // jobs; every ops/dispatcher/management caller resolves to `all` and the list
+  // is returned untouched (fail-open — see the module header).
+  const scope = await resolveDeliveryScope(sb, c.get('houzsUser'));
+  const rows = (data ?? []) as Array<Record<string, unknown> & DpRowLike>;
+  if (scope.mode === 'all') return c.json({ dpOrders: rows });
+  const tripCrew = await tripCrewByIds(sb, rows.map((r) => (r.trip_id ?? r.tripId) ?? null));
+  return c.json({ dpOrders: filterDpOrdersByScope(scope, rows, tripCrew) });
 });
 
 /* ── PATCH /api/scm/dp-orders/:id — edit an unscheduled job ────────────────────
@@ -185,6 +280,8 @@ dpOrders.patch('/:id', async (c) => {
   if (Object.keys(updates).length === 1) return c.json({ error: 'no_changes' }, 400);
 
   const sb = c.get('supabase');
+  const denied = await denyIfNotOwnDpJob(c, sb, id);
+  if (denied) return denied;
   const { data, error } = await sb.from('dp_orders')
     .update(updates)
     .eq('id', id).eq('status', 'PENDING_SCHEDULE')
@@ -203,6 +300,8 @@ dpOrders.patch('/:id', async (c) => {
 dpOrders.post('/:id/cancel', async (c) => {
   const id = c.req.param('id');
   const sb = c.get('supabase');
+  const denied = await denyIfNotOwnDpJob(c, sb, id);
+  if (denied) return denied;
 
   const { data, error } = await sb.from('dp_orders')
     .update({ status: 'CANCELLED', updated_at: new Date().toISOString() })
@@ -241,6 +340,8 @@ dpOrders.post('/:id/schedule', async (c) => {
   if (!parsed.success) return c.json({ error: 'invalid_body', reason: parsed.error.message }, 400);
   const p = parsed.data;
   const sb = c.get('supabase');
+  const denied = await denyIfNotOwnDpJob(c, sb, id);
+  if (denied) return denied;
 
   const lorry = await sb.from('lorries').select('plate').eq('id', p.lorryId).maybeSingle();
   const plate = (lorry.data as { plate?: string } | null)?.plate;
