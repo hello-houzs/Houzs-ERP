@@ -86,6 +86,9 @@ const ScmStockTransferDetailV2 = lazy(() => import("./pages/scm-v2/StockTransfer
 const ScmStockTakesV2 = lazy(() => import("./pages/scm-v2/StockTakesListV2").then((m) => ({ default: m.StockTakesListV2 })));
 const ScmStockTakeNewV2 = lazy(() => import("./pages/scm-v2/StockTakeNew").then((m) => ({ default: m.StockTakeNew })));
 const ScmStockTakeDetailV2 = lazy(() => import("./pages/scm-v2/StockTakeDetail").then((m) => ({ default: m.StockTakeDetail })));
+// HR / Commission — the payroll surface over /api/scm/hr.
+const ScmHrCommission = lazy(() => import("./pages/scm-v2/HrCommission").then((m) => ({ default: m.HrCommission })));
+const ScmHrSettings = lazy(() => import("./pages/scm-v2/HrSettings").then((m) => ({ default: m.HrSettings })));
 // TEMP — vendored 2990's PR / Inventory / Stock Card / Supplier Detail / Drivers
 // pages (this wave), parallel to the native /scm/* routes below.
 const ScmPurchaseReturnsV2 = lazy(() => import("./pages/scm-v2/PurchaseReturnsListV2").then((m) => ({ default: m.PurchaseReturnsListV2 })));
@@ -497,6 +500,13 @@ export default function App() {
         <Route path="/scm/stock-takes" element={<ScmGuard area="scm.warehouse.stock_take"><Scm2990Shell><ScmStockTakesV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/stock-takes/new" element={<ScmGuard area="scm.warehouse.stock_take"><Scm2990Shell><ScmStockTakeNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/stock-takes/:id" element={<ScmGuard area="scm.warehouse.stock_take"><Scm2990Shell><ScmStockTakeDetailV2 /></Scm2990Shell></ScmGuard>} />
+        {/* HR / Commission. Flat <Guard>, NOT <ScmGuard>: HR has no L2 page-access
+            area, and the report returns every colleague's pay — it must not ride
+            the broad scm.access umbrella. Same two keys the backend checks.
+            Settings takes scm.hr.manage alone: without it every control on the
+            page 403s, so a read-only holder gets the report instead. */}
+        <Route path="/scm/hr/commission" element={<Guard anyPerm={["*", "scm.hr.read", "scm.hr.manage"]}><Scm2990Shell><ScmHrCommission /></Scm2990Shell></Guard>} />
+        <Route path="/scm/hr/settings" element={<Guard anyPerm={["*", "scm.hr.manage"]}><Scm2990Shell><ScmHrSettings /></Scm2990Shell></Guard>} />
         {/* TEMP — vendored 2990's PR / Inventory / Stock Card / Supplier Detail /
             Drivers pages (this wave), parallel to the native /scm/* below. Each
             wrapped in <Scm2990Shell>. Literal segments (/new, /stock-card)
