@@ -43,10 +43,10 @@ export interface AssistantScope {
  * (lib/deliveryScope.ts). Denying the whole surface is simpler and more honest
  * than serving them an assistant that can answer almost nothing.
  *
- * EXACTLY the three the owner named. NOT "Storekeeper Supervisor" — that is a
- * fourth position in positionPolicy's restricted cohort, and he listed three, so
- * the Supervisor keeps access. Add the string here to change that; it is one line
- * and deliberately not my call.
+ * ALL FOUR of positionPolicy's restricted cohort. The owner first named three;
+ * asked whether the fourth (Storekeeper Supervisor) should follow, he said yes —
+ * so this list and the restricted cohort are now the same set, which is one less
+ * pair of things that can drift apart.
  *
  * Matched on the EXACT normalised name, never a substring: `Storekeeper`
  * would swallow "Storekeeper Supervisor", and a word-boundary regex on a free-text
@@ -57,6 +57,7 @@ export const ASSISTANT_DENIED_POSITIONS: ReadonlySet<string> = new Set([
   'driver',
   'helper',
   'storekeeper',
+  'storekeeper supervisor',
 ]);
 
 const normalisePosition = (n: string | null | undefined): string =>

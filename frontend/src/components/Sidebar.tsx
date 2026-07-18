@@ -622,7 +622,7 @@ export const NAV_TABS: NavTab[] = [
     // Open to staff, EXCEPT the field crew (owner 2026-07-18). What the rest may
     // SEE is scoped server-side by position; this list is who gets no surface at
     // all. Mirrors auth/assistantAccess.ts — a lockstep fixture, not a 2nd source.
-    hideForPositions: ["driver", "helper", "storekeeper"],
+    hideForPositions: ["driver", "helper", "storekeeper", "storekeeper supervisor"],
   },
   {
     section: "system",

@@ -176,10 +176,17 @@ describe("canUseAssistant — the field crew get no surface at all", () => {
     }
   });
 
-  test("Storekeeper SUPERVISOR keeps access — he named three, not four", () => {
-    // positionPolicy's restricted cohort has a fourth member. Including it would
-    // be my decision, not his; the deny list is exactly what was asked for.
-    expect(canUseAssistant({ permissions: [], position_name: "Storekeeper Supervisor" })).toBe(true);
+  test("Storekeeper Supervisor is denied too — owner confirmed the fourth", () => {
+    expect(canUseAssistant({ permissions: [], position_name: "Storekeeper Supervisor" })).toBe(false);
+    // ...and spacing/case still cannot smuggle it back in.
+    expect(canUseAssistant({ permissions: [], position_name: "  storekeeper   supervisor " })).toBe(false);
+  });
+
+  test("the deny list now EQUALS positionPolicy's restricted cohort", () => {
+    // Two lists that mean the same thing are two lists that can drift. They are
+    // the same set now, and this pins it.
+    expect([...ASSISTANT_DENIED_POSITIONS].sort())
+      .toEqual(["driver", "helper", "storekeeper", "storekeeper supervisor"]);
   });
 
   test("EXACT match, not substring — a rename must not move permissions", () => {
@@ -200,6 +207,6 @@ describe("canUseAssistant — the field crew get no surface at all", () => {
 
   test("the deny list is exactly three, lowercased", () => {
     // Pinned so the FE mirror (auth/assistantAccess.ts) can assert the same set.
-    expect([...ASSISTANT_DENIED_POSITIONS].sort()).toEqual(["driver", "helper", "storekeeper"]);
+    expect([...ASSISTANT_DENIED_POSITIONS].sort()).toEqual(["driver", "helper", "storekeeper", "storekeeper supervisor"]);
   });
 });
