@@ -18,6 +18,7 @@ import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
+import { recordEntityAudit, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
 grns.use('*', supabaseAuth);
@@ -1467,9 +1468,16 @@ grns.patch('/:id/post', async (c) => {
      was non-draft the row is POSTED → no-op; when it was a draft this is the
      real confirm. */
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
-  const { data: cur } = await sb.from('grns').select('id, status, posted_at').eq('id', id).maybeSingle();
+  const { data: cur } = await sb.from('grns')
+    .select('id, status, posted_at, grn_number, warehouse_id, total_centi').eq('id', id).maybeSingle();
   if (!cur) return c.json({ error: 'not_found' }, 404);
-  const row = cur as { id: string; status: string; posted_at: string | null };
+  const row = cur as {
+    id: string; status: string; posted_at: string | null;
+    grn_number: string; warehouse_id: string | null; total_centi: number | null;
+  };
+  /* An already-POSTED GRN is an idempotent no-op that commits nothing, so it
+     records nothing — a history full of "confirmed an already-confirmed GRN"
+     from the New-GRN form's unconditional follow-up call would be noise. */
   if (row.status === 'POSTED') {
     return c.json({ grn: row });
   }
@@ -1494,7 +1502,31 @@ grns.patch('/:id/post', async (c) => {
   if (!res.ok) return c.json({ error: 'post_failed', reason: res.reason }, 500);
   // Header money rollup (no stock) — keep it in sync on confirm.
   await recomputeGrnTotals(sb, id);
-  const { data } = await sb.from('grns').select('id, status, posted_at').eq('id', id).single();
+  const { data } = await sb.from('grns').select('id, status, posted_at, total_centi').eq('id', id).single();
+
+  /* The moment received goods become on-hand stock and PO received_qty moves.
+     Recorded AFTER recomputeGrnTotals so totalCenti is the rolled-up figure, in
+     INTEGER SEN. */
+  const postedGrn = data as unknown as { total_centi: number | null } | null;
+  await recordEntityAudit(sb, {
+    entityType: 'GRN',
+    entityId: id,
+    entityDocNo: row.grn_number,
+    action: 'POST',
+    actor: c.get('houzsUser'),
+    companyId: activeCompanyId(c),
+    statusSnapshot: 'POSTED',
+    note: res.movementErrors?.length
+      ? `Stock IN reported errors: ${res.movementErrors.join('; ')}`
+      : undefined,
+    fieldChanges: compactChanges([
+      ...statusChange(row.status, 'POSTED'),
+      fieldChange('warehouseId', null, row.warehouse_id),
+      fieldChange('totalCenti', row.total_centi, postedGrn?.total_centi ?? null),
+      fieldChange('lineCount', null, poItemIds.length),
+    ]),
+  });
+
   return c.json({ grn: data, movementErrors: res.movementErrors?.length ? res.movementErrors : undefined });
 });
 
@@ -1772,6 +1804,19 @@ grns.patch('/:id/cancel', async (c) => {
     const { data } = await sb.from('grns')
       .update({ status: 'CANCELLED', updated_at: new Date().toISOString() })
       .eq('id', id).eq('status', 'DRAFT').select(HEADER).maybeSingle();
+    /* Still recorded even though nothing was reversed: the document existed and
+       someone voided it, and the note is what tells a reader why no stock moved. */
+    await recordEntityAudit(sb, {
+      entityType: 'GRN',
+      entityId: id,
+      entityDocNo: head.grn_number,
+      action: 'CANCEL',
+      actor: c.get('houzsUser'),
+      companyId: activeCompanyId(c),
+      statusSnapshot: 'CANCELLED',
+      note: 'Draft GRN — nothing was received, so nothing was reversed',
+      fieldChanges: statusChange('DRAFT', 'CANCELLED'),
+    });
     return c.json({ grn: data ?? { id, status: 'CANCELLED' } });
   }
 
@@ -1809,6 +1854,27 @@ grns.patch('/:id/cancel', async (c) => {
     const { data } = await sb.from('grns').select(HEADER).eq('id', id).maybeSingle();
     return c.json({ grn: data ?? { id, status: 'CANCELLED' } });
   }
+
+  /* Recorded immediately after the ATOMIC flip won the race — the losing
+     concurrent cancel returned above, so exactly one CANCEL row exists per GRN.
+     Placed BEFORE the best-effort reversals rather than after: those are wrapped
+     in catch-and-continue blocks, and a cancel whose reversal silently failed
+     must still leave a record that the cancel happened. */
+  await recordEntityAudit(sb, {
+    entityType: 'GRN',
+    entityId: id,
+    entityDocNo: head.grn_number,
+    action: 'CANCEL',
+    actor: c.get('houzsUser'),
+    companyId: activeCompanyId(c),
+    statusSnapshot: 'CANCELLED',
+    note: `Reversing receipt of ${lineList.length} line(s)`,
+    fieldChanges: compactChanges([
+      ...statusChange(head.status, 'CANCELLED'),
+      fieldChange('warehouseId', null, head.warehouse_id),
+      fieldChange('qtyReversed', null, lineList.reduce((s, l) => s + Number(l.qty_accepted ?? 0), 0)),
+    ]),
+  });
 
   // (a) Inventory OUT per line — negate the original GRN IN. Best-effort.
   try {

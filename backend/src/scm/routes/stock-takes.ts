@@ -31,6 +31,7 @@ import type { Env, Variables } from '../env';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { recordEntityAudit, compactChanges, fieldChange, statusChange, type FieldChange } from '../lib/entity-audit';
 
 export const stockTakes = new Hono<{ Bindings: Env; Variables: Variables }>();
 stockTakes.use('*', supabaseAuth);
@@ -309,9 +310,11 @@ stockTakes.patch('/:id/lines', async (c) => {
   try { body = (await c.req.json()) as Record<string, unknown>; }
   catch { return c.json({ error: 'invalid_json' }, 400); }
 
-  const { data: prev } = await sb.from('stock_takes').select('status').eq('id', id).maybeSingle();
+  const { data: prev } = await sb.from('stock_takes')
+    .select('status, take_no, company_id').eq('id', id).maybeSingle();
   if (!prev) return c.json({ error: 'not_found' }, 404);
-  if ((prev as { status: string }).status !== 'OPEN') return c.json({ error: 'not_open' }, 409);
+  const head = prev as { status: string; take_no: string; company_id: number | null };
+  if (head.status !== 'OPEN') return c.json({ error: 'not_open' }, 409);
 
   const lines = body.lines as Array<{
     id: string; countedQty?: number | null; notes?: string | null;
@@ -320,10 +323,26 @@ stockTakes.patch('/:id/lines', async (c) => {
     return c.json({ error: 'lines_required' }, 400);
   }
 
+  /* BEFORE values for the from->to record. Batched (chunkIn bounds the .in()
+     list and pages each chunk, so a 500-line take cannot lose rows to
+     PostgREST's 1000-row cap) rather than a read per line — the update loop
+     below is already one round-trip per line and does not need doubling. */
+  const lineIds = lines.map((l) => l.id).filter((x): x is string => !!x);
+  const beforeById = new Map<string, { product_code: string; counted_qty: number | null; notes: string | null }>();
+  if (lineIds.length > 0) {
+    const { data: beforeLines } = await chunkIn<{
+      id: string; product_code: string; counted_qty: number | null; notes: string | null;
+    }>(lineIds, (batch, pFrom, pTo) => sb.from('stock_take_lines')
+      .select('id, product_code, counted_qty, notes')
+      .eq('stock_take_id', id).in('id', batch).range(pFrom, pTo));
+    for (const b of beforeLines ?? []) beforeById.set(b.id, b);
+  }
+
   // Issue updates one-at-a-time (Supabase JS lacks a true bulk upsert by
   // PK). Pilot scale (<500 lines per take) — fine. If volumes grow we can
   // switch to a single RPC.
   const errors: string[] = [];
+  const countChanges: Array<FieldChange | null> = [];
   for (const l of lines) {
     if (!l.id) continue;
     const patch: Record<string, unknown> = {};
@@ -338,12 +357,39 @@ stockTakes.patch('/:id/lines', async (c) => {
 
     const { error } = await sb.from('stock_take_lines')
       .update(patch).eq('id', l.id).eq('stock_take_id', id);
-    if (error) errors.push(`${l.id}: ${error.message}`);
+    if (error) { errors.push(`${l.id}: ${error.message}`); continue; }
+
+    /* Keyed by PRODUCT CODE, not the line uuid — the History drawer's reader is
+       a stock controller asking "who changed the count on this SKU", and a uuid
+       cannot answer that. Only lines whose stored update SUCCEEDED reach here. */
+    const b = beforeById.get(l.id);
+    if ('counted_qty' in patch) {
+      countChanges.push(fieldChange(b?.product_code ?? l.id, b?.counted_qty ?? null, patch.counted_qty));
+    }
   }
 
   if (errors.length > 0) {
     return c.json({ error: 'partial_update_failed', errors }, 500);
   }
+
+  const changed = compactChanges(countChanges);
+  /* A PATCH that moved no count writes no row. The endpoint is called on every
+     keystroke-blur in the counting UI, so logging no-ops would bury the real
+     edits in an unreadable history. */
+  if (changed.length > 0) {
+    await recordEntityAudit(sb, {
+      entityType: 'STOCK_TAKE',
+      entityId: id,
+      entityDocNo: head.take_no,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: head.company_id,
+      statusSnapshot: 'OPEN',
+      note: `Counted quantity changed on ${changed.length} line(s)`,
+      fieldChanges: changed,
+    });
+  }
+
   return c.json({ ok: true, updated: lines.length });
 });
 
@@ -355,9 +401,25 @@ stockTakes.patch('/:id/cancel', async (c) => {
   const { data, error } = await sb.from('stock_takes')
     .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString() })
     .eq('id', id).eq('status', 'OPEN')
-    .select('id, status, cancelled_at').single();
+    .select('id, status, cancelled_at, take_no, company_id').single();
   if (error) return c.json({ error: 'cancel_failed', reason: error.message }, 500);
   if (!data)  return c.json({ error: 'not_open' }, 409);
+
+  /* The .eq('status','OPEN') gate means only the call that actually flipped it
+     gets a row back, so this records once. The prior status is OPEN by
+     construction — that is what the gate asserts. */
+  const cancelledTake = data as unknown as { take_no: string; company_id: number | null };
+  await recordEntityAudit(sb, {
+    entityType: 'STOCK_TAKE',
+    entityId: id,
+    entityDocNo: cancelledTake.take_no,
+    action: 'CANCEL',
+    actor: c.get('houzsUser'),
+    companyId: cancelledTake.company_id,
+    statusSnapshot: 'CANCELLED',
+    fieldChanges: statusChange('OPEN', 'CANCELLED'),
+  });
+
   return c.json({ take: data });
 });
 
@@ -436,6 +498,29 @@ stockTakes.patch('/:id/reverse', async (c) => {
     if (insErr) movementErrors.push(insErr.message);
   }
 
+  /* POSTED is the prior status by construction — the .eq('status','POSTED')
+     gate on the flip above is what let this call proceed. The reversed quantity
+     is recorded as a signed total so the history says how much stock moved back,
+     not merely that a reversal was attempted. */
+  await recordEntityAudit(sb, {
+    entityType: 'STOCK_TAKE',
+    entityId: id,
+    entityDocNo: header.take_no,
+    action: 'REVERSE',
+    actor: c.get('houzsUser'),
+    companyId: activeCompanyId(c),
+    statusSnapshot: 'CANCELLED',
+    note: movementErrors.length
+      ? `Stock reversal FAILED — ${movementErrors.join('; ')}`
+      : undefined,
+    fieldChanges: compactChanges([
+      ...statusChange('POSTED', 'CANCELLED'),
+      fieldChange('warehouseId', null, header.warehouse_id),
+      fieldChange('movementsReversed', null, movementErrors.length ? 0 : reverseRows.length),
+      fieldChange('netQtyReversed', null, reverseRows.reduce((s, r) => s + Number(r.qty ?? 0), 0)),
+    ]),
+  });
+
   /* Stock changed back — re-walk SO stock allocation (mirrors the post path). */
   try {
     const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
@@ -454,12 +539,37 @@ stockTakes.delete('/:id', async (c) => {
   const sb = c.get('supabase');
   const id = c.req.param('id');
   const { data: prev } = await sb.from('stock_takes')
-    .select('status').eq('id', id).maybeSingle();
+    .select('status, take_no, warehouse_id, company_id').eq('id', id).maybeSingle();
   if (!prev) return c.json({ error: 'not_found' }, 404);
-  if ((prev as { status: string }).status !== 'OPEN') return c.json({ error: 'not_open' }, 409);
+  const doomed = prev as {
+    status: string; take_no: string; warehouse_id: string | null; company_id: number | null;
+  };
+  if (doomed.status !== 'OPEN') return c.json({ error: 'not_open' }, 409);
 
   const { error } = await sb.from('stock_takes').delete().eq('id', id);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+
+  /* The one action whose subject no longer exists once it is recorded — the
+     stock_takes row is gone, so this audit row is the ONLY remaining evidence
+     that the document ever existed. Hence the snapshot of take_no and warehouse
+     in field_changes rather than a bare status transition: nothing can be joined
+     back to afterwards. entity_id is retained anyway so a later re-created
+     document cannot silently inherit this history. */
+  await recordEntityAudit(sb, {
+    entityType: 'STOCK_TAKE',
+    entityId: id,
+    entityDocNo: doomed.take_no,
+    action: 'DELETE',
+    actor: c.get('houzsUser'),
+    companyId: doomed.company_id,
+    statusSnapshot: 'OPEN',
+    fieldChanges: compactChanges([
+      fieldChange('takeNo', doomed.take_no, null),
+      fieldChange('warehouseId', doomed.warehouse_id, null),
+      fieldChange('status', 'OPEN', null),
+    ]),
+  });
+
   return c.json({ ok: true });
 });
 
@@ -554,6 +664,34 @@ stockTakes.patch('/:id/post', async (c) => {
     const { error: mErr } = await sb.from('inventory_movements').insert(stampCompany(adjustmentRows, c));
     if (mErr) movementErrors.push(mErr.message);
   }
+
+  /* The variance that actually hit stock, per SKU — keyed by product code for
+     the same reason the line PATCH is. This is the moment a count becomes the
+     new truth, so the per-SKU adjustment is the WHAT, not a summary count. */
+  await recordEntityAudit(sb, {
+    entityType: 'STOCK_TAKE',
+    entityId: id,
+    entityDocNo: header.take_no,
+    action: 'POST',
+    actor: c.get('houzsUser'),
+    companyId: activeCompanyId(c),
+    statusSnapshot: 'POSTED',
+    note: movementErrors.length
+      ? `Stock adjustment FAILED — ${movementErrors.join('; ')}`
+      : `${adjustmentRows.length} SKU(s) adjusted at posting`,
+    fieldChanges: compactChanges([
+      ...statusChange('OPEN', 'POSTED'),
+      fieldChange('warehouseId', null, header.warehouse_id),
+      /* from = the on-hand this post overwrote, to = the counted figure that
+         replaced it. Recording the PAIR is the whole point: "12" alone does not
+         say what it corrected. adjustmentRows holds only non-zero variances (the
+         loop above skips the rest), so every entry here is a real movement. */
+      ...adjustmentRows.map((r) => {
+        const live = liveByKey.get(`${r.product_code} ${r.variant_key ?? ''}`) ?? 0;
+        return fieldChange(String(r.product_code), live, live + Number(r.qty));
+      }),
+    ]),
+  });
 
   /* B2C SO auto-allocation — variance changed stock, re-walk SO lines. */
   try {

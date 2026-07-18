@@ -27,6 +27,7 @@ import { writeMovements, reverseMovements } from '../lib/inventory-movements';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { recordEntityAudit, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 
 export const stockTransfers = new Hono<{ Bindings: Env; Variables: Variables }>();
 stockTransfers.use('*', supabaseAuth);
@@ -356,10 +357,34 @@ stockTransfers.post('/', async (c) => {
      auto-cancel the header so it can't masquerade as a posted transfer, and
      return a non-201 so the UI surfaces the failure instead of silently treating
      a partial/destroyed transfer as success. */
+  /* Recorded on BOTH outcomes, with the status snapshot telling them apart. The
+     auto-cancel path below is the one a reader most needs in the history: stock
+     was touched, the transfer did not complete, and the header now says
+     CANCELLED with no other trace of why. */
+  const transferChanges = compactChanges([
+    fieldChange('fromWarehouseId', null, fromWarehouseId),
+    fieldChange('toWarehouseId', null, toWarehouseId),
+    fieldChange('transferDate', null, (body.transferDate as string | undefined) ?? null),
+    fieldChange('lineCount', null, lineRows.length),
+    fieldChange('totalQty', null, lineRows.reduce((s, l) => s + l.qty, 0)),
+    fieldChange('notes', null, (body.notes as string | undefined) ?? null),
+  ]);
+
   if (movementErrors.length) {
     await sb.from('stock_transfers')
       .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString() })
       .eq('id', header.id);
+    await recordEntityAudit(sb, {
+      entityType: 'STOCK_TRANSFER',
+      entityId: header.id,
+      entityDocNo: header.transfer_no,
+      action: 'CREATE',
+      actor: c.get('houzsUser'),
+      companyId: activeCompanyId(c),
+      statusSnapshot: 'CANCELLED',
+      note: `Auto-cancelled — movements failed: ${movementErrors.join('; ')}`,
+      fieldChanges: transferChanges,
+    });
     return c.json({
       error: 'transfer_movements_failed',
       id: header.id,
@@ -368,6 +393,17 @@ stockTransfers.post('/', async (c) => {
       movementErrors,
     }, 422);
   }
+
+  await recordEntityAudit(sb, {
+    entityType: 'STOCK_TRANSFER',
+    entityId: header.id,
+    entityDocNo: header.transfer_no,
+    action: 'CREATE',
+    actor: c.get('houzsUser'),
+    companyId: activeCompanyId(c),
+    statusSnapshot: 'POSTED',
+    fieldChanges: transferChanges,
+  });
 
   return c.json({
     id: header.id,
@@ -392,6 +428,17 @@ stockTransfers.patch('/:id/cancel', async (c) => {
   // Gate on the ACTIVE(=POSTED)→CANCELLED transition. Only the call that
   // actually flips the status proceeds to reverse — never on an already
   // CANCELLED row.
+  /* The BEFORE half of the audit pair. Read before the flip because afterwards
+     the prior status is unrecoverable, and it is exactly what a reader wants:
+     "this was POSTED and someone cancelled it". */
+  const { data: beforeRow } = await sb.from('stock_transfers')
+    .select('transfer_no, status, from_warehouse_id, to_warehouse_id, company_id')
+    .eq('id', id).maybeSingle();
+  const beforeTransfer = beforeRow as {
+    transfer_no: string; status: string;
+    from_warehouse_id: string | null; to_warehouse_id: string | null; company_id: number | null;
+  } | null;
+
   const { data, error } = await sb.from('stock_transfers')
     .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString() })
     .eq('id', id).neq('status', 'CANCELLED')
@@ -403,6 +450,31 @@ stockTransfers.patch('/:id/cancel', async (c) => {
   // mirroring the post path: a failed reversal row is logged + reported, it
   // does NOT roll back the CANCELLED status (audit-DLQ posture).
   const rev = await reverseMovements(sb, 'STOCK_TRANSFER', id, user?.id ?? null);
+
+  /* One row covering the cancel AND its stock reversal — unlike the PV cancel,
+     which splits them, because here the reversal has no independent identity (no
+     JE number) and its counts only mean anything next to the cancel itself. A
+     partial reversal is the case worth surfacing: the header says CANCELLED but
+     stock did not fully come back. */
+  await recordEntityAudit(sb, {
+    entityType: 'STOCK_TRANSFER',
+    entityId: id,
+    entityDocNo: beforeTransfer?.transfer_no ?? null,
+    action: 'CANCEL',
+    actor: c.get('houzsUser'),
+    companyId: beforeTransfer?.company_id ?? null,
+    statusSnapshot: 'CANCELLED',
+    note: rev.failed > 0
+      ? `Stock reversal INCOMPLETE — ${rev.failed} failed: ${rev.reason ?? 'partial reversal'}`
+      : undefined,
+    fieldChanges: compactChanges([
+      ...statusChange(beforeTransfer?.status, 'CANCELLED'),
+      fieldChange('movementsReversed', null, rev.reversed),
+      fieldChange('movementsSkipped', null, rev.skipped),
+      fieldChange('movementsFailed', null, rev.failed),
+    ]),
+  });
+
   // Net-zero across warehouses again — re-walk B2C stock allocation in case a
   // partial reversal actually shifted a bucket.
   try {

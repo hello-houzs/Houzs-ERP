@@ -41,9 +41,24 @@ import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from 
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
 import { todayMyt } from '../lib/my-time';
+import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 
 export const paymentVouchers = new Hono<{ Bindings: Env; Variables: Variables }>();
 paymentVouchers.use('*', supabaseAuth);
+
+/* The auditable header fields, camel (API) -> snake (column). Money rides as
+   total_centi: the INTEGER SEN, never a formatted amount. */
+const PV_AUDIT_FIELDS: Array<[string, string]> = [
+  ['payeeName', 'payee_name'],
+  ['creditAccountCode', 'credit_account_code'],
+  ['voucherDate', 'voucher_date'],
+  ['supplierId', 'supplier_id'],
+  ['notes', 'notes'],
+  ['purpose', 'purpose'],
+  ['currency', 'currency'],
+  ['exchangeRate', 'exchange_rate'],
+  ['totalCenti', 'total_centi'],
+];
 
 const HEADER =
   'id, pv_number, voucher_date, payee_name, supplier_id, credit_account_code, currency, exchange_rate, purpose, notes, total_centi, status, posted_at, created_at, created_by, updated_at, company_id';
@@ -256,6 +271,7 @@ paymentVouchers.post('/', async (c) => {
   );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; pv_number: string };
+  const auditActor = c.get('houzsUser');
 
   const rowsWithId = built.rows.map((r) => ({ ...r, pv_id: h.id }));
   const { error: lErr } = await sb.from('payment_voucher_lines').insert(stampCompany(rowsWithId, c));
@@ -268,6 +284,28 @@ paymentVouchers.post('/', async (c) => {
     const { error: aErr } = await sb.from('pv_allocations').insert(stampCompany(allocRows, c));
     if (aErr) { await sb.from('payment_vouchers').delete().eq('id', h.id); return c.json({ error: 'allocations_insert_failed', reason: aErr.message }, 500); }
   }
+
+  /* Recorded only after every compensating-delete path above is behind us, so
+     the log never claims a voucher that was rolled back. */
+  await recordEntityAudit(sb, {
+    entityType: 'PAYMENT_VOUCHER',
+    entityId: h.id,
+    entityDocNo: h.pv_number,
+    action: 'CREATE',
+    actor: auditActor,
+    companyId: activeCompanyId(c),
+    statusSnapshot: 'DRAFT',
+    fieldChanges: compactChanges([
+      fieldChange('payeeName', null, payeeName),
+      fieldChange('creditAccountCode', null, creditAccountCode),
+      fieldChange('purpose', null, purpose),
+      fieldChange('currency', null, currency),
+      fieldChange('exchangeRate', null, exchangeRate),
+      fieldChange('totalCenti', null, built.total),
+      fieldChange('lineCount', null, built.rows.length),
+      fieldChange('allocatedCenti', null, allocBuilt.total),
+    ]),
+  });
 
   return c.json({ id: h.id, pvNumber: h.pv_number }, 201);
 });
@@ -285,9 +323,13 @@ paymentVouchers.patch('/:id', async (c) => {
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const sb = c.get('supabase');
 
-  const { data: cur } = await sb.from('payment_vouchers').select('status').eq('id', id).maybeSingle();
+  /* The FULL header, not just status: this row is the BEFORE half of every
+     from->to pair recorded at the end of the handler. Reading it here also
+     removes the second round-trip the currency branch used to make. */
+  const { data: cur } = await sb.from('payment_vouchers').select(HEADER).eq('id', id).maybeSingle();
   if (!cur) return c.json({ error: 'not_found' }, 404);
-  if ((cur as { status: string }).status !== 'DRAFT') {
+  const before = cur as unknown as Record<string, unknown>;
+  if ((before as { status: string }).status !== 'DRAFT') {
     return c.json({ error: 'not_editable', message: 'Only a DRAFT voucher can be edited' }, 409);
   }
 
@@ -314,8 +356,7 @@ paymentVouchers.patch('/:id', async (c) => {
   if (body.currency !== undefined) updates.currency = effectiveCurrency;
   if (body.exchangeRate !== undefined || updates.currency !== undefined) {
     if (effectiveCurrency === undefined) {
-      const { data: row } = await sb.from('payment_vouchers').select('currency').eq('id', id).maybeSingle();
-      effectiveCurrency = (row as { currency?: string } | null)?.currency ?? 'MYR';
+      effectiveCurrency = (before.currency as string | null) ?? 'MYR';
     }
     if (body.exchangeRate !== undefined) {
       updates.exchange_rate = normalizeExchangeRate(body.exchangeRate, effectiveCurrency);
@@ -340,11 +381,9 @@ paymentVouchers.patch('/:id', async (c) => {
   if (body.allocations !== undefined) {
     const allocBuilt = buildAllocations(body.allocations);
     if ('error' in allocBuilt) return c.json({ error: allocBuilt.error }, 400);
-    let total = newTotal;
-    if (total === undefined) {
-      const { data: row } = await sb.from('payment_vouchers').select('total_centi').eq('id', id).maybeSingle();
-      total = (row as { total_centi?: number } | null)?.total_centi ?? 0;
-    }
+    /* total_centi is NOT NULL on a row we have already read, so this is the real
+       stored total — not a `?? 0` standing in for an unknown one. */
+    const total = newTotal ?? Number(before.total_centi);
     if (allocBuilt.total > total) {
       return c.json({ error: 'allocations_exceed_total', allocated: allocBuilt.total, total }, 400);
     }
@@ -357,6 +396,25 @@ paymentVouchers.patch('/:id', async (c) => {
 
   const { data, error } = await sb.from('payment_vouchers').update(updates).eq('id', id).select(HEADER).single();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+
+  /* Diff the NORMALISED values actually written (updates), not the raw body:
+     purpose/currency/exchangeRate are all coerced above, and a log of what the
+     client asked for rather than what was stored is a log of the wrong thing. */
+  const auditPatch: Record<string, unknown> = {};
+  for (const [camel, snake] of PV_AUDIT_FIELDS) {
+    if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+  }
+  await recordEntityAudit(sb, {
+    entityType: 'PAYMENT_VOUCHER',
+    entityId: id,
+    entityDocNo: (before.pv_number as string | null) ?? null,
+    action: 'UPDATE',
+    actor: c.get('houzsUser'),
+    companyId: (before.company_id as number | null) ?? null,
+    statusSnapshot: (before.status as string | null) ?? null,
+    fieldChanges: diffFields(before, auditPatch, PV_AUDIT_FIELDS),
+  });
+
   return c.json({ paymentVoucher: data });
 });
 
@@ -461,6 +519,27 @@ paymentVouchers.post('/:id/post', async (c) => {
     status: 'POSTED', posted_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   }).eq('id', id);
 
+  /* The money-out event. Recorded here rather than after the PI settlement loop
+     below so a settlement hiccup cannot cost us the record that the GL was
+     posted — the JE exists from this point regardless. totalSen is the INTEGER
+     SEN posted to the ledger. */
+  await recordEntityAudit(sb, {
+    entityType: 'PAYMENT_VOUCHER',
+    entityId: id,
+    entityDocNo: pv.pv_number,
+    action: 'POST',
+    actor: c.get('houzsUser'),
+    companyId,
+    statusSnapshot: 'POSTED',
+    note: `GL entry ${je.je_no}`,
+    fieldChanges: compactChanges([
+      ...statusChange(pv.status, 'POSTED'),
+      fieldChange('jeNo', null, je.je_no),
+      fieldChange('creditAccountCode', null, pv.credit_account_code),
+      fieldChange('postedTotalSen', null, totalSen),
+    ]),
+  });
+
   /* PV→PI settlement (migration 0202) — a SUPPLIER_PAYMENT PV decrements each
      linked PI's paid_centi at FACE VALUE. Runs EXACTLY ONCE (the active-JE
      idempotency guard above early-returns on a re-post). Cap each allocation at
@@ -520,6 +599,19 @@ paymentVouchers.post('/:id/cancel', async (c) => {
   }
   const cancelled = data as { id: string; status: string; pv_number: string };
 
+  /* Recorded immediately after the ATOMIC flip won the race, so exactly one
+     CANCEL row is ever written for a voucher — the losing concurrent call
+     early-returned above and never reaches here. */
+  await recordEntityAudit(sb, {
+    entityType: 'PAYMENT_VOUCHER',
+    entityId: id,
+    entityDocNo: cancelled.pv_number,
+    action: 'CANCEL',
+    actor: c.get('houzsUser'),
+    statusSnapshot: 'CANCELLED',
+    fieldChanges: statusChange(head.status, 'CANCELLED'),
+  });
+
   // Reverse the GL post if one exists. Best-effort (audit-DLQ): a reversal
   // failure never un-cancels the voucher; the contra is idempotent.
   const rev = await reversePvAccounting(sb, cancelled.pv_number);
@@ -527,6 +619,23 @@ paymentVouchers.post('/:id/cancel', async (c) => {
     // eslint-disable-next-line no-console
     console.error(`[pv-accounting] reversal failed for ${cancelled.pv_number}:`, rev.status, rev.reason);
   }
+  /* A SEPARATE row from the CANCEL above, not a duplicate of it: the cancel is a
+     document-status event, this is a LEDGER event with its own JE number, and a
+     cancel whose reversal failed must be distinguishable from one whose
+     reversal landed. `rev.status` carries which of the two happened. */
+  await recordEntityAudit(sb, {
+    entityType: 'PAYMENT_VOUCHER',
+    entityId: id,
+    entityDocNo: cancelled.pv_number,
+    action: 'REVERSE',
+    actor: c.get('houzsUser'),
+    statusSnapshot: 'CANCELLED',
+    note: rev.ok ? `GL reversal: ${rev.status}` : `GL reversal FAILED: ${rev.status} — ${rev.reason ?? 'no reason given'}`,
+    fieldChanges: compactChanges([
+      fieldChange('reversalJeNo', null, rev.jeNo ?? null),
+      fieldChange('reversalOk', null, rev.ok),
+    ]),
+  });
 
   /* PV→PI settlement reversal (0202) — un-apply what this PV settled. Decrement
      each linked PI's paid_centi by the EXACT applied_centi recorded at post.

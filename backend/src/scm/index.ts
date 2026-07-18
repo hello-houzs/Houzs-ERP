@@ -26,6 +26,7 @@ import { mfgPurchaseOrders } from "./routes/mfg-purchase-orders";
 import { grns } from "./routes/grns";
 import { purchaseInvoices } from "./routes/purchase-invoices";
 import { paymentVouchers } from "./routes/payment-vouchers";
+import { entityAuditLog } from "./routes/entity-audit-log";
 import { paymentAuditLog } from "./routes/payment-audit-log";
 import { currencies } from "./routes/currencies";
 import { mfgSalesOrders } from "./routes/mfg-sales-orders";
@@ -312,6 +313,27 @@ scm.route("/payment-vouchers", paymentVouchers);
 // that assumption is exactly what shipped the /reports leak.
 scm.use("/payment-audit-log/*", scmAreaGuard("scm.finance.accounting"));
 scm.route("/payment-audit-log", paymentAuditLog);
+// Entity Audit Log — the field-change history (WHO / WHEN / from -> to) for the
+// SCM documents that are not Sales Orders: payment vouchers, GRNs, stock takes,
+// stock transfers, manual adjustments. Read-only; the writes happen inside each
+// business handler via lib/entity-audit.
+//
+// NO scmAreaGuard, on purpose. This endpoint spans FIVE modules living under
+// three different L2 areas (warehouse.*, finance.accounting,
+// warehouse.adjustments), so no single area key describes it, and picking one
+// would either lock out a legitimate reader or hand a warehouse key the finance
+// history. It rides the coarse /api/scm/* scm.access umbrella, exactly as the
+// SO's own /mfg-sales-orders/:docNo/audit-log does, and applies the SAME
+// in-route finance strip (stripAuditFinance) that endpoint does — so cost and
+// margin keys inside field_changes are gated on the REAL caller regardless of
+// which module's document is being read.
+//
+// The residual question this leaves — whether a warehouse-only user should see
+// a payment voucher's history at all, given the strip already removes the money
+// detail — is an OWNER call, not one to settle by guessing an area key here.
+// Narrowing later is safe; nothing consumes this endpoint yet (backend-only, no
+// UI in this PR).
+scm.route("/entity-audit-log", entityAuditLog);
 // Currency MASTER — owner-maintained list + rate_to_myr, read by the GRN/PI/PV
 // currency dropdowns across areas. Like state-warehouse-mappings, it's a shared
 // lookup left on the coarse scm gate (reads open); writes are gated inside the
