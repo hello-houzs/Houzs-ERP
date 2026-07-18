@@ -1,0 +1,140 @@
+import { describe, expect, it } from 'vitest';
+import {
+  collectProcessingGateProblems,
+  validationFailedBody,
+  type SaveProblem,
+} from './so-save-problems';
+
+const codes = (ps: SaveProblem[]) => ps.map((p) => p.code);
+
+describe('collectProcessingGateProblems', () => {
+  it('returns [] when every gate passes', () => {
+    const ps = collectProcessingGateProblems({
+      procDate: '2099-01-10',
+      delivDate: '2099-02-10',
+      todayMY: '2026-07-18',
+      variantOffenders: [],
+      deposit: { paidCenti: 100_00, totalCenti: 100_00 },
+    });
+    expect(ps).toEqual([]);
+  });
+
+  it('collects EVERY failing gate in one pass (variants + deposit + past + after-delivery)', () => {
+    // proc in the past AND after the (also-past) delivery date, deposit short,
+    // two lines each missing a required axis.
+    const ps = collectProcessingGateProblems({
+      procDate: '2020-05-10',
+      delivDate: '2020-05-01', // proc > deliv → after-delivery; both < today → past
+      todayMY: '2026-07-18',
+      variantOffenders: [
+        { itemCode: 'FENRIR-5FT', group: 'bedframe', missing: ['legHeight'] },
+        { itemCode: 'TELLUC-2S', group: 'sofa', missing: ['fabricCode'] },
+      ],
+      deposit: { paidCenti: 0, totalCenti: 300_00 }, // 0% < 30%
+    });
+    // 2 variant + 1 deposit + proc-past + deliv-past + after-delivery = 6 problems.
+    expect(ps).toHaveLength(6);
+    expect(codes(ps)).toEqual([
+      'variants_incomplete',
+      'variants_incomplete',
+      'processing_date_unpaid',
+      'processing_date_past',
+      'delivery_date_past',
+      'processing_after_delivery',
+    ]);
+  });
+
+  it('names the concrete line + axis on each variant problem', () => {
+    const ps = collectProcessingGateProblems({
+      procDate: '2099-01-10',
+      delivDate: '2099-02-10',
+      todayMY: '2026-07-18',
+      variantOffenders: [
+        { itemCode: 'FENRIR-5FT', group: 'bedframe', missing: ['legHeight', 'gap'] },
+      ],
+    });
+    expect(ps).toHaveLength(2);
+    // canonical axis key -> human label, and the line is named.
+    expect(ps[0]).toMatchObject({ code: 'variants_incomplete', line: 'FENRIR-5FT', field: 'Leg Height' });
+    expect(ps[0]!.message).toBe('FENRIR-5FT — Leg Height is required');
+    expect(ps[1]).toMatchObject({ line: 'FENRIR-5FT', field: 'Gap' });
+    expect(ps[1]!.message).toBe('FENRIR-5FT — Gap is required');
+  });
+
+  it('deposit problem carries the concrete amount + threshold', () => {
+    const ps = collectProcessingGateProblems({
+      procDate: '2099-01-10',
+      delivDate: '2099-02-10',
+      todayMY: '2026-07-18',
+      deposit: { paidCenti: 50_00, totalCenti: 1000_00 }, // RM50 paid, need RM300 (30%)
+    });
+    expect(ps).toHaveLength(1);
+    expect(ps[0]!.code).toBe('processing_date_unpaid');
+    expect(ps[0]!.message).toContain('RM 50');
+    expect(ps[0]!.message).toContain('RM 300');
+    expect(ps[0]!.message).toContain('30%');
+  });
+
+  it('grandfathers an unchanged already-past date (edit path)', () => {
+    const ps = collectProcessingGateProblems({
+      procDate: '2020-01-01',
+      delivDate: '2020-02-01',
+      todayMY: '2026-07-18',
+      origProcDate: '2020-01-01',  // unchanged → not a fresh past entry
+      origDelivDate: '2020-02-01',
+    });
+    // past-date suppressed for both; proc <= deliv so no after-delivery either.
+    expect(ps).toEqual([]);
+  });
+
+  it('still rejects a MOVED past date even if the old value was also past', () => {
+    const ps = collectProcessingGateProblems({
+      procDate: '2020-03-01', // moved
+      delivDate: '2020-04-01',
+      todayMY: '2026-07-18',
+      origProcDate: '2020-01-01',
+      origDelivDate: '2020-04-01',
+    });
+    expect(codes(ps)).toContain('processing_date_past');
+  });
+
+  it('does not report a deposit shortfall when no processing date is being set', () => {
+    const ps = collectProcessingGateProblems({
+      procDate: null,
+      delivDate: null,
+      todayMY: '2026-07-18',
+      deposit: { paidCenti: 0, totalCenti: 100_00 },
+    });
+    expect(ps).toEqual([]);
+  });
+
+  it('treats a total <= 0 order as deposit-satisfied (free order)', () => {
+    const ps = collectProcessingGateProblems({
+      procDate: '2099-01-10',
+      delivDate: '2099-02-10',
+      todayMY: '2026-07-18',
+      deposit: { paidCenti: 0, totalCenti: 0 },
+    });
+    expect(ps).toEqual([]);
+  });
+});
+
+describe('validationFailedBody', () => {
+  it('single problem → message is that problem', () => {
+    const body = validationFailedBody([
+      { code: 'processing_date_past', message: 'Processing Date cannot be in the past — today or a future date only.' },
+    ]);
+    expect(body.error).toBe('validation_failed');
+    expect(body.problems).toHaveLength(1);
+    expect(body.message).toBe('Processing Date cannot be in the past — today or a future date only.');
+  });
+
+  it('multiple problems → a count summary, full list preserved', () => {
+    const body = validationFailedBody([
+      { code: 'a', message: 'one' },
+      { code: 'b', message: 'two' },
+    ]);
+    expect(body.message).toBe('2 things need fixing before this can be saved.');
+    expect(body.problems).toHaveLength(2);
+  });
+});

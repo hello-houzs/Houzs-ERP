@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { authedFetch } from "../vendor/scm/lib/authed-fetch";
+import { authedFetch, parseSaveProblems } from "../vendor/scm/lib/authed-fetch";
+import { SaveProblemsList, saveProblemsTitle } from "../vendor/scm/components/SaveProblemsList";
 import { uploadSlipFull } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import { useAuth, isAdminLevel } from "../vendor/scm/lib/auth";
@@ -1798,7 +1799,19 @@ export function MobileNewSO({
       if (res?.docNo && onSaved) onSaved(res.docNo);
       else onBack();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't save the sales order. Please try again.");
+      /* Aggregated save-gate failure (validation_failed) — show EVERY reason at
+         once, same popup + list as desktop (owner 2026-07-18). Anything else
+         keeps the inline error line. */
+      const problems = parseSaveProblems((e as { body?: string } | undefined)?.body);
+      if (problems && problems.length > 0) {
+        void notify({
+          title: saveProblemsTitle(problems.length),
+          body: <SaveProblemsList problems={problems} />,
+          tone: "error",
+        });
+      } else {
+        setError(e instanceof Error ? e.message : "Couldn't save the sales order. Please try again.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -2272,7 +2285,9 @@ export function MobileNewSO({
               </div>
             </div>
 
-            {error && <div style={{ marginTop: 4, fontSize: 12, color: "#b23a3a", textAlign: "center", padding: "0 4px" }}>{error}</div>}
+            {/* pre-line so a multi-reason message (humanApiError joins them with
+                newlines) lists in full instead of collapsing onto one line. */}
+            {error && <div style={{ marginTop: 4, fontSize: 12, color: "#b23a3a", textAlign: "center", padding: "0 4px", whiteSpace: "pre-line" }}>{error}</div>}
           </>
         )}
       </div>

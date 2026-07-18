@@ -27,3 +27,4 @@ export * from './rule-target'; // 2026-06-21 — unified rule targeting (model/v
 export * from './special-delivery-match'; // 2026-06-21 — model-agnostic delivery trigger matcher (reuses rule-target)
 export * from './fabric-tier-override-resolve'; // 2026-06-21 — effective fabric-tier delta = MAX(model, matching compartments)
 export * from './so-amendment'; // 2026-07-11 — SO amendment/revision state machine + guards (port of 2990 0703)
+export * from './so-save-problems'; // 2026-07-18 — aggregate ALL Processing-Date/save gate failures into one problem list
