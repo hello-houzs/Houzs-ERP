@@ -48,7 +48,12 @@ export function isEntityType(v: unknown): v is EntityType {
    (ADD_PAYMENT, UPDATE_LINE...) because it describes ONE document type; this log
    spans five, so the verb answers "what kind of event" and the entity_type
    answers "to what". A renderer can label six verbs; it cannot label an open set. */
-export const AUDIT_ACTIONS = ['CREATE', 'UPDATE', 'POST', 'CANCEL', 'REVERSE', 'DELETE'] as const;
+/* SEND is the only verb here whose event leaves the building: it records that a
+   document was transmitted to an EXTERNAL party (today, a PO emailed to its
+   supplier). It is a separate verb rather than an UPDATE because the question it
+   answers is different — "who told the supplier, and when" is asked long after
+   nobody cares which column changed. */
+export const AUDIT_ACTIONS = ['CREATE', 'UPDATE', 'POST', 'CANCEL', 'REVERSE', 'DELETE', 'SEND'] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 /* The Houzs caller, as middleware/auth.ts stashes it. Deliberately structural:
