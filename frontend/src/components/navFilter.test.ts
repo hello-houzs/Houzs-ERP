@@ -127,58 +127,57 @@ describe("nav — the rep SCM trim stays trimmed", () => {
   });
 });
 
-describe("nav — Adjustments gates on the key the backend enforces (2026-07-18)", () => {
-  /* Stock ADJUSTMENT writes hit POST /inventory/adjustments, gated server-side on
-     scm.warehouse.inventory (scm/index.ts) — NOT scm.warehouse.adjustments, which
-     no area-guard reads. The nav + route once gated on that dead key, so the ops
-     cohort #731 granted `inventory` could POST an adjustment yet never see the
-     page. These pin that the nav now agrees with the server: the Adjustments entry
-     shows for a holder of scm.warehouse.inventory and NOT for a holder of the dead
-     scm.warehouse.adjustments key. All fixtures use an Operation-dept member (not a
-     sales rep) so hideForSalesRep does not confound the result, and each sets an L1
-     area key so the "Supply Chain" umbrella (anyAccess = L1 keys only) resolves
-     visible — otherwise the whole subtree is dropped before the leaf is reached. */
+describe("nav — Adjustments gates on scm.warehouse.adjustments, split off Inventory (2026-07-18)", () => {
+  /* The owner split stock ADJUSTMENT off viewing inventory: adjusting changes
+     valuation, so it is its own, more-sensitive permission. POST
+     /inventory/adjustments is now gated server-side on scm.warehouse.adjustments
+     (its own sub-mount in scm/index.ts), and the nav + route follow. These pin
+     the split: the Adjustments entry shows for a holder of
+     scm.warehouse.adjustments and NOT for a holder of only scm.warehouse.inventory
+     (who keeps the Inventory leaf but not Adjustments). All fixtures use an
+     Operation-dept member (not a sales rep) so hideForSalesRep does not confound
+     the result, and each sets an L1 area key so the "Supply Chain" umbrella
+     (anyAccess = L1 keys only) resolves visible — otherwise the whole subtree is
+     dropped before the leaf is reached. Fixtures set already-RESOLVED page_access
+     (as auth hydrates it); a cohort member arrives with adjustments raised to edit
+     by operationJdAccess. */
   const opsMember = (): AuthUser =>
     rep({ position_name: "Storekeeper", department_name: "Operation Department" });
 
-  it("shows Adjustments to a real gainer (Operation Executive shape: procurement + inventory, no warehouse row) on desktop AND phone", () => {
-    // The exact resolved state of an Operation Executive after #731's override: no
-    // scm.warehouse row at all, inventory raised to edit, adjustments still none.
-    // The Warehouse group must open on inventory alone (its anyAccess no longer
-    // lists adjustments), and the leaf must show on inventory, not adjustments.
+  it("shows Adjustments to a holder of scm.warehouse.adjustments on desktop AND phone", () => {
+    // The cohort's resolved state after the override: adjustments raised to edit.
+    // The Warehouse group opens (its anyAccess now lists adjustments) and the leaf
+    // shows on the new key.
     const ctx = ctxFor(opsMember(), {
       "scm.procurement": "edit", // L1 grant opens the Supply Chain umbrella
-      "scm.warehouse.inventory": "edit", // the #731 grant — opens the group + leaf
-      "scm.warehouse.adjustments": "none", // the dead key carries nothing
+      "scm.warehouse.adjustments": "edit", // the new key — opens the group + leaf
     });
     expect(desktopPaths(ctx)).toContain("/scm/stock-adjustments");
     expect(phoneAllows(ctx, "/scm/stock-adjustments")).toBe(true);
   });
 
-  it("does NOT show Adjustments to a holder of only the dead scm.warehouse.adjustments key — even with the group kept alive", () => {
-    // The old gate, isolated: the Warehouse group is kept visible by a live
-    // Transfers grant, so the leaf is judged on its OWN gate. With inventory=none
-    // the server would 403 the POST, so the nav must not surface the page on the
-    // strength of the frontend-only adjustments key alone.
+  it("does NOT show Adjustments to a holder of only inventory (adjustments=none) — the point of the split — but keeps Inventory", () => {
+    // The split, isolated: inventory-view without adjust. The Warehouse group is
+    // alive on inventory, the Inventory leaf shows, but the Adjustments leaf is
+    // hidden because adjustments is none (the server would 403 the POST too).
     const ctx = ctxFor(opsMember(), {
       "scm.warehouse": "view", // opens the umbrella + group
-      "scm.warehouse.transfers": "view", // a surviving sibling keeps the group alive
-      "scm.warehouse.adjustments": "view", // the dead key — must NOT open the leaf
-      "scm.warehouse.inventory": "none", // the real gate is shut
+      "scm.warehouse.inventory": "edit", // Inventory page stays visible
+      "scm.warehouse.adjustments": "none", // adjust is shut — leaf must not show
     });
     const paths = desktopPaths(ctx);
     expect(paths).not.toContain("/scm/stock-adjustments");
-    expect(paths).toContain("/scm/stock-transfers"); // the group is genuinely alive
+    expect(paths).toContain("/scm/inventory"); // inventory-view is untouched
     expect(phoneAllows(ctx, "/scm/stock-adjustments")).toBe(false);
   });
 
-  it("nobody loses it: a member who already saw Adjustments (scm.warehouse view + inventory) still sees it", () => {
-    // Storekeeper's real shape: scm.warehouse = view (which resolved adjustments to
-    // view under the OLD gate), inventory raised to edit by the override. Under the
-    // NEW gate it stays visible — the change never narrows anyone.
+  it("nobody loses it: a cohort member (adjustments raised to edit) still sees Adjustments AND Inventory", () => {
+    // The cohort adjusts stock today via the fused inventory grant; the split gives
+    // them adjustments=edit so they keep it. Inventory stays visible too.
     const ctx = ctxFor(opsMember(), {
       "scm.warehouse": "view",
       "scm.warehouse.inventory": "edit",
+      "scm.warehouse.adjustments": "edit",
     });
     const paths = desktopPaths(ctx);
     expect(paths).toContain("/scm/stock-adjustments");

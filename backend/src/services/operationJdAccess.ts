@@ -16,7 +16,8 @@
 //     ADDITIVE — it passes any caller whose page_access has ANY `scm*` area at
 //     >= view (middleware/auth.ts). Writing `scm.warehouse.* = edit` here makes
 //     the cohort pass it automatically; NO `scm.access` migration is needed.
-//   - FINE gate: scm/index.ts mounts `/inventory/*` → scm.warehouse.inventory,
+//   - FINE gate: scm/index.ts mounts `/inventory/adjustments` →
+//     scm.warehouse.adjustments, `/inventory/*` → scm.warehouse.inventory,
 //     `/stock-transfers/*` → scm.warehouse.transfers, `/stock-takes/*` →
 //     scm.warehouse.stock_take. `scmAreaGuard` (scm/middleware/area-guard.ts)
 //     requires `edit` for writes (POST/PATCH/PUT/DELETE) and `view` for GET. The
@@ -24,12 +25,12 @@
 //     explicit `scm*` row (prod snapshot), so each is `scm_l2_configured` and the
 //     write gate is genuinely ENFORCED for them — the grant is what unblocks it.
 //
-// THE DEAD-KEY TRAP. Stock ADJUSTMENT writes (POST /inventory/adjustments) ride
-// the /inventory/* mount and are gated on `scm.warehouse.inventory`. The page key
-// `scm.warehouse.adjustments` is FRONTEND-ONLY: no scmAreaGuard references it
-// anywhere in the backend (grep-verified — only its PAGES[] def + the snapshot).
-// So the grant is on `inventory`, NOT `adjustments`; granting `adjustments` would
-// leave adjustment writes 403ing and the owner's setting would again do nothing.
+// STOCK ADJUSTMENT IS NOW ITS OWN KEY. The owner split adjusting stock off
+// viewing it (2026-07-18): POST /inventory/adjustments moved to a dedicated
+// sub-mount gated on `scm.warehouse.adjustments` (routes/inventory-adjustments.ts).
+// So the cohort grant now covers `adjustments` AS WELL AS `inventory` — dropping
+// it would take away the adjust capability the cohort has today via the fused
+// inventory grant. Both keys stay in OPERATION_JD_KEYS below.
 //
 // DRIVER / HELPER ARE DELIBERATELY EXCLUDED. Owner 2026-07-18: they are delivery
 // labour and must NOT receive stock-write — stock adjustment changes inventory
@@ -97,15 +98,24 @@ function isOperationCohort(u: {
 }
 
 /**
- * The three warehouse WRITE pages the cohort is granted `edit` on. These are the
- * exact keys `scmAreaGuard` enforces for the three operations (scm/index.ts):
- *   - scm.warehouse.inventory   — stock ADJUSTMENT (POST /inventory/adjustments)
+ * The four warehouse WRITE pages the cohort is granted `edit` on. These are the
+ * exact keys `scmAreaGuard` enforces for the operations (scm/index.ts):
+ *   - scm.warehouse.inventory   — Inventory page (stock listing / stock card)
+ *   - scm.warehouse.adjustments — stock ADJUSTMENT (POST /inventory/adjustments)
  *   - scm.warehouse.transfers   — stock TRANSFER
  *   - scm.warehouse.stock_take  — stock COUNT / take
- * NOT scm.warehouse.adjustments — that key is dead (see header).
+ *
+ * `adjustments` was added when the owner split stock ADJUSTMENT off Inventory:
+ * the write moved from `scm.warehouse.inventory` to its own
+ * `scm.warehouse.adjustments` guard, so the cohort — who adjust stock today via
+ * the fused inventory grant — must carry `edit` on the new key too, or the split
+ * would silently take their adjust capability away. Keeping `inventory` here as
+ * well preserves their access to the Inventory page + the reads the adjustment
+ * form needs (warehouses / buckets / movements still ride /inventory).
  */
 const OPERATION_JD_KEYS: readonly string[] = [
   "scm.warehouse.inventory",
+  "scm.warehouse.adjustments",
   "scm.warehouse.transfers",
   "scm.warehouse.stock_take",
 ];

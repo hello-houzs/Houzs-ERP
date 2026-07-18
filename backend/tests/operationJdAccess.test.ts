@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import { applyOperationJdOverride } from "../src/services/operationJdAccess";
 import {
   isDormantPageKey,
+  levelRank,
+  meetsLevel,
   resolvePositionAccessFromRows,
   type AccessLevel,
 } from "../src/services/pageAccess";
@@ -10,12 +12,18 @@ import { POSITION_ACCESS_SNAPSHOT } from "../src/services/positionAccessSnapshot
 /* The Operation JD is a RULE, not a setting (owner 2026-07-18: ops staff —
    purchasing, ops managers/executives, logistic admin, storekeepers — must be
    able to do STOCK TRANSFER, STOCK COUNT and STOCK ADJUSTMENT; today only `*`
-   can). These lock the rule itself: the grant is on the three keys the backend
+   can). These lock the rule itself: the grant is on the four keys the backend
    area-guard actually enforces, it lands on the SIX named positions and NOT on
-   Driver/Helper, and it can only RAISE a level, never lower one. */
+   Driver/Helper, and it can only RAISE a level, never lower one.
+
+   Stock ADJUSTMENT was split off Inventory (owner 2026-07-18): the write moved to
+   its own scm.warehouse.adjustments guard, so the cohort now carries `edit` on
+   adjustments AS WELL AS inventory — dropping it would take away the adjust
+   capability the cohort had via the fused inventory grant. */
 
 const WAREHOUSE_KEYS = [
-  "scm.warehouse.inventory", // stock ADJUSTMENT (POST /inventory/adjustments)
+  "scm.warehouse.inventory", // Inventory page (stock listing / stock card)
+  "scm.warehouse.adjustments", // stock ADJUSTMENT (POST /inventory/adjustments)
   "scm.warehouse.transfers", // stock TRANSFER
   "scm.warehouse.stock_take", // stock COUNT / take
 ] as const;
@@ -54,7 +62,7 @@ function caller(entry: (typeof POSITION_ACCESS_SNAPSHOT)[number]) {
 }
 
 describe("Operation JD override — grants warehouse writes to the six-position cohort", () => {
-  test("each of the six cohort positions gets `edit` on all three warehouse keys", () => {
+  test("each of the six cohort positions gets `edit` on all four warehouse keys", () => {
     for (const name of SIX_POSITIONS) {
       const { before, entry } = resolveByName(name);
       const after = applyOperationJdOverride(before, caller(entry));
@@ -66,7 +74,7 @@ describe("Operation JD override — grants warehouse writes to the six-position 
     }
   });
 
-  test("BEFORE the override, the cohort does NOT already have edit on all three keys", () => {
+  test("BEFORE the override, the cohort does NOT already have edit on all four keys", () => {
     // The gap the owner reported: measured with the real resolver, not eyeballed.
     // Operation Manager is the ONE exception (scm = full already), so it is
     // excluded from this negative assertion — the other five prove the gap.
@@ -168,31 +176,26 @@ describe("Operation JD override — invariants", () => {
     expect(out["scm.warehouse.stock_take"]).toBe("edit");
   });
 
-  test("keys OUTSIDE the three are untouched — incl. the DEAD adjustments key", () => {
+  test("keys OUTSIDE the four are untouched; adjustments IS in the grant and is raised", () => {
     const out = applyOperationJdOverride(MATRIX, purchasing);
-    // scm.warehouse.adjustments is frontend-only; the backend gates adjustment
-    // writes on scm.warehouse.inventory. Granting it would be the dead-key trap.
-    expect(out["scm.warehouse.adjustments"]).toBe("view");
+    // scm.warehouse.adjustments is now a granted key (the split): it rides up to
+    // edit alongside inventory. Truly-outside keys stay put.
+    expect(out["scm.warehouse.adjustments"]).toBe("edit");
     expect(out["scm.procurement.po"]).toBe("view");
     expect(out["projects"]).toBe("view");
   });
 
-  test("scm.warehouse.adjustments is DORMANT — no scmAreaGuard reads it, and the FE now agrees", () => {
-    // The dead-key trap, pinned from the backend side. POST /inventory/adjustments
-    // is gated by scmAreaGuard('scm.warehouse.inventory') (scm/index.ts:265); NO
-    // scmAreaGuard is ever mounted on 'scm.warehouse.adjustments' (grep-verified:
-    // only its PAGES[] def + the prod snapshot's stored value reference it). Once
-    // the frontend nav + route moved off it onto scm.warehouse.inventory, the key
-    // had zero consumers — so it is greyed, not retired: settable, its stored
-    // Finance Manager value kept inert, read by nothing.
-    expect(isDormantPageKey("scm.warehouse.adjustments")).toBe(true);
-    // The key the backend actually enforces for adjustment writes is NOT dormant —
-    // it is a live, guarded area and one of the three the cohort is granted.
+  test("scm.warehouse.adjustments is LIVE (not dormant) and the cohort is granted edit on it", () => {
+    // The split, pinned from the backend side. POST /inventory/adjustments is now
+    // gated by scmAreaGuard('scm.warehouse.adjustments') via its own sub-mount
+    // (scm/index.ts), so the key is a live, guarded area — no longer dormant — and
+    // one of the four the cohort is granted.
+    expect(isDormantPageKey("scm.warehouse.adjustments")).toBe(false);
     expect(isDormantPageKey("scm.warehouse.inventory")).toBe(false);
     const out = applyOperationJdOverride(MATRIX, purchasing);
-    // Concretely: the grant lands on the enforced key, never on the dead one.
+    // Concretely: the grant lands on BOTH the adjustment key and the inventory key.
     expect(out["scm.warehouse.inventory"]).toBe("edit");
-    expect(out["scm.warehouse.adjustments"]).toBe("view");
+    expect(out["scm.warehouse.adjustments"]).toBe("edit");
   });
 
   test("a caller with no position is not in the cohort — nothing added", () => {
@@ -220,5 +223,64 @@ describe("Operation JD override — invariants", () => {
       department_name: "Operation Department",
     });
     expect(injected["scm.warehouse.inventory"]).toBe("none");
+  });
+});
+
+describe("blast radius — the split changes neither WHO can adjust nor inventory-view", () => {
+  /* "Can adjust" was gated on scm.warehouse.inventory>=edit BEFORE the split and is
+     gated on scm.warehouse.adjustments>=edit AFTER. The split added `adjustments`
+     to the SAME cohort + GRANT as inventory and left inventory's grant/matrix
+     untouched, so for EVERY position in the prod snapshot the two must agree — the
+     adjust-capable set is identical. Proven with the real resolver + override over
+     the whole snapshot, not eyeballed. `*` (Super Admin) is not in the snapshot's
+     entries as a wildcard here — it bypasses the guard entirely at runtime and is
+     unaffected either way. */
+  const COHORT = new Set<string>([
+    "Procurement/Purchasing",
+    "Operation Manager",
+    "Operation Executive",
+    "Logistic Admin",
+    "Storekeeper",
+    "Storekeeper Supervisor",
+  ]);
+
+  function afterFor(entry: (typeof POSITION_ACCESS_SNAPSHOT)[number]) {
+    const rows = Object.entries(entry.entries).map(([page_key, level]) => ({
+      page_key,
+      level: level as string,
+    }));
+    const before = resolvePositionAccessFromRows(rows);
+    return { before, after: applyOperationJdOverride(before, caller(entry)) };
+  }
+
+  test("adjust-after (adjustments>=edit) == adjust-before (inventory>=edit) for every snapshot position", () => {
+    for (const entry of POSITION_ACCESS_SNAPSHOT) {
+      const { after } = afterFor(entry);
+      const adjustAfter = meetsLevel((after["scm.warehouse.adjustments"] ?? "none") as AccessLevel, "edit");
+      const adjustBefore = meetsLevel((after["scm.warehouse.inventory"] ?? "none") as AccessLevel, "edit");
+      expect(adjustAfter, `${entry.name}: the split changed adjust capability`).toBe(adjustBefore);
+    }
+  });
+
+  test("inventory-VIEW is never lowered, and every NON-cohort position keeps its exact inventory level", () => {
+    for (const entry of POSITION_ACCESS_SNAPSHOT) {
+      const { before, after } = afterFor(entry);
+      const b = (before["scm.warehouse.inventory"] ?? "none") as AccessLevel;
+      const a = (after["scm.warehouse.inventory"] ?? "none") as AccessLevel;
+      expect(levelRank(a), `${entry.name}: inventory lowered`).toBeGreaterThanOrEqual(levelRank(b));
+      if (!COHORT.has(entry.name)) {
+        expect(a, `${entry.name}: non-cohort inventory changed`).toBe(b);
+      }
+    }
+  });
+
+  test("Finance Manager — the only explicit adjustments holder — may VIEW but not WRITE (matches inventory-era)", () => {
+    const { after } = afterFor(POSITION_ACCESS_SNAPSHOT.find((p) => p.name === "Finance Manager")!);
+    // Under the fused gate, FM's inventory=view could open the page but not POST an
+    // adjustment (write needs edit). Under the split, adjustments=view is identical:
+    // page opens, write 403s.
+    expect(after["scm.warehouse.adjustments"]).toBe("view");
+    expect(after["scm.warehouse.inventory"]).toBe("view");
+    expect(meetsLevel(after["scm.warehouse.adjustments"] as AccessLevel, "edit")).toBe(false);
   });
 });

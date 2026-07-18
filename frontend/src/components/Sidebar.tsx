@@ -508,18 +508,17 @@ export const NAV_TABS: NavTab[] = [
         groupId: "scm-warehouse",
         to: "/scm/warehouse",
         anyPerm: ["*", "scm.access"],
-        anyAccess: ["scm.warehouse", "scm.warehouse.inventory", "scm.warehouse.transfers", "scm.warehouse.stock_take"],
+        anyAccess: ["scm.warehouse", "scm.warehouse.inventory", "scm.warehouse.adjustments", "scm.warehouse.transfers", "scm.warehouse.stock_take"],
         children: [
           // Warehouses master sits at the TOP of the group (2990 parity) — it's
           // the location registry every other warehouse doc binds against.
           { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.inventory"], hideForSalesRep: true },
           { to: "/scm/inventory", label: "Inventory", icon: Package, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.inventory"], hideForSalesRep: true },
-          // Adjustment writes ride POST /inventory/adjustments, which the backend
-          // gates on scm.warehouse.inventory (scm/index.ts) — NOT the frontend-only
-          // scm.warehouse.adjustments key, which no area-guard reads. Gate the nav on
-          // the key the server enforces so the ops cohort granted inventory (#731)
-          // can see the page they can already POST to.
-          { to: "/scm/stock-adjustments", label: "Adjustments", icon: SlidersHorizontal, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.inventory"], hideForSalesRep: true },
+          // Stock adjustment is now its OWN permission, split off Inventory
+          // (adjusting changes valuation). The write (POST /inventory/adjustments)
+          // is gated on scm.warehouse.adjustments server-side (scm/index.ts), so
+          // gate the nav on the same key.
+          { to: "/scm/stock-adjustments", label: "Adjustments", icon: SlidersHorizontal, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.adjustments"], hideForSalesRep: true },
           { to: "/scm/stock-transfers", label: "Transfers", icon: ArrowLeftRight, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.transfers"], hideForSalesRep: true },
           { to: "/scm/stock-takes", label: "Stock Take", icon: ClipboardCheck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.stock_take"], hideForSalesRep: true },
         ],

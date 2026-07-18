@@ -480,10 +480,13 @@ export const PAGES: PageDef[] = [
     backfill: (p) => (isOwner(p) ? "full" : "none"),
   },
   {
+    // Stock ADJUSTMENT — split OFF Inventory because adjusting changes stock
+    // valuation. view = open the adjustment page; edit = perform an adjustment
+    // (POST /inventory/adjustments, its own guard in scm/index.ts).
     key: "scm.warehouse.adjustments",
     parent: "scm.warehouse",
     label: "Adjustments",
-    partialMeaning: "View only; write gating is per-route (later).",
+    partialMeaning: "View the adjustment page; edit to perform adjustments.",
     supportsPartial: true,
     backfill: (p) => (isOwner(p) ? "full" : "none"),
   },
@@ -645,20 +648,17 @@ export function isRetiredPageKey(key: string): boolean {
  * profile as `team.roles` and `team.departments`: catalogue + seed writer + docs,
  * zero gates. If those two are dead, this one is dead by the same test.
  */
-// `scm.warehouse.adjustments` is the EIGHTH, and it went dead by a fix, not by a
-// prune. Stock ADJUSTMENT writes ride POST /inventory/adjustments, which the
-// backend area-guard gates on `scm.warehouse.inventory` (scm/index.ts) — no
-// scmAreaGuard ever referenced `scm.warehouse.adjustments`. The frontend nav +
-// route nonetheless gated on it, so the ops cohort #731 granted `inventory` could
-// POST an adjustment yet never see or reach the page. The FE now gates on
-// `scm.warehouse.inventory` too (Sidebar.tsx / App.tsx), which leaves this key
-// with ZERO consumers (grep-verified across frontend/src + backend/src: only its
-// PAGES[] def, the prod snapshot's stored value, and comments/tests remain). Same
-// evidence profile as the other seven — settable, saves cleanly, read by nothing
-// — so it is greyed, not retired: the Finance Manager snapshot row keeps its
-// stored `view` value inert, exactly what #717's dormant treatment preserves.
+// `scm.warehouse.adjustments` WAS the eighth dormant key, greyed when stock
+// ADJUSTMENT writes were fused onto `scm.warehouse.inventory`. The owner has now
+// split the two apart (viewing inventory vs. adjusting it — the latter changes
+// valuation), so this key is LIVE again: POST /inventory/adjustments is gated on
+// it by a real `scmAreaGuard('scm.warehouse.adjustments')` (its own sub-mount in
+// scm/index.ts), the ops cohort carries `edit` on it (operationJdAccess.ts), and
+// the FE nav + /scm/stock-adjustments routes gate on it (Sidebar.tsx / App.tsx).
+// It is therefore no longer dormant. The Finance Manager snapshot row's stored
+// `view` now means "may open the adjustment page, but the write still needs
+// edit" — identical to the fused inventory-era behaviour (view could not POST).
 export const DORMANT_PAGE_KEYS: ReadonlySet<string> = new Set([
-  "scm.warehouse.adjustments",
   "service_cases.by_creditor",
   "service_cases.pnl",
   "service_cases.settings",
