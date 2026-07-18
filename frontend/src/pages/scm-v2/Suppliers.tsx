@@ -577,6 +577,11 @@ const CreateForm = ({ onClose }: { onClose: () => void }) => {
     email: '',
     website: '',
     address: '',
+    address1: '',
+    address2: '',
+    address3: '',
+    address4: '',
+    city: '',
     postcode: '',
     area: '',
     state: '',
@@ -676,6 +681,14 @@ const SupplierFields = ({
       <Field label="State" value={(form.state as string) ?? ''} onChange={(v) => onChange('state', v)} />
       <Field label="Area" value={(form.area as string) ?? ''} onChange={(v) => onChange('area', v)} />
       <Field label="Postcode" value={(form.postcode as string) ?? ''} onChange={(v) => onChange('postcode', v)} />
+      <Field label="City" value={(form.city as string) ?? ''} onChange={(v) => onChange('city', v)} />
+      {/* Structured pickup address (mig 0131) — the SAME shape as the SO header,
+          so a Supplier-Pickup DP order auto-fills it in the SO-Maintenance format.
+          The legacy single-line Billing Address below is kept for billing. */}
+      <Field label="Address 1" value={(form.address1 as string) ?? ''} onChange={(v) => onChange('address1', v)} gridFull />
+      <Field label="Address 2" value={(form.address2 as string) ?? ''} onChange={(v) => onChange('address2', v)} gridFull />
+      <Field label="Address 3" value={(form.address3 as string) ?? ''} onChange={(v) => onChange('address3', v)} gridFull />
+      <Field label="Address 4" value={(form.address4 as string) ?? ''} onChange={(v) => onChange('address4', v)} gridFull />
       <Field
         label="Billing Address"
         value={(form.address as string) ?? ''}
