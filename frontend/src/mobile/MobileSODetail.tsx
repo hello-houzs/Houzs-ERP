@@ -41,6 +41,10 @@ import {
   useApproveSo,
   type AmendmentLine,
 } from "../vendor/scm/lib/so-amendment-queries";
+import {
+  buildAmendmentDecisionHistory,
+  isRejectDecision,
+} from "../vendor/scm/lib/so-amendment-history";
 /* Owner 2026-07-16 — the persisted-payment ledger (rows + slip + amount + edit
    + delete + the edit sheet) is the SHARED RecordedPayments module, rendered
    identically by the Edit Sales Order sheet (MobileNewSO). This screen no longer
@@ -1256,6 +1260,16 @@ const mEmphIf = (changed: boolean): CSSProperties =>
 
 function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onClose: () => void }) {
   const { data, isLoading, error } = useAmendmentDetail(amendmentId);
+  /* Approve / reject decision trail (owner 2026-07-18) — read the SO audit log
+     and keep only THIS amendment's AMENDMENT_* rows (created_at floor). The only
+     source that carries a rejection's actor / time / reason. Same shared builder
+     desktop uses; one logic layer. */
+  const soDocNo = typeof data?.amendment?.so_doc_no === "string" ? data.amendment.so_doc_no : null;
+  const audit = useSalesOrderAuditLog(soDocNo);
+  const decisions = buildAmendmentDecisionHistory(
+    audit.data,
+    typeof data?.amendment?.created_at === "string" ? data.amendment.created_at : null,
+  );
   /* Only the lines that actually request something — a recorded line whose new_*
      equals its own old_snapshot is not a change and must not render as one
      (Owner 2026-07-16). Same shared filter as desktop; one logic layer. */
@@ -1375,6 +1389,40 @@ function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onC
               <span style={{ fontWeight: 700 }}>Reason:</span> {reason}
             </div>
           ) : null}
+
+          {/* Approve / reject history (owner 2026-07-18) — WHO approved or
+              rejected, WHEN, and the reason. Newest first. */}
+          <div style={{ marginTop: 14, borderTop: "1px solid var(--line2, #e3e6e0)", paddingTop: 12 }}>
+            <div className="fld-l" style={{ marginBottom: 8 }}>Approval history</div>
+            {audit.isLoading ? (
+              <div style={{ fontSize: 11.5, color: "var(--mut2)" }}>Loading history{"…"}</div>
+            ) : audit.error ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, color: "var(--red)" }}>
+                <span>Couldn't load the history.</span>
+                <button type="button" onClick={() => audit.refetch()} style={{ border: "none", background: "transparent", color: "var(--red)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0 }}>Retry</button>
+              </div>
+            ) : decisions.length === 0 ? (
+              <div style={{ fontSize: 11.5, color: "var(--mut2)" }}>No decisions recorded yet.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {decisions.map((d) => {
+                  const rej = isRejectDecision(d.action);
+                  return (
+                    <div key={d.id} style={{ display: "flex", gap: 9, alignItems: "flex-start" }}>
+                      <span aria-hidden style={{ width: 8, height: 8, minWidth: 8, borderRadius: "50%", marginTop: 4, background: rej ? "#b23a3a" : "#0c3f39" }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 700, color: rej ? "#b23a3a" : "var(--ink)", lineHeight: 1.35 }}>{d.label}</div>
+                        <div className="money" style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 1 }}>
+                          {histWhen(d.at)}{d.actor ? ` · ${d.actor}` : ""}
+                        </div>
+                        {d.note ? <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 2, fontStyle: "italic", lineHeight: 1.4 }}>{d.note}</div> : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
         <div className="sheet-foot">
           <button type="button" className="btn" style={{ flex: 1 }} onClick={onClose}>Close</button>
