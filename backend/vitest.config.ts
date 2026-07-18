@@ -47,6 +47,29 @@ export default defineWorkersConfig(async () => {
       // test still fails its assertion well under 60s. Local suites run ~7s.
       testTimeout: 60000,
       hookTimeout: 180000,
+      // POOL SIZE IS PINNED because this suite collapses at full concurrency,
+      // and it does so WITHOUT a single failing assertion — the signature is
+      // 50-65 of 66 files "failed", zero `AssertionError`, zero `error TS####`,
+      // and 100+ `[vitest-worker]: Timeout calling "onTaskUpdate"`. That RPC
+      // timeout means the worker could not reach the main thread, not that the
+      // code under test is wrong; every one of those files passes when run on
+      // its own.
+      //
+      // It is a CAPACITY CLIFF, not a random flake, and the suite walked off it
+      // by growing. Measured on 2026-07-18: at 63 test files the suite passed;
+      // at 65 (main) it passed 11 of 12 deploys; at 66 — the file count after
+      // tests/entityAudit.test.ts landed — it failed 5 of 5 runs on the same
+      // commit. Each file gets its own workerd isolate, so an unbounded pool
+      // scales isolates with CPU count and starves the main thread that is
+      // meant to be servicing their RPC.
+      //
+      // The previous mitigation for this same class was raising hookTimeout to
+      // 180s (see above). That bought two more test files. A longer timeout
+      // does not help once the main thread is the bottleneck, so bound the
+      // concurrency instead. 2 keeps CI green with headroom to grow; raise it
+      // only with a green full-suite run to back the new number.
+      maxWorkers: 2,
+      minWorkers: 1,
       poolOptions: {
         workers: {
           // Reuse production wrangler.toml so bindings line up.
