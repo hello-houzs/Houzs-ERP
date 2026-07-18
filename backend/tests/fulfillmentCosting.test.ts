@@ -12,6 +12,11 @@ import {
   type LineDims,
 } from "../src/scm/lib/fulfillment-costing";
 import { canViewScmFinance } from "../src/scm/lib/houzs-perms";
+import {
+  parseAmountCenti,
+  buildLines,
+  buildAllocations,
+} from "../src/scm/routes/payment-vouchers";
 import type { AuthUser } from "../src/services/auth";
 
 /* The Fulfillment Costing report's correctness is money: a THREE-WAY split
@@ -288,5 +293,68 @@ describe("(e) the report's finance gate blocks sales, admits finance", () => {
 
   test("no caller → refused (fails closed)", () => {
     expect(canViewScmFinance(ctx(null))).toBe(false);
+  });
+});
+
+/* ── Payment-voucher money in, from the wire ───────────────────────────────
+   Ported from HOOKKA's BUG-2026-05-20-002 (a negative payment amount was
+   accepted and silently subtracted). Houzs's variant was quieter and therefore
+   harder to notice: buildLines ran the wire value through
+   `Math.max(0, Math.round(Number(x)) || 0)`, so a negative or unparseable
+   amount became a silent 0. The voucher saved, returned 200, and its header
+   total was short by exactly the line nobody was told about.
+
+   These pin the boundary: a payable amount is a non-negative INTEGER sen. */
+describe("payment voucher — line amounts are validated, not clamped", () => {
+  test("parseAmountCenti admits a plain non-negative integer sen", () => {
+    expect(parseAmountCenti(0)).toBe(0);
+    expect(parseAmountCenti(150000)).toBe(150000);
+  });
+
+  test("parseAmountCenti refuses what the old clamp turned into a silent zero", () => {
+    expect(parseAmountCenti(-500000)).toBeNull();   // was 0
+    expect(parseAmountCenti("abc")).toBeNull();     // was 0
+    expect(parseAmountCenti(NaN)).toBeNull();       // was 0
+    expect(parseAmountCenti(Infinity)).toBeNull();  // was 0
+  });
+
+  test("parseAmountCenti refuses a fractional amount — that is RM in a sen field", () => {
+    expect(parseAmountCenti(48.5)).toBeNull();
+  });
+
+  test("a negative line is refused outright rather than saved as a zero line", () => {
+    expect(buildLines([{ debitAccountCode: "500-0000", amountCenti: -500000 }]))
+      .toEqual({ error: "line_amount_invalid" });
+  });
+
+  test("a valid line still builds, and the header total is its sum", () => {
+    const built = buildLines([
+      { debitAccountCode: "500-0000", amountCenti: 150000 },
+      { debitAccountCode: "500-0001", amountCenti: 25000 },
+    ]);
+    expect("error" in built).toBe(false);
+    if ("error" in built) return;
+    expect(built.total).toBe(175000);
+    expect(built.rows.map((r) => r.line_no)).toEqual([1, 2]);
+  });
+
+  test("an existing guard is untouched — a line with no debit account still fails on that", () => {
+    expect(buildLines([{ amountCenti: 1000 }])).toEqual({ error: "debit_account_required" });
+  });
+
+  test("a negative ALLOCATION is refused, not silently dropped as a zero row", () => {
+    expect(buildAllocations([{ piId: "pi-1", amountCenti: -1 }]))
+      .toEqual({ error: "allocation_amount_invalid" });
+  });
+
+  test("allocations still sum, and an explicit zero row is still dropped", () => {
+    const a = buildAllocations([
+      { piId: "pi-1", amountCenti: 40000 },
+      { piId: "pi-2", amountCenti: 0 },
+    ]);
+    expect("error" in a).toBe(false);
+    if ("error" in a) return;
+    expect(a.total).toBe(40000);
+    expect(a.rows).toEqual([{ pi_id: "pi-1", amount_centi: 40000 }]);
   });
 });
