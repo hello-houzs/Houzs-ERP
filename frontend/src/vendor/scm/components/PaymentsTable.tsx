@@ -727,32 +727,33 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSaved, slipProp?.slipKey]);
 
-  /* 8-column override when the Slip column is shown. Nick 2026-07-09:
-     the previous 1040px min-width forced a horizontal scrollbar even on
-     wide desktop viewports, so the whole row wouldn't fit at a glance
-     ("间隔太远 需要缩小一些 一页看完"). Tightened every track by ~20%
-     and dropped min-width to 800px so the grid fits inside a typical
-     ~960-1000px SCM detail body without scrolling; when the aside
-     drawer is open, the scroll wrapper still lets the tail nudge into
-     view without clipping the Slip cell.
-     Amount collapsed 92px/0.9fr → 100px fixed (Nick 2026-07-09 "amount
-     列放窄一些") — no MYR-formatted number needs more than ~85px at
-     var(--font-money), so the fluid extra was empty air. Track sum:
-     112+116+100+104+104+52+128+28 = 744 px. */
+  /* 8-column override when the Slip column is shown (SO detail).
+     ALL FIXED, NO fr (owner 2026-07-18: "整齐一点"). Every prior attempt kept
+     one flexible track so the table would "fill" the card, and every attempt
+     read crooked because a flexible track has no honest width:
+       - Collected By was minmax(140px, 1fr): on a WIDE desktop body it
+         ballooned to absorb all the leftover width, leaving the other columns
+         cramped-left with a gap punched down the middle of the row;
+       - the min-width that guarded it (844) then forced a horizontal scrollbar
+         the moment the body was narrower than that.
+     There is no width worth stretching to fill: the payments table is a small
+     fixed set of columns. Pinning EVERY track to the width that fits its own
+     header on one line makes the grid a tidy, predictable 844px block that
+     left-aligns in its card — the leftover space sits as trailing air to the
+     RIGHT of the whole table, never as holes between columns, and nothing
+     balloons on a wide screen. Track widths are each sized to their header
+     (Amount 116 holds "Amount (MYR)"; Account Sheet / Approval Code / Collected
+     By at 140 each hold their labels — headerCell is white-space:nowrap so a
+     track can only be too narrow, never wrap). Track sum:
+       112 + 116 + 116 + 140 + 140 + 52 + 140 + 28 = 844 px,
+     which fits inside a typical ~960-1000px SCM detail body with no scroll. The
+     844 min-width is kept as the narrow/drawer-open safety net: below 844 the
+     .gridScroll wrapper scrolls the block horizontally instead of clipping the
+     Slip cell. */
   const gridStyle: CSSProperties | undefined = showSlip
     ? {
-        /* Every track fits its OWN header on one line. The previous set was
-           squeezed to make room for Slip (112/116/100/.../128, sum 744) and the
-           labels silently WRAPPED to two lines while the data stayed on one --
-           the header sat a row taller than its column and the whole table read
-           crooked (owner 2026-07-17: "歪来歪去").
-           Slack goes to the LAST content column, not to two arbitrary middle
-           ones: with Account Sheet + Approval Code as the only 1fr tracks, a
-           wide screen poured all the extra width into them, so a short value
-           like "PBB" sat alone at the left of a 400px column and the row had
-           two holes punched in its middle. */
         gridTemplateColumns:
-          '112px 116px 116px 140px 140px 52px minmax(140px, 1fr) 28px',
+          '112px 116px 116px 140px 140px 52px 140px 28px',
         minWidth: 844,
       }
     : undefined;
