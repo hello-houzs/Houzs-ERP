@@ -652,6 +652,24 @@ export async function generatePurchaseOrderPdf(
   doc.save(`${header.po_number}-${safeName}.pdf`);
 }
 
+/* The SAME PO PDF, returned as raw base64 instead of downloaded — for emailing it
+   to the supplier. The backend bars a PDF engine, so the browser renders it here
+   and posts the base64 to POST /:id/send-to-supplier, which attaches it. */
+export async function purchaseOrderPdfBase64(
+  header: PoHeader,
+  items: PoItem[],
+  opts?: { docTitle?: string },
+): Promise<string> {
+  const { jsPDF } = await import('jspdf');
+  const autoTable = (await import('jspdf-autotable')).default;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  await renderPurchaseOrderInto(doc, autoTable, header, items, opts);
+  finalizePoPdf(doc);
+  // 'datauristring' → "data:application/pdf;base64,XXXX"; keep the base64 tail.
+  const uri = doc.output('datauristring');
+  return uri.slice(uri.indexOf(',') + 1);
+}
+
 /* Several POs → ONE combined file, each PO starting on a new page. For the
    batch "Print documentation" action (send a supplier all their POs in one
    attachment). The per-PO "1 of N" meta patch is skipped (cosmetic in a

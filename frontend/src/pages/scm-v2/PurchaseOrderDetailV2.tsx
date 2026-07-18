@@ -16,6 +16,7 @@ import {
   ArrowLeft,
   History,
   Printer,
+  Mail,
   XCircle,
   Edit3,
   CircleDot,
@@ -47,6 +48,7 @@ import {
 import { useWarehouses } from "../../vendor/scm/lib/inventory-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { cn } from "../../lib/utils";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -449,6 +451,39 @@ function PurchaseOrderDetailV2ReadOnly() {
   };
   const goGrnFromPo = () =>
     id && navigate(`/scm/grns/from-po?poId=${id}`);
+
+  /* Email this PO to its supplier — a HUMAN action (the agent only drafts). The
+     PDF is rendered here in the browser (the backend has no PDF engine) and posted
+     as base64; the backend attaches it and sends via the gated purchase_order
+     channel. Confirm first — it goes to an external party. */
+  const doSendToSupplier = async () => {
+    if (!id || !purchaseOrder) return;
+    if (!window.confirm(`Email PO ${purchaseOrder.po_number} to the supplier now?`)) return;
+    try {
+      const wh = (warehousesQ.data ?? []).find((w) => w.id === purchaseOrder.purchase_location_id);
+      const headerForPdf = {
+        ...purchaseOrder,
+        purchase_location_name: wh ? `${wh.code} · ${wh.name}` : null,
+        delivery_address: wh?.location ?? null,
+        your_ref_no: (purchaseOrder as unknown as { your_ref_no?: string | null }).your_ref_no ?? null,
+        source_so_doc_no: (purchaseOrder as unknown as { source_so_doc_no?: string | null }).source_so_doc_no ?? null,
+      };
+      const { purchaseOrderPdfBase64 } = await import("../../vendor/scm/lib/purchase-order-pdf");
+      const pdfBase64 = await purchaseOrderPdfBase64(headerForPdf as never, items as never);
+      const res = await authedFetch<{ sent: boolean; to: string; result: { reason?: string } }>(
+        `/mfg-purchase-orders/${id}/send-to-supplier`,
+        { method: "POST", body: JSON.stringify({ pdfBase64 }) },
+      );
+      if (res.sent) {
+        notify({ title: "Sent to supplier", body: `PO emailed to ${res.to}.` });
+      } else {
+        notify({ title: "Not sent", body: res.result?.reason ?? "The email channel may be off — check email settings.", tone: "error" });
+      }
+    } catch (e) {
+      notify({ title: "Send failed", body: e instanceof Error ? e.message : String(e), tone: "error" });
+    }
+  };
+
   const doSubmit = () => {
     if (!id) return;
     if (window.confirm("Submit this PO to the supplier?")) {
@@ -712,6 +747,11 @@ function PurchaseOrderDetailV2ReadOnly() {
             <Button variant="secondary" icon={<Printer size={14} />} onClick={goPrintPdf}>
               Print PDF
             </Button>
+            {purchaseOrder.status !== "DRAFT" && purchaseOrder.status !== "CANCELLED" && (
+              <Button variant="secondary" icon={<Mail size={14} />} onClick={doSendToSupplier}>
+                Send to supplier
+              </Button>
+            )}
             {canCancel && (
               <Button variant="danger" icon={<XCircle size={14} />} onClick={doCancel}>
                 Cancel PO
