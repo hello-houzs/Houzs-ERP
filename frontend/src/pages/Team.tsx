@@ -251,7 +251,17 @@ export function Team() {
   const canViewTab: Record<TeamTabValue, boolean> = {
     hub: firstVisible !== null,
     members: canSeeMembers,
-    positions: canManageUsers,
+    // Positions is turned off entirely (owner: "整個關掉先") — #740 only pulled
+    // it from the nav but left it URL-reachable at /team?tab=positions for a
+    // full admin. Forcing this to `false` closes that escape hatch: a requested
+    // `positions` tab now fails the canViewTab gate below and falls through to
+    // the user's first real tab (or the same Forbidden safe-landing #722 gives
+    // any admitted-but-empty user), so `active` can never resolve to "positions"
+    // and PositionsTab never mounts — its data query never fires. Enforcement is
+    // untouched: this only governs the editor's reachability in the browser, not
+    // the position_page_access matrix or its read path. The sole writer,
+    // POST /api/positions/:id/page-access, stays mounted for backend/tooling use.
+    positions: false,
     orgchart: canSeeMembers,
     departments: canSeeMembers,
     roles: canRoles,
@@ -403,6 +413,10 @@ export function Team() {
           salesDirScoped={salesDirScoped}
         />
       )}
+      {/* Unreachable by design: canViewTab.positions is false, so `active` can
+          never resolve to "positions" and this never mounts. Kept (not deleted)
+          so the editor is one line from being restored if the owner turns it
+          back on — flip canViewTab.positions to canManageUsers. */}
       {active === "positions" && canManageUsers && <PositionsTab />}
       {active === "orgchart" && canSeeMembers && <OrgChartTab />}
       {active === "departments" && canSeeMembers && (
