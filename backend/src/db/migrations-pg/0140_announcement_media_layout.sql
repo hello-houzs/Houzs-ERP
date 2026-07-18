@@ -1,4 +1,4 @@
--- 0139_announcement_media_layout.sql (Postgres).
+-- 0140_announcement_media_layout.sql (Postgres).
 -- Rich-media LAYOUT hint for announcements (owner 2026-07-18). The composer now
 -- lets the author choose how the attached media renders: photos as a 1 / 2 / 3 /
 -- 4 arrangement, and a video as a 1x1 (square) or 1x2 (portrait) block. The hint

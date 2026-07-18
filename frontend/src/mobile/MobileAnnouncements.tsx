@@ -27,7 +27,7 @@ import "./mobile.css";
 
 type Attachment = { r2Key: string; name: string; mime: string; size?: number };
 
-// Rich-media layout hint (mig 0139). Optional keys; absent = derive a default
+// Rich-media layout hint (mig 0140). Optional keys; absent = derive a default
 // from the attachment count (legacy rows render unchanged).
 type PhotoLayout = "1" | "2" | "3" | "4";
 type VideoLayout = "1x1" | "1x2";
@@ -116,7 +116,7 @@ const byLine = (a: Announcement) => a.createdByName?.trim() || "Management";
 const isImage = (att: Attachment) => (att.mime || "").startsWith("image/");
 const isVideo = (att: Attachment) => (att.mime || "").startsWith("video/");
 
-// Layout-hint helpers (mig 0139). Mirror the desktop AnnouncementMedia mapping
+// Layout-hint helpers (mig 0140). Mirror the desktop AnnouncementMedia mapping
 // so a notice lays out identically on both platforms.
 function photoCols(layout: PhotoLayout): number {
   return layout === "4" ? 2 : Number(layout);
@@ -676,7 +676,7 @@ function Compose({
   const [userSearch, setUserSearch] = useState("");
   const [body, setBody] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  // Rich-media layout hint (mig 0139). "" photo = auto (derive from count);
+  // Rich-media layout hint (mig 0140). "" photo = auto (derive from count);
   // video defaults to a 1x1 square. Only surfaced when the media is attached.
   const [photoLayout, setPhotoLayout] = useState<PhotoLayout | "">("");
   const [videoLayout, setVideoLayout] = useState<VideoLayout>("1x1");

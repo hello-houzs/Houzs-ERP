@@ -60,10 +60,10 @@ type AnnouncementAttachment = {
   size?: number;
 };
 
-// Rich-media LAYOUT hint (mig 0139). The author picks how the media is laid out;
+// Rich-media LAYOUT hint (mig 0140). The author picks how the media is laid out;
 // every renderer (desktop pop-up + page, mobile detail) honours the SAME hint so
 // a notice looks identical everywhere. Both keys optional — a missing key means
-// "derive a default from the attachment count", which is exactly how pre-0139
+// "derive a default from the attachment count", which is exactly how pre-0140
 // (NULL) rows keep rendering unchanged.
 //   · photo: how the photo set is arranged — "1" one big, "2" side-by-side,
 //     "3" three across, "4" a 2x2 grid.
@@ -118,7 +118,7 @@ type AnnouncementRow = {
   updatedAt?: string | null;
   translations?: AnnouncementTranslations | string | null;
   attachments?: string | unknown[] | null;
-  // Rich-media layout hint (mig 0139). JSON string, dual-keyed for the pg
+  // Rich-media layout hint (mig 0140). JSON string, dual-keyed for the pg
   // snake->camel fold. NULL = derive a default from the attachment count.
   media_layout?: string | MediaLayout | null;
   mediaLayout?: string | MediaLayout | null;

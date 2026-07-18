@@ -6,7 +6,7 @@ import { cn } from "../lib/utils";
 
 // ────────────────────────────────────────────────────────────────────────────
 // AnnouncementMedia — the ONE desktop renderer for an announcement's attached
-// media, honouring the author's layout hint (mig 0139). Used by both the
+// media, honouring the author's layout hint (mig 0140). Used by both the
 // pop-up notice (AnnouncementBanner) and the Announcements page rows so the same
 // media lays out identically everywhere.
 //

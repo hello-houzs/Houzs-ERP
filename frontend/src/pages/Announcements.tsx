@@ -477,7 +477,7 @@ function Composer({
   const [userSearch, setUserSearch] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  // Rich-media layout hint (mig 0139). "" photo layout = auto (derive from
+  // Rich-media layout hint (mig 0140). "" photo layout = auto (derive from
   // count); a video defaults to a 1x1 square. Only surfaced when the matching
   // media is actually attached.
   const [photoLayout, setPhotoLayout] = useState<PhotoLayout | "">("");
