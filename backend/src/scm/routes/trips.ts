@@ -43,7 +43,10 @@ const TRIP_COLS =
   'created_at, created_by, updated_at';
 
 const STOP_COLS =
-  'id, trip_id, stop_no, stop_type, do_id, so_id, customer_name, address, revenue_centi, notes, created_at';
+  'id, trip_id, stop_no, stop_type, do_id, so_id, customer_name, address, revenue_centi, notes, created_at, ' +
+  /* Mig 0134 — what the route optimiser worked out. NULL = never optimised, which
+     is honestly "not computed" rather than a fabricated zero. */
+  'leg_distance_m, leg_duration_s, eta_offset_s, route_optimised_at';
 
 const TRIP_STATUSES = new Set(['PLANNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']);
 
@@ -424,9 +427,24 @@ trips.post('/:id/optimize-route', async (c) => {
   // A failed/absent route must never renumber the operator's manual order.
   let applied = false;
   if (apply && result.ok && result.stops.length > 0) {
+    const optimisedAt = new Date().toISOString();
     for (const st of result.stops) {
-      await sb.from('trip_stops').update({ stop_no: st.order }).eq('id', st.ref).eq('trip_id', id);
+      /* Persist the numbers too (mig 0134) — otherwise the ETA lived only in this
+         response and the next page load would have to re-bill Google to show it.
+         eta_offset_s is an OFFSET from departure, not a clock time: the trip's
+         start can move, and a stored wall-clock ETA would go stale silently. */
+      await sb.from('trip_stops').update({
+        stop_no: st.order,
+        leg_distance_m: st.legDistanceMetres,
+        leg_duration_s: st.legDurationSeconds,
+        eta_offset_s: st.etaSecondsFromDepart,
+        route_optimised_at: optimisedAt,
+      }).eq('id', st.ref).eq('trip_id', id);
     }
+    // The trip's own distance was hand-typed until now; the optimiser knows it.
+    await sb.from('trips')
+      .update({ total_distance_km: Math.round(result.totalDistanceMetres / 100) / 10, updated_at: optimisedAt })
+      .eq('id', id);
     applied = true;
   }
   return c.json({ ...result, applied });
