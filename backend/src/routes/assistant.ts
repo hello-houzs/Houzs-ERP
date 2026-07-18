@@ -24,7 +24,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { askAssistant } from "../services/assistant";
-import { scopeForUser } from "../services/assistant-scope";
+import { canUseAssistant, scopeForUser } from "../services/assistant-scope";
 import { resolvePositionPolicy } from "../services/positionPolicy";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -48,6 +48,16 @@ app.post("/chat", async (c) => {
   const user = c.get("user") as
     | { permissions?: unknown; position_name?: string | null; department_name?: string | null }
     | undefined;
+  /* Field crew are denied the surface outright (owner 2026-07-18: operation gets
+     the Assistant EXCEPT driver / helper / storekeeper). Checked here, not only in
+     the nav — a hidden menu item is not a control, and this endpoint is reachable
+     by anyone who can send a POST. */
+  if (!canUseAssistant(user)) {
+    return c.json(
+      { success: false, error: "The assistant is not available for your role. Your jobs are on the Delivery Planning board." },
+      403,
+    );
+  }
   const scope = scopeForUser(user, (i) => resolvePositionPolicy(i));
   const res = await askAssistant(c.env, message, undefined, scope);
   return c.json({ success: true, data: res });

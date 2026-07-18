@@ -6,6 +6,8 @@ import {
   redactFacts,
   scopeNote,
   scopeForUser,
+  canUseAssistant,
+  ASSISTANT_DENIED_POSITIONS,
   type AssistantScope,
 } from "../src/services/assistant-scope";
 
@@ -158,5 +160,46 @@ describe("scopeForUser — derived from the ONE policy, never re-authored", () =
 
   test("a stray '*' inside a longer permission string is NOT wildcard", () => {
     expect(scopeForUser({ permissions: "scm.*" }, resolve).wildcard).toBeUndefined();
+  });
+});
+
+describe("canUseAssistant — the field crew get no surface at all", () => {
+  test("the three the owner named are denied", () => {
+    for (const p of ["Driver", "Helper", "Storekeeper"]) {
+      expect(canUseAssistant({ permissions: [], position_name: p }), p).toBe(false);
+    }
+  });
+
+  test("case and spacing do not smuggle access", () => {
+    for (const p of ["driver", "  DRIVER ", "Store keeper".replace(" ", ""), "helper"]) {
+      expect(canUseAssistant({ permissions: [], position_name: p }), p).toBe(false);
+    }
+  });
+
+  test("Storekeeper SUPERVISOR keeps access — he named three, not four", () => {
+    // positionPolicy's restricted cohort has a fourth member. Including it would
+    // be my decision, not his; the deny list is exactly what was asked for.
+    expect(canUseAssistant({ permissions: [], position_name: "Storekeeper Supervisor" })).toBe(true);
+  });
+
+  test("EXACT match, not substring — a rename must not move permissions", () => {
+    // /Storekeeper/ would swallow "Storekeeper Supervisor". A word-boundary
+    // regex over a free-text position name has already misfired twice here.
+    expect(canUseAssistant({ permissions: [], position_name: "Assistant Driver Coordinator" })).toBe(true);
+  });
+
+  test("everyone else, including no position, may open it", () => {
+    for (const p of ["Sales Executive", "Operation Manager", "HR Manager", null]) {
+      expect(canUseAssistant({ permissions: [], position_name: p }), String(p)).toBe(true);
+    }
+  });
+
+  test("wildcard is never denied", () => {
+    expect(canUseAssistant({ permissions: ["*"], position_name: "Driver" })).toBe(true);
+  });
+
+  test("the deny list is exactly three, lowercased", () => {
+    // Pinned so the FE mirror (auth/assistantAccess.ts) can assert the same set.
+    expect([...ASSISTANT_DENIED_POSITIONS].sort()).toEqual(["driver", "helper", "storekeeper"]);
   });
 });
