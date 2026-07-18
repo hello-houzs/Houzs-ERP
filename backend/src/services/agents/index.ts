@@ -32,6 +32,7 @@ import { runPmsAgent } from "./pms-agent";
 // Document Agent self-registers at module load (family DOCUMENT, 9:00 MYT).
 import "./document-agent";
 import "./of-agent";
+import "./si-agent";
 
 // ── Delivery Agent wiring ────────────────────────────────────────────────────
 

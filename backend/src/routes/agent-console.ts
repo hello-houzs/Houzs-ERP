@@ -206,6 +206,7 @@ const REVIEW_FAMILY_SOURCES: Record<
   PROCUREMENT: { task: "procurement-run", proposalTable: "procurement_agent_proposals" },
   PMS: { task: "pms-run", proposalTable: "pms_agent_proposals" },
   OF: { task: "of-run", findingsTable: "of_agent_findings" },
+  SI: { task: "si-run", findingsTable: "si_agent_findings" },
 };
 
 export interface AgentReviewFamily {
@@ -921,6 +922,80 @@ app.post("/of/findings/resolve", async (c) => {
 app.get("/of/brief", async (c) => {
   const r = await c.env.DB.prepare(
     `SELECT * FROM of_agent_briefs ORDER BY generated_at DESC LIMIT 1`,
+  ).first<Record<string, unknown>>();
+  if (!r) return c.json({ success: true, data: null });
+  return c.json({
+    success: true,
+    data: {
+      id: r.id,
+      brief: asJson(r.brief),
+      aiFocus: (r.aiFocus ?? r.ai_focus) ?? null,
+      generatedAt: (r.generatedAt ?? r.generated_at) ?? null,
+    },
+  });
+});
+
+// ═══ Sales & Commercial Intelligence (SI-006) — anomaly worklist ══════════════
+// Same list/resolve/brief surface; SI rows are subject-centric (an ORDER doc_no, a
+// SALESPERSON or a VENUE) with the metric that tripped the anomaly.
+app.get("/si/findings", async (c) => {
+  const status = (c.req.query("status") ?? "OPEN").toUpperCase();
+  const kind = (c.req.query("kind") ?? "").toUpperCase();
+  const params: string[] = [status];
+  let where = "status = ?";
+  if (kind) { where += " AND kind = ?"; params.push(kind); }
+  const res = await c.env.DB.prepare(
+    `SELECT * FROM si_agent_findings WHERE ${where}
+      ORDER BY CASE severity WHEN 'CRIT' THEN 0 WHEN 'WARN' THEN 1 ELSE 2 END, created_at ASC
+      LIMIT 200`,
+  ).bind(...params).all<Record<string, unknown>>();
+  return c.json({
+    success: true,
+    data: (res.results ?? []).map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      severity: r.severity,
+      subject: r.subject ?? "",
+      subjectType: (r.subjectType ?? r.subject_type) ?? "",
+      metric: r.metric ?? null,
+      summary: r.summary ?? "",
+      payload: asJson(r.payload),
+      status: r.status,
+      createdAt: (r.createdAt ?? r.created_at) ?? null,
+      lastSeenAt: (r.lastSeenAt ?? r.last_seen_at) ?? null,
+      resolvedAt: (r.resolvedAt ?? r.resolved_at) ?? null,
+    })),
+  });
+});
+
+app.post("/si/findings/resolve", async (c) => {
+  let body: { ids?: unknown } = {};
+  try { body = (await c.req.json()) as typeof body; } catch { body = {}; }
+  const ids = Array.isArray(body.ids)
+    ? body.ids.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, 100)
+    : [];
+  if (ids.length === 0) return c.json({ success: false, error: "ids[] required" }, 400);
+  const nowIso = new Date().toISOString();
+  let resolved = 0;
+  for (const id of ids) {
+    const r = await c.env.DB.prepare(
+      `UPDATE si_agent_findings SET status = 'RESOLVED', resolved_at = ? WHERE id = ? AND status = 'OPEN'`,
+    ).bind(nowIso, id).run();
+    resolved += Number(r.meta?.changes ?? r.meta?.rows_written ?? 0) > 0 ? 1 : 0;
+  }
+  await audit(c, {
+    action: "agents.si_finding_resolve",
+    entityType: "si_agent_finding",
+    entityId: ids.join(","),
+    summary: `Manually resolved ${resolved}/${ids.length} sales-intelligence finding(s)`,
+    meta: { ids },
+  });
+  return c.json({ success: true, data: { resolved } });
+});
+
+app.get("/si/brief", async (c) => {
+  const r = await c.env.DB.prepare(
+    `SELECT * FROM si_agent_briefs ORDER BY generated_at DESC LIMIT 1`,
   ).first<Record<string, unknown>>();
   if (!r) return c.json({ success: true, data: null });
   return c.json({

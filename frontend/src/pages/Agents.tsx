@@ -9,6 +9,7 @@ import {
   Package,
   BarChart3,
   ClipboardCheck,
+  TrendingUp,
   Play,
   Pause,
   Power,
@@ -33,7 +34,7 @@ import { cn, formatCurrency, relativeTime } from "../lib/utils";
 
 // ── Types (mirror the /api/agents contract, docs/agent-console-api.md) ────────
 
-type Family = "DELIVERY" | "DOCUMENT" | "COLLECTION" | "CS" | "PROCUREMENT" | "PMS" | "OF";
+type Family = "DELIVERY" | "DOCUMENT" | "COLLECTION" | "CS" | "PROCUREMENT" | "PMS" | "OF" | "SI";
 
 interface RunRow {
   id: string;
@@ -98,6 +99,9 @@ interface Finding {
   soDocNo?: string;
   readiness?: number;
   owner?: string | null;
+  // Sales-intelligence (SI) findings are subject-centric (order / salesperson / venue).
+  subject?: string;
+  metric?: string | null;
   summary: string;
   status: string;
   createdAt: string | null;
@@ -161,6 +165,7 @@ const FAMILIES: FamilyMeta[] = [
   { id: "PROCUREMENT", label: "Procurement", base: "procurement", icon: Package },
   { id: "PMS", label: "Roadshow / PMS", base: "pms", icon: BarChart3 },
   { id: "OF", label: "Order fulfilment", base: "of", icon: ClipboardCheck, findings: true },
+  { id: "SI", label: "Sales intelligence", base: "si", icon: TrendingUp, findings: true },
 ];
 
 const CARD = "relative overflow-hidden rounded-md border border-border bg-surface p-6 shadow-stone";
@@ -742,7 +747,8 @@ function FindingsPanel({ meta }: { meta: FamilyMeta }) {
               <Badge tone="neutral" caseless>
                 {f.kind.replace(/_/g, " ").toLowerCase()}
               </Badge>
-              {(f.docNo || f.soDocNo) && <span className="text-[11px] font-medium text-ink-secondary">{f.docNo || f.soDocNo}</span>}
+              {(f.docNo || f.soDocNo || f.subject) && <span className="text-[11px] font-medium text-ink-secondary">{f.docNo || f.soDocNo || f.subject}</span>}
+              {f.metric && <span className="text-[11px] font-semibold text-ink-secondary">{f.metric}</span>}
               {f.owner && <Badge tone="neutral" caseless>{f.owner.toLowerCase()}</Badge>}
               {typeof f.readiness === "number" && (
                 <span className="text-[11px] text-ink-muted">ready {f.readiness}%</span>

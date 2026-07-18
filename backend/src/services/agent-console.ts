@@ -25,7 +25,8 @@ export type AgentFamily =
   | "COLLECTION"
   | "PROCUREMENT"
   | "PMS"
-  | "OF";
+  | "OF"
+  | "SI";
 
 export const AGENT_FAMILIES: AgentFamily[] = [
   "DELIVERY",
@@ -35,6 +36,7 @@ export const AGENT_FAMILIES: AgentFamily[] = [
   "PROCUREMENT",
   "PMS",
   "OF",
+  "SI",
 ];
 
 // ── MYT calendar buckets ─────────────────────────────────────────────────────
@@ -415,6 +417,7 @@ export function taskFamily(task: string): AgentFamily | "OTHER" {
   if (t.startsWith("pms")) return "PMS";
   if (t.startsWith("cs")) return "CS";
   if (t.startsWith("of")) return "OF";
+  if (t.startsWith("si")) return "SI";
   return "OTHER";
 }
 
