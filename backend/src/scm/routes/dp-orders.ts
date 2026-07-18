@@ -143,6 +143,89 @@ dpOrders.get('/', async (c) => {
   return c.json({ dpOrders: data ?? [] });
 });
 
+/* ── PATCH /api/scm/dp-orders/:id — edit an unscheduled job ────────────────────
+   Only while PENDING_SCHEDULE: once a DP number is minted and the job sits on a
+   trip, its details are on a manifest a driver may already be holding — changing
+   them silently is the "silent date change" the spec forbids. Cancel and raise a
+   new one instead. */
+const patchSchema = z.object({
+  partyName: z.string().nullable().optional(),
+  contactName: z.string().nullable().optional(),
+  contactPhone: z.string().nullable().optional(),
+  address1: z.string().nullable().optional(),
+  address2: z.string().nullable().optional(),
+  address3: z.string().nullable().optional(),
+  address4: z.string().nullable().optional(),
+  city: z.string().nullable().optional(),
+  postcode: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  requestedDate: z.string().nullable().optional(),
+  remark: z.string().nullable().optional(),
+});
+
+const PATCH_COLS: Record<keyof z.infer<typeof patchSchema>, string> = {
+  partyName: 'party_name', contactName: 'contact_name', contactPhone: 'contact_phone',
+  address1: 'address1', address2: 'address2', address3: 'address3', address4: 'address4',
+  city: 'city', postcode: 'postcode', state: 'state',
+  requestedDate: 'requested_date', remark: 'remark',
+};
+
+dpOrders.patch('/:id', async (c) => {
+  const id = c.req.param('id');
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = patchSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'invalid_body', reason: parsed.error.message }, 400);
+
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  for (const [k, col] of Object.entries(PATCH_COLS)) {
+    const v = (parsed.data as Record<string, unknown>)[k];
+    if (v !== undefined) updates[col] = v;
+  }
+  if (Object.keys(updates).length === 1) return c.json({ error: 'no_changes' }, 400);
+
+  const sb = c.get('supabase');
+  const { data, error } = await sb.from('dp_orders')
+    .update(updates)
+    .eq('id', id).eq('status', 'PENDING_SCHEDULE')
+    .select('*').maybeSingle();
+  if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  if (!data) {
+    return c.json({ error: 'not_editable', message: 'Only a job that is still pending schedule can be edited. Cancel it and raise a new one.' }, 409);
+  }
+  return c.json({ dpOrder: data });
+});
+
+/* ── POST /api/scm/dp-orders/:id/cancel — cancel a job ─────────────────────────
+   Cancelling a SCHEDULED job also removes its trip_stop: leaving the stop behind
+   would keep a cancelled job on the driver's route, which is the worst possible
+   place to discover it. Reported if that removal fails — never silently. */
+dpOrders.post('/:id/cancel', async (c) => {
+  const id = c.req.param('id');
+  const sb = c.get('supabase');
+
+  const { data, error } = await sb.from('dp_orders')
+    .update({ status: 'CANCELLED', updated_at: new Date().toISOString() })
+    .eq('id', id).neq('status', 'CANCELLED')
+    .select('*').maybeSingle();
+  if (error) return c.json({ error: 'cancel_failed', reason: error.message }, 500);
+  if (!data) return c.json({ error: 'not_found_or_already_cancelled' }, 409);
+
+  let stopRemoved: { removed: boolean; failed: boolean; reason?: string } = { removed: false, failed: false };
+  const stopId = (data as { trip_stop_id?: string | null }).trip_stop_id ?? null;
+  if (stopId) {
+    try {
+      const del = await sb.from('trip_stops').delete().eq('id', stopId);
+      stopRemoved = del.error
+        ? { removed: false, failed: true, reason: del.error.message }
+        : { removed: true, failed: false };
+    } catch (e) {
+      stopRemoved = { removed: false, failed: true, reason: String((e as Error)?.message ?? e).slice(0, 140) };
+    }
+  }
+  return c.json({ dpOrder: data, stopRemoved });
+});
+
 const scheduleSchema = z.object({
   lorryId: z.string().uuid(),
   tripDate: z.string(), // YYYY-MM-DD

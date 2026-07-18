@@ -48,6 +48,7 @@ import {
   useDeliveryPlanning,
   useDeliveryPlanningLines,
   useConvertSosToDo,
+  useCancelDpOrder,
   useScheduleDelivery,
   DELIVERY_STATES,
   DELIVERY_STATE_LABEL,
@@ -504,6 +505,32 @@ export const DeliveryPlanning = () => {
   /* The order whose HC fields are being edited (drawer open when non-null). */
   const [editing, setEditing] = useState<PlanningOrder | null>(null);
   const [showNewDp, setShowNewDp] = useState(false);
+  const cancelDp = useCancelDpOrder();
+
+  /* Cancel a DP job. The row's so_doc_no is the synthetic `DP:<id>` key, so the
+     id comes back off it. Confirm first — cancelling drops its trip stop too. */
+  const cancelDpRow = async (o: PlanningOrder) => {
+    const id = String(o.so_doc_no ?? '').replace(/^DP:/, '');
+    if (!id) return;
+    const ok = await askConfirm({
+      title: `Cancel this ${dpLabel(o).toLowerCase()} job?`,
+      body: o.dp_no
+        ? `${o.dp_no} will be cancelled and removed from its trip.`
+        : 'The job will be cancelled. It has not been scheduled yet.',
+      confirmLabel: 'Cancel job',
+    });
+    if (!ok) return;
+    try {
+      const res = await cancelDp.mutateAsync(id);
+      if (res?.stopRemoved?.failed) {
+        notify({ title: 'Cancelled, but the trip stop stayed', body: res.stopRemoved.reason ?? 'Remove it from the trip manually.', tone: 'error' });
+      } else {
+        notify({ title: 'Job cancelled', body: 'It is off the board and off its trip.' });
+      }
+    } catch (e) {
+      notify({ title: 'Cancel failed', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+    }
+  };
 
   /* Multi-select → bulk "Convert N to DO". Selection keys are so_doc_no strings
      (the DataGrid rowKey). The convert reuses POST /from-sos one-DO-per-SO. */
@@ -1284,7 +1311,7 @@ export const DeliveryPlanning = () => {
         }}
         rowStyle={(o) => (o.region === 'SG' ? { boxShadow: 'inset 3px 0 0 #2f5d4f' } : undefined)}
         contextMenu={(row) => (isDp(row)
-          ? [] // DP-Order jobs are managed from the DP Orders page, not the SO actions
+          ? [{ label: 'Cancel job', onClick: () => void cancelDpRow(row) }]
           : isAssr(row)
           ? [
               { label: 'Open Service Case', onClick: () => openRow(row) },
