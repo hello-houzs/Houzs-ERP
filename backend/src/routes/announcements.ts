@@ -60,6 +60,44 @@ type AnnouncementAttachment = {
   size?: number;
 };
 
+// Rich-media LAYOUT hint (mig 0140). The author picks how the media is laid out;
+// every renderer (desktop pop-up + page, mobile detail) honours the SAME hint so
+// a notice looks identical everywhere. Both keys optional — a missing key means
+// "derive a default from the attachment count", which is exactly how pre-0140
+// (NULL) rows keep rendering unchanged.
+//   · photo: how the photo set is arranged — "1" one big, "2" side-by-side,
+//     "3" three across, "4" a 2x2 grid.
+//   · video: the video block's shape — "1x1" square, "1x2" portrait (tall).
+type PhotoLayout = "1" | "2" | "3" | "4";
+type VideoLayout = "1x1" | "1x2";
+type MediaLayout = { photo?: PhotoLayout; video?: VideoLayout };
+
+// Parse the stored media_layout JSON, dropping anything not in the small allowed
+// set. Returns null when empty/unrecognised so toPublic emits `mediaLayout: null`
+// and the client falls back to count-derived defaults.
+function readMediaLayout(raw: unknown): MediaLayout | null {
+  let obj: unknown = raw;
+  if (typeof obj === "string") {
+    const s = obj.trim();
+    if (!s) return null;
+    try {
+      obj = JSON.parse(s);
+    } catch {
+      return null;
+    }
+  }
+  if (!obj || typeof obj !== "object") return null;
+  const o = obj as Record<string, unknown>;
+  const out: MediaLayout = {};
+  const photo = String(o.photo ?? "").trim();
+  if (photo === "1" || photo === "2" || photo === "3" || photo === "4") {
+    out.photo = photo;
+  }
+  const video = String(o.video ?? "").trim();
+  if (video === "1x1" || video === "1x2") out.video = video;
+  return out.photo || out.video ? out : null;
+}
+
 // Raw row shape from the DB (dual-keyed because the pg driver folds
 // snake_case -> camelCase on read — the #1 Hookka read-gotcha).
 type AnnouncementRow = {
@@ -80,6 +118,10 @@ type AnnouncementRow = {
   updatedAt?: string | null;
   translations?: AnnouncementTranslations | string | null;
   attachments?: string | unknown[] | null;
+  // Rich-media layout hint (mig 0140). JSON string, dual-keyed for the pg
+  // snake->camel fold. NULL = derive a default from the attachment count.
+  media_layout?: string | MediaLayout | null;
+  mediaLayout?: string | MediaLayout | null;
   target_type?: string | null;
   targetType?: string | null;
   target_dept_ids?: string | number[] | null;
@@ -241,6 +283,7 @@ function toPublic(r: AnnouncementRow) {
     updatedAt: r.updatedAt ?? r.updated_at ?? null,
     translations: readTranslations(r),
     attachments: normalizeAttachments(r.attachments ?? null),
+    mediaLayout: readMediaLayout(r.mediaLayout ?? r.media_layout ?? null),
     targetType: readTargetType(r),
     targetDeptIds: readIntArray(r.targetDeptIds ?? r.target_dept_ids ?? null),
     targetPositionIds: readIntArray(
@@ -687,6 +730,7 @@ app.post("/", requirePermissionOrSalesDirector("announcements.write"), async (c)
   }
 
   const attachments = normalizeAttachments(body.attachments);
+  const mediaLayout = readMediaLayout(body.mediaLayout);
   const reqDeptIds = readIntArray(
     body.targetDeptIds as string | number[] | null | undefined,
   );
@@ -751,10 +795,10 @@ app.post("/", requirePermissionOrSalesDirector("announcements.write"), async (c)
   await c.env.DB.prepare(
     `INSERT INTO announcements
        (id, title, body, is_active, expires_at, created_by, created_at,
-        translations, attachments, target_type,
+        translations, attachments, media_layout, target_type,
         target_dept_ids, target_position_ids, target_user_ids,
         target_company_ids, category${stampCo ? ", company_id" : ""})
-     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`,
+     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`,
   )
     .bind(
       id,
@@ -765,6 +809,7 @@ app.post("/", requirePermissionOrSalesDirector("announcements.write"), async (c)
       nowIso,
       translations ? JSON.stringify(translations) : null,
       attachments.length ? JSON.stringify(attachments) : null,
+      mediaLayout ? JSON.stringify(mediaLayout) : null,
       targetType,
       effDeptIds.length ? JSON.stringify(effDeptIds) : null,
       effPositionIds.length ? JSON.stringify(effPositionIds) : null,
@@ -840,6 +885,13 @@ app.patch("/:id", requirePermissionOrSalesDirector("announcements.write"), async
     const next = normalizeAttachments(body.attachments);
     sets.push("attachments = ?");
     binds.push(next.length ? JSON.stringify(next) : null);
+  }
+  // Media layout retarget. Present + empty/unrecognised clears to NULL (fall
+  // back to count-derived defaults); a valid hint narrows the arrangement.
+  if ("mediaLayout" in body || "media_layout" in body) {
+    const nextLayout = readMediaLayout(body.mediaLayout ?? body.media_layout);
+    sets.push("media_layout = ?");
+    binds.push(nextLayout ? JSON.stringify(nextLayout) : null);
   }
   // Retarget when ANY targeting list is present. We rewrite all four columns
   // together so target_type stays in sync; missing buckets fall back to the
