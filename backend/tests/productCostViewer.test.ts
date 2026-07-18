@@ -96,13 +96,21 @@ describe("product-cost cohort", () => {
     expect(isProductCostViewer(user({ position_name: "Super Admin" }))).toBe(true);
   });
 
-  test("a prefixed live position still matches — the failure this change ends", () => {
-    // Prod positions carry prefixes ("Test Sales Director", projectAcl.ts:23).
-    // An anchored /^Purchasing$/i would drop the live row and leave the ruling
-    // dead exactly as before.
-    expect(isProductCostViewer(user({ position_name: "Test Purchasing" }))).toBe(true);
-    // ...and it is still not a director.
-    expect(isDirectorUser(user({ position_name: "Test Purchasing" }))).toBe(false);
+  test("the LIVE prod purchasing row matches by exact name + rename alias, but a substring rename does NOT inject", () => {
+    // The live prod position is "Procurement/Purchasing" (positionAccessSnapshot.ts
+    // id 13); "Purchasing" is kept as the documented pre-rename alias. Both must
+    // keep cost so the ruling stays in force for the real row.
+    expect(isProductCostViewer(user({ position_name: "Procurement/Purchasing" }))).toBe(true);
+    expect(isProductCostViewer(user({ position_name: "Purchasing" }))).toBe(true);
+    // Owner-approved hardening 2026-07-18 (harden/position-name-matchers): the
+    // matcher was tightened from /\bPurchasing\b/i to an EXACT normalised-name
+    // set because position names are owner-editable free text. A future rename
+    // that merely CONTAINS "Purchasing" must no longer inherit cost — that
+    // substring convenience was the injection hole.
+    expect(isProductCostViewer(user({ position_name: "Purchasing Assistant" }))).toBe(false);
+    expect(isProductCostViewer(user({ position_name: "Test Purchasing" }))).toBe(false);
+    // ...and the real row is still not a director.
+    expect(isDirectorUser(user({ position_name: "Procurement/Purchasing" }))).toBe(false);
   });
 
   test("no position / no user → no cost (fails closed)", () => {
@@ -148,7 +156,7 @@ describe("product-cost cohort — the wire agrees with the screen", () => {
   });
 
   test("directors keep cost on the wire — the cohort only ever widened by Purchasing", () => {
-    for (const pos of ["Sales Director", "Finance Manager", "Super Admin", "Test Purchasing"]) {
+    for (const pos of ["Sales Director", "Finance Manager", "Super Admin", "Procurement/Purchasing"]) {
       expect(canViewScmProductCost(ctx(user({ position_name: pos })))).toBe(true);
     }
     const owner = user({ position_name: "Owner", perms: ["*"] });

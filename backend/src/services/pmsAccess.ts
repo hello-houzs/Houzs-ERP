@@ -72,22 +72,45 @@ const SECTIONS_BY_ROLE: Record<PmsRole, PmsSection[]> = {
   NONE: [],
 };
 
-// Directors / finance — the only roles that see money on the project.
-// Owner 2026-07-15: real positions carry prefixes/variants (e.g. "Test Sales
-// Director"), so match the director title as a word anywhere in the name rather
-// than requiring an exact string. Keep FE auth/salesAccess.ts in lockstep.
-const DIRECTOR_POSITIONS = /\b(Super Admin|Sales Director|Finance Manager)\b/i;
+// Lower-case + collapse internal whitespace + trim. Tolerant to casing/spacing
+// drift ONLY — never to substring matching. Mirrors positionPolicy.normalisePosition
+// and the FE salesAccess mirror so all three classify a name identically.
+function normalisePosition(name: string | null | undefined): string {
+  return (name ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// Directors / finance — the only roles that see money on the project. Matched by
+// EXACT normalised name. This WAS /\b(Super Admin|Sales Director|Finance Manager)\b/i:
+// a word-boundary test whose convenience (catch "Test Sales Director") was an
+// injection hole — any future free-text rename whose name merely CONTAINED a
+// director title ("Assistant to Sales Director", "Deputy Finance Manager",
+// "Senior Super Admin") silently inherited FULL director access. Position names
+// are owner-editable free text, so a substring match turns a rename into a
+// privilege grant. The three names below are the live prod positions
+// (positionAccessSnapshot.ts) — a rename TO one of them still grants; a new
+// position that only contains the words does not. Keep FE auth/salesAccess.ts
+// DIRECTOR_POSITION_NAMES in lockstep (pinned by pmsAccess/salesAccess tests).
+const DIRECTOR_POSITION_NAMES: ReadonlySet<string> = new Set(
+  ["Super Admin", "Sales Director", "Finance Manager"].map(normalisePosition),
+);
+
+function isDirectorPositionName(name: string | null | undefined): boolean {
+  return DIRECTOR_POSITION_NAMES.has(normalisePosition(name));
+}
 
 // The EXACT "Sales Director" position — the signal for the department-scoped
 // Team admin grant (owner 2026-07: a Sales Director manages ONLY his own
 // department's members/org-chart/departments + Sales mailboxes, WITHOUT full
-// users.manage). Keyed off the STABLE ORG FIELD position_name, matched
-// case-insensitively but ANCHORED (^…$) so ONLY "Sales Director" qualifies —
-// "Sales Executive"/"Sales Coordinator" do NOT. Deliberately narrower than
-// isDirectorUser (which also admits Super Admin / Finance Manager, both of whom
-// already hold full admin). This is the single source of truth the users /
-// departments / mail-center routes share for the scoped-admin admittance.
-const SALES_DIRECTOR_POSITION = /\bSales Director\b/i;
+// users.manage). Matched by EXACT normalised name so ONLY "Sales Director"
+// qualifies — this WAS /\bSales Director\b/i, whose comment already CLAIMED it
+// was anchored while the regex actually matched any name CONTAINING "Sales
+// Director" ("Assistant to Sales Director" would have been handed the scoped
+// admin). Deliberately narrower than isDirectorUser (which also admits Super
+// Admin / Finance Manager, both already full admins). Single source of truth the
+// users / departments / mail-center routes share; keep FE in lockstep.
+const SALES_DIRECTOR_POSITION_NAMES: ReadonlySet<string> = new Set(
+  ["Sales Director"].map(normalisePosition),
+);
 
 /**
  * True ONLY for the "Sales Director" position (exact, case-insensitive).
@@ -99,7 +122,7 @@ const SALES_DIRECTOR_POSITION = /\bSales Director\b/i;
  */
 export function isSalesDirectorUser(user: AuthUser | null | undefined): boolean {
   if (!user) return false;
-  return SALES_DIRECTOR_POSITION.test((user.position_name ?? "").trim());
+  return SALES_DIRECTOR_POSITION_NAMES.has(normalisePosition(user.position_name));
 }
 
 // Sales staff — a position whose title starts with "sales" (Sales Executive,
@@ -138,16 +161,20 @@ export function isSalesUser(user: AuthUser | null | undefined): boolean {
 export function isDirectorUser(user: AuthUser | null | undefined): boolean {
   if (!user) return false;
   if (user.permissions_set?.has("*")) return true;
-  return DIRECTOR_POSITIONS.test((user.position_name ?? "").trim());
+  return isDirectorPositionName(user.position_name);
 }
 
-// The purchasing function. Matched with `\b` rather than the anchored
-// /^Purchasing$/i that getPmsRole uses below, for the same reason
-// DIRECTOR_POSITIONS carries `\b`: real prod positions carry prefixes/variants
-// ("Test Sales Director", "Test Sales Executive" — see projectAcl.ts:23). An
-// anchored test would silently miss the live row and leave the ruling
-// not-in-force, which is the exact failure isProductCostViewer exists to end.
-const PURCHASING_POSITION = /\bPurchasing\b/i;
+// The purchasing function — product COST visibility. Matched by EXACT normalised
+// name. This WAS /\bPurchasing\b/i, a word-boundary test that also matched any
+// future "…Purchasing…" rename (e.g. "Purchasing Assistant") and silently handed
+// it SKU cost. The live prod position is "Procurement/Purchasing"
+// (positionAccessSnapshot.ts id 13); "Purchasing" is retained as a DOCUMENTED
+// alias for the pre-rename name so a partial revert never silently drops cost
+// access. BE-only: the FE reads the product_cost_viewer flag off /auth/me, so
+// there is no FE mirror to keep for this one.
+const PURCHASING_POSITION_NAMES: ReadonlySet<string> = new Set(
+  ["Procurement/Purchasing", "Purchasing"].map(normalisePosition),
+);
 
 /**
  * "May this user see a product / SKU COST price."
@@ -158,7 +185,7 @@ const PURCHASING_POSITION = /\bPurchasing\b/i;
  * simply been lost: the cost question was being answered by isFinanceViewer,
  * whose cohort has no Purchasing in it. This is a RESTORATION, not a new grant.
  *
- * Deliberately its own function rather than a widening of DIRECTOR_POSITIONS /
+ * Deliberately its own function rather than a widening of DIRECTOR_POSITION_NAMES /
  * isFinanceViewer. Those answer a DIFFERENT question — "are you a PMS director",
  * i.e. may you see a project's financial snapshot, rental, payment and cost
  * rates. Adding Purchasing there would hand him every project's P&L (SECTIONS_BY_ROLE
@@ -174,7 +201,7 @@ const PURCHASING_POSITION = /\bPurchasing\b/i;
 export function isProductCostViewer(user: AuthUser | null | undefined): boolean {
   if (!user) return false;
   if (isDirectorUser(user)) return true;
-  return PURCHASING_POSITION.test((user.position_name ?? "").trim());
+  return PURCHASING_POSITION_NAMES.has(normalisePosition(user.position_name));
 }
 
 export interface ProjectLike {
@@ -187,7 +214,7 @@ export function getPmsRole(user: AuthUser | null | undefined, project: ProjectLi
   const pos = (user.position_name ?? "").trim();
 
   // Wildcard (Owner / IT Admin) or a director/finance position → full.
-  if (user.permissions_set?.has("*") || DIRECTOR_POSITIONS.test(pos)) return "DIRECTOR";
+  if (user.permissions_set?.has("*") || isDirectorPositionName(pos)) return "DIRECTOR";
 
   if (/^(Driver|Helper)$/i.test(pos)) return "DRIVER";
   if (/^Purchasing$/i.test(pos)) return "PURCHASING";
