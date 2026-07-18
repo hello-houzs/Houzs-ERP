@@ -34,6 +34,54 @@ export interface AssistantScope {
 }
 
 /**
+ * Positions with NO Assistant access at all (owner, 2026-07-18: "開放給operation
+ * 除了driver helper storekeeper").
+ *
+ * These are the field crew. They hold a phone on a lorry, not a desk — the
+ * Assistant answers planning questions they are not the ones to act on, and their
+ * own job list is already the Delivery Planning board scoped to them
+ * (lib/deliveryScope.ts). Denying the whole surface is simpler and more honest
+ * than serving them an assistant that can answer almost nothing.
+ *
+ * EXACTLY the three the owner named. NOT "Storekeeper Supervisor" — that is a
+ * fourth position in positionPolicy's restricted cohort, and he listed three, so
+ * the Supervisor keeps access. Add the string here to change that; it is one line
+ * and deliberately not my call.
+ *
+ * Matched on the EXACT normalised name, never a substring: `Storekeeper`
+ * would swallow "Storekeeper Supervisor", and a word-boundary regex on a free-text
+ * position name is how a RENAME silently moves permissions (BUG-HISTORY,
+ * 2026-07-18 — it has already happened twice in this codebase).
+ */
+export const ASSISTANT_DENIED_POSITIONS: ReadonlySet<string> = new Set([
+  'driver',
+  'helper',
+  'storekeeper',
+]);
+
+const normalisePosition = (n: string | null | undefined): string =>
+  String(n ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+/**
+ * May this user open the Assistant at all?
+ *
+ * A wildcard holder always may. Everyone else is allowed UNLESS their position is
+ * on the deny list — allow-by-default, matching the surface being open to staff.
+ * A user with no position is ALLOWED here (they simply get the money-hidden scope);
+ * the deny list is about a named job, not about missing data.
+ */
+export function canUseAssistant(
+  user: { permissions?: unknown; position_name?: string | null } | null | undefined,
+): boolean {
+  const perms = user?.permissions;
+  const isWildcard = Array.isArray(perms)
+    ? perms.includes('*')
+    : typeof perms === 'string' && perms.trim() === '*';
+  if (isWildcard) return true;
+  return !ASSISTANT_DENIED_POSITIONS.has(normalisePosition(user?.position_name));
+}
+
+/**
  * Derive a caller's scope from the ONE policy, never from a fresh rule.
  *
  * Three cases, and the third is the one that needs stating:

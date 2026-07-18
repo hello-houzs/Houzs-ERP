@@ -165,6 +165,10 @@ export interface NavTab {
    *  survives for a rep (its only surviving child is the rep Sales-Orders leaf)
    *  no matter what SCM page-access the rep's position happens to hold. */
   showForSalesRep?: boolean;
+  /** Positions (exact, lowercased) that must NOT see this entry. Checked before
+   *  every `showFor*` bypass, so a show-flag cannot re-open it. The backend is
+   *  still the control — this only avoids offering a tap that 403s. */
+  hideForPositions?: readonly string[];
   /** Sales-access model: show this entry ONLY to a NON-director Sales user and
    *  hide it from everyone else (office/director). Bypasses the permission
    *  gates. Used for the single rep-facing "Sales Orders" leaf mounted directly
@@ -615,8 +619,10 @@ export const NAV_TABS: NavTab[] = [
     to: "/assistant",
     label: "Assistant",
     icon: Bot,
-    // Open to all staff — visibility of the ANSWERS is scoped server-side by
-    // position, so hiding the nav would only withhold the safe half.
+    // Open to staff, EXCEPT the field crew (owner 2026-07-18). What the rest may
+    // SEE is scoped server-side by position; this list is who gets no surface at
+    // all. Mirrors auth/assistantAccess.ts — a lockstep fixture, not a 2nd source.
+    hideForPositions: ["driver", "helper", "storekeeper"],
   },
   {
     section: "system",

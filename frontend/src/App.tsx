@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { useAuth } from "./auth/AuthContext";
+import { canUseAssistant } from "./auth/assistantAccess";
 import { isSalesStaff, isDirectorUser, isSalesDirectorUser } from "./auth/salesAccess";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
@@ -162,6 +163,16 @@ const ScmPurchaseConsignmentReturnDetailV2 = lazy(() => import("./pages/scm-v2/P
  * <Forbidden> page inline (URL preserved) so the user understands why
  * they were blocked — see frontend/src/pages/Forbidden.tsx.
  */
+/* Field crew get no Assistant at all (owner 2026-07-18: operation EXCEPT
+   driver / helper / storekeeper). The route does not MOUNT for them — per the
+   house rule that a gated feature is absent, not merely hidden. The backend 403s
+   the endpoint independently; this is the UI half, not the control. */
+function AssistantGuard({ children }: { children: React.ReactElement }) {
+  const { user } = useAuth();
+  if (!canUseAssistant(user)) return <Navigate to="/" replace />;
+  return children;
+}
+
 function Guard({
   perm,
   anyPerm,
@@ -366,7 +377,7 @@ export default function App() {
             member, and what each may SEE is scoped server-side per position
             (services/assistant-scope.ts). Gating the door again here would only
             hide the feature from the people the scoping already protects. */}
-        <Route path="/assistant" element={<Assistant />} />
+        <Route path="/assistant" element={<AssistantGuard><Assistant /></AssistantGuard>} />
         <Route
           path="/system-health"
           element={

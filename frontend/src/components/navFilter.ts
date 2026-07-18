@@ -54,6 +54,19 @@ export function makeNavVisible({ user, can, pageAccess }: NavFilterCtx) {
     // Rep HIDE gate — cut from a NON-director Sales rep only (SCM trim +
     // Service-Cases board/metrics). Director/office pass through.
     if (t.hideForSalesRep && isSalesNonDirector(user)) return false;
+    /* HIDE BY POSITION — evaluated BEFORE the sales bypasses below, so no
+       `showFor*` flag can re-open an entry a position is denied. Used for the
+       Assistant, which field crew (driver/helper/storekeeper) do not get. The
+       backend 403s them regardless; this only stops showing a menu item that
+       would fail when tapped. */
+    if (t.hideForPositions?.length) {
+      const pos = String((user as { position_name?: string | null } | null)?.position_name ?? "")
+        .trim().toLowerCase().replace(/\s+/g, " ");
+      const wildcard = Array.isArray(user?.permissions)
+        ? (user!.permissions as string[]).includes("*")
+        : false;
+      if (!wildcard && pos && t.hideForPositions.includes(pos)) return false;
+    }
     // Rep-only entry — visible ONLY to a non-director Sales rep; everyone else
     // (office/director) never sees it.
     if (t.salesRepOnly && !isSalesNonDirector(user)) return false;
