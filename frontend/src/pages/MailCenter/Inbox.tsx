@@ -220,7 +220,14 @@ function sortDepts(a: string, b: string): number {
   return a.localeCompare(b);
 }
 
-function fmtTime(iso: string): string {
+/* Accepts an ISO string OR an epoch-millisecond number, because both reach it:
+   thread rows carry ISO strings from the API, local drafts carry epoch numbers
+   from localStorage. Callers used to normalise the number half themselves with
+   `new Date(x).toISOString()`, which threw RangeError on a missing value and
+   took the whole page down — the guard below was never reached. Widening the
+   parameter is what lets every caller hand the raw value straight over and
+   actually get the tolerant behaviour this function was written to provide. */
+function fmtTime(iso: string | number | null | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -811,7 +818,7 @@ function DraftsList({
                   {d.subject?.trim() || "(no subject)"}
                 </span>
                 <span className="shrink-0 text-xs text-ink-muted">
-                  {fmtTime(new Date(d.updatedAt).toISOString())}
+                  {fmtTime(d.updatedAt)}
                 </span>
               </div>
               <p className="truncate text-xs text-ink-muted">To {d.to?.trim() || "—"}</p>
