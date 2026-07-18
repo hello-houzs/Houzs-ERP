@@ -166,11 +166,13 @@ export async function askAssistant(
   env: Env,
   message: string,
   usageSink?: AgentBrainUsageSink,
-  /* The caller's visibility. Defaults to WILDCARD because the only route that
-     reaches this today is owner-only (requirePermission("*")); the moment that
-     gate widens, the route must pass a real scope. That default is safe only
-     because of the gate, so the two must change together. */
-  scope: AssistantScope = { wildcard: true, canSeeMargin: true, canSeeCommission: true, orderScope: 'all' },
+  /* The caller's visibility. The default is the MOST RESTRICTIVE scope, not the
+     most permissive: the route is now open to any authenticated staff member, so
+     a future caller that forgets to pass a scope must under-disclose, never
+     over-disclose. (This default WAS wildcard, correct only while the route was
+     owner-only — the two were documented as having to change together, and this
+     is that change.) */
+  scope: AssistantScope = { canSeeMargin: false, canSeeCommission: false, orderScope: 'own' },
 ): Promise<AssistantAnswer> {
   const apiKey = env.ANTHROPIC_API_KEY;
   const text = (message ?? '').trim();

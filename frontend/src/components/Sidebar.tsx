@@ -615,7 +615,8 @@ export const NAV_TABS: NavTab[] = [
     to: "/assistant",
     label: "Assistant",
     icon: Bot,
-    anyPerm: ["*"],
+    // Open to all staff — visibility of the ANSWERS is scoped server-side by
+    // position, so hiding the nav would only withhold the safe half.
   },
   {
     section: "system",

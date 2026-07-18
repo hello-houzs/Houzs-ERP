@@ -33,6 +33,47 @@ export interface AssistantScope {
   orderScope: 'all' | 'own_downline' | 'own';
 }
 
+/**
+ * Derive a caller's scope from the ONE policy, never from a fresh rule.
+ *
+ * Three cases, and the third is the one that needs stating:
+ *   • wildcard (`*`)         → sees everything, as everywhere else.
+ *   • a positioned user      → positionPolicy's flags VERBATIM. Note this honours
+ *                              the owner's default-FULL model: an unclassified
+ *                              position sees money, because that is his ruling
+ *                              ("暂时都可以看到系统里的所有内容") and this surface
+ *                              must not be quietly stricter than every other one.
+ *   • NO position at all     → money hidden. Not a policy disagreement: the policy
+ *                              has no input to decide from, and "we cannot tell"
+ *                              must not resolve to "entitled". Defaulting the
+ *                              unknown to permissive is how `?? 0` style bugs
+ *                              become disclosures.
+ */
+export function scopeForUser(
+  user: { permissions?: unknown; position_name?: string | null; department_name?: string | null } | null | undefined,
+  resolve: (i: { position_name: string | null; department_name: string | null }) => {
+    flags: { canSeeMargin: boolean; canSeeCommission: boolean; orderScope: 'own_downline' | 'all' };
+  } | null,
+): AssistantScope {
+  const perms = user?.permissions;
+  const isWildcard = Array.isArray(perms)
+    ? perms.includes('*')
+    : typeof perms === 'string' && perms.trim() === '*';
+  if (isWildcard) return { wildcard: true, canSeeMargin: true, canSeeCommission: true, orderScope: 'all' };
+
+  const position = user?.position_name ?? null;
+  if (!position) {
+    return { canSeeMargin: false, canSeeCommission: false, orderScope: 'own' };
+  }
+  const policy = resolve({ position_name: position, department_name: user?.department_name ?? null });
+  if (!policy) return { canSeeMargin: false, canSeeCommission: false, orderScope: 'own' };
+  return {
+    canSeeMargin: policy.flags.canSeeMargin,
+    canSeeCommission: policy.flags.canSeeCommission,
+    orderScope: policy.flags.orderScope,
+  };
+}
+
 /** Capability keys whose entire subject is money the caller may not be entitled
  *  to. Gated wholesale, because redacting the numbers out of a receivables brief
  *  leaves a brief about nothing. */
