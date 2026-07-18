@@ -18,10 +18,124 @@ import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
-import { recordEntityAudit, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
+import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
+import { GRN_LINE_AUDIT_FIELDS, GRN_LINE_AUDIT_SELECT } from '../lib/entity-audit-fields';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
 grns.use('*', supabaseAuth);
+
+/* ── Audit trail (migration 0139 / lib/entity-audit) ───────────────────────────
+   Action vocabulary for this module:
+     CREATE — the receipt is raised. Recorded for BOTH the DRAFT and the
+              straight-to-POSTED create; statusSnapshot is what distinguishes
+              them, because "a draft existed first" is itself part of the story.
+     POST   — DRAFT -> POSTED. The stock IN and the PO received-rollup commit.
+     CANCEL — status -> CANCELLED plus the reversing OUT.
+     UPDATE — header edits and the line add / edit / delete.
+   No DELETE: this file never destroys a GRN header, and using DELETE for a line
+   would tell a reader the whole receipt was destroyed (same rule the DO keeps).
+
+   ── WHY EVERY CREATE ROW IS WRITTEN LATE ──
+   Three of the create paths COMPENSATE: they insert the header, then delete it
+   again when the line insert fails or when the post-insert over-receipt
+   re-verification finds this GRN broke a PO line's cap. A CREATE row emitted at
+   insert time would outlive the document it describes — a receipt in the ledger
+   that never existed, against a PO whose numbers never moved. So each CREATE is
+   recorded only after the LAST compensating branch has been passed, at the point
+   where the only remaining exits are success. recordGrnCreate also re-reads the
+   persisted row rather than echoing the request body, which makes that ordering
+   self-enforcing: a rolled-back header reads back empty. */
+
+/* The auditable GRN header fields, camel (API) -> snake (column). Deliberately
+   the same list the header PATCH's own map writes. */
+const GRN_AUDIT_FIELDS: Array<[string, string]> = [
+  ['supplierId', 'supplier_id'], ['receivedAt', 'received_at'],
+  ['deliveryNoteRef', 'delivery_note_ref'], ['warehouseId', 'warehouse_id'],
+  ['notes', 'notes'], ['currency', 'currency'],
+  ['exchangeRate', 'exchange_rate'], ['allocationMethod', 'allocation_method'],
+];
+
+/* The BEFORE half of the header PATCH's from->to pairs, plus the identity
+   columns every audit row on this entity needs. */
+const GRN_AUDIT_SELECT =
+  `id, grn_number, status, company_id, ${GRN_AUDIT_FIELDS.map(([, snake]) => snake).join(', ')}`;
+
+/* The auditable LINE fields + the select that reads them back live in
+   lib/entity-audit-fields (imported above), not here: the camelCase half is what
+   AUDIT_FINANCE_FIELDS gates on, and a route file cannot be imported into a test
+   without dragging Hono and the auth middleware along. See that file's header. */
+
+/* The GRN's identity for an audit row written from a LINE handler, which has the
+   line in hand but not the parent. Best-effort by design: the writer is
+   fail-open, so an unresolved doc number costs the row its human key and
+   nothing else. */
+async function loadGrnAuditMeta(
+  sb: Variables['supabase'],
+  grnId: string,
+): Promise<{ docNo: string | null; companyId: number | null; status: string | null }> {
+  try {
+    const { data } = await sb.from('grns')
+      .select('grn_number, company_id, status').eq('id', grnId).maybeSingle();
+    const row = (data ?? null) as { grn_number?: string | null; company_id?: number | null; status?: string | null } | null;
+    return { docNo: row?.grn_number ?? null, companyId: row?.company_id ?? null, status: row?.status ?? null };
+  } catch {
+    return { docNo: null, companyId: null, status: null };
+  }
+}
+
+/**
+ * Record the CREATE of a GRN that has SURVIVED its handler.
+ *
+ * Reads the row back rather than taking the caller's payload, for two reasons.
+ * The receipt's stored shape is what a reader is being told about — currency and
+ * exchange_rate are resolved server-side, the warehouse may have been derived
+ * from the PO lines, and total_centi only exists after recomputeGrnTotals. And a
+ * header that a compensating branch already deleted reads back as nothing, so a
+ * CREATE row can never describe a rolled-back document even if a future edit
+ * moves this call earlier by mistake.
+ */
+async function recordGrnCreate(
+  sb: Variables['supabase'],
+  actor: Variables['houzsUser'],
+  fallbackCompanyId: number | null | undefined,
+  grnId: string,
+  lineCount: number,
+  note?: string,
+): Promise<void> {
+  let row: Record<string, unknown> | null = null;
+  try {
+    const { data } = await sb.from('grns')
+      .select('id, grn_number, status, company_id, supplier_id, warehouse_id, purchase_order_id, ' +
+        'received_at, delivery_note_ref, currency, exchange_rate, allocation_method, total_centi')
+      .eq('id', grnId).maybeSingle();
+    row = (data ?? null) as Record<string, unknown> | null;
+  } catch { /* best-effort — fall through with what we know */ }
+  if (!row) return; // rolled back (or unreadable): recording a CREATE would be a lie
+  await recordEntityAudit(sb, {
+    entityType: 'GRN',
+    entityId: grnId,
+    entityDocNo: (row.grn_number as string | null) ?? null,
+    action: 'CREATE',
+    actor,
+    companyId: (row.company_id as number | null) ?? fallbackCompanyId,
+    statusSnapshot: (row.status as string | null) ?? null,
+    note,
+    fieldChanges: compactChanges([
+      fieldChange('status', null, row.status ?? null),
+      fieldChange('supplierId', null, row.supplier_id ?? null),
+      fieldChange('purchaseOrderId', null, row.purchase_order_id ?? null),
+      fieldChange('warehouseId', null, row.warehouse_id ?? null),
+      fieldChange('receivedAt', null, row.received_at ?? null),
+      fieldChange('deliveryNoteRef', null, row.delivery_note_ref ?? null),
+      fieldChange('currency', null, row.currency ?? null),
+      fieldChange('exchangeRate', null, row.exchange_rate ?? null),
+      fieldChange('allocationMethod', null, row.allocation_method ?? null),
+      /* INTEGER SEN, straight off the column — never a formatted amount. */
+      fieldChange('totalCenti', null, row.total_centi ?? null),
+      fieldChange('lineCount', null, lineCount),
+    ]),
+  });
+}
 
 /* A source PO can only be received against while it is still open for receipt —
    SUBMITTED (nothing received yet) or PARTIALLY_RECEIVED (some received). A
@@ -1272,6 +1386,12 @@ grns.post('/', async (c) => {
   // (Money only — no stock — so it's safe to run for a draft too.)
   await recomputeGrnTotals(sb, h.id);
 
+  /* The receipt has survived every compensating branch above (items-insert
+     rollback, over-receipt rollback) — from here the only exits are success, so
+     this is the earliest point at which a CREATE row is true. Written AFTER
+     recomputeGrnTotals so totalCenti is the rolled-up figure. */
+  await recordGrnCreate(sb, c.get('houzsUser'), activeCompanyId(c), h.id, items.length);
+
   const movementErrors = postRes && postRes.ok ? postRes.movementErrors : undefined;
   return c.json({ id: h.id, grnNumber: h.grn_number, movementErrors: movementErrors?.length ? movementErrors : undefined }, 201);
 });
@@ -1451,6 +1571,13 @@ grns.post('/from-pos', async (c) => {
   const postRes = await postGrnAndRollup(sb, h.id, user.id);
   // Migration 0101 — populate header money rollups from the inserted lines.
   await recomputeGrnTotals(sb, h.id);
+
+  /* Past the items-insert rollback and the over-receipt rollback — the GRN is
+     now permanent, so the CREATE row cannot outlive a document that was undone. */
+  await recordGrnCreate(
+    sb, c.get('houzsUser'), activeCompanyId(c), h.id, itemList.length,
+    `Batch-converted from ${poList.length} PO${poList.length === 1 ? '' : 's'}: ${poNumbersJoined}`,
+  );
 
   const movementErrors = postRes.ok ? postRes.movementErrors : undefined;
   return c.json({ id: h.id, grnNumber: h.grn_number, poCount: poList.length, lineCount: itemList.length, movementErrors: movementErrors?.length ? movementErrors : undefined }, 201);
@@ -1739,6 +1866,13 @@ grns.post('/from-po-items', async (c) => {
        inventory IN silently fail (writeMovements {ok:false}), or fail the post
        outright. Surface both per entry so a partial multi-PO receive is LOUD
        instead of the whole call returning a flat 201. */
+    /* This bucket's GRN cleared its own over-receipt rollback (the `continue`
+       above), so it survives the request even if a LATER bucket is rolled back —
+       each bucket is its own document and its own CREATE row. */
+    await recordGrnCreate(
+      sb, c.get('houzsUser'), activeCompanyId(c), h.id, bucket.lines.length,
+      `Received from ${[...bucket.poNumbers].join(', ')}`,
+    );
     const postFailReason = postRes.ok ? undefined : postRes.reason;
     const bucketMovementErrors = postRes.ok ? postRes.movementErrors : undefined;
     created.push({
@@ -1955,6 +2089,15 @@ grns.patch('/:id', async (c) => {
   const sb = c.get('supabase');
   const user = c.get('user');
 
+  /* GRN_AUDIT_SELECT, not the five columns the relocation needs: this row is
+     also the BEFORE half of every from->to pair recorded at the end of the
+     handler. An audit entry carrying only the new value does not answer "what
+     changed". One read serves both — the relocation block below reads its
+     warehouse / status / rate out of the same row it always did. */
+  const { data: beforeRow } = await sb.from('grns')
+    .select(GRN_AUDIT_SELECT).eq('id', id).maybeSingle();
+  const before = (beforeRow ?? {}) as unknown as Record<string, unknown>;
+
   /* Warehouse relocation — a posted GRN already pushed its IN stock into the OLD
      warehouse. If the operator changes the warehouse, just rewriting the header
      field would strand the stock in the old warehouse while the header claims the
@@ -1964,9 +2107,7 @@ grns.patch('/:id', async (c) => {
      relocate phantom qty). Best-effort allocation re-walk after, since per-
      warehouse buckets changed. */
   if (body.warehouseId !== undefined) {
-    const { data: cur } = await sb.from('grns')
-      .select('id, grn_number, status, warehouse_id, exchange_rate').eq('id', id).maybeSingle();
-    const c0 = cur as { grn_number: string; status: string | null; warehouse_id: string | null; exchange_rate?: string | number | null } | null;
+    const c0 = (beforeRow ?? null) as unknown as { grn_number: string; status: string | null; warehouse_id: string | null; exchange_rate?: string | number | null } | null;
     const oldWh = c0?.warehouse_id ?? null;
     const newWh = (body.warehouseId as string | null) ?? null;
     if (c0 && (c0.status ?? '').toUpperCase() === 'POSTED' && newWh && oldWh && newWh !== oldWh) {
@@ -2035,8 +2176,9 @@ grns.patch('/:id', async (c) => {
   if (body.exchangeRate !== undefined || updates.currency !== undefined) {
     let effectiveCurrency = updates.currency as string | undefined;
     if (effectiveCurrency === undefined) {
-      const { data: curRow } = await sb.from('grns').select('currency').eq('id', id).maybeSingle();
-      effectiveCurrency = (curRow as { currency?: string } | null)?.currency ?? 'MYR';
+      /* Taken from the row already read above — the round-trip this used to make
+         read the same column of the same row. */
+      effectiveCurrency = (before.currency as string | undefined) ?? 'MYR';
     }
     if (body.exchangeRate !== undefined) {
       updates.exchange_rate = normalizeExchangeRate(body.exchangeRate, effectiveCurrency);
@@ -2048,6 +2190,28 @@ grns.patch('/:id', async (c) => {
   }
   const { data, error } = await sb.from('grns').update(updates).eq('id', id).select(HEADER).single();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+
+  /* Diff the NORMALISED values actually written (`updates`), not the raw body —
+     currency is upper-cased, exchange_rate is derived from it and the allocation
+     method is enum-normalised, so a log of what the client asked for rather than
+     what was stored is a log of the wrong thing. */
+  {
+    const auditPatch: Record<string, unknown> = {};
+    for (const [camel, snake] of GRN_AUDIT_FIELDS) {
+      if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+    }
+    await recordEntityAudit(sb, {
+      entityType: 'GRN',
+      entityId: id,
+      entityDocNo: (before.grn_number as string | null) ?? null,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: (before.company_id as number | null) ?? activeCompanyId(c),
+      statusSnapshot: (before.status as string | null) ?? null,
+      fieldChanges: diffFields(before, auditPatch, GRN_AUDIT_FIELDS),
+    });
+  }
+
   /* When the rate or the landed-cost basis moved, the lot was booked at the OLD
      figures. Re-allocate the freight (allocated_charge_centi) then recost the
      lots → consumptions → DO/SI so the landed MYR cost reflects the new rate /
@@ -2180,6 +2344,28 @@ grns.post('/:id/items', async (c) => {
 
   await recomputeGrnTotals(sb, grnId);
 
+  /* UPDATE, not CREATE: the entity is the GRN and it already existed. The line's
+     identity travels in the note and as the to-value of every pair. Recorded
+     after the over-receipt rollback above, so a line that was inserted and then
+     deleted by the race guard leaves no "added" row behind it. */
+  {
+    const added = (data ?? {}) as unknown as Record<string, unknown>;
+    const meta = await loadGrnAuditMeta(sb, grnId);
+    await recordEntityAudit(sb, {
+      entityType: 'GRN',
+      entityId: grnId,
+      entityDocNo: meta.docNo,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: meta.companyId ?? activeCompanyId(c),
+      statusSnapshot: meta.status,
+      note: `Line added: ${String(it.materialCode ?? '')}`,
+      fieldChanges: compactChanges(
+        GRN_LINE_AUDIT_FIELDS.map(([camel, snake]) => fieldChange(camel, null, added[snake] ?? null)),
+      ),
+    });
+  }
+
   /* LEAK GUARD: a DRAFT GRN commits NOTHING on line-add — no inventory IN, no PO
      received-rollup. The row's qty stays correct; the full IN + PO rollup happen
      once at confirm (postGrnAndRollup re-reads all live lines). Skip the
@@ -2255,10 +2441,20 @@ grns.patch('/:id/items/:itemId', async (c) => {
     }, 409);
   }
 
-  const { data: prev } = await sb.from('grn_items')
-    .select('qty_received, qty_accepted, unit_price_centi, discount_centi, item_group, variants, purchase_order_item_id, material_code, material_name')
+  /* The audited columns as well as the ones the stock/money logic below reads:
+     this row is also the BEFORE half of every from->to pair recorded after the
+     update lands. `variants` and `purchase_order_item_id` are business-logic
+     only and are deliberately not in GRN_LINE_AUDIT_FIELDS — variants render
+     into description2, which IS audited. */
+  const { data: prevRow } = await sb.from('grn_items')
+    .select(GRN_LINE_AUDIT_SELECT + ', variants, purchase_order_item_id')
     .eq('id', itemId).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+  if (!prevRow) return c.json({ error: 'not_found' }, 404);
+  /* Cast through `unknown`: a .select() built from a concatenated string infers
+     as GenericStringError on the SupabaseClient<any> the scm client is, so the
+     row shape only exists after this. Project-wide pattern (see ITEM / HEADER
+     elsewhere in this file). */
+  const prev = prevRow as unknown as Record<string, unknown>;
 
   // The editable quantity is qty_received (also keep qty_accepted in lockstep).
   const prevAccepted = (prev as { qty_accepted: number }).qty_accepted ?? 0;
@@ -2377,6 +2573,33 @@ grns.patch('/:id/items/:itemId', async (c) => {
   const { error } = await sb.from('grn_items').update(updates).eq('id', itemId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
 
+  /* Diff `updates` — the EFFECTIVE values written — against the stored row.
+     qty / price / discount / line total are recomputed above from the body OR
+     the prior row, so the body alone would not say what changed. The camel names
+     are the ones AUDIT_FINANCE_FIELDS gates (unitCostCenti), so a non-finance
+     reader of the history is stripped exactly as on the detail. */
+  {
+    const auditPatch: Record<string, unknown> = {};
+    for (const [camel, snake] of GRN_LINE_AUDIT_FIELDS) {
+      if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+    }
+    const lineChanges = diffFields(prev as unknown as Record<string, unknown>, auditPatch, GRN_LINE_AUDIT_FIELDS);
+    if (lineChanges.length > 0) {
+      const meta = await loadGrnAuditMeta(sb, grnId);
+      await recordEntityAudit(sb, {
+        entityType: 'GRN',
+        entityId: grnId,
+        entityDocNo: meta.docNo,
+        action: 'UPDATE',
+        actor: c.get('houzsUser'),
+        companyId: meta.companyId ?? activeCompanyId(c),
+        statusSnapshot: meta.status,
+        note: `Line edited: ${String((prev as unknown as { material_code?: string | null }).material_code ?? itemId)}`,
+        fieldChanges: lineChanges,
+      });
+    }
+  }
+
   // Now write the inventory delta (best-effort, mirroring add/delete-line).
   if (inventoryChange && editWarehouseId) {
     const warehouseId = editWarehouseId;
@@ -2474,9 +2697,14 @@ grns.delete('/:id/items/:itemId', async (c) => {
   // Read the line's PO link + accepted qty + variant/cost fields BEFORE deleting
   // so we can roll back the PO receipt AND reverse the inventory IN the GRN post
   // wrote for this line.
-  const { data: line } = await sb.from('grn_items')
-    .select('qty_accepted, purchase_order_item_id, material_code, material_name, unit_price_centi, item_group, variants')
+  /* Read the audited columns too — after the delete the audit row is the only
+     remaining evidence of what was received on this line, and there is nothing
+     left to join back to. */
+  const { data: lineRow } = await sb.from('grn_items')
+    .select(GRN_LINE_AUDIT_SELECT + ', purchase_order_item_id, variants')
     .eq('id', itemId).maybeSingle();
+  /* Cast through `unknown` — see the note on the line PATCH's `prev`. */
+  const line = (lineRow ?? null) as unknown as Record<string, unknown> | null;
 
   /* LEAK GUARD: a DRAFT GRN's line never wrote an inventory IN, so deleting it
      reverses NOTHING — skip the consumed-downstream guard (there's no committed
@@ -2503,6 +2731,27 @@ grns.delete('/:id/items/:itemId', async (c) => {
 
   const { error } = await sb.from('grn_items').delete().eq('id', itemId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+
+  /* UPDATE, not DELETE: the entity is the GRN and it still exists. DELETE on
+     this entity type would tell a reader the whole receipt was destroyed. The
+     line is the from-value of every pair, to-value null. */
+  {
+    const doomed = (line ?? {}) as unknown as Record<string, unknown>;
+    const meta = await loadGrnAuditMeta(sb, grnId);
+    await recordEntityAudit(sb, {
+      entityType: 'GRN',
+      entityId: grnId,
+      entityDocNo: meta.docNo,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: meta.companyId ?? activeCompanyId(c),
+      statusSnapshot: meta.status,
+      note: `Line removed: ${String(doomed.material_code ?? itemId)}`,
+      fieldChanges: compactChanges(
+        GRN_LINE_AUDIT_FIELDS.map(([camel, snake]) => fieldChange(camel, doomed[snake] ?? null, null)),
+      ),
+    });
+  }
 
   /* LEAK GUARD: for a DRAFT GRN there is no committed receipt — skip BOTH the PO
      received-recount and the reversing inventory OUT (the draft never wrote an
