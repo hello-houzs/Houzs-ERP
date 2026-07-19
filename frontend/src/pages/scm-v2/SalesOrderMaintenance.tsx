@@ -1438,14 +1438,16 @@ const VenuesSection = (_props: { canEdit: boolean }) => {
           (projects.maintenance = full), so this may land a user on Forbidden —
           that is the honest answer, and better than silence. */}
       <div className={styles.banner} style={{ marginBottom: 10 }}>
-        Venues are maintained in{' '}
+        Venues come from two places. Exhibition venues are maintained in{' '}
         <Link
           to="/projects?view=maintenance"
           className="font-semibold text-primary underline underline-offset-2"
         >
           Project Maintenance
         </Link>
-        . This list is read-only; add, rename, or deactivate venues there.
+        . Showroom venues come from warehouses marked as a Showroom — set the
+        Showroom flag and its Venue name in Warehouses. This list is read-only;
+        add, rename, or deactivate each one where it lives.
       </div>
 
       {venues.isError && <LoadError what="the venue list" error={venues.error} />}
@@ -1455,20 +1457,41 @@ const VenuesSection = (_props: { canEdit: boolean }) => {
           <thead>
             <tr>
               <th>Name</th>
+              <th>Origin</th>
               <th>State</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
             {venues.isLoading && (
-              <tr><td colSpan={3} className={styles.empty}>Loading…</td></tr>
+              <tr><td colSpan={4} className={styles.empty}>Loading…</td></tr>
             )}
             {!venues.isLoading && (venues.data ?? []).length === 0 && (
-              <tr><td colSpan={3} className={styles.empty}>No venues yet — add them in Project Maintenance.</td></tr>
+              <tr><td colSpan={4} className={styles.empty}>No venues yet — add exhibition venues in Project Maintenance, or mark a warehouse as a Showroom and give it a Venue name.</td></tr>
             )}
             {(venues.data ?? []).map((v) => (
               <tr key={v.id}>
                 <td><strong className="font-semibold text-ink">{v.name}</strong></td>
+                <td>
+                  {/* Origin is shown as its own column, not folded into the
+                      name, so the owner can tell a showroom from an exhibition
+                      venue at a glance — they are maintained in different
+                      places and mean different things in the fair P&L. */}
+                  <span
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider ${
+                      v.origin === 'SHOWROOM'
+                        ? 'bg-surface-2 text-ink-secondary'
+                        : 'bg-primary-soft text-primary-ink'
+                    }`}
+                    title={
+                      v.origin === 'SHOWROOM'
+                        ? 'From a warehouse marked as a Showroom'
+                        : 'From the Project Maintenance venue master'
+                    }
+                  >
+                    {v.origin === 'SHOWROOM' ? 'Showroom' : 'Exhibition'}
+                  </span>
+                </td>
                 <td>{v.state ?? '—'}</td>
                 <td>
                   <span

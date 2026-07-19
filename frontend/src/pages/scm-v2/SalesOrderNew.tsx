@@ -57,7 +57,7 @@ import { useAuth } from '../../vendor/scm/lib/auth';
    Salesperson blank for anyone without a scm.staff row. We read the Houzs
    AuthUser to default + name the creator so the field is never blank. */
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
-import { useVenues } from '../../vendor/scm/lib/venues-queries';
+import { useVenues, type AutoVenue } from '../../vendor/scm/lib/venues-queries';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
   countryForState,
@@ -1020,12 +1020,10 @@ export const SalesOrderNew = () => {
      project_venues master gets its option auto-selected; one not in the master
      is still stamped server-side on save (we show a hint). OCR / a manual pick
      still wins — we only auto-apply while nothing is picked. */
-  const [autoVenue, setAutoVenue] = useState<{
-    venueId: string | null; venueName: string | null; projectName: string | null;
-  } | null>(null);
+  const [autoVenue, setAutoVenue] = useState<AutoVenue | null>(null);
   useEffect(() => {
     let alive = true;
-    authedFetch<{ venueId: string | null; venueName: string | null; projectName: string | null }>(
+    authedFetch<AutoVenue>(
       '/mfg-sales-orders/active-venue',
     )
       .then((r) => { if (alive) setAutoVenue(r); })
@@ -1789,14 +1787,27 @@ export const SalesOrderNew = () => {
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
-              {autoVenue?.venueId && autoVenue?.projectName && (
+              {/* Name the SOURCE, not just the fact of an auto-fill. "Auto-filled
+                  from Ipoh Fair" and "Auto-filled from your showroom" mean
+                  different things, and the operator needs to know which default
+                  they are being offered before deciding to override it. */}
+              {autoVenue?.venueId && autoVenue.source === 'PMS' && autoVenue.projectName && (
                 <span style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>
                   Auto-filled from {autoVenue.projectName}
                 </span>
               )}
+              {autoVenue?.venueId && autoVenue.source === 'SHOWROOM' && (
+                <span style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>
+                  Auto-filled from your showroom{autoVenue.showroomName ? ` (${autoVenue.showroomName})` : ''} — change it if you are somewhere else today
+                </span>
+              )}
+              {/* KNOWN GAP, deliberately tolerated: projects reference ~60
+                  distinct venues and the master holds ~38. The order still
+                  saves with the venue text — refusing it would block real sales
+                  to enforce a list nobody has finished filling in. */}
               {autoVenue && !autoVenue.venueId && autoVenue.venueName && (
                 <span style={{ fontSize: '11px', marginTop: '4px', color: 'var(--c-festive-b, #B8331F)' }}>
-                  Project venue {autoVenue.venueName} is not in the venue list yet — it is still saved on the order; add it in Project Maintenance to show it here.
+                  Venue {autoVenue.venueName} is not in the venue list yet — it is still saved on the order; add it in Project Maintenance to show it here.
                 </span>
               )}
             </label>

@@ -108,6 +108,27 @@ function ExtraDeptCount({
 
 type CompanyOpt = { id: number; code: string; name: string };
 
+/* Showroom parking (owner 2026-07-19) — a Showroom is a scm.warehouses row
+   flagged is_showroom, and `venueName` is the venue its parked salespeople's
+   orders attribute to. venueName is nullable on purpose: a showroom can be
+   flagged before anyone has decided what its venue is called, and until then it
+   resolves to NO venue rather than to the warehouse's own name. */
+type ShowroomOption = {
+  id: string;
+  code: string;
+  name: string;
+  venueName: string | null;
+  active: boolean;
+};
+
+/* The subset of GET /api/scm/staff this panel reads. `userId` is migration
+   0066's link from a Houzs user to their sales profile. */
+type ScmStaffRow = {
+  id: string;
+  userId: number | null;
+  showroomWarehouseId: string | null;
+};
+
 // Friendly short name for a company code (HOUZS → "Houzs"; else the code).
 function companyShortName(code: string): string {
   return code === "HOUZS" ? "Houzs" : code;
@@ -2571,6 +2592,44 @@ function EditMemberPanel({
   const [picBusy, setPicBusy] = useState(false);
   const [picBump, setPicBump] = useState(0);
 
+  /* ── SHOWROOM PARKING (owner 2026-07-19) ────────────────────────────────
+     The PRIMARY venue binding, and the reason it lives HERE rather than on a
+     project: HR/admin parks a salesperson under a Showroom ONCE, on this
+     panel, and every sales order that person raises from then on attributes to
+     that showroom's venue — no per-event work, nothing to keep re-entering,
+     and it keeps working when nobody touches a project team.
+
+     An exhibition assignment still WINS over this default while that project
+     is running (see backend lib/venue-binding.ts), and the salesperson can
+     always override the venue on the order itself. This is the floor, not a
+     lock. */
+  const showrooms = useQuery<{ showrooms: ShowroomOption[] }>(
+    () => api.get("/api/scm/staff/showrooms"),
+    [],
+    { staleTime: 300_000 },
+  );
+  const scmStaff = useQuery<{ staff: ScmStaffRow[] }>(
+    () => api.get("/api/scm/staff"),
+    [],
+    { staleTime: 300_000 },
+  );
+  /* The scm.staff row is joined by user_id — migration 0066's deterministic
+     link between a Houzs user and their sales profile. No row means this
+     member has no sales profile and cannot be parked; the UI says so rather
+     than offering a control that would silently do nothing. */
+  const myScmStaff = (scmStaff.data?.staff ?? []).find(
+    (r) => Number(r.userId) === Number(user.id),
+  );
+  const [showroomId, setShowroomId] = useState<string>("");
+  const [showroomDirty, setShowroomDirty] = useState(false);
+  useEffect(() => {
+    /* Seed from the server once loaded, but never stomp an edit in progress. */
+    if (!showroomDirty) setShowroomId(myScmStaff?.showroomWarehouseId ?? "");
+  }, [myScmStaff?.showroomWarehouseId, showroomDirty]);
+  const selectedShowroom = (showrooms.data?.showrooms ?? []).find(
+    (sr) => sr.id === showroomId,
+  );
+
   async function uploadPic(file: File) {
     if (!file.type.startsWith("image/")) {
       toast.error("Pick an image file");
@@ -2657,6 +2716,25 @@ function EditMemberPanel({
     setBusy(true);
     try {
       await api.patch(`/api/users/${user.id}`, patch);
+      /* Showroom parking lives in scm.staff, not on the user record, so it is a
+         second call — made only when it actually changed, and AFTER the user
+         patch succeeded. Its failure is surfaced separately rather than being
+         folded into the user save's success message: reporting "Saved" when the
+         venue binding did not persist is exactly the silent-miss this feature
+         cannot afford. */
+      if (showroomDirty) {
+        try {
+          await api.patch(`/api/scm/staff/by-user/${user.id}/showroom`, {
+            showroomWarehouseId: showroomId || null,
+          });
+          setShowroomDirty(false);
+        } catch (e: any) {
+          toast.error(e?.message || "Saved the member, but the showroom could not be set");
+          setBusy(false);
+          onSaved();
+          return;
+        }
+      }
       toast.success(`Saved ${name.trim() || em}`);
       onSaved();
     } catch (e: any) {
@@ -2936,6 +3014,61 @@ function EditMemberPanel({
           <div className="mt-1 text-[10px] text-ink-muted">
             Sets a new password for this member (min 12 chars). They can change it
             later — leave blank to keep their current one.
+          </div>
+        </div>
+      </PanelSection>
+
+      <PanelSection title="Sales venue">
+        <div>
+          <label className={labelCls}>Showroom</label>
+          {!myScmStaff && !scmStaff.loading ? (
+            <div className="rounded border border-hairline bg-surface-2 px-2.5 py-2 text-[11px] text-ink-muted">
+              This member has no sales profile yet, so they cannot be parked
+              under a showroom.
+            </div>
+          ) : (
+            <select
+              value={showroomId}
+              onChange={(e) => {
+                setShowroomId(e.target.value);
+                setShowroomDirty(true);
+              }}
+              className={inputCls}
+              disabled={scmStaff.loading || showrooms.loading}
+            >
+              <option value="">— Not parked —</option>
+              {(showrooms.data?.showrooms ?? []).map((sr) => (
+                <option key={sr.id} value={sr.id}>
+                  {sr.name}
+                  {sr.venueName ? ` · ${sr.venueName}` : " · no venue set"}
+                </option>
+              ))}
+            </select>
+          )}
+          <div className="mt-1 text-[10px] text-ink-muted">
+            {/* State WHAT the setting does to real documents, and be explicit
+                about the two ways it does not apply — those are the questions
+                the owner will actually have, and both are deliberate. */}
+            {selectedShowroom && !selectedShowroom.venueName ? (
+              <span className="text-danger">
+                This showroom has no Venue name yet, so orders will still have no
+                venue. Set its Venue name in Warehouses.
+              </span>
+            ) : selectedShowroom?.venueName ? (
+              <>
+                Sales orders this member raises will default to venue
+                {" "}<strong className="text-ink">{selectedShowroom.venueName}</strong>.
+                An exhibition they are assigned to overrides it while it runs, and
+                they can always change the venue on the order itself.
+              </>
+            ) : (
+              <>
+                Parking a salesperson under a showroom sets the default venue on
+                every sales order they raise. Showrooms are warehouses marked as
+                a Showroom — mark one in Warehouses to see it here. Left unparked,
+                their orders carry no venue unless they pick one.
+              </>
+            )}
           </div>
         </div>
       </PanelSection>

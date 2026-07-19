@@ -6,7 +6,7 @@ import { uploadSlipFull } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import { useAuth, isAdminLevel } from "../vendor/scm/lib/auth";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
-import { useVenues } from "../vendor/scm/lib/venues-queries";
+import { useVenues, type AutoVenue } from "../vendor/scm/lib/venues-queries";
 import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-queries";
 import { todayMyt } from "../vendor/scm/lib/dates";
 import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
@@ -920,16 +920,17 @@ export function MobileNewSO({
     [staffList, salespersonId],
   );
 
-  /* Houzs venue auto-fill (owner 2026-06-25) — the logged-in salesperson's
-     active exhibition project already knows this week's venue. Declared BEFORE
-     resolvedVenueName so the memo can read it (no TDZ). */
-  const [autoVenue, setAutoVenue] = useState<{
-    venueId: string | null; venueName: string | null; projectName: string | null;
-  } | null>(null);
+  /* Houzs venue binding (owner 2026-07-19) — the venue this salesperson is
+     bound to, resolved server-side by the ONE shared resolver
+     (backend scm/lib/venue-binding.ts): their in-period exhibition project if
+     they have one, else the showroom they are parked under, else nothing.
+     Mobile does NOT re-implement any of that — same endpoint as desktop.
+     Declared BEFORE resolvedVenueName so the memo can read it (no TDZ). */
+  const [autoVenue, setAutoVenue] = useState<AutoVenue | null>(null);
   useEffect(() => {
     if (isEdit) return; // edit keeps the persisted venue
     let alive = true;
-    authedFetch<{ venueId: string | null; venueName: string | null; projectName: string | null }>(
+    authedFetch<AutoVenue>(
       "/mfg-sales-orders/active-venue",
     )
       .then((r) => { if (alive) setAutoVenue(r); })
@@ -2008,9 +2009,15 @@ export function MobileNewSO({
                     </select>
                   </Field>
                 </div>
-                {!isEdit && autoVenue?.venueId && autoVenue?.projectName &&
+                {!isEdit && autoVenue?.venueId &&
                   (pickedVenueId == null || pickedVenueId === autoVenue.venueId) && (
-                  <div style={{ fontSize: 10, color: "#16695f", marginTop: -4 }}>Auto-filled from {autoVenue.projectName}</div>
+                  <div style={{ fontSize: 10, color: "#16695f", marginTop: -4 }}>
+                    {autoVenue.source === "SHOWROOM"
+                      ? `Auto-filled from your showroom${autoVenue.showroomName ? ` (${autoVenue.showroomName})` : ""}`
+                      : autoVenue.projectName
+                        ? `Auto-filled from ${autoVenue.projectName}`
+                        : "Auto-filled"}
+                  </div>
                 )}
                 <div style={{ display: "flex", gap: 9 }}>
                   {/* FIX D3 — once the processing date has passed the SO is locked

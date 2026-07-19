@@ -866,7 +866,70 @@ app.get("/venues", requirePageAccess("projects"), async (c) => {
     `SELECT id, name, state, notes, active FROM project_venues
       WHERE active = 1 ORDER BY name`
   ).all();
-  return c.json({ data: rows.results ?? [] });
+  type VenueOut = Record<string, unknown> & { name?: unknown; origin: 'PROJECT' | 'SHOWROOM' };
+  const projectVenues: VenueOut[] = ((rows.results ?? []) as Array<Record<string, unknown>>).map((r) => ({
+    ...r,
+    /* Where this entry came from. The owner asked to see a showroom apart from
+       an exhibition venue at a glance, so origin travels WITH the row rather
+       than being inferred by the client from a name pattern. */
+    origin: "PROJECT" as const,
+  }));
+
+  /* SHOWROOM VENUES (owner 2026-07-19) — "the Venue list should be fed from
+     project venues AND from warehouses flagged as Showroom".
+     OPT-IN via ?includeShowrooms=1, NOT on by default: this endpoint is also
+     the Project Maintenance venue master's own CRUD list, and quietly mixing
+     non-editable synthetic rows into it would make Project Maintenance offer to
+     rename or delete things it does not own. Sales Maintenance and the SO venue
+     picker pass the flag; PMS does not. */
+  const includeShowrooms =
+    c.req.query("includeShowrooms") === "1" || c.req.query("includeShowrooms") === "true";
+  if (!includeShowrooms) return c.json({ data: projectVenues });
+
+  let showroomVenues: VenueOut[] = [];
+  try {
+    const shRows = await c.env.DB.prepare(
+      `SELECT id, code, name, venue_name FROM scm.warehouses
+        WHERE is_showroom = true AND is_active = true
+          AND venue_name IS NOT NULL AND btrim(venue_name) <> ''
+        ORDER BY venue_name`
+    ).all();
+    /* DEDUPE against the project venues by case-insensitive name. A showroom
+       that has ALSO been entered by hand into the venue master is ONE venue, and
+       the project_venues row wins because it carries the real integer id the SO
+       venue_id column and every existing picker compare against. */
+    const seen = new Set(
+      projectVenues.map((v) => String(v.name ?? "").trim().toLowerCase()).filter(Boolean),
+    );
+    showroomVenues = ((shRows.results ?? []) as Array<Record<string, unknown>>)
+      .map((r) => {
+        const venueName = String((r.venueName ?? r.venue_name) ?? "").trim();
+        return {
+          /* Prefixed synthetic id — a showroom venue is NOT a project_venues row
+             and must never collide with one of its integer ids, or editing the
+             venue master would write to the wrong record. The prefix also makes
+             it obvious in a payload which kind of id is in hand. */
+          id: `showroom:${String(r.id ?? "")}`,
+          name: venueName,
+          state: null,
+          notes: `Showroom · ${String(r.name ?? r.code ?? "").trim()}`,
+          active: 1,
+          origin: "SHOWROOM" as const,
+          warehouseId: r.id ?? null,
+        };
+      })
+      .filter((v) => v.name && !seen.has(v.name.toLowerCase()));
+  } catch {
+    /* Pre-migration, or the scm schema is unreachable from this binding. The
+       project venues still list — a missing showroom half must never take the
+       venue picker down with it. */
+    showroomVenues = [];
+  }
+
+  const merged = [...projectVenues, ...showroomVenues].sort((a, b) =>
+    String(a.name ?? "").localeCompare(String(b.name ?? "")),
+  );
+  return c.json({ data: merged });
 });
 
 app.post("/venues", requirePermission("projects.write"), async (c) => {
