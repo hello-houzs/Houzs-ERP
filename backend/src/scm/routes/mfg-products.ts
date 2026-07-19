@@ -21,7 +21,7 @@ import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { paginateAll } from '../lib/paginate-all';
 import { findSkuUsage } from '../lib/sku-usage';
-import { productToBindingPatch } from '../lib/cost-anchor-sync';
+import { productToBindingPatch, type ProductSeatCost } from '../lib/cost-anchor-sync';
 import { moduleCodeFromSku, normalizeSofaTier, parseDefaultFreeGifts } from '../shared';
 import { canWriteScmConfig, canViewScmProductCost } from '../lib/houzs-perms';
 import { PRODUCT_FINANCE_KEYS, stripProductPriceHistory } from '../lib/finance-keys';
@@ -55,18 +55,33 @@ async function requireRole(c: AppContext): Promise<{ ok: true } | { ok: false; r
 // Allowed values for the `field` column on master_price_history.
 const PRICE_FIELDS = new Set(['base_price_sen', 'price1_sen', 'cost_price_sen', 'sell_price_sen', 'pwp_price_sen']);
 
-/* ── Cost anchor (migration 0177) ─────────────────────────────────────────
+/* ── Cost anchor (migration 0177; sofa one-way 2026-07-20) ─────────────────
    The product→binding leg of R8-at-SKU-level. After a product's COST
-   (base_price_sen / price1_sen) is written, if any supplier_material_bindings
-   row for this code is the cost anchor (is_cost_anchor=true), mirror the
-   product cost back onto that binding so the two sides stay equal. BEST-EFFORT:
-   the product write already committed, so any failure here is swallowed. SOFA
-   is skipped by the pure helper. The mirror targets the binding row directly —
-   it does NOT re-enter mfg-products PATCH, so there's no sync loop. */
+   (base_price_sen / price1_sen, or a SOFA seat_height_prices cost slot) is
+   written, if a supplier_material_bindings row for this code is the cost anchor
+   (is_cost_anchor=true), mirror the product cost onto that binding so the two
+   sides stay equal. BEST-EFFORT: the product write already committed, so any
+   failure here is swallowed. The mirror targets the binding row directly — it
+   does NOT re-enter mfg-products PATCH, so there's no sync loop.
+
+   SOFA: the product record is authoritative (owner "我这用的是产品档"), so this
+   ONE-WAY push carries the product's seat_height_prices cost grid onto the
+   binding's price_matrix; the reverse leg (bindingToProductPatch) stays skipped
+   for sofa so a supplier edit can't overwrite the product.
+
+   MULTI-SUPPLIER: the push targets the single is_cost_anchor binding (the
+   owner's designated primary — "我锚定一个 supplier"), same as every other
+   category. A sofa bound to a NON-anchor supplier keeps its own binding matrix
+   (the PO cost path reads each supplier's own binding). Broadening the push to
+   all bindings is an owner decision — see the PR flag. */
 async function syncAnchorBindingFromProduct(
   supabase: SupabaseClient,
   productCode: string,
-  product: { base_price_sen: number | null; price1_sen: number | null },
+  product: {
+    base_price_sen: number | null;
+    price1_sen: number | null;
+    seat_height_prices?: ProductSeatCost[] | null;
+  },
   companyId?: number,
 ): Promise<void> {
   try {
@@ -93,7 +108,11 @@ async function syncAnchorBindingFromProduct(
     const { data: prod } = await prodQ.maybeSingle();
 
     const result = productToBindingPatch(
-      { base_price_sen: product.base_price_sen, price1_sen: product.price1_sen },
+      {
+        base_price_sen: product.base_price_sen,
+        price1_sen: product.price1_sen,
+        seat_height_prices: product.seat_height_prices ?? null,
+      },
       {
         category: (prod as { category: string | null } | null)?.category ?? null,
         price_matrix: (binding as { price_matrix: unknown }).price_matrix,
@@ -781,7 +800,15 @@ mfgProducts.patch('/:id', async (c) => {
      written value if it changed, else the unchanged current value. Best-effort
      — runs after the product write committed. */
   const costFieldChanged = priceChanges.some(
-    (ch) => ch.field === 'base_price_sen' || ch.field === 'price1_sen',
+    (ch) =>
+      ch.field === 'base_price_sen' ||
+      ch.field === 'price1_sen' ||
+      // SOFA per-(height,tier) COST slots (field `seat_height:<h>|<tier>`) — the
+      // authoritative sofa cost the binding's price_matrix mirrors. This does
+      // NOT match the selling side (`seat_height_selling:…`): the ':' vs '_'
+      // boundary keeps them disjoint, so a POS selling-price edit never fires a
+      // cost sync.
+      ch.field.startsWith('seat_height:'),
   );
   /* Rename-aware: bindings + price history were cascade-renamed above, so all
      post-write side effects must address the SKU by its FINAL code. */
@@ -796,6 +823,12 @@ mfgProducts.patch('/:id', async (c) => {
       price1_sen: 'price1_sen' in updates
         ? (updates.price1_sen as number | null)
         : current.price1_sen,
+      // Sofa cost grid — the MERGED array when this PATCH touched it, else the
+      // unchanged current grid (so a base_price_sen-only edit still re-mirrors
+      // the full sofa matrix rather than dropping it).
+      seat_height_prices: 'seat_height_prices' in updates
+        ? (updates.seat_height_prices as ProductSeatCost[])
+        : ((current.seat_height_prices as ProductSeatCost[] | null) ?? null),
     }, activeCompanyId(c));
   }
 

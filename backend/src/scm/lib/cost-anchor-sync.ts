@@ -8,7 +8,7 @@
 // (unit_price_centi flat, or price_matrix cells). centi === sen (both RM×100),
 // so the mapping is 1:1 — no unit conversion, only field/shape mapping.
 //
-// DIRECTIONS (bidirectional while a binding is the cost anchor):
+// DIRECTIONS (bidirectional for FLAT/BEDFRAME; SOFA is one-way product→binding):
 //   FLAT  (unit_price_centi; MATTRESS/ACCESSORY/SERVICE)
 //        binding→product: base_price_sen = unit_price_centi
 //        product→binding: unit_price_centi = base_price_sen
@@ -16,8 +16,17 @@
 //        binding→product: base_price_sen = matrix.P2, price1_sen = matrix.P1
 //        product→binding: matrix.P2 = base_price_sen, matrix.P1 = price1_sen
 //   SOFA (per-height matrix {height:{P1,P2,P3}})
-//        SKIPPED — a single SKU cost vs a per-height grid is ambiguous; we
-//        return { skipped:true } and touch nothing. Documented phase-2 gap.
+//        ONE-WAY — the PRODUCT record is authoritative (owner 2026-07-20:
+//        "我这用的是产品档"). The product's sofa cost lives in
+//        seat_height_prices (per-(height,tier) priceSen = COST) — the SAME grid
+//        the binding stores as price_matrix { "<height>": {P1,P2,P3} }. So the
+//        old "single SKU cost vs per-height grid is ambiguous" skip compared the
+//        WRONG product field (base_price_sen); the real mapping is a shape
+//        transform, not ambiguous.
+//        product→binding: price_matrix ⇐ seat_height_prices (grouped by height,
+//          tier→P1/P2/P3); unit_price_centi ⇐ base_price_sen (flat fallback).
+//        binding→product: SKIPPED — a supplier-side edit must NEVER overwrite
+//          the authoritative product cost.
 // ─────────────────────────────────────────────────────────────────────────
 
 /** Category as stored on mfg_products (uppercased before calling). */
@@ -30,10 +39,23 @@ export type BindingCost = {
   price_matrix: unknown; // JSONB — { P1,P2 } (bedframe) | { h:{P1,P2,P3} } (sofa) | null
 };
 
+/** One row of the product's SOFA cost grid (mfg_products.seat_height_prices,
+ *  JSONB). `priceSen` is the COST side (the selling side, sellingPriceSen, is
+ *  deliberately NOT read here — cost sync only). A row with no `priceSen`
+ *  (selling-only) carries no cost and is skipped, never mirrored as a 0. */
+export type ProductSeatCost = {
+  height: string;
+  tier?: 'PRICE_1' | 'PRICE_2' | 'PRICE_3' | null;
+  priceSen?: number | null;
+};
+
 /** Minimal product cost shape this helper reads/writes (sen). */
 export type ProductCost = {
   base_price_sen: number | null;
   price1_sen: number | null;
+  /** SOFA per-(height,tier) COST grid — the authoritative source for the sofa
+   *  binding's price_matrix. Absent/empty for non-sofa categories. */
+  seat_height_prices?: ProductSeatCost[] | null;
 };
 
 /** Patch to apply to the mfg_products row (only the keys that changed). */
@@ -81,7 +103,13 @@ export function bindingToProductPatch(binding: BindingCost): SyncResult<ProductP
   const lane = laneFor(binding.category);
 
   if (lane === 'SOFA') {
-    return { skipped: true, reason: 'sofa_per_height_matrix_ambiguous' };
+    // ONE-WAY: the PRODUCT record is authoritative for sofa cost (owner
+    // 2026-07-20 "我这用的是产品档"). A supplier-side binding edit must NEVER
+    // flow back onto the product — that would let a supplier overwrite the cost
+    // the owner maintains in Product Maintenance. The forward leg
+    // (productToBindingPatch) mirrors the product's seat_height_prices onto the
+    // binding's price_matrix.
+    return { skipped: true, reason: 'sofa_product_is_authoritative' };
   }
 
   if (lane === 'BEDFRAME') {
@@ -116,7 +144,37 @@ export function productToBindingPatch(
   const lane = laneFor(binding.category);
 
   if (lane === 'SOFA') {
-    return { skipped: true, reason: 'sofa_per_height_matrix_ambiguous' };
+    // ONE-WAY product→binding (owner 2026-07-20: the product record is the boss
+    // for sofa cost). The product's seat_height_prices is a per-(height,tier)
+    // COST grid — the SAME information the binding stores as price_matrix
+    // { "<height>": {P1,P2,P3} } — so mirror it across as a shape transform.
+    // Only the COST side (priceSen) is read; sellingPriceSen is never touched.
+    const rows = Array.isArray(product.seat_height_prices) ? product.seat_height_prices : [];
+    const matrix: Record<string, { P1?: number; P2?: number; P3?: number }> = {};
+    for (const r of rows) {
+      if (!r || typeof r.height !== 'string' || r.height === '') continue;
+      const cost = asSen(r.priceSen);
+      // Money-safe: a selling-only / empty seat row carries NO cost. Skip it —
+      // never fabricate a 0 cost into the binding matrix (mirrors
+      // resolveSeatHeightSen's costed() guard). A missing cost stays missing.
+      if (cost === null) continue;
+      const key = r.tier === 'PRICE_1' ? 'P1' : r.tier === 'PRICE_3' ? 'P3' : 'P2';
+      const cell = matrix[r.height] ?? (matrix[r.height] = {});
+      cell[key] = cost;
+    }
+    const flat = asSen(product.base_price_sen);
+    const patch: BindingPatch = {};
+    // Replace the matrix ONLY when the product carries a priced grid, so a
+    // product with no seat cost can never WIPE an existing binding matrix to {}.
+    if (Object.keys(matrix).length > 0) patch.price_matrix = matrix;
+    // Flat fallback lane (unmatched seat size). Set only when the product has a
+    // base cost; a null base leaves the binding's flat price untouched rather
+    // than forcing it to 0 (money-safe — a missing cost must stay visible).
+    if (flat !== null) patch.unit_price_centi = flat;
+    if (Object.keys(patch).length === 0) {
+      return { skipped: true, reason: 'sofa_product_has_no_cost' };
+    }
+    return { skipped: false, patch };
   }
 
   if (lane === 'BEDFRAME') {
