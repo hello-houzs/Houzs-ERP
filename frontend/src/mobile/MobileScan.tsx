@@ -99,6 +99,13 @@ export type { ScanJob, ScanJobsResp };
 type Shot = { file: File; url: string };
 type Slot = Shot | null;
 
+/* A picked file can now be a PDF (desktop parity — a PDF slip / e-receipt), and
+   an object-URL of a PDF rendered into an <img> is a broken thumbnail. So the
+   preview branches on this: image → the <img>, PDF → a document tile with the
+   filename. */
+const isPdfShot = (s: Shot): boolean =>
+  s.file.type === "application/pdf" || /\.pdf$/i.test(s.file.name);
+
 /* One queued order in the session: a single front slip + its payment slips.
    `id` is a stable client key for React lists + remove (independent of array
    index so removing an order doesn't reshuffle keys).
@@ -271,6 +278,23 @@ function RemoveButton({ label, onClick, style }: { label: string; onClick: () =>
       {"×"}
     </button>
   );
+}
+
+/* Preview fill for a captured slip — the <img> for an image, a document tile for
+   a PDF (an object-URL of a PDF in an <img> renders as a broken thumbnail). Fills
+   its positioned `.ph` wrapper; the wrapper owns the overlays (check / remove /
+   retake). Added with PDF accept (desktop parity). */
+function ShotPreview({ shot, alt }: { shot: Shot; alt: string }) {
+  if (isPdfShot(shot)) {
+    return (
+      <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, background: "#eef1ec", padding: 8, boxSizing: "border-box" }}>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#5c6156" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg>
+        <span style={{ fontSize: 10, fontWeight: 700, color: "#5c6156", textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{shot.file.name}</span>
+        <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".1em", color: "#9aa093" }}>PDF</span>
+      </div>
+    );
+  }
+  return <img src={shot.url} alt={alt} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />;
 }
 
 const SLOT_LABELS = ["Front slip", "Payment slip"];
@@ -548,10 +572,12 @@ export function MobileScan({
     }
   };
 
-  // The session is submittable once EVERY queued order has its front slip AND at
-  // least one payment slip. (An order that's still blank blocks submit — the
-  // operator should finish it or remove it.)
-  const ready = orders.length > 0 && orders.every((o) => o.front !== null && o.payShots.length > 0);
+  // The session is submittable once EVERY queued order has its front slip. The
+  // payment slip is OPTIONAL — desktop parity (ScanOrderModal `ready` = slip
+  // only): a slip alone submits and the payment can be recorded later; the
+  // background /enqueue OCR reads zero-or-more receipts. (An order that's still
+  // blank — no front slip — blocks submit; finish it or remove it.)
+  const ready = orders.length > 0 && orders.every((o) => o.front !== null);
   const multiOrder = orders.length > 1;
 
   const pickFront = (orderId: string) => {
@@ -737,7 +763,8 @@ export function MobileScan({
   // clears; the background job still marks it as a soft duplicate for the trail.
   const createAnyway = async (orderId: string) => {
     const order = orders.find((o) => o.id === orderId);
-    if (!order || !order.front || order.payShots.length === 0 || forcingId) return;
+    // Front slip is the only requirement — payment optional (desktop parity).
+    if (!order || !order.front || forcingId) return;
     setForcingId(orderId);
     try {
       await enqueueOne(order, true);
@@ -824,7 +851,9 @@ export function MobileScan({
       let queued = 0;
       const dupErrors: Record<string, string> = {};
       for (const order of orders) {
-        if (!order.front || order.payShots.length === 0) continue;
+        // Slip-only orders enqueue too (payment optional — desktop parity). Only
+        // a genuinely blank order (no front slip) is skipped.
+        if (!order.front) continue;
         try {
           await enqueueOne(order);
           queued++;
@@ -1027,7 +1056,11 @@ export function MobileScan({
             <input
               ref={frontInputRef}
               type="file"
-              accept="image/*"
+              /* Desktop parity — also accept a PDF slip (ScanOrderModal ACCEPT).
+                 capture="environment" stays: the owner's mobile flow is snap-the-
+                 slip with the rear camera; where a browser honours capture the
+                 front stays camera-first, where it doesn't a PDF becomes pickable. */
+              accept="image/*,application/pdf"
               capture="environment"
               style={{ display: "none" }}
               onChange={(e) => {
@@ -1038,7 +1071,9 @@ export function MobileScan({
             <input
               ref={payInputRef}
               type="file"
-              accept="image/*"
+              /* Desktop parity — accept a PDF e-receipt alongside images. No
+                 capture here, so a PDF is fully pickable from Files. */
+              accept="image/*,application/pdf"
               multiple
               style={{ display: "none" }}
               onChange={(e) => {
@@ -1074,7 +1109,7 @@ export function MobileScan({
                 <div className="ey" style={{ letterSpacing: ".14em", color: "#9aa093", fontSize: 10.5, marginBottom: 6 }}>{SLOT_LABELS[0]}</div>
                 {order.front ? (
                   <div className="ph" style={{ position: "relative", height: 130, borderRadius: 12, overflow: "hidden", marginBottom: 4 }}>
-                    <img src={order.front.url} alt={SLOT_LABELS[0]} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                    <ShotPreview shot={order.front} alt={SLOT_LABELS[0]} />
                     <span style={{ position: "absolute", top: 6, left: 6, width: 20, height: 20, borderRadius: "50%", background: "#2f8a5b", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
                       {CHECK}
                     </span>
@@ -1120,7 +1155,7 @@ export function MobileScan({
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
                   {order.payShots.map((shot, i) => (
                     <div key={shot.url} className="ph" style={{ position: "relative", height: 96, borderRadius: 12, overflow: "hidden" }}>
-                      <img src={shot.url} alt={`Order ${oi + 1} payment ${i + 1}`} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                      <ShotPreview shot={shot} alt={`Order ${oi + 1} payment ${i + 1}`} />
                       <span style={{ position: "absolute", top: 5, left: 5, height: 18, minWidth: 18, padding: "0 5px", borderRadius: 999, background: "rgba(17,20,15,.62)", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         {i + 1}
                       </span>
@@ -1146,7 +1181,9 @@ export function MobileScan({
                   </button>
                 </div>
                 <div style={{ fontSize: 10.5, color: "#9aa093", textAlign: "center", marginTop: 10 }}>
-                  1 front slip + {order.payShots.length || 1} payment slip{(order.payShots.length || 1) === 1 ? "" : "s"} · each payment slip = one payment
+                  {order.payShots.length === 0
+                    ? "1 front slip · payment slips optional (add later if you like)"
+                    : `1 front slip + ${order.payShots.length} payment slip${order.payShots.length === 1 ? "" : "s"} · each payment slip = one payment`}
                 </div>
 
                 {/* Order-level duplicate-slip WARNING (409 duplicate_slip): this

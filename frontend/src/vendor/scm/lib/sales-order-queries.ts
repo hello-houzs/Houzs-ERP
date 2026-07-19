@@ -359,6 +359,23 @@ export const useDeleteMfgSalesOrderItem = () => {
   });
 };
 
+/* Discard a DRAFT SO (owner 2026-07-20) — hard-deletes the draft + its children
+   via the backend DELETE /:docNo (DRAFT-only, company-scoped, same `edit`
+   permission as an SO edit). The order ceases to exist, so beyond refreshing the
+   list caches we DROP the detail query for that docNo rather than invalidating
+   it (there is nothing left to refetch, and the caller navigates away). */
+export const useDeleteMfgSalesOrder = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ docNo }: { docNo: string }) =>
+      authedFetch<{ ok: boolean; docNo: string }>(`/mfg-sales-orders/${docNo}`, { method: 'DELETE' }),
+    onSuccess: (_, vars) => {
+      invalidateSoLists(qc);
+      qc.removeQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
+    },
+  });
+};
+
 export const useOverrideMfgSoLinePrice = () => {
   const qc = useQueryClient();
   return useMutation({
