@@ -184,8 +184,21 @@ const ROUTE_TO_CONFIG: Record<string, string> = {
  *  `gateVia` — gate this row on ANOTHER path's nav entry. Needed when a mobile
  *  screen outlives its desktop route: `allowed()` fails OPEN for a path with no
  *  NAV_TABS match, so a row pointing at a retired desktop path would go from
- *  gated to visible-to-everyone. Point it at a live entry with the same gate. */
-const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; alwaysShow?: boolean; directorOnly?: boolean; gateVia?: string }[] }[] = [
+ *  gated to visible-to-everyone. Point it at a live entry with the same gate.
+ *
+ *  EVERY row must state its gate in ONE of four ways — `mobileMenuGates.test.ts`
+ *  fails CI for a row that states none, so "I forgot to gate this" can no longer
+ *  ship as a public page:
+ *    1. a live NAV_TABS entry at `to` (the normal case — the desktop nav's own
+ *       anyPerm/anyAccess becomes this row's gate),
+ *    2. `gateVia` pointing at a live NAV_TABS entry carrying the same gate (for a
+ *       mobile-only or retired-on-desktop path),
+ *    3. `directorOnly` (isDirectorUser, bypasses `allowed()` entirely),
+ *    4. `alwaysShow` + membership in that test's UNGATED_BY_DESIGN list, which
+ *       is where a deliberately ungated row must be justified in writing. */
+export type MobileMenuItem = { to: string; label: string; alwaysShow?: boolean; directorOnly?: boolean; gateVia?: string };
+
+export const MOBILE_MENU_GROUPS: { group: string; items: MobileMenuItem[] }[] = [
   { group: "Sales & Finance", items: [
     { to: "/scm/sales-orders", label: "Sales Orders" },
     { to: "/scm/amendments", label: "Amendments" },
@@ -200,13 +213,15 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; a
     { to: "/scm/delivery-orders", label: "Delivery Orders" },
     { to: "/scm/sales-invoices", label: "Sales Invoices" },
     { to: "/scm/delivery-returns", label: "Delivery Returns" },
-    /* Chart of Accounts (MODULE_CONFIGS.accounting → GET /accounting/accounts).
-       READ-ONLY and accounts-only: the journal-entry half of the desktop page
-       (/accounting/journal-entries) has no mobile screen, so this row is the
-       account list, not the whole desktop module. Gated by its own live nav
-       entry (anyAccess scm.finance.accounting), which is also the backend area
-       guard on /api/scm/accounting/*. */
-    { to: "/scm/accounting", label: "Accounting" },
+    /* MODULE_CONFIGS.accounting → GET /accounting/accounts. Labelled "Chart of
+       Accounts", NOT "Accounting", because accounts is all it opens: the
+       journal-entry half of the desktop page (/accounting/journal-entries) has
+       no mobile screen. A row named "Accounting" would send someone looking for
+       journal entries and let them conclude the app is broken when they don't
+       find them — the label has to name what the screen actually is. Gated by
+       its own live nav entry (anyAccess scm.finance.accounting), which is also
+       the backend area guard on /api/scm/accounting/*. */
+    { to: "/scm/accounting", label: "Chart of Accounts" },
   ]},
   { group: "Projects · PMS", items: [
     { to: "/projects", label: "Projects" },
@@ -283,8 +298,19 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; a
  *  Same routes and the SAME per-item permission gate (`allowed`) the menu
  *  applied when they lived there; an item hidden from the old menu stays
  *  hidden in Profile. */
-const PROFILE_ORG_ITEMS: { to: string; label: string; alwaysShow?: boolean }[] = [
-  { to: "/activity-inbox", label: "Inbox" },
+export const PROFILE_ORG_ITEMS: MobileMenuItem[] = [
+  /* DELIBERATELY UNGATED — the one row in the whole mobile shell that relies on
+     `allowed()` failing OPEN, and the reason the default cannot simply be
+     flipped to deny. /activity-inbox is a MOBILE-ONLY path: it is not a route in
+     App.tsx and has no NAV_TABS entry, so there is no desktop gate to borrow.
+     The screen is the project-activity feed (hooks/useNotifications) — the phone's
+     equivalent of the desktop bell, which every signed-in user has — and it is
+     audience-filtered SERVER-side, so there is no page permission to apply here.
+     `alwaysShow` states that intent in the data instead of leaning on the
+     permissive default, and mobileMenuGates.test.ts pins it: this path is in that
+     test's UNGATED_BY_DESIGN list, and the test fails if the list ever names a
+     path that has since acquired a real gate. */
+  { to: "/activity-inbox", label: "Inbox", alwaysShow: true },
   { to: "/mail-center", label: "Mail Center" },
   /* Owner rule 2026-07: Announcements is readable by EVERY active user —
      the mobile screen reads /api/announcements/banner, which needs no
