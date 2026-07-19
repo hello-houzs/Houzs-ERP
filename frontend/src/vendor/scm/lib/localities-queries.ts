@@ -79,6 +79,63 @@ export const countryForState = (rows: LocalityRow[], state: string): string | nu
   return hit?.country ?? null;
 };
 
+/* ── REVERSE resolution (postcode / city → state) ──────────────────────────
+   The forward cascade above is State → City → Postcode. These helpers run the
+   OTHER way so the SO/mobile forms can auto-fill State (and, through the existing
+   state→warehouse mapping, the Sales Location) the moment the operator knows a
+   Postcode or a City instead of a State. A Malaysian 5-digit postcode maps to a
+   single locality, so resolvePostcode returns both {state, city}; a city name
+   can (rarely) sit under more than one state, so resolveCityState returns a
+   state ONLY when it is unambiguous — never a wrong guess. Both read the SAME
+   my_localities rows the forward cascade uses, so the two directions can't
+   disagree. */
+
+/* Reverse-resolve a Postcode to its {state, city}. Exact (trimmed) string match —
+   postcodes are stored as strings incl. any leading zeros/letters. Returns null
+   when the postcode is unknown, or when the rows for it disagree on the state
+   (conflicting seed data → refuse to guess). city is '' when a postcode legibly
+   spans more than one city (still lets the caller set the state). */
+export const resolvePostcode = (
+  rows: LocalityRow[],
+  postcode: string,
+): { state: string; city: string } | null => {
+  const want = (postcode ?? '').trim();
+  if (!want) return null;
+  const hits = rows.filter((r) => r.postcode === want);
+  if (hits.length === 0) return null;
+  const state = hits[0].state;
+  if (!hits.every((r) => r.state === state)) return null; // ambiguous state → don't guess
+  const cities = Array.from(new Set(hits.map((r) => r.city)));
+  return { state, city: cities.length === 1 ? cities[0] : '' };
+};
+
+/* Reverse-resolve a City to its State — ONLY when the city name appears under a
+   single state (case-insensitive). A city shared by >1 state returns null so the
+   caller leaves State for the operator to pick (never a wrong guess). */
+export const resolveCityState = (rows: LocalityRow[], city: string): string | null => {
+  const want = (city ?? '').trim().toLowerCase();
+  if (!want) return null;
+  const states = new Set<string>();
+  for (const r of rows) if (r.city.trim().toLowerCase() === want) states.add(r.state);
+  return states.size === 1 ? Array.from(states)[0] : null;
+};
+
+/* Distinct city / postcode lists across ALL states — the option pool the SO
+   forms show when NO state is picked yet, so the operator can choose a City or
+   Postcode first and have the State resolve back from it. With a state picked the
+   forms keep using the state-scoped citiesInState/postcodesInCity (forward
+   cascade unchanged). */
+export const allCities = (rows: LocalityRow[]): string[] => {
+  const s = new Set<string>();
+  for (const r of rows) s.add(r.city);
+  return Array.from(s).sort();
+};
+export const allPostcodes = (rows: LocalityRow[]): string[] => {
+  const s = new Set<string>();
+  for (const r of rows) s.add(r.postcode);
+  return Array.from(s).sort();
+};
+
 /* HOUZS VENDOR — SO Maintenance's Localities CRUD section. authedFetch-based in
    the source (→ /localities). Copied verbatim. */
 export const useCreateLocality = () => {
