@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, defaultWarehouseId, reconcileDropshipBatches } from '../lib/inventory-movements';
+import { reconcileUncostedOuts } from '../lib/oversell-retrocost';
 import { buildVariantSummary, computeVariantKey, effectiveDelivery, isServiceLine, type VariantAttrs } from '../shared';
 import {
   orderSofaModuleRowsWithinBuilds,
@@ -445,6 +446,11 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string, companyI
          booked and the caller never told). No rollback; just make it loud. */
       const res = await writeMovements(sb, movements, grnHeader?.company_id ?? null);
       if (!res.ok) movementErrors.push(`IN ${grnNo}: ${res.reason ?? 'unknown'}`);
+      /* Receipt cutoff for the retro-cost reconciles below: the moment the IN rows
+         posted. Only OUTs that shipped BEFORE this are eligible to draw on the
+         arriving lots — a later order consumes them through the normal FIFO trigger
+         at its own ship time (coverage-theft guard, migration 0154). */
+      const receiptCutoffTs = new Date().toISOString();
       /* Drop-ship receipt reconcile (mig 0057) — the IN just created fresh
          batched lots. If a sofa was drop-shipped against this batch before
          receipt, its OUT consumed no lot; consume that outstanding shortfall
@@ -474,6 +480,34 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string, companyI
             try { await restampSiFromDo(sb, doId); } catch { /* best-effort */ }
           }
         } catch (e) { /* eslint-disable-next-line no-console */ console.error('[dropship] DO restamp failed:', e); }
+      }
+      /* Oversell retro-cost (migration 0154) — NORMAL (non-drop-ship) DO short-
+         ships. When a DO oversold via the soft "ship anyway" path, its short units
+         shipped UNBATCHED and UNCOSTED (fn_consume_fifo discarded the qty_short) and
+         inventory_balances went negative. The arriving lots let us retro-cost that
+         outstanding shortfall now (plain FIFO, real lot cost) so COGS catches up and
+         the signed-balance vs lot-value views re-converge. Scoped to prior shipments
+         only (receiptCutoffTs) + non-drop-ship + non-cancelled + idempotent; drop-
+         ship shorts are owned by the batched reconcile above (0088). Best-effort. */
+      const oversell = await reconcileUncostedOuts(
+        sb,
+        movements.map((m) => ({
+          warehouse_id: m.warehouse_id,
+          product_code: m.product_code,
+          variant_key: m.variant_key,
+        })),
+        receiptCutoffTs,
+        userId,
+      );
+      if (oversell.affectedDoIds.length > 0) {
+        try {
+          const { restampDoActualCost } = await import('./delivery-orders-mfg');
+          const { restampSiFromDo } = await import('../lib/recost');
+          for (const doId of oversell.affectedDoIds) {
+            await restampDoActualCost(sb, doId);
+            try { await restampSiFromDo(sb, doId); } catch { /* best-effort */ }
+          }
+        } catch (e) { /* eslint-disable-next-line no-console */ console.error('[oversell] DO restamp failed:', e); }
       }
     }
   }
