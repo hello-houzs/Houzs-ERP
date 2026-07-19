@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { MOBILE_MENU_GROUPS, PROFILE_ORG_ITEMS, type MobileMenuItem } from "./MobileApp";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
+import { CAPABILITY_KEYS } from "../auth/capabilities";
 
 /**
  * EVERY mobile menu row must state its permission gate. This test is the reason
@@ -76,13 +77,26 @@ const UNGATED_BY_DESIGN = new Map<string, string>([
 
 /** How a row states its gate, or null when it states none.
  *
- *  Order matters. `directorOnly` and `alwaysShow` are checked BEFORE the nav
+ *  Order matters. `capability` and `alwaysShow` are checked BEFORE the nav
  *  lookup because both short-circuit `allowed()` at runtime — a row carrying
  *  `alwaysShow` is ungated whether or not a NAV_TABS entry happens to exist for
- *  its path, so crediting it with that entry's gate would be a false pass. */
+ *  its path, so crediting it with that entry's gate would be a false pass.
+ *
+ *  `capability` replaced `directorOnly`. It is the STRONGEST gate form a row can
+ *  carry: the boolean is decided by the backend (services/capabilities.ts) and
+ *  read verbatim, so unlike a nav-tab gate it cannot drift from the rule the
+ *  endpoint enforces. A row is credited only when the key is one the frontend
+ *  actually declares — a typo'd or retired key would otherwise read as a gate
+ *  while `capability()` silently returned false for everyone, which is a
+ *  fail-CLOSED bug but still a screen that vanished without anyone deciding it
+ *  should. */
 function gateOf(item: MobileMenuItem): string | null {
   const path = item.to.split("?")[0];
-  if (item.directorOnly) return "directorOnly";
+  if (item.capability) {
+    return (CAPABILITY_KEYS as readonly string[]).includes(item.capability)
+      ? `capability ${item.capability}`
+      : null;
+  }
   if (item.alwaysShow) return UNGATED_BY_DESIGN.has(path) ? "ungated by design (alwaysShow)" : null;
   if (item.gateVia) return navPaths.has(item.gateVia.split("?")[0]) ? `gateVia ${item.gateVia}` : null;
   if (navPaths.has(path)) return `NAV_TABS ${path}`;

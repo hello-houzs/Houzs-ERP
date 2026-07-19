@@ -58,7 +58,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { resolveSoLocation } from "../../lib/soLocation";
 import { useAuth } from "../../auth/AuthContext";
-import { isDirectorUser, canViewScmCosting } from "../../auth/salesAccess";
+import { canViewScmCosting } from "../../auth/salesAccess";
+import { capability } from "../../auth/capabilities";
 import { buildVariantSummary, lineIdentity } from "@2990s/shared";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -946,12 +947,18 @@ export function MfgSalesOrdersListV2() {
   // those keys from the payload — see canViewScmFinance).
   const { user } = useAuth();
   const canFinance = canViewScmCosting(user);
-  // SO Maintenance (bulk import / duplicate / renumber) is DIRECTOR-only —
-  // Sales Director / Super Admin / Finance Manager / Owner-IT `*`
-  // (auth/salesAccess.isDirectorUser). Owner 2026-07-15: a non-director Sales
-  // user (Sales Executive/Coordinator) must not see the button OR reach the
-  // route. Same rule enforced on the route in App.tsx (SoMaintenanceGuard).
-  const canMaintain = isDirectorUser(user);
+  // SO Maintenance (bulk import / duplicate / renumber) — the BACKEND's answer,
+  // `scm.maintenance.open`, resolved once on /auth/me and read verbatim.
+  //
+  // WAS `isDirectorUser(user)`, which the route guard and both mobile sites also
+  // asked independently. That cohort ({`*`, Super Admin, Sales Director, Finance
+  // Manager}) is not the one the API serves: the page's writes pass
+  // houzs-perms.canWriteScmConfig, which also admits Procurement/Purchasing,
+  // Operation Manager, Operation Executive and Logistic Admin — so those four
+  // could not even see this button over a page the API would have let them edit.
+  // Owner 2026-07-15's exclusion of non-director SALES is unchanged: the sales
+  // cohort satisfies neither term of the capability.
+  const canMaintain = capability(user, "scm.maintenance.open");
 
   const status = (params.get("status") ?? "all") as StatusTab;
   // View toggle applies at md+; on phones we always render the card list

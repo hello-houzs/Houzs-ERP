@@ -492,6 +492,26 @@ export interface AuthUser {
    *  Older backends omit it → treated as false by the helper, which then falls
    *  back to the flat key, i.e. exactly today's behaviour. */
   scm_config_writer?: boolean;
+  /**
+   * The RESOLVED capability set — the server's answers to "what may this user
+   * do", computed once per /auth/me by backend services/capabilities.ts and
+   * consumed verbatim by desktop and mobile. Owner's ruling 2026-07-19: the
+   * frontend is TOLD a permission, it does not compute one.
+   *
+   * Read it through auth/capabilities.ts (`useCapability` / `capability`), never
+   * by indexing this object directly — those helpers fail closed on an absent
+   * set and an absent key, and the direct read is where a `?? true` eventually
+   * gets written. The two flags above are the same idea grown one field at a
+   * time; they stay for a cached SPA shell that predates this response.
+   *
+   * OPTIONAL ONLY FOR THE DEPLOY WINDOW. `undefined` means the Worker predates
+   * the capabilities response, NOT that the user has no permissions — every gate
+   * reads false and auth/capabilities.capabilitiesUnresolved reports the
+   * condition so it can be surfaced as a load failure rather than a denial.
+   * Values are `boolean | undefined` per key for the same reason: a key the
+   * server has not shipped yet must not be indistinguishable from `true`.
+   */
+  capabilities?: Partial<Record<string, boolean>>;
   /** Org POSITION name (positions.name) — e.g. "Sales Executive",
    *  "Super Admin". Sent by /auth/me (services/auth.ts → hydrateAuthUser).
    *  Drives the code-keyed Sales-access model (director / sales detection in

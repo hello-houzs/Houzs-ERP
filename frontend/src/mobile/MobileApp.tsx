@@ -1,7 +1,8 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
-import { isDirectorUser, canViewFairReport, canViewScmCosting } from "../auth/salesAccess";
+import { canViewFairReport, canViewScmCosting } from "../auth/salesAccess";
+import { capability, type CapabilityKey } from "../auth/capabilities";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { makeNavVisible } from "../components/navFilter";
 import { NotifyProvider, useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -200,23 +201,42 @@ const ROUTE_TO_CONFIG: Record<string, string> = {
  *       anyPerm/anyAccess becomes this row's gate),
  *    2. `gateVia` pointing at a live NAV_TABS entry carrying the same gate (for a
  *       mobile-only or retired-on-desktop path),
- *    3. `directorOnly` (isDirectorUser, bypasses `allowed()` entirely),
+ *    3. `capability` — a SERVER-DECIDED answer from /auth/me (auth/capabilities),
+ *       which bypasses `allowed()` entirely. This is the preferred gate for a
+ *       destination with no NAV_TABS entry: it is the same boolean the backend
+ *       gate resolved, so the row and the endpoint cannot disagree. It replaced
+ *       `directorOnly`, which asked the FRONTEND to re-derive isDirectorUser and
+ *       got a cohort the API did not use (see the SO Maintenance row below),
  *    4. `alwaysShow` + membership in that test's UNGATED_BY_DESIGN list, which
  *       is where a deliberately ungated row must be justified in writing. */
-export type MobileMenuItem = { to: string; label: string; alwaysShow?: boolean; directorOnly?: boolean; gateVia?: string };
+export type MobileMenuItem = {
+  to: string;
+  label: string;
+  alwaysShow?: boolean;
+  /** Gate this row on one backend-resolved capability. Fails closed: an
+   *  unresolved capability set hides the row. */
+  capability?: CapabilityKey;
+  gateVia?: string;
+};
 
 export const MOBILE_MENU_GROUPS: { group: string; items: MobileMenuItem[] }[] = [
   { group: "Sales & Finance", items: [
     { to: "/scm/sales-orders", label: "Sales Orders" },
     { to: "/scm/amendments", label: "Amendments" },
-    /* SO Maintenance — DIRECTOR-only (Super Admin / Sales Director / Finance
-       Manager / Owner-IT `*`, via auth/salesAccess.isDirectorUser), the same
-       gate the desktop SO-list button + route use (MfgSalesOrdersListV2
-       `canMaintain`, App.tsx SoMaintenanceGuard). `directorOnly` bypasses the
-       nav-tab `allowed()` check because this destination isn't a NAV_TABS entry
-       (it's a toolbar button on desktop). OFF, not hide: a non-director never
-       gets this row rendered and never reaches the screen. */
-    { to: "/scm/sales-orders/maintenance", label: "SO Maintenance", directorOnly: true },
+    /* SO Maintenance — gated on the BACKEND's own answer, `scm.maintenance.open`.
+       This row said `directorOnly` (auth/salesAccess.isDirectorUser = {`*`,
+       Super Admin, Sales Director, Finance Manager}) and so did the desktop
+       button and route. That is not the cohort the API serves: every write on
+       the page passes houzs-perms.canWriteScmConfig, which admits
+       Procurement/Purchasing, Operation Manager, Operation Executive and
+       Logistic Admin — the positions the owner ruled on 2026-07-18 must be able
+       to DO the master-data writes they can see. All four were bounced at the
+       door on both surfaces while the API would have accepted their edits.
+       The capability is the union of the write tier and the director read tier,
+       resolved server-side once, so phone and desktop now ask one question and
+       get one answer. Still OFF, not hidden: a caller without it never gets the
+       row and never mounts the screen. */
+    { to: "/scm/sales-orders/maintenance", label: "SO Maintenance", capability: "scm.maintenance.open" },
     { to: "/scm/delivery-orders", label: "Delivery Orders" },
     { to: "/scm/sales-invoices", label: "Sales Invoices" },
     { to: "/scm/delivery-returns", label: "Delivery Returns" },
@@ -453,7 +473,7 @@ function MobileAppInner() {
   // gates). Computed HERE, above the state, because the initial screen is resolved
   // from the URL against exactly this permission-filtered list.
   const menuGroups = MOBILE_MENU_GROUPS
-    .map((g) => ({ group: g.group, items: g.items.filter((it) => (it.directorOnly ? isDirectorUser(user) : (it.alwaysShow || allowed(it.gateVia ?? it.to)))) }))
+    .map((g) => ({ group: g.group, items: g.items.filter((it) => (it.capability ? capability(user, it.capability) : (it.alwaysShow || allowed(it.gateVia ?? it.to)))) }))
     .filter((g) => g.items.length > 0);
 
   // Organisation rows shown inside the Profile screen — gated by the SAME
@@ -565,10 +585,12 @@ function MobileAppInner() {
   else if (screen.t === "so-detail") overlay = <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} />;
   else if (screen.t === "amendments") overlay = <MobileAmendments onBack={back} onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })} />;
   else if (screen.t === "so-maintenance") {
-    // Director-only, defence-in-depth: even though the menu row is director-gated,
-    // don't mount the maintenance page (or its data hooks) for a non-director —
-    // mirrors App.tsx SoMaintenanceGuard. OFF, not hide.
-    overlay = !isDirectorUser(user) ? (
+    // Defence-in-depth on the SAME server-decided answer the menu row uses, so
+    // the row and the mount cannot disagree: don't mount the maintenance page
+    // (or its data hooks) for a caller the backend would refuse. Mirrors
+    // App.tsx SoMaintenanceGuard, which now reads the same capability. OFF, not
+    // hide — an unresolved capability set denies here too.
+    overlay = !capability(user, "scm.maintenance.open") ? (
       <TabLocked title="SO Maintenance" />
     ) : (
       <div className="hz-m" style={{ position: "fixed", inset: 0, display: "flex", flexDirection: "column", background: "var(--app-bg)" }}>

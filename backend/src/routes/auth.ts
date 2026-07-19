@@ -13,6 +13,7 @@ import {
 import { bustUserSessions } from "../services/sessionCache";
 import { isFinanceViewer, isProductCostViewer } from "../services/pmsAccess";
 import { userCanWriteScmConfig } from "../services/positionPolicy";
+import { resolveCapabilities } from "../services/capabilities";
 import { sendEmail, publicUrl, resetEmailHtml, inviteEmailHtml, erpProductName } from "../services/email";
 import { getBrandingForCompany } from "../services/branding";
 import { defaultCompanyCodeForHost } from "../middleware/companyContext";
@@ -522,6 +523,11 @@ app.get("/me", async (c) => {
         role_name: "Service",
         status: "active",
         permissions: ["*"],
+        // The service identity is a wildcard holder, so it resolves through the
+        // SAME registry rather than being handed a hand-written answer — a
+        // second, hand-maintained capability map for one caller is the drift
+        // this file exists to stop.
+        capabilities: resolveCapabilities({ permissions: ["*"] }),
       },
     });
   }
@@ -543,6 +549,19 @@ app.get("/me", async (c) => {
   // cost for a month: that flag answers "are you a PMS director". Computed here,
   // beside its sibling, so the FE never re-derives either from a position-name
   // regex and the two surfaces cannot drift.
+  // capabilities: the RESOLVED ANSWER SET — owner's ruling 2026-07-19, "我们的
+  // 权限全部要用 backend 来做…frontend 那边就不会那么忙". Computed ONCE here, per
+  // request, and consumed by desktop and mobile verbatim: the client renders a
+  // control or does not, and never re-derives WHY. The two flags above are the
+  // same idea grown one at a time; services/capabilities.ts is where the next
+  // one goes instead of a third sibling field. They stay for compatibility with
+  // a cached SPA shell that predates this response.
+  //
+  // A THROW HERE IS A 500, DELIBERATELY. If the capability set cannot be
+  // resolved, the answer is "no" — and an unresolvable permission is an error to
+  // SURFACE, not a blank to fill. There is no try/catch and no `?? {}` fallback
+  // in this path: an empty object on the wire would read to the client as "no
+  // rules configured", which is exactly the fail-open shape this replaces.
   return c.json({
     user: {
       ...user,
@@ -556,6 +575,7 @@ app.get("/me", async (c) => {
       // the API would have accepted their edits. Third flag on this response for
       // the third time the FE and BE drifted by exactly one rule.
       scm_config_writer: userCanWriteScmConfig(user),
+      capabilities: resolveCapabilities(user),
     },
   });
 });

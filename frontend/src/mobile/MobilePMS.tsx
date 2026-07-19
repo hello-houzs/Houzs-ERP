@@ -7,6 +7,7 @@ import { MobileGantt } from "./MobileGantt";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesDirectorUser } from "../auth/salesAccess";
+import { capability } from "../auth/capabilities";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
@@ -724,7 +725,23 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const _dept = (user?.department_name ?? "").trim();
   const _roleName = (user?.role_name ?? "").trim();
   const isOwnerAdmin = !!user?.permissions?.includes("*");
-  const isDirectorPos = /\b(Super Admin|Sales Director|Finance Manager)\b/i.test(_pos);
+  /* The DIRECTOR term is now the backend's own answer (`org.director` =
+     pmsAccess.isDirectorUser, resolved on /auth/me), not a local regex.
+
+     It WAS /\b(Super Admin|Sales Director|Finance Manager)\b/i — the exact
+     word-boundary test that pmsAccess.ts and auth/salesAccess.ts both replaced
+     with an exact-name Set, and for a documented reason: position names are
+     owner-editable free text, so a \b substring match turns a RENAME into a
+     privilege grant. "Assistant to Sales Director" or "Deputy Finance Manager"
+     inherited management visibility here — the last copy of a hole that had been
+     closed everywhere else. `org.director` also folds in the `*` wildcard
+     (isDirectorUser checks it), so isOwnerAdmin is subsumed; it is kept in the
+     OR below only because `seeAllTasks` reads it separately.
+
+     NO LIVE DELTA: over every position in the prod snapshot the old regex and
+     the exact-name set agree, so this narrows nothing that exists today — it
+     removes the way a future rename could widen it. */
+  const isDirectorPos = capability(user, "org.director");
   const isMgt = isOwnerAdmin || isDirectorPos || /^management$/i.test(_dept);
   const isBD = /bd\s*exec|business\s*develop/i.test(_roleName);
   const isDriverCrew = /\b(Driver|Helper)\b/i.test(_pos);
