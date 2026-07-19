@@ -38,7 +38,8 @@ import { z } from 'zod';
 import { normalizePhone, buildVariantSummary, isServiceLine, fmtRM } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  isCrossCompanySource, crossCompanyConversionBlocked } from '../lib/companyScope';
 import { postSiRevenue, reverseSiRevenue, resyncSiRevenue } from '../lib/post-si-revenue';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
@@ -828,6 +829,35 @@ salesInvoices.post('/', async (c) => {
     }
   }
 
+  /* CROSS-COMPANY GUARD — this create path stamps the ACTIVE company on the new
+     invoice, so invoicing another company's SO or DO here would post that
+     company's revenue, AR and commission onto the active company's books.
+     Checks BOTH declared sources: an SI can be raised from an SO directly or
+     from a DO (which itself may legitimately be a 2990 DO, since the
+     Delivery-Planning converter correctly inherits the source company). */
+  {
+    const srcSoDocNo = (body.soDocNo as string | undefined) ?? null;
+    if (srcSoDocNo) {
+      const { data: soRow, error: soErr } = await sb
+        .from('mfg_sales_orders').select('doc_no, company_id').eq('doc_no', srcSoDocNo).maybeSingle();
+      if (soErr) return c.json({ error: 'load_failed', reason: soErr.message }, 500);
+      const so = soRow as { doc_no: string; company_id: number | null } | null;
+      if (so && isCrossCompanySource(so.company_id, c)) {
+        return c.json(crossCompanyConversionBlocked(so.doc_no, so.company_id, c), 409);
+      }
+    }
+    const srcDoId = (body.deliveryOrderId as string | undefined) ?? null;
+    if (srcDoId) {
+      const { data: doRow, error: doErr } = await sb
+        .from('delivery_orders').select('do_number, company_id').eq('id', srcDoId).maybeSingle();
+      if (doErr) return c.json({ error: 'load_failed', reason: doErr.message }, 500);
+      const dr = doRow as { do_number: string; company_id: number | null } | null;
+      if (dr && isCrossCompanySource(dr.company_id, c)) {
+        return c.json(crossCompanyConversionBlocked(dr.do_number, dr.company_id, c), 409);
+      }
+    }
+  }
+
   /* Price-vs-order drift — a WARNING carried back in the response, NEVER a
      rejection (see siPriceDriftWarnings). Computed here so the operator hears
      about a fat-fingered price on the same round-trip that creates the invoice,
@@ -1022,7 +1052,7 @@ salesInvoices.post('/from-dos', async (c) => {
   const distinctDoNumbers = [...new Set(sortedPicks.map((l) => l.doNumber))].sort();
 
   const DO_HEADER =
-    'id, do_number, so_doc_no, debtor_code, debtor_name, customer_delivery_date, ' +
+    'id, do_number, company_id, so_doc_no, debtor_code, debtor_name, customer_delivery_date, ' +
     'salesperson_id, agent, email, customer_type, building_type, branding, venue, venue_id, ref, ' +
     'customer_so_no, po_doc_no, sales_location, customer_state, customer_country, note, ' +
     'address1, address2, city, state, postcode, phone, currency, ' +
@@ -1035,6 +1065,21 @@ salesInvoices.post('/from-dos', async (c) => {
   if (hLoadErr) return c.json({ error: 'load_failed', reason: hLoadErr.message }, 500);
   if (!doHeaderRow) return c.json({ error: 'delivery_order_not_found' }, 404);
   const head = doHeaderRow as unknown as Record<string, unknown>;
+
+  /* CROSS-COMPANY GUARD — the insert below stamps the ACTIVE company and
+     nextNum mints under the ACTIVE company's prefix, so a 2990 DO invoiced from
+     the Houzs view would become a Houzs invoice: 2990's revenue and AR on
+     Houzs' books. This is the SECOND hop of the same conversion chain — the DO
+     itself may legitimately be a 2990 document, because POST /from-sos in
+     delivery-orders-mfg.ts correctly inherits the source SO's company. Refuse
+     rather than inherit: unlike the shared Delivery Planning queue, invoicing
+     is a per-company book with its own numbering. */
+  if (isCrossCompanySource(head.company_id, c)) {
+    return c.json(
+      crossCompanyConversionBlocked(head.do_number as string | null, head.company_id, c),
+      409,
+    );
+  }
 
   const nowIso = new Date().toISOString();
   const phoneRaw = head.phone as string | null;

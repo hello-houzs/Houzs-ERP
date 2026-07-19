@@ -26,7 +26,8 @@ import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr, phoneSearchOrParts } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap,
+  isCrossCompanySource, crossCompanyConversionBlocked } from '../lib/companyScope';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { freezeShipCost } from '../lib/fulfillment-costing';
@@ -2351,10 +2352,14 @@ deliveryOrdersMfg.get('/deliverable-so-lines', async (c) => {
   } else {
     // Page through so PostgREST's 1000-row cap can't drop SOs from the picker
     // (a non-cancelled SO past row 1000 would be undeliverable via the UI).
-    const { data: sos, error } = await paginateAll<{ doc_no: string; status: string }>((from, to) => sb
+    /* Per-company: the SO picker must offer only the active company's orders.
+       Unscoped, this listed every 2990 mirrored SO to a Houzs operator — the
+       visible half of the cross-company conversion bug, and how the operator
+       reached a 2990 SO from the Houzs Create-DO screen at all. */
+    const { data: sos, error } = await paginateAll<{ doc_no: string; status: string }>((from, to) => scopeToCompany(sb
       .from('mfg_sales_orders')
       .select('doc_no, status')
-      .neq('status', 'CANCELLED')
+      .neq('status', 'CANCELLED'), c)
       .order('doc_no', { ascending: false })
       .range(from, to));
     if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -2574,6 +2579,31 @@ deliveryOrdersMfg.post('/', async (c) => {
     }
     const offender = await firstUndeliverableSo(sb, refDocNos);
     if (offender) return c.json(soNotDeliverableResponse(offender), 409);
+
+    /* CROSS-COMPANY GUARD — this create path stamps the ACTIVE company on the
+       new DO (see the insert below), so converting another company's SO here
+       would re-company the order: a 2990 SO shipped out as a HOUZS DO, moving
+       2990's stock and revenue onto Houzs' books. The mirrored 2990 SO rows
+       legitimately live in this database; claiming them as Houzs documents is
+       what must not happen.
+
+       Checked over the SAME refDocNos set as the deliverability guard above,
+       so a cross-company SO reached only through a line's soItemId — with no
+       header soDocNo at all — is caught too. The multi-SO POST /from-sos path
+       is deliberately NOT guarded this way: it INHERITS the source SO's
+       company and mints under the source's prefix, which is the correct
+       cross-company behaviour for the shared Delivery Planning queue. */
+    const soDocNos = [...new Set(refDocNos.filter((d): d is string => !!d))];
+    if (soDocNos.length > 0) {
+      const { data: soCoRows, error: soCoErr } = await sb
+        .from('mfg_sales_orders').select('doc_no, company_id').in('doc_no', soDocNos);
+      if (soCoErr) return c.json({ error: 'load_failed', reason: soCoErr.message }, 500);
+      for (const r of (soCoRows ?? []) as Array<{ doc_no: string; company_id: number | null }>) {
+        if (isCrossCompanySource(r.company_id, c)) {
+          return c.json(crossCompanyConversionBlocked(r.doc_no, r.company_id, c), 409);
+        }
+      }
+    }
   }
 
   /* Edge #1+#2 — soft stock check, gated by confirmShortStock. */

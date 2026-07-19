@@ -336,3 +336,90 @@ export const MIRRORED_SO_CREATE_BLOCKED: { error: string; message: string } = {
   message:
     "New orders for 2990 have to be created in 2990. An order created here would take a number 2990 is about to use, and would be overwritten.",
 };
+
+/**
+ * CROSS-COMPANY CONVERSION GUARD.
+ *
+ * The converters (SO -> DO, SO -> SI, DO -> SI, PO -> GRN) all follow the same
+ * shape: load a SOURCE document by id/doc_no, then INSERT a new document
+ * stamped `company_id: activeCompanyId(c)`. The source load is NOT scoped —
+ * every one of them reads the source by primary key with no company predicate,
+ * and the DB client is service-role, so nothing else re-checks it.
+ *
+ * That combination silently RE-COMPANIES the document: convert a 2990 sales
+ * order while the switcher says Houzs Century and you get a HOUZS delivery
+ * order — Houzs doc number, Houzs company_id — which then posts the stock
+ * movement, the invoice revenue and the commission against Houzs' books for an
+ * order Houzs never sold. The source row legitimately exists in this database
+ * (the one-way 2990 SO mirror puts it there); what must not happen is Houzs
+ * claiming it as its own document.
+ *
+ * The rule, and it is deliberately NOT "block all cross-company conversion":
+ *
+ *  • INHERIT is correct and already implemented where the destination stamps
+ *    the SOURCE's company — POST /from-sos in delivery-orders-mfg.ts stamps
+ *    `head.company_id` and mints under the source's prefix, so a 2990 SO
+ *    converted from the shared Delivery Planning queue becomes a 2990 DO. That
+ *    path keeps the books straight and is left alone.
+ *
+ *  • REFUSE is correct where the destination stamps the ACTIVE company. There
+ *    the conversion would move the document between companies' books, so it
+ *    must fail loudly rather than write a mis-attributed row.
+ *
+ * UNRESOLVED (no active company — pre-migration / cold-start) and a source row
+ * with a NULL company_id both DEGRADE to allowed, matching the three-state
+ * sentinel on allowedCompanyIds: single-company Houzs must keep converting
+ * unchanged. Only a source company that is RESOLVED and DIFFERENT is refused.
+ */
+export function isCrossCompanySource(
+  sourceCompanyId: unknown,
+  c: CompanyScopeCtx,
+): boolean {
+  const active = activeCompanyId(c);
+  if (active == null) return false; // unresolved -> degrade, as everywhere else
+  if (sourceCompanyId == null) return false; // pre-migration row -> degrade
+  const src = Number(sourceCompanyId);
+  if (!Number.isInteger(src) || src <= 0) return false;
+  return src !== Number(active);
+}
+
+/**
+ * The refusal payload for a blocked cross-company conversion. Names the source
+ * document and both companies, because the operator's next question is always
+ * "which one am I in?" — a bare "not allowed" sends them to IT.
+ *
+ * DELIBERATELY NOT registered in the SCM client's ERROR_CODE_MESSAGES, unlike
+ * the two mirrored-SO refusals above. That map is consulted FIRST and its hit
+ * REPLACES the server message (authed-fetch.ts:366) — a static entry there
+ * would throw away the doc number and the two company names, which are the only
+ * parts that tell the operator what to actually do. Falling through to the
+ * server `message` keeps them.
+ *
+ * The cost of that choice is that the message must survive the plain-sentence
+ * filter one step further down: under 200 characters, no leading `{`, and none
+ * of `violates|constraint|null value|column|relation|syntax|PGRST|error_code`
+ * or a bare 5-digit number. Exceed 200 and the operator silently gets the
+ * generic "That clashes with something already in the system" 409 instead —
+ * which is precisely the blank-wall outcome this refusal exists to avoid. Keep
+ * it short; the structured fields below carry the detail for the UI.
+ */
+export function crossCompanyConversionBlocked(
+  sourceDocNo: string | null | undefined,
+  sourceCompanyId: unknown,
+  c: CompanyScopeCtx,
+): { error: string; message: string; sourceDocNo: string | null; sourceCompany: string | null; activeCompany: string | null } {
+  const codes = companyCodeMap(c);
+  const srcCode = sourceCompanyId != null ? codes.get(Number(sourceCompanyId)) ?? null : null;
+  const activeCode = (c.get("companyCode") as string | undefined) ?? null;
+  const doc = sourceDocNo ? String(sourceDocNo) : null;
+  return {
+    error: "cross_company_conversion_blocked",
+    message:
+      `${doc ?? "That document"} belongs to ${srcCode ?? "another company"}` +
+      `, but you are working in ${activeCode ?? "a different company"}. ` +
+      `Switch company using the selector at the top, then convert it there.`,
+    sourceDocNo: doc,
+    sourceCompany: srcCode,
+    activeCompany: activeCode,
+  };
+}
