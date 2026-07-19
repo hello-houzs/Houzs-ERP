@@ -74,7 +74,7 @@ currencies.get('/', async (c) => {
 
 currencies.post('/', async (c) => {
   if (!hasHouzsPerm(c, 'scm.currency.manage')) {
-    return c.json({ error: 'Forbidden: missing scm.currency.manage' }, 403);
+    return c.json({ error: "You don't have permission to do that." }, 403);
   }
   const sb = c.get('supabase');
   let body: unknown;
@@ -111,7 +111,7 @@ currencies.post('/', async (c) => {
 
 currencies.patch('/:code', async (c) => {
   if (!hasHouzsPerm(c, 'scm.currency.manage')) {
-    return c.json({ error: 'Forbidden: missing scm.currency.manage' }, 403);
+    return c.json({ error: "You don't have permission to do that." }, 403);
   }
   const sb = c.get('supabase');
   const code = normCode(c.req.param('code'));

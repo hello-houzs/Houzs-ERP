@@ -1274,7 +1274,7 @@ mountEngineRoutes({
     if (!staffId) {
       return {
         ok: false,
-        error: "approver has no scm.staff record — cannot stamp the PO's created_by",
+        error: "Your account isn't linked to a staff profile, so this can't be approved. Please contact your administrator.",
         reversible: true,
       };
     }

@@ -28,7 +28,7 @@ const PATCHABLE = ["type", "title", "event_date", "address", "status", "notes"] 
 app.get("/", async (c) => {
   const user = c.get("user");
   if (!hasPermission(user.permissions, "trips.read.all")) {
-    return c.json({ error: "Forbidden" }, 403);
+    return c.json({ error: "You don't have permission to do that." }, 403);
   }
   const dateFrom = c.req.query("date_from");
   const dateTo = c.req.query("date_to");

@@ -141,7 +141,7 @@ export async function executeReorderProposal(
        report a successful approval that created nothing. */
     return {
       ok: false,
-      error: 'proposal carries no executable picks — raise this PO from the MRP page',
+      error: 'This proposal has nothing to order. Please raise the purchase order from the MRP page.',
       reversible: true,
     };
   }

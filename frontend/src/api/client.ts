@@ -112,6 +112,42 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
     "This is already going through — give it a moment, then refresh to check. Please don't send it again.",
 };
 
+/* A body string that carries DATABASE or framework internals — a leaked SQL
+   error, a Postgres/SQLite code, a constraint name — must NEVER reach the
+   operator verbatim. The SCM sibling humanApiError (vendor/scm/lib/authed-fetch)
+   already carries this guard; api/client.ts had been missing it, so a raw
+   "D1_ERROR: UNIQUE constraint failed: …" thrown by a backend catch and echoed
+   in { error } surfaced word-for-word. When a string looks like internals we
+   drop it and fall through to the plain status-code sentence instead. */
+const looksLikeInternals = (s: string) =>
+  /violates|constraint|null value|no such column|no such table|syntax error|PGRST|D1_ERROR|SQLITE|duplicate key|error_code/i.test(
+    s,
+  );
+
+/* Bare HTTP reason phrases ("Not Found", "Forbidden", …) are the status code
+   spelled out — machine vocabulary, not a message. When a backend answers with
+   one verbatim, drop it and let the plain status sentence below speak instead.
+   EXACT (case-insensitive) match only, so a real sentence like "That code is
+   already in use." is never touched. */
+const HTTP_REASON_PHRASES = new Set([
+  "bad request", "unauthorized", "payment required", "forbidden", "not found",
+  "method not allowed", "not acceptable", "request timeout", "conflict", "gone",
+  "length required", "precondition failed", "payload too large", "uri too long",
+  "unsupported media type", "unprocessable entity", "too many requests",
+  "internal server error", "not implemented", "bad gateway",
+  "service unavailable", "gateway timeout",
+]);
+
+/* Returns the backend string ONLY when it is safe to show a user as-is; an
+   empty return means "not presentable — use the status-code sentence". */
+function presentable(s: string): string {
+  const v = s.trim();
+  if (!v) return "";
+  if (HTTP_REASON_PHRASES.has(v.toLowerCase())) return "";
+  if (looksLikeInternals(v)) return "";
+  return v;
+}
+
 export function humanHttpMessage(status: number, body: string): string {
   const t = (body ?? "").trim();
   if (t && (t.startsWith("{") || t.startsWith("["))) {
@@ -123,14 +159,21 @@ export function humanHttpMessage(status: number, body: string): string {
         const mapped = ERROR_CODE_MESSAGES[j.error.trim()];
         if (mapped) return mapped;
         const fallback = j?.message ?? j?.detail;
-        if (typeof fallback === "string" && fallback.trim()) return fallback.trim();
+        if (typeof fallback === "string") {
+          const safe = presentable(fallback);
+          if (safe) return safe;
+        }
       } else {
         const m = j?.error ?? j?.message ?? j?.detail;
-        if (typeof m === "string" && m.trim()) return m.trim();
+        if (typeof m === "string") {
+          const safe = presentable(m);
+          if (safe) return safe;
+        }
       }
     } catch { /* not json — fall through to the status map */ }
   } else if (t && t.length <= 200 && !t.startsWith("<") && !/^\d+\s*:/.test(t)) {
-    return t; // a short, human-ish plain-text body (not HTML, not a code dump)
+    const safe = presentable(t); // a short plain-text body (not HTML, not a code dump)
+    if (safe) return safe;
   }
   switch (status) {
     case 400: return "Something in that request wasn't right. Please check and try again.";

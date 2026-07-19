@@ -54,6 +54,7 @@ import {
 } from "../../vendor/scm/lib/sales-order-queries";
 import { useIdempotencyKey } from "../../lib/idempotency";
 import { cn } from "../../lib/utils";
+import { fmtCenti } from "../../vendor/shared/format";
 import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../../vendor/scm/lib/so-form-validate";
 import { hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../../vendor/shared/so-variant-rule";
 import { todayMyt } from "../../vendor/scm/lib/dates";
@@ -78,11 +79,8 @@ type Customer = {
   debtorCode: string | null;
 };
 
-const fmtRm = (sen: number): string =>
-  `RM ${(sen / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+// Guarded centi→"RM …" — "—" for an absent/non-finite amount, never "RM NaN".
+const fmtRm = (sen: number | null | undefined): string => fmtCenti(sen);
 
 const errMsg = (e: unknown): string =>
   e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";

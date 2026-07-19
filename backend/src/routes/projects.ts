@@ -92,7 +92,7 @@ const app = new Hono<{ Bindings: Env }>();
  */
 function denyFinance(c: any): Response | null {
   if (financeHiddenForUser(c.get("user"))) {
-    return c.json({ error: "Forbidden — finance is restricted" }, 403);
+    return c.json({ error: "You don't have permission to view financial information." }, 403);
   }
   return null;
 }
@@ -1913,7 +1913,7 @@ app.patch("/:id/finance", requirePermission("projects.write"), async (c) => {
     if (!row) return c.json({ error: "Not found" }, 404);
     const effectivePic = row.pic_id ?? row.created_by ?? null;
     if (effectivePic !== user.id) {
-      return c.json({ error: "Forbidden — finance is PIC-only" }, 403);
+      return c.json({ error: "You don't have permission to view this project's financial information." }, 403);
     }
   }
   const body = await c.req.json<Record<string, any>>();
@@ -2430,9 +2430,9 @@ app.post("/:id/phase-photos", async (c) => {
   }>();
   const phase = body.phase;
   if (phase !== "setup" && phase !== "dismantle") {
-    return c.json({ error: "phase required" }, 400);
+    return c.json({ error: "Something went wrong. Please try again." }, 400);
   }
-  if (!body.r2_key) return c.json({ error: "r2_key required" }, 400);
+  if (!body.r2_key) return c.json({ error: "Something went wrong with the upload. Please try again." }, 400);
 
   const granted = user?.permissions_set ?? user?.permissions;
   const canManage = !!user && hasPermission(granted, "projects.write");
@@ -2464,7 +2464,7 @@ app.get("/:id/phase-photos", async (c) => {
     (hasPermission(grantedR, "projects.read") || hasPermission(grantedR, "projects.write"));
   if (!canRead) {
     const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0);
-    if (!phases.length) return c.json({ error: "Forbidden" }, 403);
+    if (!phases.length) return c.json({ error: "You don't have permission to view this project." }, 403);
   }
 
   /* project_phase_photos carries no company_id of its own, so the boundary is
@@ -2499,7 +2499,7 @@ app.delete("/phase-photos/:photoId", async (c) => {
   const granted = user?.permissions_set ?? user?.permissions;
   const canManage = !!user && hasPermission(granted, "projects.write");
   const isUploader = user?.id != null && row.uploaded_by === user.id;
-  if (!canManage && !isUploader) return c.json({ error: "Forbidden" }, 403);
+  if (!canManage && !isUploader) return c.json({ error: "You don't have permission to delete this photo." }, 403);
 
   await c.env.DB.prepare(`DELETE FROM project_phase_photos WHERE id = ?`)
     .bind(photoId)
@@ -3316,8 +3316,8 @@ app.post("/:id/defects", requirePermission("projects.write"), async (c) => {
   }>();
   const phase = body.phase as "setup" | "dismantle";
   const role = body.reported_by_role as "sales" | "logistic";
-  if (!["setup", "dismantle"].includes(phase)) return c.json({ error: "phase required" }, 400);
-  if (!["sales", "logistic"].includes(role)) return c.json({ error: "reported_by_role required" }, 400);
+  if (!["setup", "dismantle"].includes(phase)) return c.json({ error: "Something went wrong. Please try again." }, 400);
+  if (!["sales", "logistic"].includes(role)) return c.json({ error: "Something went wrong. Please try again." }, 400);
   const result = await createDefect(
     c.env,
     {
@@ -3452,7 +3452,7 @@ app.post("/:id/team", requirePermission("projects.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const body = await c.req.json<{ user_id?: number; role?: string }>();
-  if (!body.user_id) return c.json({ error: "user_id required" }, 400);
+  if (!body.user_id) return c.json({ error: "Please choose a team member." }, 400);
   try {
     const r = await c.env.DB.prepare(
       `INSERT INTO project_team (project_id, user_id, role) VALUES (?, ?, ?)`
@@ -3460,9 +3460,10 @@ app.post("/:id/team", requirePermission("projects.write"), async (c) => {
       .bind(id, body.user_id, body.role || null)
       .run();
     return c.json({ id: r.meta.last_row_id }, 201);
-  } catch (e: any) {
-    // Unique-constraint violation — user already has that role
-    return c.json({ error: e?.message || "Duplicate" }, 409);
+  } catch {
+    // The only expected failure is the UNIQUE(project_id,user_id,role) index —
+    // never surface the raw driver string ("D1_ERROR: UNIQUE constraint …").
+    return c.json({ error: "This person is already on the team with that role." }, 409);
   }
 });
 
@@ -3492,7 +3493,7 @@ app.post("/:id/sales-attendees", requirePermission("projects.write"), async (c) 
     return c.json({ error: "A Sales Director cannot change Sales Attending." }, 403);
   }
   const body = await c.req.json<{ sales_rep_id?: number }>();
-  if (!body.sales_rep_id) return c.json({ error: "sales_rep_id required" }, 400);
+  if (!body.sales_rep_id) return c.json({ error: "Please choose a sales attendee." }, 400);
   try {
     await c.env.DB.prepare(
       `INSERT INTO project_sales_attendees (project_id, sales_rep_id, created_by)
@@ -3515,8 +3516,10 @@ app.post("/:id/sales-attendees", requirePermission("projects.write"), async (c) 
       user?.id
     );
     return c.json({ ok: true }, 201);
-  } catch (e: any) {
-    return c.json({ error: e?.message || "Duplicate" }, 409);
+  } catch {
+    // The only expected failure is the UNIQUE(project_id,sales_rep_id) index —
+    // never surface the raw driver string.
+    return c.json({ error: "That sales attendee is already assigned to this project." }, 409);
   }
 });
 

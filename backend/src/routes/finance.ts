@@ -16,7 +16,7 @@ import { financeHiddenForUser } from "../services/pmsAccess";
  */
 function denyFinance(c: any): Response | null {
   if (financeHiddenForUser(c.get("user"))) {
-    return c.json({ error: "Forbidden — finance is restricted" }, 403);
+    return c.json({ error: "You don't have permission to view financial information." }, 403);
   }
   return null;
 }

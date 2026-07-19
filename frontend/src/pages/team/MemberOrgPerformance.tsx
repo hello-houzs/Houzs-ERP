@@ -66,7 +66,10 @@ export type LeaderboardRow = {
   avatar_initials?: string;
 };
 
-const fmtRm = (sen: number, { compact = false } = {}): string => {
+const fmtRm = (sen: number | null | undefined, { compact = false } = {}): string => {
+  // An absent/non-finite amount reads as "—", never "RM NaN" (owner's plain-
+  // language rule: a number the ERP does not have must not render as broken).
+  if (sen == null || !Number.isFinite(sen)) return "—";
   if (compact) {
     const k = sen / 1000 / 100;
     if (Math.abs(k) >= 1) {

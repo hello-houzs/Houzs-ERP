@@ -117,7 +117,7 @@ export function scmAreaGuard(area: string, opts?: ScmAreaGuardOpts): MiddlewareH
     // c.get('user') is still the Houzs AuthUser at this point (supabaseAuth has
     // not run yet — see ordering note above).
     const user = c.get("user") as unknown as AuthUser | undefined;
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
 
     // 1) Owner / wildcard bypasses the L2 gate entirely.
     if (user.permissions_set?.has("*") || user.permissions?.includes("*")) {

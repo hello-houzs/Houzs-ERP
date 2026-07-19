@@ -1035,7 +1035,7 @@ app.post("/entries/:id/submit", requirePageAccess("sales"), async (c) => {
     .first<{ id: number; created_by: number; status: string; customer_name: string }>();
   if (!current) return c.json({ error: "Not found" }, 404);
   if (!canManage && current.created_by !== user?.id) {
-    return c.json({ error: "Forbidden" }, 403);
+    return c.json({ error: "You don't have permission to do that." }, 403);
   }
   if (current.status !== "draft") {
     return c.json({ error: `Can't submit a ${current.status} entry` }, 400);
@@ -1108,7 +1108,7 @@ app.delete("/entries/:id", requirePageAccess("sales"), async (c) => {
     .first<{ created_by: number; status: string; project_id: number | null }>();
   if (!row) return c.json({ error: "Not found" }, 404);
   if (!canManage) {
-    if (row.created_by !== user?.id) return c.json({ error: "Forbidden" }, 403);
+    if (row.created_by !== user?.id) return c.json({ error: "You don't have permission to do that." }, 403);
     if (row.status !== "draft")
       return c.json({ error: "Only drafts can be deleted" }, 400);
   }

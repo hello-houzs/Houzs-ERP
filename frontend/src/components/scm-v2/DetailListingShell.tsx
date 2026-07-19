@@ -31,6 +31,7 @@
 
 import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { fmtMoneyCenti } from '../../vendor/shared/format';
 import { ArrowLeft, ClipboardList, Printer, Eye, Filter, X, SlidersHorizontal, FileSearch } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
@@ -96,10 +97,11 @@ export interface DetailListingShellProps<R extends DetailListingRow> {
   computeKpis?: (rows: R[]) => DetailListingKpis;
 }
 
-const fmtRm = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  })}`;
+// The ONE guarded centi→"<currency> …" formatter — returns "—" for an absent/
+// non-finite amount, never "MYR NaN". Kept under the local name so the shell's
+// callsites are unchanged.
+const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string =>
+  fmtMoneyCenti(centi, currency);
 
 const defaultComputeKpis = <R extends DetailListingRow>(rows: R[]): DetailListingKpis => {
   const totalLines = rows.length;

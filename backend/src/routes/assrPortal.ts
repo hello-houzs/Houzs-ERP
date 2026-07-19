@@ -326,7 +326,7 @@ app.patch("/priority-targets", requirePermission("service_cases.manage"), async 
   const newDays = Number(body.target_days);
 
   if (!Number.isFinite(priorityId) || priorityId <= 0) {
-    return c.json({ error: "priority_id is required" }, 400);
+    return c.json({ error: "Please choose a priority." }, 400);
   }
   if (!STAGES.includes(stage as (typeof STAGES)[number])) {
     return c.json({ error: "stage must be one of the canonical 9 stages" }, 400);
@@ -468,7 +468,7 @@ app.post("/alerts/ack", requirePermission("service_cases.read"), async (c) => {
   const userId = (c as any).get?.("userId") ?? 0;
   const body = await c.req.json<{ assr_id?: number; stage?: string; event?: string; note?: string }>();
   if (!body.assr_id || !body.stage || !body.event) {
-    return c.json({ error: "assr_id, stage, event are required" }, 400);
+    return c.json({ error: "Something went wrong. Please try again." }, 400);
   }
   if (!ALERT_EVENTS.has(body.event)) return c.json({ error: "unknown event" }, 400);
   const note = (body.note || "").slice(0, 200);
@@ -486,7 +486,7 @@ app.post("/alerts/snooze", requirePermission("service_cases.read"), async (c) =>
   const userId = (c as any).get?.("userId") ?? 0;
   const body = await c.req.json<{ assr_id?: number; stage?: string; event?: string; note?: string }>();
   if (!body.assr_id || !body.stage || !body.event) {
-    return c.json({ error: "assr_id, stage, event are required" }, 400);
+    return c.json({ error: "Something went wrong. Please try again." }, 400);
   }
   if (!ALERT_EVENTS.has(body.event)) return c.json({ error: "unknown event" }, 400);
 
@@ -515,9 +515,9 @@ app.post("/alerts/snooze", requirePermission("service_cases.read"), async (c) =>
 app.post("/alerts/override", requirePermission("service_cases.manage"), async (c) => {
   const userId = (c as any).get?.("userId") ?? 0;
   const body = await c.req.json<{ assr_id?: number; reason?: string }>();
-  if (!body.assr_id) return c.json({ error: "assr_id is required" }, 400);
+  if (!body.assr_id) return c.json({ error: "Something went wrong. Please try again." }, 400);
   const reason = (body.reason || "").trim();
-  if (reason.length < 5) return c.json({ error: "reason required (>=5 chars)" }, 400);
+  if (reason.length < 5) return c.json({ error: "Please enter a reason of at least 5 characters." }, 400);
 
   // Mark every open history row for this case as "all alerts fired" so
   // the scanner skips it. Audit row captures who + why.

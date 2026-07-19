@@ -10,6 +10,7 @@
 // ----------------------------------------------------------------------------
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
+import { fmtCenti } from '../../vendor/shared/format';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ClipboardList, FileText, Receipt, Truck, Undo2, ScrollText, PackagePlus } from 'lucide-react';
@@ -36,8 +37,8 @@ const MODULES: { value: OutstandingModule; label: string; icon: React.ReactNode;
   { value: 'si',          label: 'SI',          icon: <FileText size={14} strokeWidth={1.75} />,      route: (r) => `/scm/sales-invoices/${r.id}` },
 ];
 
-const fmtRm = (centi: number): string =>
-  `RM ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// Guarded centi→"RM …" — "—" for an absent/non-finite amount, never "RM NaN".
+const fmtRm = (centi: number | null | undefined): string => fmtCenti(centi);
 
 export const Outstanding = () => {
   const today = todayMyt();
