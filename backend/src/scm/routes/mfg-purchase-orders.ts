@@ -36,7 +36,8 @@ import { parseLineNumbers, invalidLineNumberBody } from '../shared/line-numbers'
 import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { escapeForOr } from '../lib/postgrest-search';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import {
   loadLeadTimeBase,
   resolveLeadDays,
@@ -697,10 +698,10 @@ mfgPurchaseOrders.get('/:id', async (c) => {
      header + items load, so fold it into the same parallel batch instead of a
      third sequential round-trip. */
   const [headerRes, itemsRes, childCountRes] = await Promise.all([
-    supabase
+    scopeToCompany(supabase
       .from('purchase_orders')
       .select(`${HEADER_COLS}, supplier:suppliers(id, code, name, contact_person, phone, email, address)`)
-      .eq('id', id)
+      .eq('id', id), c)
       .maybeSingle(),
     supabase.from('purchase_order_items').select(ITEM_COLS).eq('purchase_order_id', id).order('created_at'),
     supabase.from('grns')
@@ -2220,6 +2221,8 @@ mfgPurchaseOrders.patch('/:id', async (c) => {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   /* Tier 2 downstream-lock — PO header is read-only once a non-cancelled GRN
      exists. Convert-to-GRN (partial receiving) is NOT routed here. */
   const childLock = await poHasDownstream(sb, id);
@@ -2229,15 +2232,16 @@ mfgPurchaseOrders.patch('/:id', async (c) => {
      below. PO_AUDIT_FIELDS is the same column list the loop writes (PR #77 =
      purchase_location_id, migration 0180 = the supplier-revised dates), kept in
      one place so a field added to the PATCH cannot silently escape the log. */
-  const { data: beforeRow } = await sb.from('purchase_orders')
-    .select(PO_AUDIT_SELECT).eq('id', id).maybeSingle();
+  const { data: beforeRow } = await scopeToCompanyId(sb.from('purchase_orders')
+    .select(PO_AUDIT_SELECT).eq('id', id), co.companyId).maybeSingle();
+  if (!beforeRow) return c.json(NOT_THIS_COMPANY, 404);
   const before = (beforeRow ?? {}) as unknown as Record<string, unknown>;
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
   for (const [from, to] of PO_AUDIT_FIELDS) {
     if (body[from] !== undefined) updates[to] = body[from];
   }
-  const { data, error } = await sb.from('purchase_orders').update(updates).eq('id', id).select('*').single();
+  const { data, error } = await scopeToCompanyId(sb.from('purchase_orders').update(updates).eq('id', id), co.companyId).select('*').single();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
 
   {
@@ -2270,9 +2274,9 @@ mfgPurchaseOrders.patch('/:id', async (c) => {
     const v = body[bodyKey];
     if (v === undefined || v === null || v === '') continue;
     try {
-      await sb.from('purchase_order_items')
+      await scopeToCompanyId(sb.from('purchase_order_items')
         .update({ [col]: v })
-        .eq('purchase_order_id', id)
+        .eq('purchase_order_id', id), co.companyId)
         .is(col, null);
     } catch (e) {
       console.error('[mfg-po PATCH] header date cascade failed', { id, col, error: e });
@@ -2401,6 +2405,12 @@ mfgPurchaseOrders.post('/:id/items', async (c) => {
   if (!it.materialName) return c.json({ error: 'material_name_required' }, 400);
 
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  /* The new line is stamped with the active company; the PO it hangs off must
+     be this company's too, or a line lands on another company's PO. */
+  const { data: parentPo } = await scopeToCompanyId(sb.from('purchase_orders').select('id').eq('id', poId), co.companyId).maybeSingle();
+  if (!parentPo) return c.json(NOT_THIS_COMPANY, 404);
   /* Tier 2 downstream-lock — line-add is blocked once a GRN exists. */
   const childLock = await poHasDownstream(sb, poId);
   if (childLock) return c.json(childLock, 409);
@@ -2496,6 +2506,8 @@ mfgPurchaseOrders.patch('/:id/items/:itemId', async (c) => {
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   /* Tier 2 downstream-lock — line-edit is blocked once a GRN exists. */
   const childLock = await poHasDownstream(sb, poId);
@@ -2506,10 +2518,10 @@ mfgPurchaseOrders.patch('/:id/items/:itemId', async (c) => {
      `variants` and `so_item_id` are business-logic only and deliberately not in
      PO_LINE_AUDIT_FIELDS — variants render into description2, which is
      server-owned and derived, not an operator edit. */
-  const { data: prevRow } = await sb.from('purchase_order_items')
+  const { data: prevRow } = await scopeToCompanyId(sb.from('purchase_order_items')
     .select(PO_LINE_AUDIT_SELECT + ', variants, so_item_id')
-    .eq('id', itemId).maybeSingle();
-  if (!prevRow) return c.json({ error: 'not_found' }, 404);
+    .eq('id', itemId), co.companyId).maybeSingle();
+  if (!prevRow) return c.json(NOT_THIS_COMPANY, 404);
   /* Cast through `unknown`: a .select() built from a concatenated string infers
      as GenericStringError on the SupabaseClient<any> the scm client is, so the
      row shape only exists after this. Project-wide pattern in these routes. */
@@ -2562,7 +2574,7 @@ mfgPurchaseOrders.patch('/:id/items/:itemId', async (c) => {
     updates['description2'] = buildVariantSummary(String(effGroup ?? ''), effVariants ?? null) || null;
   }
 
-  const { error } = await sb.from('purchase_order_items').update(updates).eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('purchase_order_items').update(updates).eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
 
   /* Diff `updates` — the EFFECTIVE values written — against the stored row. qty,
@@ -2607,6 +2619,8 @@ mfgPurchaseOrders.patch('/:id/items/:itemId', async (c) => {
 mfgPurchaseOrders.delete('/:id/items/:itemId', async (c) => {
   const poId = c.req.param('id'); const itemId = c.req.param('itemId');
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   /* Tier 2 downstream-lock — line-delete is blocked once a GRN exists. */
   const childLock = await poHasDownstream(sb, poId);
@@ -2617,14 +2631,15 @@ mfgPurchaseOrders.delete('/:id/items/:itemId', async (c) => {
   /* The audited columns too — after the delete the audit row is the only
      remaining evidence of what was ordered on this line, and there is nothing
      left to join back to. */
-  const { data: doomedRow } = await sb.from('purchase_order_items')
+  const { data: doomedRow } = await scopeToCompanyId(sb.from('purchase_order_items')
     .select(PO_LINE_AUDIT_SELECT + ', so_item_id')
-    .eq('id', itemId)
+    .eq('id', itemId), co.companyId)
     .maybeSingle();
+  if (!doomedRow) return c.json(NOT_THIS_COMPANY, 404);
   /* Cast through `unknown` — see the note on the line PATCH's `prev`. */
   const doomed = (doomedRow ?? null) as unknown as Record<string, unknown> | null;
 
-  const { error } = await sb.from('purchase_order_items').delete().eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('purchase_order_items').delete().eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
 
   /* UPDATE, not DELETE: the entity is the PURCHASE ORDER and it still exists.
@@ -2687,15 +2702,18 @@ mfgPurchaseOrders.post('/:id/convert-from-so', async (c) => {
     : null;
 
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  // Verify the target PO exists + is editable.
-  const { data: po, error: poErr } = await sb
+  // Verify the target PO exists + is editable — and belongs to the active
+  // company, so lines can't be appended onto another company's PO.
+  const { data: po, error: poErr } = await scopeToCompanyId(sb
     .from('purchase_orders')
     .select('id, status, supplier_id')
-    .eq('id', poId)
+    .eq('id', poId), co.companyId)
     .maybeSingle();
   if (poErr) return c.json({ error: 'load_failed', reason: poErr.message }, 500);
-  if (!po) return c.json({ error: 'po_not_found' }, 404);
+  if (!po) return c.json(NOT_THIS_COMPANY, 404);
   // PR-DRAFT-removal — DRAFT no longer exists. SUBMITTED + PARTIALLY_RECEIVED
   // are both editable for convert-from-so (commander can keep adding lines
   // until the PO is fully received or cancelled).
@@ -2706,11 +2724,11 @@ mfgPurchaseOrders.post('/:id/convert-from-so', async (c) => {
   // Read SO items (non-cancelled only). po_qty_picked rides along so this
   // path converts only the UNPICKED remainder (F1 audit fix 2026-06-10 —
   // it used to re-copy full qty on every call → double-ordering).
-  const { data: soItems, error: soErr } = await sb
+  const { data: soItems, error: soErr } = await scopeToCompany(sb
     .from('mfg_sales_order_items')
     .select('id, item_code, description, description2, item_group, qty, po_qty_picked, unit_price_centi, discount_centi, unit_cost_centi, variants, uom, remark')
     .eq('doc_no', soDocNo)
-    .eq('cancelled', false);
+    .eq('cancelled', false), c);
   if (soErr) return c.json({ error: 'so_load_failed', reason: soErr.message }, 500);
   if (!soItems || soItems.length === 0) {
     return c.json({ error: 'so_has_no_items', reason: `Sales Order ${soDocNo} has no items to convert.` }, 404);
@@ -2886,12 +2904,14 @@ mfgPurchaseOrders.post('/:id/convert-from-so', async (c) => {
 mfgPurchaseOrders.patch('/:id/submit', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
-  const { data } = await supabase
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .select('id, status, submitted_at')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   const row = data as { id: string; status: string; submitted_at: string | null };
   if (row.status === 'SUBMITTED') return c.json({ purchaseOrder: row });
   return c.json({ error: 'cannot_submit', message: `PO is ${row.status}` }, 409);
@@ -2905,17 +2925,19 @@ mfgPurchaseOrders.patch('/:id/submit', async (c) => {
    GRN-receivable (the GRN-from-PO picker accepts SUBMITTED). Idempotent on an
    already-live PO; rejects RECEIVED/CANCELLED. Split read -> guard -> update ->
    re-read so the RETURNING-coercion PGRST116 can't 500 it (mirrors cancel). */
-mfgPurchaseOrders.patch('/:id/confirm', async (c) => {
+export const confirmMfgPurchaseOrderHandler = async (c: any) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: cur, error: readErr } = await supabase
+  const { data: cur, error: readErr } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .select('id, status, po_number, company_id, supplier_id, total_centi, currency')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const curStatus = (cur as { status: string }).status;
   // Idempotent — an already-live PO is already confirmed, echo back.
   if (curStatus === 'SUBMITTED' || curStatus === 'PARTIALLY_RECEIVED') {
@@ -2925,10 +2947,10 @@ mfgPurchaseOrders.patch('/:id/confirm', async (c) => {
     return c.json({ error: 'cannot_confirm', message: `Only a draft PO can be confirmed (this is ${curStatus})` }, 409);
   }
 
-  const { error: updErr } = await supabase
+  const { error: updErr } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .update({ status: 'SUBMITTED', submitted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq('id', id);
+    .eq('id', id), co.companyId);
   if (updErr) return c.json({ error: 'confirm_failed', reason: updErr.message }, 500);
 
   /* Recorded before the SO-quota recount below, which is itself best-effort:
@@ -2966,13 +2988,14 @@ mfgPurchaseOrders.patch('/:id/confirm', async (c) => {
     await recomputeSoPicked(supabase, ((lines ?? []) as Array<{ so_item_id: string | null }>).map((l) => l.so_item_id));
   } catch { /* PO already confirmed — don't fail on counter recount */ }
 
-  const { data: after } = await supabase
+  const { data: after } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .select('id, status, submitted_at')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   return c.json({ purchaseOrder: after ?? { id, status: 'SUBMITTED' } });
-});
+};
+mfgPurchaseOrders.patch('/:id/confirm', confirmMfgPurchaseOrderHandler);
 
 /* ── POST /:id/send-to-supplier — email the PO to its supplier (HUMAN action) ──
    The Procurement agent only ever raises a DRAFT PO; a person confirms it and,
@@ -2996,6 +3019,8 @@ mfgPurchaseOrders.patch('/:id/confirm', async (c) => {
 mfgPurchaseOrders.post('/:id/send-to-supplier', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   let body: { pdfBase64?: unknown; message?: unknown } = {};
   try { body = (await c.req.json()) as typeof body; } catch { body = {}; }
@@ -3008,13 +3033,13 @@ mfgPurchaseOrders.post('/:id/send-to-supplier', async (c) => {
     return c.json({ error: 'channel_off', message: 'The purchase-order email channel is off. Turn it on in email settings to send.' }, 409);
   }
 
-  const { data: po, error } = await supabase
+  const { data: po, error } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .select('id, po_number, status, total_centi, currency, po_date, company_id, po_email_sent_at, po_email_sent_to, supplier:suppliers(name, email)')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  if (!po) return c.json({ error: 'not_found' }, 404);
+  if (!po) return c.json(NOT_THIS_COMPANY, 404);
 
   const row = po as unknown as PoEmailRow & {
     company_id?: number | null;
@@ -3080,10 +3105,10 @@ mfgPurchaseOrders.post('/:id/send-to-supplier', async (c) => {
   const previousSentAt = row.po_email_sent_at ?? null;
   const previousSentTo = row.po_email_sent_to ?? null;
 
-  const { data: claimed } = await supabase
+  const { data: claimed } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .update({ po_email_sent_at: claimedAt, po_email_sent_to: supplierEmail })
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .or(`po_email_sent_at.is.null,po_email_sent_at.lt.${windowStart}`)
     .select('id')
     .maybeSingle();
@@ -3117,10 +3142,10 @@ mfgPurchaseOrders.post('/:id/send-to-supplier', async (c) => {
     /* NOT sent -> RELEASE the claim back to its previous value, so the stamp
        only ever means "this supplier was successfully emailed at this time" and
        the operator can retry immediately instead of waiting out the window. */
-    await supabase
+    await scopeToCompanyId(supabase
       .from('purchase_orders')
       .update({ po_email_sent_at: previousSentAt, po_email_sent_to: previousSentTo })
-      .eq('id', id)
+      .eq('id', id), co.companyId)
       .eq('po_email_sent_at', claimedAt);
   }
 
@@ -3162,13 +3187,15 @@ mfgPurchaseOrders.patch('/:id/cancel', async (c) => {
      threw "Cannot coerce the result to a single JSON object" (PostgREST
      PGRST116) whenever the UPDATE's RETURNING yielded ≠ 1 visible rows. Split
      into read → guard → update → re-read so the cancel can't 500 on that. */
-  const { data: cur, error: readErr } = await supabase
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: cur, error: readErr } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .select('id, status, po_number, company_id, total_centi')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const curStatus = (cur as { status: string }).status;
   if (curStatus === 'RECEIVED') return c.json({ error: 'cannot_cancel', message: 'PO already received' }, 409);
   // Idempotent — already cancelled, just echo back.
@@ -3188,10 +3215,10 @@ mfgPurchaseOrders.patch('/:id/cancel', async (c) => {
     supabase, (cur as { po_number?: string | null }).po_number);
   if (dropshipLock) return c.json(dropshipLock, 409);
 
-  const { error: updErr } = await supabase
+  const { error: updErr } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq('id', id);
+    .eq('id', id), co.companyId);
   if (updErr) return c.json({ error: 'cancel_failed', reason: updErr.message }, 500);
 
   /* The prior status comes from the guarded read above, so this records the real
@@ -3231,10 +3258,10 @@ mfgPurchaseOrders.patch('/:id/cancel', async (c) => {
     await recomputeSoPicked(supabase, ((lines ?? []) as Array<{ so_item_id: string | null }>).map((l) => l.so_item_id));
   } catch { /* best-effort — PO already cancelled, don't fail on counter recount */ }
 
-  const { data: after } = await supabase
+  const { data: after } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .select('id, status, cancelled_at')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   return c.json({ purchaseOrder: after ?? { id, status: 'CANCELLED' } });
 });
@@ -3250,13 +3277,15 @@ mfgPurchaseOrders.patch('/:id/reopen', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
 
-  const { data: cur, error: readErr } = await supabase
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: cur, error: readErr } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .select('id, status, po_number, company_id')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const curStatus = (cur as { status: string }).status;
   // Idempotent — a live PO is already open, echo back.
   if (curStatus === 'SUBMITTED' || curStatus === 'PARTIALLY_RECEIVED') {
@@ -3266,10 +3295,10 @@ mfgPurchaseOrders.patch('/:id/reopen', async (c) => {
     return c.json({ error: 'cannot_reopen', message: `Only a cancelled PO can be reopened (this is ${curStatus})` }, 409);
   }
 
-  const { error: updErr } = await supabase
+  const { error: updErr } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .update({ status: 'SUBMITTED', cancelled_at: null, updated_at: new Date().toISOString() })
-    .eq('id', id);
+    .eq('id', id), co.companyId);
   if (updErr) return c.json({ error: 'reopen_failed', reason: updErr.message }, 500);
 
   /* UPDATE, not REVERSE: nothing was posted to reverse. A reopen re-claims the
@@ -3301,10 +3330,10 @@ mfgPurchaseOrders.patch('/:id/reopen', async (c) => {
     await recomputeSoPicked(supabase, ((lines ?? []) as Array<{ so_item_id: string | null }>).map((l) => l.so_item_id));
   } catch { /* best-effort — PO already reopened, don't fail on counter recount */ }
 
-  const { data: after } = await supabase
+  const { data: after } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .select('id, status, cancelled_at')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   return c.json({ purchaseOrder: after ?? { id, status: 'SUBMITTED' } });
 });
@@ -3316,14 +3345,16 @@ mfgPurchaseOrders.patch('/:id/reopen', async (c) => {
 mfgPurchaseOrders.delete('/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   // Status guard first — get current row.
-  const { data: cur, error: readErr } = await supabase
+  const { data: cur, error: readErr } = await scopeToCompanyId(supabase
     .from('purchase_orders')
     .select('id, status, po_number, company_id, supplier_id, total_centi, po_date')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (readErr) return c.json({ error: 'read_failed', reason: readErr.message }, 500);
-  if (!cur)    return c.json({ error: 'not_found' }, 404);
+  if (!cur)    return c.json(NOT_THIS_COMPANY, 404);
   const row = cur as {
     id: string; status: string; po_number: string;
     company_id?: number | null; supplier_id?: string | null; total_centi?: number | null; po_date?: string | null;
@@ -3343,7 +3374,7 @@ mfgPurchaseOrders.delete('/:id', async (c) => {
     .eq('purchase_order_id', id);
 
   // Items cascade via FK ON DELETE CASCADE.
-  const { error: delErr } = await supabase.from('purchase_orders').delete().eq('id', id);
+  const { error: delErr } = await scopeToCompanyId(supabase.from('purchase_orders').delete().eq('id', id), co.companyId);
   if (delErr) return c.json({ error: 'delete_failed', reason: delErr.message }, 500);
 
   /* The one action whose subject no longer exists once it is recorded — the

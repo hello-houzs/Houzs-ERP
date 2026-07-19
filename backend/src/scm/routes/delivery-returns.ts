@@ -17,7 +17,8 @@ import { normalizePhone } from '../shared/phone';
 import { buildVariantSummary } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { warehouseLabel } from '../lib/warehouse-label';
 import { computeVariantKey, type VariantAttrs } from '../shared';
@@ -774,7 +775,7 @@ deliveryReturns.get('/returnable-do-lines', async (c) => {
 deliveryReturns.get('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   const [h, i] = await Promise.all([
-    sb.from('delivery_returns').select(HEADER).eq('id', id).maybeSingle(),
+    scopeToCompany(sb.from('delivery_returns').select(HEADER).eq('id', id), c).maybeSingle(),
     sb.from('delivery_return_items').select(ITEM).eq('delivery_return_id', id).order('created_at'),
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
@@ -1221,6 +1222,8 @@ deliveryReturns.post('/from-dos', convertDoLinesToReturn);
 // ── Header PATCH (editable SO/DO-style fields) ─────────────────────────────
 deliveryReturns.patch('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
@@ -1253,15 +1256,17 @@ deliveryReturns.patch('/:id', async (c) => {
   }
   if (Object.keys(updates).length === 1) return c.json({ ok: true, changed: 0 });
 
-  const { data, error } = await sb.from('delivery_returns').update(updates).eq('id', id).select('id').maybeSingle();
+  const { data, error } = await scopeToCompanyId(sb.from('delivery_returns').update(updates).eq('id', id), co.companyId).select('id').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true, id });
 });
 
 // ── Item CRUD ─────────────────────────────────────────────────────────────
 deliveryReturns.post('/:id/items', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!it.itemCode) return c.json({ error: 'item_code_required' }, 400);
@@ -1289,8 +1294,8 @@ deliveryReturns.post('/:id/items', async (c) => {
     if (svc.length > 0) return c.json(serviceLinesNotReturnableResponse(svc), 409);
   }
 
-  const { data: header } = await sb.from('delivery_returns').select('id').eq('id', id).maybeSingle();
-  if (!header) return c.json({ error: 'not_found' }, 404);
+  const { data: header } = await scopeToCompanyId(sb.from('delivery_returns').select('id').eq('id', id), co.companyId).maybeSingle();
+  if (!header) return c.json(NOT_THIS_COMPANY, 404);
 
   /* Over-return guard for the single-add path too. */
   {
@@ -1313,6 +1318,8 @@ deliveryReturns.post('/:id/items', async (c) => {
 
 deliveryReturns.patch('/:id/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const itemId = c.req.param('itemId'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
@@ -1324,11 +1331,12 @@ deliveryReturns.patch('/:id/items/:itemId', async (c) => {
 
   /* Audit 2026-06-11 M10 — scope the line to THIS return: a mismatched itemId
      must 404, not edit another DR's line while the recompute + stock resync
-     run against this one. */
-  const { data: prev } = await sb.from('delivery_return_items')
+     run against this one. Company scope layered on top so the line can't belong
+     to another company's return either. */
+  const { data: prev } = await scopeToCompanyId(sb.from('delivery_return_items')
     .select('qty_returned, unit_price_centi, discount_centi, unit_cost_centi, item_code, item_group, description, uom, variants, notes, condition, do_item_id')
-    .eq('id', itemId).eq('delivery_return_id', id).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+    .eq('id', itemId).eq('delivery_return_id', id), co.companyId).maybeSingle();
+  if (!prev) return c.json(NOT_THIS_COMPANY, 404);
 
   /* P1 SO-SKU spec §4.6 — block edits that would TURN a return line into a
      SERVICE line (code/group swap). Effective = patch value ?? stored value. */
@@ -1392,7 +1400,7 @@ deliveryReturns.patch('/:id/items/:itemId', async (c) => {
     updates['description2'] = buildVariantSummary(String(effGroup ?? ''), effVariants ?? null) || null;
   }
 
-  const { error } = await sb.from('delivery_return_items').update(updates).eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('delivery_return_items').update(updates).eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   await recomputeTotals(sb, id);
   /* A DR put goods back into stock on create; an edited qty must re-sync that
@@ -1403,15 +1411,18 @@ deliveryReturns.patch('/:id/items/:itemId', async (c) => {
 
 deliveryReturns.delete('/:id/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const itemId = c.req.param('itemId'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   /* Audit 2026-06-11 M10 — scope the line to THIS return: a mismatched itemId
      must 404, not delete another DR's line while the recompute + stock resync
-     run against this one. */
+     run against this one. Company scope layered on top so the line can't belong
+     to another company's return either. */
   {
-    const { data: line } = await sb.from('delivery_return_items')
-      .select('id').eq('id', itemId).eq('delivery_return_id', id).maybeSingle();
-    if (!line) return c.json({ error: 'not_found' }, 404);
+    const { data: line } = await scopeToCompanyId(sb.from('delivery_return_items')
+      .select('id').eq('id', itemId).eq('delivery_return_id', id), co.companyId).maybeSingle();
+    if (!line) return c.json(NOT_THIS_COMPANY, 404);
   }
-  const { error } = await sb.from('delivery_return_items').delete().eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('delivery_return_items').delete().eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   await recomputeTotals(sb, id);
   /* Deleting a returned line must take its re-stocked goods back out, or on-hand
@@ -1434,15 +1445,17 @@ deliveryReturns.delete('/:id/items/:itemId', async (c) => {
 // the uq_inv_mov_dr_source unique index. Idempotent by construction: a re-run
 // finds delta 0. The cancelled return's qty also returns to Pending automatically
 // (the do-line-remaining formula filters non-cancelled DRs).
-deliveryReturns.patch('/:id/status', async (c) => {
+export const patchDeliveryReturnStatusHandler = async (c: any) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: { status?: string; inspectionNotes?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
 
   // Read the current status so the CANCELLED reversal is idempotent.
-  const { data: cur } = await sb.from('delivery_returns').select('status').eq('id', id).maybeSingle();
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  const { data: cur } = await scopeToCompanyId(sb.from('delivery_returns').select('status').eq('id', id), co.companyId).maybeSingle();
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const prevStatus = (cur as { status: string }).status;
   // Already cancelled → echo back without re-reversing (would double-deduct).
   if (body.status === 'CANCELLED' && prevStatus === 'CANCELLED') {
@@ -1474,8 +1487,8 @@ deliveryReturns.patch('/:id/status', async (c) => {
      the row and fires the single reversal. */
   let data: { id: string; status: string } | null;
   if (body.status === 'CANCELLED') {
-    const { data: updated, error } = await sb.from('delivery_returns')
-      .update(ts).eq('id', id).neq('status', 'CANCELLED')
+    const { data: updated, error } = await scopeToCompanyId(sb.from('delivery_returns')
+      .update(ts).eq('id', id), co.companyId).neq('status', 'CANCELLED')
       .select('id, status').maybeSingle();
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
     if (!updated) {
@@ -1485,8 +1498,8 @@ deliveryReturns.patch('/:id/status', async (c) => {
     }
     data = updated as { id: string; status: string };
   } else {
-    const { data: updated, error } = await sb.from('delivery_returns')
-      .update(ts).eq('id', id).select('id, status').single();
+    const { data: updated, error } = await scopeToCompanyId(sb.from('delivery_returns')
+      .update(ts).eq('id', id), co.companyId).select('id, status').single();
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
     data = updated as { id: string; status: string };
   }
@@ -1513,4 +1526,5 @@ deliveryReturns.patch('/:id/status', async (c) => {
   }
 
   return c.json({ deliveryReturn: data });
-});
+};
+deliveryReturns.patch('/:id/status', patchDeliveryReturnStatusHandler);

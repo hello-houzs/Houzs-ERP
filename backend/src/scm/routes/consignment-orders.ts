@@ -57,7 +57,8 @@ import { collectProcessingGateProblems, validationFailedBody } from '../shared/s
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { SO_ITEM_FINANCE_KEYS, stripAuditFinance } from '../lib/finance-keys';
 import type { Env, Variables } from '../env';
 
@@ -586,7 +587,7 @@ async function coLineDeliveries(
 consignmentOrders.get('/:docNo', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo');
   const [h, i] = await Promise.all([
-    sb.from('consignment_sales_orders').select(`${HEADER}, signature_b64`).eq('doc_no', docNo).maybeSingle(),
+    scopeToCompany(sb.from('consignment_sales_orders').select(`${HEADER}, signature_b64`).eq('doc_no', docNo), c).maybeSingle(),
     sb.from('consignment_sales_order_items').select(ITEM).eq('doc_no', docNo).order('created_at'),
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
@@ -1013,13 +1014,15 @@ consignmentOrders.post('/', async (c) => {
 });
 
 // Status transition with audit row.
-consignmentOrders.patch('/:docNo/status', async (c) => {
+export const patchConsignmentOrderStatusHandler = async (c: any) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: { status?: string; notes?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
 
-  const { data: prev } = await sb.from('consignment_sales_orders').select('status').eq('doc_no', docNo).maybeSingle();
+  const { data: prev } = await scopeToCompanyId(sb.from('consignment_sales_orders').select('status').eq('doc_no', docNo), co.companyId).maybeSingle();
   const fromStatus = (prev as { status: string } | null)?.status ?? null;
 
   /* Tier 2 downstream-lock — only the CANCELLED transition is gated. */
@@ -1029,11 +1032,11 @@ consignmentOrders.patch('/:docNo/status', async (c) => {
   }
 
   const patch: Record<string, unknown> = { status: body.status, updated_at: new Date().toISOString() };
-  const { data, error } = await sb.from('consignment_sales_orders').update(patch)
-    .eq('doc_no', docNo).select('doc_no, status').maybeSingle();
+  const { data, error } = await scopeToCompanyId(sb.from('consignment_sales_orders').update(patch)
+    .eq('doc_no', docNo), co.companyId).select('doc_no, status').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
-  // Stale/missing docNo matches 0 rows → clean 404, not an opaque 500.
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  // Stale/missing docNo (or another company's) matches 0 rows → clean 404.
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
 
   await recordSoAudit(sb, {
     docNo,
@@ -1046,7 +1049,8 @@ consignmentOrders.patch('/:docNo/status', async (c) => {
   });
 
   return c.json({ salesOrder: data });
-});
+};
+consignmentOrders.patch('/:docNo/status', patchConsignmentOrderStatusHandler);
 
 // ── GET /:docNo/audit-log — unified history feed (newest first). ──────
 consignmentOrders.get('/:docNo/audit-log', async (c) => {
@@ -1086,15 +1090,17 @@ consignmentOrders.get('/:docNo/audit-log', async (c) => {
 consignmentOrders.post('/:docNo/items/:itemId/override', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId');
   const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: { overridePriceSen?: number; reason?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const newPrice = Number(body.overridePriceSen ?? 0);
   if (!Number.isFinite(newPrice) || newPrice < 0) return c.json({ error: 'invalid_price' }, 400);
 
-  const { data: item } = await sb.from('consignment_sales_order_items')
+  const { data: item } = await scopeToCompanyId(sb.from('consignment_sales_order_items')
     .select('id, doc_no, item_code, unit_price_centi, qty, discount_centi')
-    .eq('id', itemId).maybeSingle();
-  if (!item) return c.json({ error: 'item_not_found' }, 404);
+    .eq('id', itemId), co.companyId).maybeSingle();
+  if (!item) return c.json(NOT_THIS_COMPANY, 404);
   const i = item as { id: string; doc_no: string; item_code: string; unit_price_centi: number; qty: number; discount_centi: number };
   if (i.doc_no !== docNo) return c.json({ error: 'item_doc_mismatch' }, 400);
 
@@ -1103,18 +1109,18 @@ consignmentOrders.post('/:docNo/items/:itemId/override', async (c) => {
 
   // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
   const newLineTotal = Math.max(0, (i.qty * newPrice) - i.discount_centi);
-  const { data: costRow } = await sb.from('consignment_sales_order_items')
+  const { data: costRow } = await scopeToCompanyId(sb.from('consignment_sales_order_items')
     .select('line_cost_centi')
-    .eq('id', itemId)
+    .eq('id', itemId), co.companyId)
     .maybeSingle();
   const currentLineCost = Number((costRow as { line_cost_centi?: number } | null)?.line_cost_centi ?? 0);
-  const { error } = await sb.from('consignment_sales_order_items').update({
+  const { error } = await scopeToCompanyId(sb.from('consignment_sales_order_items').update({
     unit_price_centi: newPrice,
     total_centi: newLineTotal,
     total_inc_centi: newLineTotal,
     balance_centi: newLineTotal,
     line_margin_centi: newLineTotal - currentLineCost,
-  }).eq('id', itemId);
+  }).eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   await recomputeTotals(sb, docNo);
 
@@ -1135,6 +1141,8 @@ consignmentOrders.post('/:docNo/items/:itemId/override', async (c) => {
 // ── PATCH header — edit debtor info, addresses, note, etc. ───────────
 consignmentOrders.patch('/:docNo', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
@@ -1232,10 +1240,10 @@ consignmentOrders.patch('/:docNo', async (c) => {
      required variants. Collected (not returned) — aggregated with the date rules
      below. */
   if (body['internalExpectedDd'] !== undefined && body['internalExpectedDd'] !== null && body['internalExpectedDd'] !== '') {
-    const { data: liveItems } = await sb
+    const { data: liveItems } = await scopeToCompanyId(sb
       .from('consignment_sales_order_items')
       .select('id, item_code, item_group, variants, cancelled')
-      .eq('doc_no', docNo);
+      .eq('doc_no', docNo), co.companyId);
     coVariantOffenders = findIncompleteVariantLines(
       ((liveItems ?? []) as Array<{ id: string; item_code: string; item_group: string; variants: Record<string, unknown> | null; cancelled: boolean }>)
         .filter((it) => !it.cancelled)
@@ -1245,7 +1253,7 @@ consignmentOrders.patch('/:docNo', async (c) => {
 
   // Snapshot the row before update for the audit diff + the date / lock guards.
   const beforeCols = map.map(([, snake]) => snake).concat(['status']).join(', ');
-  const { data: before } = await sb.from('consignment_sales_orders').select(beforeCols).eq('doc_no', docNo).maybeSingle();
+  const { data: before } = await scopeToCompanyId(sb.from('consignment_sales_orders').select(beforeCols).eq('doc_no', docNo), co.companyId).maybeSingle();
 
   /* Processing & Delivery Date may only be today or a future date, BUT an
      already-past value the edit does NOT change is grandfathered through. The
@@ -1291,17 +1299,17 @@ consignmentOrders.patch('/:docNo', async (c) => {
     }
   }
 
-  const { data, error } = await sb.from('consignment_sales_orders').update(updates).eq('doc_no', docNo).select('doc_no').maybeSingle();
+  const { data, error } = await scopeToCompanyId(sb.from('consignment_sales_orders').update(updates).eq('doc_no', docNo), co.companyId).select('doc_no').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
 
   /* Master-follower cascade. When the header's customer_delivery_date changes,
      every non-overridden line picks up the new date. Best-effort. */
   if (body['customerDeliveryDate'] !== undefined) {
     const newDate = body['customerDeliveryDate'] as string | null;
-    await sb.from('consignment_sales_order_items')
+    await scopeToCompanyId(sb.from('consignment_sales_order_items')
       .update({ line_delivery_date: newDate })
-      .eq('doc_no', docNo)
+      .eq('doc_no', docNo), co.companyId)
       .eq('line_delivery_date_overridden', false);
   }
 
@@ -1503,6 +1511,8 @@ async function recomputeTotals(sb: any, docNo: string) {
 
 consignmentOrders.post('/:docNo/items', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!it.itemCode) return c.json({ error: 'item_code_required' }, 400);
@@ -1517,8 +1527,8 @@ consignmentOrders.post('/:docNo/items', async (c) => {
   const childLock = await coHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
 
-  const { data: header } = await sb.from('consignment_sales_orders').select('debtor_code, debtor_name, agent, branding, venue, customer_delivery_date, customer_state').eq('doc_no', docNo).maybeSingle();
-  if (!header) return c.json({ error: 'not_found' }, 404);
+  const { data: header } = await scopeToCompanyId(sb.from('consignment_sales_orders').select('debtor_code, debtor_name, agent, branding, venue, customer_delivery_date, customer_state').eq('doc_no', docNo), co.companyId).maybeSingle();
+  if (!header) return c.json(NOT_THIS_COMPANY, 404);
 
   const qty = Number(it.qty ?? 1);
   const discount = Number(it.discountCenti ?? 0);
@@ -1649,6 +1659,8 @@ consignmentOrders.post('/:docNo/items', async (c) => {
 
 consignmentOrders.patch('/:docNo/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
@@ -1662,10 +1674,10 @@ consignmentOrders.patch('/:docNo/items/:itemId', async (c) => {
   const childLock = await coHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
 
-  const { data: prev } = await sb.from('consignment_sales_order_items')
+  const { data: prev } = await scopeToCompanyId(sb.from('consignment_sales_order_items')
     .select('qty, unit_price_centi, discount_centi, unit_cost_centi, item_code, item_group, description, description2, uom, variants, remark, cancelled')
-    .eq('id', itemId).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+    .eq('id', itemId), co.companyId).maybeSingle();
+  if (!prev) return c.json(NOT_THIS_COMPANY, 404);
   const qty = it.qty !== undefined ? Number(it.qty) : prev.qty;
   const clientUnit = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : prev.unit_price_centi;
   const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : prev.discount_centi;
@@ -1796,7 +1808,7 @@ consignmentOrders.patch('/:docNo/items/:itemId', async (c) => {
     updates['line_delivery_date_overridden'] = Boolean(it.lineDeliveryDateOverridden);
   }
 
-  const { error } = await sb.from('consignment_sales_order_items').update(updates).eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('consignment_sales_order_items').update(updates).eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   await recomputeTotals(sb, docNo);
 
@@ -1832,19 +1844,22 @@ consignmentOrders.patch('/:docNo/items/:itemId', async (c) => {
 
 consignmentOrders.delete('/:docNo/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   /* Tier 2 downstream-lock — line-delete is blocked once a DO / SI exists. */
   const childLock = await coHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
 
-  const { data: prev } = await sb.from('consignment_sales_order_items')
+  const { data: prev } = await scopeToCompanyId(sb.from('consignment_sales_order_items')
     .select('item_code, qty, unit_price_centi, total_centi, photo_urls')
-    .eq('id', itemId).maybeSingle();
+    .eq('id', itemId), co.companyId).maybeSingle();
   const prevTyped = prev as
     | { item_code: string; qty: number; unit_price_centi: number; total_centi: number; photo_urls: string[] | null }
     | null;
+  if (!prevTyped) return c.json(NOT_THIS_COMPANY, 404);
 
-  const { error } = await sb.from('consignment_sales_order_items').delete().eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('consignment_sales_order_items').delete().eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   await recomputeTotals(sb, docNo);
 
@@ -1911,14 +1926,16 @@ consignmentOrders.post('/:docNo/items/:itemId/photos', async (c) => {
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
   }
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: item, error: itemErr } = await sb
+  const { data: item, error: itemErr } = await scopeToCompanyId(sb
     .from('consignment_sales_order_items')
     .select('id, doc_no, item_code, photo_urls')
-    .eq('id', itemId)
+    .eq('id', itemId), co.companyId)
     .maybeSingle();
   if (itemErr) return c.json({ error: 'item_lookup_failed', reason: itemErr.message }, 500);
-  if (!item) return c.json({ error: 'item_not_found' }, 404);
+  if (!item) return c.json(NOT_THIS_COMPANY, 404);
   const i = item as { id: string; doc_no: string; item_code: string; photo_urls: string[] | null };
   if (i.doc_no !== docNo) return c.json({ error: 'item_doc_mismatch' }, 400);
 
@@ -1965,10 +1982,10 @@ consignmentOrders.post('/:docNo/items/:itemId/photos', async (c) => {
   });
 
   const nextKeys = [...(i.photo_urls ?? []), photoKey];
-  const { error: updErr } = await sb
+  const { error: updErr } = await scopeToCompanyId(sb
     .from('consignment_sales_order_items')
     .update({ photo_urls: nextKeys })
-    .eq('id', itemId);
+    .eq('id', itemId), co.companyId);
   if (updErr) {
     await c.env.SO_ITEM_PHOTOS.delete(photoKey).catch(() => {});
     await deleteThumbFor(c.env.SO_ITEM_PHOTOS, photoKey);
@@ -2008,10 +2025,10 @@ consignmentOrders.get('/:docNo/items/:itemId/photos/:photoKey/signed', async (c)
   const itemId = c.req.param('itemId');
   const photoKey = decodeURIComponent(c.req.param('photoKey'));
 
-  const { data: item } = await sb
+  const { data: item } = await scopeToCompany(sb
     .from('consignment_sales_order_items')
     .select('doc_no, photo_urls')
-    .eq('id', itemId)
+    .eq('id', itemId), c)
     .maybeSingle();
   if (!item) return c.json({ error: 'item_not_found' }, 404);
   const i = item as { doc_no: string; photo_urls: string[] | null };
@@ -2045,10 +2062,10 @@ consignmentOrders.get('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
 
   // WO-7: a `.thumb` sibling is authorised against its BASE key — thumbs
   // are never listed in photo_urls.
-  const { data: item } = await sb
+  const { data: item } = await scopeToCompany(sb
     .from('consignment_sales_order_items')
     .select('doc_no, photo_urls')
-    .eq('id', itemId)
+    .eq('id', itemId), c)
     .maybeSingle();
   if (!item) return c.json({ error: 'item_not_found' }, 404);
   const i = item as { doc_no: string; photo_urls: string[] | null };
@@ -2080,13 +2097,15 @@ consignmentOrders.delete('/:docNo/items/:itemId/photos/:photoKey', async (c) => 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
   }
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: item } = await sb
+  const { data: item } = await scopeToCompanyId(sb
     .from('consignment_sales_order_items')
     .select('doc_no, item_code, photo_urls')
-    .eq('id', itemId)
+    .eq('id', itemId), co.companyId)
     .maybeSingle();
-  if (!item) return c.json({ error: 'item_not_found' }, 404);
+  if (!item) return c.json(NOT_THIS_COMPANY, 404);
   const i = item as { doc_no: string; item_code: string; photo_urls: string[] | null };
   if (i.doc_no !== docNo) return c.json({ error: 'item_doc_mismatch' }, 400);
   const existing = i.photo_urls ?? [];
@@ -2095,10 +2114,10 @@ consignmentOrders.delete('/:docNo/items/:itemId/photos/:photoKey', async (c) => 
   }
 
   const nextKeys = existing.filter((k) => k !== photoKey);
-  const { error: updErr } = await sb
+  const { error: updErr } = await scopeToCompanyId(sb
     .from('consignment_sales_order_items')
     .update({ photo_urls: nextKeys })
-    .eq('id', itemId);
+    .eq('id', itemId), co.companyId);
   if (updErr) return c.json({ error: 'db_update_failed', reason: updErr.message }, 500);
 
   await c.env.SO_ITEM_PHOTOS.delete(photoKey).catch(() => {});
@@ -2169,9 +2188,11 @@ const paymentCreateSchema = z.object({
 
 consignmentOrders.post('/:docNo/payments', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: so } = await sb.from('consignment_sales_orders').select('doc_no').eq('doc_no', docNo).maybeSingle();
-  if (!so) return c.json({ error: 'sales_order_not_found' }, 404);
+  const { data: so } = await scopeToCompanyId(sb.from('consignment_sales_orders').select('doc_no').eq('doc_no', docNo), co.companyId).maybeSingle();
+  if (!so) return c.json(NOT_THIS_COMPANY, 404);
 
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -2226,13 +2247,15 @@ consignmentOrders.post('/:docNo/payments', async (c) => {
 consignmentOrders.delete('/:docNo/payments/:id', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
   const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: row } = await sb.from('consignment_sales_order_payments').select('*').eq('id', id).maybeSingle();
-  if (!row) return c.json({ error: 'not_found' }, 404);
+  const { data: row } = await scopeToCompanyId(sb.from('consignment_sales_order_payments').select('*').eq('id', id), co.companyId).maybeSingle();
+  if (!row) return c.json(NOT_THIS_COMPANY, 404);
   const rowTyped = row as { so_doc_no: string; paid_at: string; method: string; amount_centi: number; approval_code: string | null };
   if (rowTyped.so_doc_no !== docNo) return c.json({ error: 'payment_doc_mismatch' }, 400);
 
-  const { error } = await sb.from('consignment_sales_order_payments').delete().eq('id', id);
+  const { error } = await scopeToCompanyId(sb.from('consignment_sales_order_payments').delete().eq('id', id), co.companyId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
 
   await recordSoAudit(sb, {

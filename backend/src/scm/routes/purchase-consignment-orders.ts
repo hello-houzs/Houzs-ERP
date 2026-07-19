@@ -44,7 +44,8 @@ import {
 } from '../shared/so-line-display';
 import { supabaseAuth } from '../middleware/auth';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const purchaseConsignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -177,10 +178,10 @@ purchaseConsignmentOrders.get('/:id', async (c) => {
   const supabase = c.get('supabase');
 
   const [headerRes, itemsRes] = await Promise.all([
-    supabase
+    scopeToCompany(supabase
       .from('purchase_consignment_orders')
       .select(`${HEADER_COLS}, supplier:suppliers(id, code, name, contact_person, phone, email, address)`)
-      .eq('id', id)
+      .eq('id', id), c)
       .maybeSingle(),
     supabase.from('purchase_consignment_order_items').select(ITEM_COLS).eq('purchase_consignment_order_id', id).order('created_at'),
   ]);
@@ -376,6 +377,8 @@ purchaseConsignmentOrders.patch('/:id', async (c) => {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   /* Tier 2 downstream-lock — header is read-only once a non-cancelled PC Receive
      exists. */
   const childLock = await pcoHasDownstream(sb, id);
@@ -391,8 +394,9 @@ purchaseConsignmentOrders.patch('/:id', async (c) => {
   ] as const) {
     if (body[from] !== undefined) updates[to] = body[from];
   }
-  const { data, error } = await sb.from('purchase_consignment_orders').update(updates).eq('id', id).select('*').single();
+  const { data, error } = await scopeToCompanyId(sb.from('purchase_consignment_orders').update(updates).eq('id', id), co.companyId).select('*').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ purchaseConsignmentOrder: data });
 });
 
@@ -434,6 +438,12 @@ purchaseConsignmentOrders.post('/:id/items', async (c) => {
   if (!it.materialName) return c.json({ error: 'material_name_required' }, 400);
 
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  /* The child is stamped with the active company; the parent it hangs off must
+     be this company's too, or a line lands on another company's PC Order. */
+  const { data: parent } = await scopeToCompanyId(sb.from('purchase_consignment_orders').select('id').eq('id', pcoId), co.companyId).maybeSingle();
+  if (!parent) return c.json(NOT_THIS_COMPANY, 404);
   /* Tier 2 downstream-lock — line-add is blocked once a PC Receive exists. */
   const childLock = await pcoHasDownstream(sb, pcoId);
   if (childLock) return c.json(childLock, 409);
@@ -486,15 +496,17 @@ purchaseConsignmentOrders.patch('/:id/items/:itemId', async (c) => {
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   /* Tier 2 downstream-lock — line-edit is blocked once a PC Receive exists. */
   const childLock = await pcoHasDownstream(sb, pcoId);
   if (childLock) return c.json(childLock, 409);
 
-  const { data: prev } = await sb.from('purchase_consignment_order_items')
+  const { data: prev } = await scopeToCompanyId(sb.from('purchase_consignment_order_items')
     .select('qty, unit_price_centi, discount_centi, unit_cost_centi, item_group, variants')
-    .eq('id', itemId).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+    .eq('id', itemId), co.companyId).maybeSingle();
+  if (!prev) return c.json(NOT_THIS_COMPANY, 404);
 
   const qty = it.qty !== undefined ? Number(it.qty) : prev.qty;
   const unit = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : prev.unit_price_centi;
@@ -529,7 +541,7 @@ purchaseConsignmentOrders.patch('/:id/items/:itemId', async (c) => {
     updates['description2'] = buildVariantSummary(String(effGroup ?? ''), effVariants ?? null) || null;
   }
 
-  const { error } = await sb.from('purchase_consignment_order_items').update(updates).eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('purchase_consignment_order_items').update(updates).eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   await recomputePcoTotals(sb, pcoId);
   return c.json({ ok: true });
@@ -538,13 +550,16 @@ purchaseConsignmentOrders.patch('/:id/items/:itemId', async (c) => {
 purchaseConsignmentOrders.delete('/:id/items/:itemId', async (c) => {
   const pcoId = c.req.param('id'); const itemId = c.req.param('itemId');
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   /* Tier 2 downstream-lock — line-delete is blocked once a PC Receive exists. */
   const childLock = await pcoHasDownstream(sb, pcoId);
   if (childLock) return c.json(childLock, 409);
 
-  const { error } = await sb.from('purchase_consignment_order_items').delete().eq('id', itemId);
+  const { data: del, error } = await scopeToCompanyId(sb.from('purchase_consignment_order_items').delete().eq('id', itemId), co.companyId).select('id').maybeSingle();
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  if (!del) return c.json(NOT_THIS_COMPANY, 404);
   await recomputePcoTotals(sb, pcoId);
 
   return c.body(null, 204);
@@ -556,28 +571,32 @@ purchaseConsignmentOrders.delete('/:id/items/:itemId', async (c) => {
 purchaseConsignmentOrders.patch('/:id/submit', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
-  const { data } = await supabase
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data } = await scopeToCompanyId(supabase
     .from('purchase_consignment_orders')
     .select('id, status, submitted_at')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   const row = data as { id: string; status: string; submitted_at: string | null };
   if (row.status === 'SUBMITTED') return c.json({ purchaseConsignmentOrder: row });
   return c.json({ error: 'cannot_submit', message: `PC Order is ${row.status}` }, 409);
 });
 
-purchaseConsignmentOrders.patch('/:id/cancel', async (c) => {
+export const cancelPurchaseConsignmentOrderHandler = async (c: any) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: cur, error: readErr } = await supabase
+  const { data: cur, error: readErr } = await scopeToCompanyId(supabase
     .from('purchase_consignment_orders')
     .select('id, status')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const curStatus = (cur as { status: string }).status;
   if (curStatus === 'RECEIVED') return c.json({ error: 'cannot_cancel', message: 'PC Order already received' }, 409);
   if (curStatus === 'CANCELLED') {
@@ -589,19 +608,20 @@ purchaseConsignmentOrders.patch('/:id/cancel', async (c) => {
   const childLock = await pcoHasDownstream(supabase, id);
   if (childLock) return c.json(childLock, 409);
 
-  const { error: updErr } = await supabase
+  const { error: updErr } = await scopeToCompanyId(supabase
     .from('purchase_consignment_orders')
     .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq('id', id);
+    .eq('id', id), co.companyId);
   if (updErr) return c.json({ error: 'cancel_failed', reason: updErr.message }, 500);
 
-  const { data: after } = await supabase
+  const { data: after } = await scopeToCompanyId(supabase
     .from('purchase_consignment_orders')
     .select('id, status, cancelled_at')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   return c.json({ purchaseConsignmentOrder: after ?? { id, status: 'CANCELLED' } });
-});
+};
+purchaseConsignmentOrders.patch('/:id/cancel', cancelPurchaseConsignmentOrderHandler);
 
 // ── Delete ────────────────────────────────────────────────────────────
 // Hard-delete a PC Order + its line items. Only CANCELLED PC Orders may be
@@ -609,13 +629,15 @@ purchaseConsignmentOrders.patch('/:id/cancel', async (c) => {
 purchaseConsignmentOrders.delete('/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
-  const { data: cur, error: readErr } = await supabase
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: cur, error: readErr } = await scopeToCompanyId(supabase
     .from('purchase_consignment_orders')
     .select('id, status, pc_number')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (readErr) return c.json({ error: 'read_failed', reason: readErr.message }, 500);
-  if (!cur)    return c.json({ error: 'not_found' }, 404);
+  if (!cur)    return c.json(NOT_THIS_COMPANY, 404);
   const row = cur as { id: string; status: string; pc_number: string };
   if (row.status !== 'CANCELLED') {
     return c.json({
@@ -625,7 +647,7 @@ purchaseConsignmentOrders.delete('/:id', async (c) => {
   }
 
   // Items cascade via FK ON DELETE CASCADE.
-  const { error: delErr } = await supabase.from('purchase_consignment_orders').delete().eq('id', id);
+  const { error: delErr } = await scopeToCompanyId(supabase.from('purchase_consignment_orders').delete().eq('id', id), co.companyId);
   if (delErr) return c.json({ error: 'delete_failed', reason: delErr.message }, 500);
 
   return c.json({ ok: true, deleted: row.pc_number });

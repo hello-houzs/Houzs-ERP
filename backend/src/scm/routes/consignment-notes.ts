@@ -36,7 +36,8 @@ import { warehouseLabel } from '../lib/warehouse-label';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { canViewScmFinance } from '../lib/houzs-perms';
 import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { sourceUnitCostByItemId } from '../lib/source-cost';
@@ -607,7 +608,7 @@ consignmentNotes.get('/deliverable-order-lines', async (c) => {
 consignmentNotes.get('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   const [h, i] = await Promise.all([
-    sb.from('consignment_delivery_orders').select(HEADER).eq('id', id).maybeSingle(),
+    scopeToCompany(sb.from('consignment_delivery_orders').select(HEADER).eq('id', id), c).maybeSingle(),
     sb.from('consignment_delivery_order_items').select(ITEM).eq('consignment_delivery_order_id', id).order('created_at'),
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
@@ -735,6 +736,8 @@ consignmentNotes.post('/', async (c) => {
 // ── Header PATCH (editable SO-style fields) ───────────────────────────────
 consignmentNotes.patch('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
@@ -774,15 +777,17 @@ consignmentNotes.patch('/:id', async (c) => {
   const headerLock = await noteHasDownstream(sb, id);
   if (headerLock) return c.json(headerLock, 409);
 
-  const { data, error } = await sb.from('consignment_delivery_orders').update(updates).eq('id', id).select('id').maybeSingle();
+  const { data, error } = await scopeToCompanyId(sb.from('consignment_delivery_orders').update(updates).eq('id', id), co.companyId).select('id').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true, id });
 });
 
 // ── Item CRUD ─────────────────────────────────────────────────────────────
 consignmentNotes.post('/:id/items', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!it.itemCode) return c.json({ error: 'item_code_required' }, 400);
@@ -797,8 +802,8 @@ consignmentNotes.post('/:id/items', async (c) => {
   const childLock = await noteHasDownstream(sb, id);
   if (childLock) return c.json(childLock, 409);
 
-  const { data: header } = await sb.from('consignment_delivery_orders').select('id, status, warehouse_id').eq('id', id).maybeSingle();
-  if (!header) return c.json({ error: 'not_found' }, 404);
+  const { data: header } = await scopeToCompanyId(sb.from('consignment_delivery_orders').select('id, status, warehouse_id').eq('id', id), co.companyId).maybeSingle();
+  if (!header) return c.json(NOT_THIS_COMPANY, 404);
 
   const row = buildItemRow(id, it, await sourceUnitCostByItemId(
     sb, 'consignment_sales_order_items', [(it.soItemId ?? it.consignmentSoItemId) as string | undefined],
@@ -817,6 +822,8 @@ consignmentNotes.post('/:id/items', async (c) => {
 
 consignmentNotes.patch('/:id/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const itemId = c.req.param('itemId');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
@@ -830,10 +837,10 @@ consignmentNotes.patch('/:id/items/:itemId', async (c) => {
   const childLock = await noteHasDownstream(sb, id);
   if (childLock) return c.json(childLock, 409);
 
-  const { data: prev } = await sb.from('consignment_delivery_order_items')
+  const { data: prev } = await scopeToCompanyId(sb.from('consignment_delivery_order_items')
     .select('qty, unit_price_centi, discount_centi, unit_cost_centi, item_code, item_group, description, uom, variants, notes, consignment_so_item_id')
-    .eq('id', itemId).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+    .eq('id', itemId), co.companyId).maybeSingle();
+  if (!prev) return c.json(NOT_THIS_COMPANY, 404);
 
   const qty = it.qty !== undefined ? Number(it.qty) : Number(prev.qty);
   const unitPrice = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
@@ -875,7 +882,7 @@ consignmentNotes.patch('/:id/items/:itemId', async (c) => {
     updates['description2'] = buildVariantSummary(String(effGroup ?? ''), effVariants ?? null) || null;
   }
 
-  const { error } = await sb.from('consignment_delivery_order_items').update(updates).eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('consignment_delivery_order_items').update(updates).eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   await recomputeTotals(sb, id);
   /* Adjust inventory by the qty/variant delta (no-op until shipped). */
@@ -885,13 +892,16 @@ consignmentNotes.patch('/:id/items/:itemId', async (c) => {
 
 consignmentNotes.delete('/:id/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const itemId = c.req.param('itemId');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   /* Downstream-lock — line-delete is blocked once a Consignment Return exists. */
   const childLock = await noteHasDownstream(sb, id);
   if (childLock) return c.json(childLock, 409);
 
-  const { error } = await sb.from('consignment_delivery_order_items').delete().eq('id', itemId);
+  const { data: del, error } = await scopeToCompanyId(sb.from('consignment_delivery_order_items').delete().eq('id', itemId), co.companyId).select('id').maybeSingle();
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  if (!del) return c.json(NOT_THIS_COMPANY, 404);
   await recomputeTotals(sb, id);
   /* Give the deleted line's stock back (no-op until shipped). */
   try { await resyncNoteInventory(sb, id, c.get('user')?.id ?? null); } catch { /* best-effort */ }
@@ -901,10 +911,10 @@ consignmentNotes.delete('/:id/items/:itemId', async (c) => {
 // ── Payments (mirror DO payments ledger) ──────────────────────────────────
 consignmentNotes.get('/:id/payments', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
-  const { data, error } = await sb
+  const { data, error } = await scopeToCompany(sb
     .from('consignment_delivery_order_payments')
     .select(`${PAYMENT_COLS}, staff:collected_by ( name )`)
-    .eq('consignment_delivery_order_id', id)
+    .eq('consignment_delivery_order_id', id), c)
     .order('paid_at', { ascending: false })
     .order('created_at', { ascending: false });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -932,9 +942,11 @@ const paymentCreateSchema = z.object({
 
 consignmentNotes.post('/:id/payments', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: doc } = await sb.from('consignment_delivery_orders').select('id').eq('id', id).maybeSingle();
-  if (!doc) return c.json({ error: 'consignment_note_not_found' }, 404);
+  const { data: doc } = await scopeToCompanyId(sb.from('consignment_delivery_orders').select('id').eq('id', id), co.companyId).maybeSingle();
+  if (!doc) return c.json(NOT_THIS_COMPANY, 404);
 
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -970,22 +982,26 @@ consignmentNotes.post('/:id/payments', async (c) => {
 
 consignmentNotes.delete('/:id/payments/:paymentId', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const paymentId = c.req.param('paymentId');
-  const { data: row } = await sb.from('consignment_delivery_order_payments').select('consignment_delivery_order_id').eq('id', paymentId).maybeSingle();
-  if (!row) return c.json({ error: 'not_found' }, 404);
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: row } = await scopeToCompanyId(sb.from('consignment_delivery_order_payments').select('consignment_delivery_order_id').eq('id', paymentId), co.companyId).maybeSingle();
+  if (!row) return c.json(NOT_THIS_COMPANY, 404);
   if ((row as { consignment_delivery_order_id: string }).consignment_delivery_order_id !== id) return c.json({ error: 'payment_doc_mismatch' }, 400);
-  const { error } = await sb.from('consignment_delivery_order_payments').delete().eq('id', paymentId);
+  const { error } = await scopeToCompanyId(sb.from('consignment_delivery_order_payments').delete().eq('id', paymentId), co.companyId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   return c.json({ ok: true });
 });
 
 // ── Status transition + loaner transfer / reversal ────────────────────────
-consignmentNotes.patch('/:id/status', async (c) => {
+export const patchConsignmentNoteStatusHandler = async (c: any) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: { status?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
 
-  const { data: cur } = await sb.from('consignment_delivery_orders').select('status').eq('id', id).maybeSingle();
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  const { data: cur } = await scopeToCompanyId(sb.from('consignment_delivery_orders').select('status').eq('id', id), co.companyId).maybeSingle();
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const prevStatus = (cur as { status: string }).status;
   if (body.status === 'CANCELLED' && prevStatus === 'CANCELLED') {
     return c.json({ consignmentNote: { id, status: 'CANCELLED' } });
@@ -1015,16 +1031,16 @@ consignmentNotes.patch('/:id/status', async (c) => {
      being non-cancelled so two concurrent cancels can't double-reverse. */
   let data: { id: string; status: string } | null;
   if (body.status === 'CANCELLED') {
-    const { data: updated, error } = await sb.from('consignment_delivery_orders')
+    const { data: updated, error } = await scopeToCompanyId(sb.from('consignment_delivery_orders')
       .update({ status: body.status, ...ts })
-      .eq('id', id).neq('status', 'CANCELLED')
+      .eq('id', id).neq('status', 'CANCELLED'), co.companyId)
       .select('id, status').maybeSingle();
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
     if (!updated) return c.json({ consignmentNote: { id, status: 'CANCELLED' } });
     data = updated as { id: string; status: string };
   } else {
-    const { data: updated, error } = await sb.from('consignment_delivery_orders')
-      .update({ status: body.status, ...ts }).eq('id', id).select('id, status').single();
+    const { data: updated, error } = await scopeToCompanyId(sb.from('consignment_delivery_orders')
+      .update({ status: body.status, ...ts }).eq('id', id), co.companyId).select('id, status').single();
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
     data = updated as { id: string; status: string };
   }
@@ -1037,4 +1053,5 @@ consignmentNotes.patch('/:id/status', async (c) => {
   }
 
   return c.json({ consignmentNote: data });
-});
+};
+consignmentNotes.patch('/:id/status', patchConsignmentNoteStatusHandler);
