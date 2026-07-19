@@ -1,5 +1,6 @@
 import { ACCESS_RANK, type AuthUser, type AccessLevel } from "../types";
 import { COSTING_DISPLAY_ENABLED } from "@2990s/shared";
+import { capability } from "./capabilities";
 
 /**
  * Sales-access model — CODE-KEYED off STABLE ORG FIELDS (position_name /
@@ -12,6 +13,17 @@ import { COSTING_DISPLAY_ENABLED } from "@2990s/shared";
  * (`getPmsRole` / `isFinanceViewer`) so the FE and BE agree on who is a
  * "director" and who is "sales staff". Backend stays the authority — these
  * guards are UX + defence-in-depth only.
+ *
+ * FOLDED TO THE BACKEND (owner's 2026-07-19 ruling, #835/#839). Three of the
+ * helpers below no longer COMPUTE their answer from position names / flags — they
+ * READ the server-resolved capability set (auth/capabilities): `isDirectorUser`
+ * -> `org.director`, `canViewFairReport` -> `fair.report.view`, and the position
+ * half of `canViewScmCosting` -> `scm.finance.view`. They stay as named helpers
+ * (their callers are unchanged and one still composes the SCM display switch),
+ * but the rule now lives in ONE place, server-side, and each fails CLOSED when the
+ * capability set did not resolve. The remaining helpers (isSalesStaff /
+ * isSalesDirectorUser / isSalesNonDirector / fairAllowedStages / product-cost) are
+ * still client-side and still mirror pmsAccess.
  */
 
 /** Owner/IT `*` or a director-level position — sees everything. */
@@ -20,17 +32,6 @@ import { COSTING_DISPLAY_ENABLED } from "@2990s/shared";
 function normalisePosition(name: string | null | undefined): string {
   return (name ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 }
-
-// Director-level positions, matched by EXACT normalised name. This WAS
-// /\b(Super Admin|Sales Director|Finance Manager)\b/i — a word-boundary test
-// that let any future free-text rename CONTAINING a director title ("Assistant
-// to Sales Director", "Deputy Finance Manager") silently inherit full director
-// access. Position names are owner-editable free text, so a substring match
-// turns a rename into a privilege grant. MUST stay identical to the backend
-// services/pmsAccess.ts DIRECTOR_POSITION_NAMES (pinned by both sides' tests).
-const DIRECTOR_POSITION_NAMES: ReadonlySet<string> = new Set(
-  ["Super Admin", "Sales Director", "Finance Manager"].map(normalisePosition),
-);
 
 /** A sales position name — matches "Sales Executive", "Sales Coordinator",
  *  "Sales Director", but ALSO the no-space / punctuated variants that the old
@@ -43,17 +44,20 @@ const DIRECTOR_POSITION_NAMES: ReadonlySet<string> = new Set(
 const SALES_POSITION = /^sales/i;
 
 /**
- * Director signal — the cohort that sees everything. Matches the backend
- * `isFinanceViewer`: the `*` wildcard (Owner/IT) OR a director position name.
- * The backend already surfaces this precomputed as `project_finance_viewer`;
- * we OR it in so the two agree even if a director position name is ever
- * renamed on the server side.
+ * Director signal — the cohort that sees everything. FOLDED: reads the
+ * server-resolved `org.director` capability (backend services/capabilities.ts ->
+ * pmsAccess.isDirectorUser = `*` wildcard OR an exact director position name).
+ * The position-name matcher and the `project_finance_viewer` OR that used to live
+ * here now live once, on the backend; this is a thin read of that answer.
+ *
+ * Fails CLOSED with the capability set: a caller whose /auth/me carried no
+ * `capabilities` (stale PWA shell / a Pages deploy ahead of the Worker) resolves
+ * to false here rather than being granted director access off a stale flag. The
+ * internal callers below (isSalesNonDirector, isFairManagementUser) inherit that
+ * same server answer, so all three read one source.
  */
 export function isDirectorUser(user: AuthUser | null | undefined): boolean {
-  if (!user) return false;
-  if (user.permissions?.includes("*")) return true;
-  if (user.project_finance_viewer) return true;
-  return DIRECTOR_POSITION_NAMES.has(normalisePosition(user.position_name));
+  return capability(user, "org.director");
 }
 
 /**
@@ -222,18 +226,25 @@ export function canOperateSalesInvoices(
  * there and never reaches DIRECTOR, so every salesperson below Sales Director
  * gets false. That is the whole rule.
  *
- * Kept as its own helper rather than reading `project_finance_viewer` raw,
- * because the COSTING_DISPLAY_ENABLED term is SCM-only: it exists so the SCM
+ * Kept as its own helper — NOT because it computes a rule (it no longer does),
+ * but because the COSTING_DISPLAY_ENABLED term is SCM-only: it exists so the SCM
  * document surfaces can be switched off without taking the PMS / Projects P&L
  * (real data, same flag) down with them. It was false 2026-07-16..17 (#649) and
  * is true again now — see costing-enabled.ts for what a HOUZS 100% still means
- * until that catalog is costed.
+ * until that catalog is costed. Housing that display switch in ONE helper is why
+ * the ~9 SCM pages call this rather than inlining it nine times.
+ *
+ * FOLDED: the PERMISSION half (was `project_finance_viewer`) now reads the
+ * server-resolved `scm.finance.view` capability (backend isFinanceViewer — the
+ * same function `project_finance_viewer` was computed from, so same cohort), which
+ * fails CLOSED on an unresolved capability set. The display switch stays here on
+ * the FE because it is a build-time toggle, not a per-user permission.
  *
  * Callers must make the element ABSENT, not blank it ("off, not hide").
  */
 export function canViewScmCosting(user: AuthUser | null | undefined): boolean {
   if (!COSTING_DISPLAY_ENABLED) return false;
-  return !!user?.project_finance_viewer;
+  return capability(user, "scm.finance.view");
 }
 
 // ── Fair Report access (owner-ruled 2026-07-19) ─────────────────────────────
@@ -272,11 +283,15 @@ export function fairAllowedStages(user: AuthUser | null | undefined): FairStage[
 }
 
 /** Nav + route guard — may this user open the Fair Report at all (any stage).
- *  True for management + the Sales Director; false for ordinary sales / office
- *  (defence-in-depth + UX only — the backend fairReportAccess stays the
- *  authority and 403s every refused stage). */
+ *  True for management + the Sales Director; false for ordinary sales / office.
+ *
+ *  FOLDED: reads the server-resolved `fair.report.view` capability (backend
+ *  fairReportAccess ORed over every stage — the SAME gate that 403s each refused
+ *  stage), instead of re-deriving the tiers here via `fairAllowedStages`. Fails
+ *  CLOSED when the capability set did not resolve. `fairAllowedStages` stays
+ *  client-side for the PER-TAB visibility INSIDE the already-gated page. */
 export function canViewFairReport(user: AuthUser | null | undefined): boolean {
-  return fairAllowedStages(user).length > 0;
+  return capability(user, "fair.report.view");
 }
 
 /**

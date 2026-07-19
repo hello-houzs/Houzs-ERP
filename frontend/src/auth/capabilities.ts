@@ -61,6 +61,7 @@ import type { AuthUser } from "../types";
 export const CAPABILITY_KEYS = [
   "fair.do.view",
   "fair.invoice.view",
+  "fair.report.view",
   "fair.so.view",
   "org.director",
   "org.sales.staff",

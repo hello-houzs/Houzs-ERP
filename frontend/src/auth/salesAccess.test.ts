@@ -8,12 +8,18 @@ import {
 import type { AuthUser } from "../types";
 
 /**
- * FE mirror of the backend director / sales-director classification
- * (services/pmsAccess.ts). Position names are owner-editable FREE TEXT, so the
- * matchers key on EXACT normalised name, not a word-boundary regex: a rename
- * whose name merely CONTAINS a privileged title ("Assistant to Sales Director")
- * must NOT inherit that title's access. The backend is the authority; these
- * guards are UX + defence-in-depth, so they must agree with it.
+ * `isSalesDirectorUser` is the FE mirror of the backend sales-director
+ * classification (services/pmsAccess.ts). Position names are owner-editable FREE
+ * TEXT, so the matcher keys on EXACT normalised name, not a word-boundary regex: a
+ * rename whose name merely CONTAINS a privileged title ("Assistant to Sales
+ * Director") must NOT inherit that title's access. The backend is the authority;
+ * this guard is UX + defence-in-depth, so it must agree with it.
+ *
+ * `isDirectorUser` is NO LONGER a FE mirror — it was FOLDED (#835/#839) to read the
+ * server-resolved `org.director` capability. The position-name matcher lives once,
+ * on the backend (pinned by backend/tests/pmsAccess.test.ts + capabilities.test.ts);
+ * here we only pin that the FE helper reads the capability and fails CLOSED without
+ * it. So the director LOCKSTEP table moved to the backend and is gone from here.
  */
 
 const u = (over: Partial<AuthUser> = {}): AuthUser =>
@@ -31,22 +37,10 @@ const u = (over: Partial<AuthUser> = {}): AuthUser =>
   }) as AuthUser;
 
 // ── LOCKSTEP FIXTURE — MUST stay identical to backend/tests/pmsAccess.test.ts ──
-// The two files carry no shared import (vendored-clone architecture), so these
-// tables ARE the FE<->BE contract. Change one, change the other in the SAME commit.
-const LOCKSTEP_DIRECTOR: ReadonlyArray<[string, boolean]> = [
-  ["Super Admin", true],
-  ["Sales Director", true],
-  ["Finance Manager", true],
-  ["sales director", true],
-  ["  Sales   Director ", true],
-  ["Assistant to Sales Director", false],
-  ["Deputy Finance Manager", false],
-  ["Senior Super Admin", false],
-  ["Super Administrator", false],
-  ["Sales Manager", false],
-  ["HR Manager", false],
-  ["Operation Manager", false],
-];
+// The two files carry no shared import (vendored-clone architecture), so this
+// table IS the FE<->BE contract for isSalesDirectorUser. Change one, change the
+// other in the SAME commit. (The director table moved wholly to the backend when
+// isDirectorUser was folded — see the file docblock.)
 const LOCKSTEP_SALES_DIRECTOR: ReadonlyArray<[string, boolean]> = [
   ["Sales Director", true],
   ["  sales director ", true],
@@ -55,14 +49,17 @@ const LOCKSTEP_SALES_DIRECTOR: ReadonlyArray<[string, boolean]> = [
   ["Sales Manager", false],
 ];
 
-describe("salesAccess — position-name matcher hardening (FE mirror)", () => {
-  it("isDirectorUser matches ONLY the exact director names", () => {
-    for (const [name, expected] of LOCKSTEP_DIRECTOR) {
-      expect(isDirectorUser(u({ position_name: name }))).toBe(expected);
-    }
-    // `*` wildcard and the precomputed backend flag are directors regardless.
-    expect(isDirectorUser(u({ permissions: ["*"], position_name: "Assistant to Sales Director" }))).toBe(true);
-    expect(isDirectorUser(u({ project_finance_viewer: true, position_name: "Sales Executive" }))).toBe(true);
+describe("salesAccess — director/sales-director classification", () => {
+  it("isDirectorUser reads the org.director capability and fails CLOSED", () => {
+    // Folded: the FE no longer derives director from position_name / permissions /
+    // project_finance_viewer — it reads the server answer verbatim.
+    expect(isDirectorUser(u({ capabilities: { "org.director": true } }))).toBe(true);
+    expect(isDirectorUser(u({ capabilities: { "org.director": false } }))).toBe(false);
+    // No resolved capability set (stale shell / Worker-behind-Pages deploy) is a
+    // DENIAL, never a grant off the still-present position/flag — the #839 rule.
+    expect(isDirectorUser(u({ position_name: "Super Admin" }))).toBe(false);
+    expect(isDirectorUser(u({ permissions: ["*"], project_finance_viewer: true }))).toBe(false);
+    expect(isDirectorUser(null)).toBe(false);
   });
 
   it("isSalesDirectorUser matches ONLY the exact 'Sales Director'", () => {

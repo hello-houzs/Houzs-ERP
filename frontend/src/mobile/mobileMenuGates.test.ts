@@ -1,27 +1,37 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { MOBILE_MENU_GROUPS, PROFILE_ORG_ITEMS, type MobileMenuItem } from "./MobileApp";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { CAPABILITY_KEYS } from "../auth/capabilities";
 
+const HERE = dirname(fileURLToPath(import.meta.url));
+
 /**
  * EVERY mobile menu row must state its permission gate. This test is the reason
- * "I forgot to gate this" is now a CI failure instead of a silent public page.
+ * "I forgot to gate this" is a CI failure instead of a silently mis-scoped page.
  *
- * THE MECHANISM IT GUARDS. `MobileApp`'s `allowed(to)` ends with
- * `matches.length === 0 ? true` — a path with NO NAV_TABS entry is visible to
- * EVERY mobile user. That default has already produced the same bug twice: once
- * when the desktop /scm/drivers page was retired out from under the mobile row
- * that borrowed its gate, and again when the mobile-only /scm/helpers row was
- * added. Both were caught by a human reading the code. Neither was caught by a
- * compiler or a test, because an ungated row is perfectly valid TypeScript.
+ * THE MECHANISM IT GUARDS. `MobileApp`'s `allowed(to)` now ends with
+ * `matches.length === 0 ? false` — a path with NO NAV_TABS entry is HIDDEN, not
+ * shown. That default was fail-OPEN (`? true`) until 2026-07-19, which made every
+ * ungated row a page visible to EVERY mobile user, and it produced the same bug
+ * twice: once when the desktop /scm/drivers page was retired out from under the
+ * mobile row that borrowed its gate, and again when the mobile-only /scm/helpers
+ * row was added. Both were caught by a human reading the code; neither by a
+ * compiler, because an ungated row is perfectly valid TypeScript.
  *
- * WHY THE DEFAULT IS NOT SIMPLY FLIPPED TO DENY. Exactly one row legitimately
- * depends on the permissive default — `/activity-inbox` (see UNGATED_BY_DESIGN).
- * Flipping the default today would remove the Inbox row from the Profile screen
- * for every user in production. A screen that silently disappears is worse than
- * one that is over-shared: nobody reports it as a bug, they just quietly stop
- * using the feature. So the leak is CLOSED BY ENUMERATION instead — every row
- * must name its gate, and the ungated ones must be justified here in writing.
+ * THE FLIP DID NOT REMOVE ANY ROW. The two rows that have no nav gate to borrow —
+ * `/activity-inbox` and `/announcements` (see UNGATED_BY_DESIGN) — carry
+ * `alwaysShow`, which short-circuits `allowed()` at the filter call sites, so they
+ * stay visible under the closed default. Nothing depended on the permissive
+ * default itself; the enumeration below (every row names its gate) is what made
+ * the flip safe, and the flip is what makes the enumeration true at runtime.
+ *
+ * WHY THE ENUMERATION STILL MATTERS UNDER FAIL-CLOSED. A row that names no gate no
+ * longer leaks — it now VANISHES for the cohort that should see it, silently,
+ * because `allowed()` denies an unmatched path. A screen that disappears with
+ * nobody deciding it should is its own bug, so every row must still name its gate.
  *
  * WHEN THIS TEST FAILS, DO NOT ADD YOUR PATH TO UNGATED_BY_DESIGN TO GO GREEN.
  * That list is for rows with no permission to apply at all. If the screen reads
@@ -109,6 +119,21 @@ const allRows: MobileMenuItem[] = [
 ];
 
 describe("mobile menu permission gates", () => {
+  it("the runtime default fails CLOSED — an unlisted path is hidden, not shown to all", () => {
+    /* The gate this whole file exists around lives in MobileApp's `allowed()`,
+       a closure inside MobileAppInner that cannot be imported. Its guarantee is
+       pinned at the source instead: the no-NAV_TABS-match branch must resolve to
+       FALSE. This is the inversion of the original fail-open default (`? true`);
+       a future edit that restores it turns every ungated path back into a public
+       page and fails HERE, next to the enumeration that made the flip safe. */
+    const appSrc = readFileSync(resolve(HERE, "MobileApp.tsx"), "utf8");
+    const at = appSrc.indexOf("const allowed = (to: string)");
+    expect(at, "allowed() not found in MobileApp.tsx — did it get renamed?").toBeGreaterThan(-1);
+    const decl = appSrc.slice(at, at + 320);
+    expect(decl).toContain("matches.length === 0 ? false");
+    expect(decl).not.toContain("matches.length === 0 ? true");
+  });
+
   it("gives every menu and Profile row an explicit gate", () => {
     const ungated = allRows.filter((it) => gateOf(it) === null).map((it) => `${it.label} (${it.to})`);
     // Named in the failure so the next author sees WHICH row and WHAT to do,
@@ -117,9 +142,9 @@ describe("mobile menu permission gates", () => {
       ungated,
       ungated.length === 0
         ? ""
-        : `These mobile rows have no permission gate. allowed() fails OPEN for a path ` +
-          `with no NAV_TABS entry, so each of these is currently visible to EVERY mobile ` +
-          `user regardless of position:\n  ${ungated.join("\n  ")}\n` +
+        : `These mobile rows have no permission gate. allowed() now fails CLOSED for a ` +
+          `path with no NAV_TABS entry, so each of these currently VANISHES for the cohort ` +
+          `that should see it (and before the 2026-07-19 flip was visible to everyone):\n  ${ungated.join("\n  ")}\n` +
           `Fix by pointing the row at a live NAV_TABS path, or adding gateVia to one that ` +
           `carries the same permission the backend enforces on the screen's endpoint. Do ` +
           `NOT add it to UNGATED_BY_DESIGN unless the screen genuinely has no permission ` +

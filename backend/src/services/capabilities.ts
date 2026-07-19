@@ -54,7 +54,7 @@ import {
   isSalesUser,
 } from "./pmsAccess";
 import { moneyWriteDenial, resolvePositionPolicy, type MoneyWriteCaller } from "./positionPolicy";
-import { fairReportAccess } from "../scm/lib/fair-report";
+import { fairReportAccess, FAIR_STAGES } from "../scm/lib/fair-report";
 
 /**
  * The caller shape a capability predicate may read. Structurally satisfied by
@@ -190,6 +190,15 @@ const PREDICATES = {
   "fair.do.view": (u: CapabilityCaller): boolean => fairReportAccess("do", asAuthUser(u)).allowed,
   "fair.invoice.view": (u: CapabilityCaller): boolean =>
     fairReportAccess("invoice", asAuthUser(u)).allowed,
+
+  /** May this caller OPEN the Fair / Sales Report at all — the nav row, the route
+   *  mount, the mobile overlay — as opposed to any one document stage. GATE:
+   *  scm/lib/fair-report.fairReportAccess ORed over every stage, so it is the SAME
+   *  gate the per-stage 403 enforces; a caller allowed on no stage is refused here
+   *  too. The FE previously re-derived this as auth/salesAccess.canViewFairReport
+   *  (fairAllowedStages(...).length > 0), a second copy of the owner ruling. */
+  "fair.report.view": (u: CapabilityCaller): boolean =>
+    FAIR_STAGES.some((stage) => fairReportAccess(stage, asAuthUser(u)).allowed),
 
   /**
    * May this caller OPEN the SO Maintenance screen at all — nav row, route
