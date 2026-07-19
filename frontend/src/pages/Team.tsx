@@ -734,41 +734,30 @@ function MembersTab({
   // one PATCH with all changed fields (name/email/phone/department/
   // position/reports-to), keeping the members table read-only and tidy.
 
+  // Sending a reset link does NOT change the account (backend users.ts
+  // /:id/reset-password). The old copy promised a logout that the old handler
+  // really did perform; both are gone. The link is never shown here — it is a
+  // live credential and it belongs only in the member's mailbox.
   async function sendReset(u: TeamMember) {
     if (
       !(await dialog.confirm(
-        `Send a password reset link to ${u.email}?\n\nTheir current password will keep working until they complete the reset. Active sessions will be logged out.`
+        `Send a password reset link to ${u.email}?\n\nNothing changes until they click it — their current password and any active sessions keep working. The link expires in 1 hour and can be used once.`
       ))
     )
       return;
     try {
       const res = await api.post<{
         ok: boolean;
-        token: string;
-        reset_path: string;
         expires_at: string;
         email: string;
         email_sent?: boolean;
         email_status?: string;
       }>(`/api/users/${u.id}/reset-password`);
-      const link = `${window.location.origin}${res.reset_path}`;
-      const copied = await navigator.clipboard
-        .writeText(link)
-        .then(() => true)
-        .catch(() => false);
       if (res.email_sent) {
-        toast.success(
-          copied
-            ? `Reset link emailed to ${u.email} and copied to clipboard`
-            : `Reset link emailed to ${u.email}`
-        );
-      } else if (copied) {
-        toast.success(
-          `Email not sent (${res.email_status || "check Settings, Email"}) — reset link copied to clipboard instead`
-        );
+        toast.success(`Reset link emailed to ${u.email} — expires in 1 hour`);
       } else {
         toast.error(
-          `Email not sent (${res.email_status || "check Settings, Email"}) and clipboard unavailable`
+          `Email not sent (${res.email_status || "check Settings, Email"}) — nothing was changed on the account`
         );
       }
     } catch (e: any) {
@@ -1134,7 +1123,7 @@ function MembersTab({
     if (targets.length === 0) return;
     const ok = await dialog.confirm(
       `Send a password-reset link to ${targets.length} active member${targets.length === 1 ? "" : "s"}?\n\n` +
-        `Their current password keeps working until they reset, but any active sessions will be logged out. This does NOT touch pending invites.`,
+        `Nothing changes for anyone who doesn't click — passwords and active sessions keep working. Each link expires in 1 hour. This does NOT touch pending invites.`,
     );
     if (!ok) return;
     try {
