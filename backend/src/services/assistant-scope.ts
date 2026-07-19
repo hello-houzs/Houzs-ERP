@@ -60,8 +60,8 @@ export const ASSISTANT_DENIED_POSITIONS: ReadonlySet<string> = new Set([
   'storekeeper supervisor',
   /* SALES — owner 2026-07-19: "我説的是吧assistant從sales 那邊移除先"
    * ("remove the Assistant from Sales first"). All four Sales-Department
-   * positions on the live positions table, exact normalised names, listed for
-   * the owner to confirm the set.
+   * positions on the live positions table, exact normalised names —
+   * owner-confirmed 2026-07-19.
    *
    * NOT about CS. There is no CS department and no CS position in this system;
    * the only "CS" is an AI agent in the Agent Console (services/agents/
