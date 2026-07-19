@@ -65,7 +65,7 @@ function PriorityTargetsSection({
     priorities: PriorityRow[];
     stages: string[];
     targets: PriorityTarget[];
-  }>(() => api.get("/api/assr/portal/priority-targets"));
+  }>("/api/assr/portal/priority-targets", () => api.get("/api/assr/portal/priority-targets"));
 
   if (data.loading) {
     return (

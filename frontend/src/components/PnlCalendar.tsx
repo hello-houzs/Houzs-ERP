@@ -138,7 +138,7 @@ export function PnlCalendar({
   const [granularity, setGranularity] = useState<PnlGranularity>(defaultGranularity);
   const [openBucket, setOpenBucket] = useState<PnlBucket | null>(null);
 
-  const q = useQuery<PnlResponse>(
+  const q = useQuery<PnlResponse>("/api/finance/pnl?year=:&scope=:&granularity=:",
     () => api.get(`/api/finance/pnl?year=${year}&scope=${scope}&granularity=${granularity}`),
     [year, scope, granularity]
   );
@@ -466,7 +466,7 @@ function BucketDetailPanel({
   onClose: () => void;
 }) {
   const navigate = useNavigate();
-  const q = useQuery<PnlBucketDetail>(
+  const q = useQuery<PnlBucketDetail>("/api/finance/pnl/bucket?start=:&end=:",
     () =>
       api.get(
         `/api/finance/pnl/bucket?start=${bucket.start}&end=${bucket.endExclusive}`

@@ -38,8 +38,8 @@ export function RolesTab({
 
   const [editing, setEditing] = useState<Role | null>(null);
 
-  const rolesQ = useQuery<{ roles: Role[] }>(() => api.get("/api/roles"));
-  const permsQ = useQuery<{ permissions: PermissionDef[] }>(() =>
+  const rolesQ = useQuery<{ roles: Role[] }>("/api/roles", () => api.get("/api/roles"));
+  const permsQ = useQuery<{ permissions: PermissionDef[] }>("/api/roles/permissions", () =>
     api.get("/api/roles/permissions")
   );
 
@@ -193,11 +193,11 @@ function RoleEditorPanel({
 
   // ── Page Access (mig 073) ─────────────────────────────────────
   // Only fetched/edited when we're editing an existing role.
-  const pagesQ = useQuery<{ pages: PageDef[] }>(() => api.get("/api/roles/pages"));
+  const pagesQ = useQuery<{ pages: PageDef[] }>("/api/roles/pages", () => api.get("/api/roles/pages"));
   const accessQ = useQuery<{
     role_id: number;
     page_access: Record<string, RolePageAccess>;
-  }>(
+  }>("/api/roles/:/page-access",
     () =>
       role?.id
         ? api.get(`/api/roles/${role.id}/page-access`)

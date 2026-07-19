@@ -206,19 +206,19 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
   const branding = useBranding();
   const url = id ? `/api/mail-center/threads/${id}` : null;
 
-  const { data, loading, error, reload } = useQuery<ThreadDetail>(
+  const { data, loading, error, reload } = useQuery<ThreadDetail>("mail-center-thread",
     () => api.get(url!),
     [url],
   );
 
   // Users for the Assign dropdown. Envelope is { users: [] } (see routes/users).
-  const { data: usersResp } = useQuery<{ users: UserOption[] }>(
+  const { data: usersResp } = useQuery<{ users: UserOption[] }>("/api/users",
     () => api.get("/api/users"),
     [],
   );
   const users = usersResp?.users ?? [];
   // Label catalogue (name → colour) for chip colours + the add-label menu.
-  const { data: labelCatalog } = useQuery<MailLabel[]>(
+  const { data: labelCatalog } = useQuery<MailLabel[]>("/api/mail-center/labels",
     () => api.get("/api/mail-center/labels"),
     [],
   );
@@ -226,7 +226,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
 
   // Our mailboxes (for the reply From picker) + the current user (so the From
   // defaults to THEIR own mailbox).
-  const { data: addresses } = useQuery<MailAddress[]>(
+  const { data: addresses } = useQuery<MailAddress[]>("/api/mail-center/addresses",
     () => api.get("/api/mail-center/addresses"),
     [],
   );

@@ -74,7 +74,7 @@ function StagePill({ stage }: { stage: string }) {
 
 export function MyCases() {
   const nav = useNavigate();
-  const listQ = useQuery<{ cases: MyCase[]; user_name?: string }>(
+  const listQ = useQuery<{ cases: MyCase[]; user_name?: string }>("/api/assr/my-cases",
     () => api.get("/api/assr/my-cases"),
     [],
   );
@@ -154,7 +154,7 @@ export function MyCaseDetail() {
   const [posting, setPosting] = useState(false);
   const [nudging, setNudging] = useState(false);
 
-  const detail = useQuery<AssrDetail>(
+  const detail = useQuery<AssrDetail>("/api/assr/:",
     () => api.get(`/api/assr/${id}`),
     [id],
   );

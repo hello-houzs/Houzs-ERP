@@ -26,7 +26,10 @@ import { paginateAll } from '../lib/paginate-all';
 import { safeRate, toMyrSen } from '../lib/fx';
 import { todayMyt } from '../lib/my-time';
 import { nextJeNo, jePrefixForCompany } from '../lib/doc-no';
-import { scopeToCompany, activeCompanyId, companyDocPrefix } from '../lib/companyScope';
+import {
+  scopeToCompany, activeCompanyId, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY,
+} from '../lib/companyScope';
 
 export const accounting = new Hono<{ Bindings: Env; Variables: Variables }>();
 accounting.use('*', supabaseAuth);
@@ -172,15 +175,54 @@ accounting.post('/journal-entries', async (c) => {
   return c.json({ journalEntry: je, lineCount: lineRows.length }, 201);
 });
 
-accounting.post('/journal-entries/:id/post', async (c) => {
+/* POST /journal-entries/:id/post — mark a journal entry posted.
+ *
+ * LEAK FIX (audit item 1). This used to post by BLIND ID: no load, no company
+ * scope, no status check. `UPDATE journal_entries SET posted = true WHERE id =
+ * $1` on a service-role client — RLS is bypassed, so that predicate WAS the
+ * isolation boundary and it named only the id. Anyone signed into company A
+ * who could produce a company B journal-entry id posted B's GL entry, and the
+ * only trace was a posted JE in B's books that nobody in B did.
+ *
+ * Now: resolve the company (required — see requireActiveCompanyId), LOAD the
+ * entry within it, check its status, and scope the UPDATE itself as well. The
+ * update carries the company predicate too, rather than trusting the load —
+ * they run as two statements, and the one that writes is the one that has to
+ * be safe.
+ *
+ * Exported so the route test can drive it without the supabaseAuth bridge,
+ * which cannot run in this harness. */
+export const postJournalEntryHandler = async (c: any) => {
   const id = c.req.param('id');
   const sb = c.get('supabase');
-  const { data, error } = await sb
-    .from('journal_entries')
-    .update({ posted: true })
-    .eq('id', id)
-    .select('*')
-    .single();
+
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
+  // Load within the company first. A miss means "not yours OR not there", and
+  // both answer the same way — telling A that B's id exists is itself a leak.
+  const { data: je, error: loadErr } = await scopeToCompanyId(
+    sb.from('journal_entries').select('id, je_no, posted, reversed').eq('id', id),
+    co.companyId,
+  ).maybeSingle();
+  if (loadErr) return c.json({ error: 'load_failed', reason: loadErr.message }, 500);
+  if (!je) return c.json(NOT_THIS_COMPANY, 404);
+
+  // Status checks the blind update never made.
+  if ((je as { posted?: boolean }).posted === true) {
+    return c.json({ error: 'already_posted', message: 'This journal entry is already posted.' }, 409);
+  }
+  if ((je as { reversed?: boolean }).reversed === true) {
+    return c.json({
+      error: 'je_reversed',
+      message: 'This journal entry was reversed and cannot be posted. Create a new one.',
+    }, 409);
+  }
+
+  const { data, error } = await scopeToCompanyId(
+    sb.from('journal_entries').update({ posted: true }).eq('id', id),
+    co.companyId,
+  ).select('*').maybeSingle();
   if (error) {
     // The trigger throws if unbalanced — pass through as 400
     if (String(error.message).includes('not balanced')) {
@@ -188,8 +230,11 @@ accounting.post('/journal-entries/:id/post', async (c) => {
     }
     return c.json({ error: 'post_failed', reason: error.message }, 500);
   }
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ journalEntry: data });
-});
+};
+
+accounting.post('/journal-entries/:id/post', postJournalEntryHandler);
 
 /* ════════════════════════════════════════════════════════════════════════
    Auto-post helpers — SI / PI confirm

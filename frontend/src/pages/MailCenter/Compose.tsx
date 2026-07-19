@@ -85,7 +85,7 @@ export function ComposeDialog({
   const toast = useToast();
   const { user } = useAuth();
   const branding = useBranding();
-  const { data: addresses } = useQuery<MailAddress[]>(
+  const { data: addresses } = useQuery<MailAddress[]>("/api/mail-center/addresses",
     () => api.get("/api/mail-center/addresses"),
     [],
   );

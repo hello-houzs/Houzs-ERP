@@ -53,13 +53,13 @@ export function Overview() {
   // Manager/Agent) would otherwise fire these on every home load and get a
   // "Forbidden: missing …" toast. Gate the fetch so it never fires for them —
   // the tile just shows 0 instead of erroring.
-  const inbox = useQuery<InboxResp>(() => api.get("/api/inbox"));
-  const assr = useQuery<{ active_count: number; breach_count: number }>(
+  const inbox = useQuery<InboxResp>("/api/inbox", () => api.get("/api/inbox"));
+  const assr = useQuery<{ active_count: number; breach_count: number }>("/api/assr/summary",
     () => api.get("/api/assr/summary"),
     [],
     { enabled: can("service_cases.read") },
   );
-  const projects = useQuery<{ live_count: number; upcoming_30d: number }>(
+  const projects = useQuery<{ live_count: number; upcoming_30d: number }>("/api/projects/summary",
     () => api.get("/api/projects/summary"),
     [],
     { enabled: can("projects.read") },

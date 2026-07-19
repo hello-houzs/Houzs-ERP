@@ -598,8 +598,8 @@ function MembersTab({
 
   // NOTE: unbounded fetch — pulls ALL users in one request; the grid below is
   // DOM-windowed, but fetch pagination is a separate follow-up.
-  const members = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users"));
-  const invites = useQuery<{ invitations: Invitation[] }>(() =>
+  const members = useQuery<{ users: TeamMember[] }>("/api/users", () => api.get("/api/users"));
+  const invites = useQuery<{ invitations: Invitation[] }>("/api/users/invitations", () =>
     api.get("/api/users/invitations")
   );
   // PERF: these were refetchOnMount "always" + staleTime 0, which forced a
@@ -609,23 +609,23 @@ function MembersTab({
   // to sibling tabs — and invalidation ignores staleTime. A 60s staleTime
   // just lets a plain revisit serve the cached snapshot instantly.
   const freshList = { staleTime: 60_000 };
-  const roles = useQuery<{ roles: Role[] }>(
+  const roles = useQuery<{ roles: Role[] }>("/api/roles",
     () => api.get("/api/roles"),
     [],
     freshList,
   );
-  const depts = useQuery<{ departments: Department[] }>(
+  const depts = useQuery<{ departments: Department[] }>("/api/departments",
     () => api.get("/api/departments"),
     [],
     freshList,
   );
-  const positions = useQuery<{ positions: Position[] }>(
+  const positions = useQuery<{ positions: Position[] }>("/api/positions",
     () => api.get("/api/positions"),
     [],
     freshList,
   );
   // Live presence — who's online right now (active in the last few minutes).
-  const presence = useQuery<{ active: { id: number }[] }>(() =>
+  const presence = useQuery<{ active: { id: number }[] }>("/api/presence", () =>
     api.get("/api/presence")
   );
   // Multi-company (Phase 0e). Gate the per-user Company-access control on there
@@ -633,7 +633,7 @@ function MembersTab({
   // so the control stays hidden — single-company Houzs is unchanged.
   const companiesQ = useQuery<{
     companies: Array<{ id: number; code: string; name: string }>;
-  }>(() => api.get("/api/companies"), [], freshList);
+  }>("/api/companies", () => api.get("/api/companies"), [], freshList);
   const companyOpts: CompanyOpt[] = companiesQ.data?.companies ?? [];
   const multiCompany = companyOpts.length > 1;
   const onlineIds = useMemo(
@@ -2059,7 +2059,7 @@ function MemberDetail({
   // so flatten it to a sorted list of the pages actually granted.
   const pageAccessQ = useQuery<{
     page_access: Record<string, { explicit?: boolean; level: string }>;
-  }>(
+  }>("position-page-access#user",
     () =>
       user.position_id != null
         ? api.get(`/api/positions/${user.position_id}/page-access`)
@@ -2604,11 +2604,13 @@ function EditMemberPanel({
      always override the venue on the order itself. This is the floor, not a
      lock. */
   const showrooms = useQuery<{ showrooms: ShowroomOption[] }>(
+    "/api/scm/staff/showrooms",
     () => api.get("/api/scm/staff/showrooms"),
     [],
     { staleTime: 300_000 },
   );
   const scmStaff = useQuery<{ staff: ScmStaffRow[] }>(
+    "/api/scm/staff",
     () => api.get("/api/scm/staff"),
     [],
     { staleTime: 300_000 },
@@ -3128,11 +3130,11 @@ function UserBrandsPanel({
   const [brands, setBrands] = useState<string[] | null>(null);
 
   // Canonical brand list from the project_brands lookup.
-  const brandOpts = useQuery<{ data: string[] }>(() =>
+  const brandOpts = useQuery<{ data: string[] }>("/api/projects/brands?names_only=1", () =>
     api.get("/api/projects/brands?names_only=1")
   );
   // Current allow-list for this user.
-  const current = useQuery<{ brands: string[] }>(
+  const current = useQuery<{ brands: string[] }>("/api/users/:/brands",
     () => api.get(`/api/users/${user.id}/brands`),
     [user.id]
   );
@@ -3330,8 +3332,8 @@ function OrgChartTab() {
   const { can } = useAuth();
   const toast = useToast();
   const canManage = can("users.manage");
-  const members = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users"));
-  const depts = useQuery<{ departments: Department[] }>(() =>
+  const members = useQuery<{ users: TeamMember[] }>("/api/users", () => api.get("/api/users"));
+  const depts = useQuery<{ departments: Department[] }>("/api/departments", () =>
     api.get("/api/departments")
   );
 
@@ -4413,7 +4415,7 @@ function DepartmentsTab({
   const toast = useToast();
   const dialog = useDialog();
   const canManage = can("users.manage");
-  const depts = useQuery<{ departments: Department[] }>(() =>
+  const depts = useQuery<{ departments: Department[] }>("/api/departments", () =>
     api.get("/api/departments")
   );
   const [editing, setEditing] = useState<Department | null>(null);
@@ -4715,7 +4717,7 @@ export function InvitePanel({
   // on a blank/Forbidden app. Fetched on demand to warn before sending.
   const positionPages = useQuery<{
     page_access: Record<string, { explicit?: boolean; level: string }>;
-  }>(
+  }>("position-page-access#selected",
     () =>
       positionId !== ""
         ? api.get(`/api/positions/${positionId}/page-access`)

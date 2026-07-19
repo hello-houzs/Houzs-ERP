@@ -144,7 +144,7 @@ function CompanySwitcher() {
     getActiveCompanySnapshot,
   );
 
-  const { data } = useQuery<CompaniesResponse>(
+  const { data } = useQuery<CompaniesResponse>("/api/companies",
     () => api.get<CompaniesResponse>("/api/companies"),
     [],
   );

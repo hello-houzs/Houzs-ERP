@@ -368,6 +368,20 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   // know which box.
   extra_addon_needs_description:
     'A special add-on charge needs a description. Fill in "Describe the special order..." next to the extra charge, or clear the amount.',
+  // Company-scoped WRITE refusals (backend scm/lib/companyScope.ts). Curated
+  // here because this map is read BEFORE `message`, so the operator's wording
+  // stays put even if the server sentence is later reworded. Kept short: a
+  // server message of 200 characters or more is discarded below in favour of a
+  // generic clash line, which reads as a blank wall.
+  company_unresolved:
+    "We couldn't tell which company this belongs to. Please refresh and try again.",
+  // Deliberately says the same thing as "no such record": confirming that
+  // another company's id exists would itself leak.
+  not_found_in_company:
+    "That record isn't available in the company you're working in.",
+  already_posted: 'This journal entry is already posted.',
+  je_reversed:
+    'This journal entry was reversed and cannot be posted. Create a new one.',
 };
 
 export function humanApiError(status: number, body: string): string {

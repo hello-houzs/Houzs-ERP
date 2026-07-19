@@ -180,9 +180,9 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
 
   // Mailbox switcher options (scope-bound by the backend) + the label catalogue
   // (name -> colour) so chips render in their managed colours.
-  const { data: addresses } = useQuery<MailAddress[]>(() => api.get("/api/mail-center/addresses"), []);
+  const { data: addresses } = useQuery<MailAddress[]>("/api/mail-center/addresses", () => api.get("/api/mail-center/addresses"), []);
   const activeAddresses = useMemo(() => (addresses ?? []).filter((a) => a.active), [addresses]);
-  const { data: labelCatalog } = useQuery<MailLabel[]>(() => api.get("/api/mail-center/labels"), []);
+  const { data: labelCatalog } = useQuery<MailLabel[]>("/api/mail-center/labels", () => api.get("/api/mail-center/labels"), []);
   const colorMap = useMemo(() => {
     const m = new Map<string, string>();
     for (const l of labelCatalog ?? []) if (l.color) m.set((l.name ?? "").toLowerCase(), l.color);
@@ -204,7 +204,7 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
     loading,
     error,
     reload,
-  } = useQuery<Thread[]>(() => (folder === "drafts" ? Promise.resolve([]) : api.get(listUrl)), [listUrl, folder]);
+  } = useQuery<Thread[]>("mail-center-list", () => (folder === "drafts" ? Promise.resolve([]) : api.get(listUrl)), [listUrl, folder]);
 
   const threads = useMemo(() => {
     let rows = threadsRaw ?? [];
@@ -423,7 +423,7 @@ function MailThread({
   const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
-  const { data, loading, error, reload } = useQuery<ThreadDetail>(
+  const { data, loading, error, reload } = useQuery<ThreadDetail>("/api/mail-center/threads/:",
     () => api.get(`/api/mail-center/threads/${threadId}`),
     [threadId],
   );

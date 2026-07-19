@@ -210,7 +210,7 @@ export function Sales() {
     setPage(1);
   }, [qs]);
 
-  const list = useQuery<ListResponse>(
+  const list = useQuery<ListResponse>("/api/sales/entries?:",
     () => {
       const p = new URLSearchParams(qs);
       p.set("page", String(page));
@@ -221,7 +221,7 @@ export function Sales() {
   );
   // Pending edit-approval queue (managers only). Drives the Approvals tab +
   // its badge; reps don't see this surface.
-  const approvals = useQuery<{ requests: ChangeRequest[] }>(
+  const approvals = useQuery<{ requests: ChangeRequest[] }>("/api/sales/entries/change-requests?status=pending",
     () =>
       canManage
         ? api.get(`/api/sales/entries/change-requests?status=pending`)
@@ -752,13 +752,13 @@ export function EntryPanel({
   // Sales-person picker. Defaults to the logged-in user (admins keying
   // an entry on behalf of a rep change this). Falls back gracefully if
   // /api/users is forbidden for the role — the picker simply hides.
-  const usersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>(
+  const usersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>("/api/users#tolerant",
     () => api.get<{ users: Array<{ id: number; name: string | null; email: string }> }>("/api/users").catch(() => ({ users: [] }))
   );
 
   // Brand list — same source the projects + sales-team modules use.
   type BrandRow = { id: number; name: string; hex_color: string | null };
-  const brandsQ = useQuery<{ data: BrandRow[] }>(
+  const brandsQ = useQuery<{ data: BrandRow[] }>("/api/projects/brands?full=1",
     () =>
       api
         .get<{ data: BrandRow[] }>("/api/projects/brands?full=1")
@@ -850,7 +850,7 @@ export function EntryPanel({
   // fallback not shown; pic_id wiring on projects means reps already see
   // only their PIC's projects here. Fires even when locked — harmless
   // and avoids a conditional hook call.
-  const projectsQ = useQuery<{ data: Array<{ id: number; code: string; name: string }> }>(
+  const projectsQ = useQuery<{ data: Array<{ id: number; code: string; name: string }> }>("/api/projects?per_page=200",
     () => api.get("/api/projects?per_page=200")
   );
 

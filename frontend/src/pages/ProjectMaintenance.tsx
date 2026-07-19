@@ -194,7 +194,7 @@ function ExpandToggle({
 function OrganizerManager() {
   const toast = useToast();
   const dialog = useDialog();
-  const q = useQuery<{ data: OrganizerRow[] }>(
+  const q = useQuery<{ data: OrganizerRow[] }>("/api/projects/organizers",
     () => api.get("/api/projects/organizers")
   );
   const [adding, setAdding] = useState(false);
@@ -326,7 +326,7 @@ const MY_STATES = [
 function VenueManager() {
   const toast = useToast();
   const dialog = useDialog();
-  const q = useQuery<{ data: VenueRow[] }>(() => api.get("/api/projects/venues"));
+  const q = useQuery<{ data: VenueRow[] }>("/api/projects/venues", () => api.get("/api/projects/venues"));
   const [name, setName] = useState("");
   const [stateField, setStateField] = useState("");
   const [adding, setAdding] = useState(false);
@@ -487,10 +487,10 @@ function VenueManager() {
 
 function ChecklistManager() {
   const toast = useToast();
-  const eventTypesQ = useQuery<{ data: EventTypeRow[] }>(
+  const eventTypesQ = useQuery<{ data: EventTypeRow[] }>("/api/projects/event-types",
     () => api.get("/api/projects/event-types")
   );
-  const templatesQ = useQuery<{ data: ChecklistTemplate[] }>(
+  const templatesQ = useQuery<{ data: ChecklistTemplate[] }>("/api/projects/checklist-templates",
     () => api.get("/api/projects/checklist-templates")
   );
   const [activeTemplate, setActiveTemplate] = useState<number | null>(null);
@@ -599,7 +599,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
   const q = useQuery<{
     data: ChecklistTemplateItem[];
     sections: ChecklistTemplateSection[];
-  }>(
+  }>("/api/projects/checklist-templates/:/items",
     () => api.get(`/api/projects/checklist-templates/${templateId}/items`),
     [templateId]
   );
@@ -1478,7 +1478,7 @@ function BrandLogoCell({
 function BrandManager() {
   const toast = useToast();
   const dialog = useDialog();
-  const q = useQuery<{ data: BrandRow[] }>(() =>
+  const q = useQuery<{ data: BrandRow[] }>("/api/projects/brands?full=1&include_inactive=1", () =>
     api.get("/api/projects/brands?full=1&include_inactive=1")
   );
   const [name, setName] = useState("");
@@ -1690,7 +1690,7 @@ function BrandManager() {
 function EventTypeManager() {
   const toast = useToast();
   const dialog = useDialog();
-  const q = useQuery<{ data: EventTypeRow[] }>(() =>
+  const q = useQuery<{ data: EventTypeRow[] }>("/api/projects/event-types?include_inactive=1", () =>
     api.get("/api/projects/event-types?include_inactive=1")
   );
   const [name, setName] = useState("");
@@ -1912,7 +1912,7 @@ function CostRateManager({ enabled = true }: { enabled?: boolean }) {
   // `enabled` is the finance-viewer hard gate (see ProjectMaintenanceView). The
   // parent already skips rendering this section when false; the enabled guard
   // is the belt-and-suspenders so the denyFinance-guarded fetch never fires.
-  const q = useQuery<{ data: CostRateRow[] }>(
+  const q = useQuery<{ data: CostRateRow[] }>("/api/projects/cost-rates",
     () => api.get("/api/projects/cost-rates"),
     [],
     { enabled },

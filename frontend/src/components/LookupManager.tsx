@@ -76,7 +76,7 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
   // mounts five (ServiceSettings.tsx:87,92,97,103,108) and all five rendered
   // whichever list resolved first, under five different headings. The bug is
   // invisible to the component — it renders exactly what it was handed.
-  const q = useQuery<{ data: LookupRow[] }>(
+  const q = useQuery<{ data: LookupRow[] }>("lookup-manager-options",
     () => api.get(`${apiPath}?include_inactive=1`),
     [apiPath],
   );

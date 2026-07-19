@@ -180,7 +180,7 @@ export function ServiceMetrics() {
   // fetches so they never fire without the permission; the dashboard renders
   // its empty state instead.
   const canReadMetrics = can("service_cases.read");
-  const metrics = useQuery<AssrMetrics>(
+  const metrics = useQuery<AssrMetrics>("/api/assr/metrics?since_days=:",
     () => api.get(`/api/assr/metrics?since_days=${since}`),
     [since],
     { enabled: canReadMetrics }
@@ -190,7 +190,7 @@ export function ServiceMetrics() {
   // and Stage Funnel narrow with the dropdown. CSAT trend on the
   // summary is still a fixed 13-week rolling window (it's a trend
   // chart, not a window-aware stat).
-  const summary = useQuery<AssrSummaryV31>(
+  const summary = useQuery<AssrSummaryV31>("/api/assr/summary?since_days=:",
     () => api.get(`/api/assr/summary?since_days=${since}`),
     [since],
     { enabled: canReadMetrics }

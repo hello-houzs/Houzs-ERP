@@ -57,9 +57,14 @@ const STOCK_ROOTS = ["inventory", ...SO_ROOTS];
 /* The shared roots each generic module screen's status/payment writes touch,
  * keyed by the MODULE_CONFIGS / statusActionsFor key. Only the SCM DOCUMENT
  * modules are listed: the master-data modules (suppliers/drivers/positions/…)
- * either have no desktop react-query twin or cache under the legacy
- * ["uq", <fetcher source>] key from hooks/useQuery, which has no invalidable
- * name. */
+ * either have no desktop react-query twin or cache under hooks/useQuery's
+ * ["uq", <callsite key>, ...deps].
+ *
+ * Those uq keys DO have an invalidable name now — the key is caller-supplied
+ * rather than derived from the fetcher's source text — so wiring the master-data
+ * modules in here is finally possible. Deliberately NOT done in the same change
+ * that fixed the keying: adding roots here changes what refetches and when, and
+ * that deserves its own diff. */
 const MODULE_SHARED_ROOTS: Record<string, string[]> = {
   "delivery-orders-mfg": [...DO_ROOTS, ...STOCK_ROOTS],
   "sales-invoices":      ["sales-invoices", "sales-invoices-paged", "sales-invoice-detail"],

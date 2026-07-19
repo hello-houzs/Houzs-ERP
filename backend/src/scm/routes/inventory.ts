@@ -29,7 +29,10 @@ import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { reconcileLedger } from '../lib/reconcile-ledger';
-import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import {
+  activeCompanyId, scopeToCompany,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY,
+} from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const inventory = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -58,8 +61,15 @@ inventory.post('/warehouses', async (c) => {
   if (!code) return c.json({ error: 'code_required' }, 400);
   if (!name) return c.json({ error: 'name_required' }, 400);
 
+  /* Company is REQUIRED here, not best-effort. `company_id: activeCompanyId(c)`
+     sent `undefined` when unresolved, supabase-js dropped the key, and mig 0091's
+     `DEFAULT <HOUZS id>` then stamped the row HOUZS — so a 2990 warehouse could
+     be silently filed under Houzs instead of failing. Resolve or refuse. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
   const { data, error } = await sb.from('warehouses').insert({
-    company_id: activeCompanyId(c), // multi-company: stamp the active company (mig 0086)
+    company_id: co.companyId, // multi-company: stamp the active company (mig 0086)
     code, name,
     location: (body.location as string) ?? null,
     is_active: body.isActive === false ? false : true,
@@ -82,15 +92,36 @@ inventory.post('/warehouses', async (c) => {
   /* Audit 2026-06-20 — enforce a SINGLE default warehouse: clear is_default on
      every other row when this one is set default. Two defaults make
      defaultWarehouseId() (maybeSingle) error → null, breaking the warehouse
-     fallback on GRN/DO/return/consignment posts. */
+     fallback on GRN/DO/return/consignment posts.
+     LEAK FIX: scoped to this company. Unscoped, "single default" was enforced
+     GLOBALLY, so creating a default warehouse in one company cleared the
+     other's. */
   if (body.isDefault === true) {
-    await sb.from('warehouses').update({ is_default: false })
-      .eq('is_default', true).neq('id', (data as { id: string }).id);
+    await scopeToCompanyId(
+      sb.from('warehouses').update({ is_default: false })
+        .eq('is_default', true).neq('id', (data as { id: string }).id),
+      co.companyId,
+    );
   }
   return c.json({ warehouse: data }, 201);
 });
 
-inventory.patch('/warehouses/:id', async (c) => {
+/* PATCH /warehouses/:id — update a warehouse, incl. promoting it to default.
+ *
+ * LEAK FIX (audit item 2), and this one was not hypothetical and needed no
+ * id-guessing: it fired on a normal click. The single-default enforcement below
+ * ran `UPDATE warehouses SET is_default = false WHERE is_default = true AND id
+ * <> $1` with NO company predicate, so setting your own default DEMOTED THE
+ * OTHER COMPANY'S DEFAULT. The other company then had no default warehouse, and
+ * defaultWarehouseId() (a maybeSingle) started returning null — which is the
+ * fallback GRN / DO / return / consignment posts rely on.
+ *
+ * Scoping the demote alone is not enough: if A could still PATCH B's warehouse
+ * by id, A would promote B's row and the now-scoped demote would clear A's own
+ * default — strictly worse. So the target row is scoped too.
+ *
+ * Exported for the route test (see postJournalEntryHandler for why). */
+export const patchWarehouseHandler = async (c: any) => {
   const sb = c.get('supabase');
   const id = c.req.param('id');
   let body: Record<string, unknown>;
@@ -113,28 +144,52 @@ inventory.patch('/warehouses/:id', async (c) => {
   }
   if (Object.keys(updates).length === 0) return c.json({ error: 'no_changes' }, 400);
 
-  const { data, error } = await sb.from('warehouses').update(updates).eq('id', id)
-    .select('id, code, name, location, is_active, is_default, is_showroom, venue_name').single();
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
+  const { data, error } = await scopeToCompanyId(
+    sb.from('warehouses').update(updates).eq('id', id),
+    co.companyId,
+  ).select('id, code, name, location, is_active, is_default, is_showroom, venue_name').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  // No row matched id + company: not this company's warehouse, or gone.
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   /* Audit 2026-06-20 — single-default enforcement (see POST): promoting this
-     warehouse to default demotes every other one. */
+     warehouse to default demotes every other one IN THIS COMPANY. The company
+     predicate is the whole fix — see the header comment. */
   if (updates.is_default === true) {
-    await sb.from('warehouses').update({ is_default: false })
-      .eq('is_default', true).neq('id', id);
+    await scopeToCompanyId(
+      sb.from('warehouses').update({ is_default: false })
+        .eq('is_default', true).neq('id', id),
+      co.companyId,
+    );
   }
   return c.json({ warehouse: data });
-});
+};
+
+inventory.patch('/warehouses/:id', patchWarehouseHandler);
 
 /* Task #121 — Hard DELETE of a warehouse. Used by the inline Warehouses
    table on /mfg-sales-orders/maintenance so a coordinator can drop a
    row they just typed by mistake. Postgres FKs from inventory_movements
    / lots / cogs reject the delete when there's referenced history;
    commander should toggle is_active=false via PATCH in that case. We
-   surface the FK error so the UI can hint at deactivate instead. */
+   surface the FK error so the UI can hint at deactivate instead.
+
+   Scoped to the active company alongside the PATCH above. Not one of the two
+   items this pass was sequenced for, but it is the same blind-id defect on the
+   same table three lines away — company A could DELETE company B's warehouse —
+   and scoping a delete can only ever refuse a cross-company write, never hide a
+   company's own rows from itself. */
 inventory.delete('/warehouses/:id', async (c) => {
   const sb = c.get('supabase');
   const id = c.req.param('id');
-  const { error } = await sb.from('warehouses').delete().eq('id', id);
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { error } = await scopeToCompanyId(
+    sb.from('warehouses').delete().eq('id', id),
+    co.companyId,
+  );
   if (error) {
     // 23503 = foreign_key_violation — there are movements/lots/etc. tied
     // to this warehouse. Bubble up so the client can show a friendlier
