@@ -110,7 +110,7 @@ import {
 import {
   useSoDropdownOptions, optionsOrFallback,
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
-import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { useStaff, usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { soStatusDisplay, type DeliveryState, type SoLifecycle } from '../../vendor/scm/lib/so-status';
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
@@ -2298,7 +2298,11 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
   const notify = useNotify();
   const localities = useLocalities();
   const localityRows = useMemo(() => localities.data ?? [], [localities.data]);
-  const staffQ = useStaff();
+  /* PICKER: the salesperson SELECTION dropdown — scoped to the active company
+     via the Team-grant rule (usePickableStaff). The self-resolution copy above
+     (for the Collected-By default) stays on the FULL useStaff roster; only the
+     list of people you can PICK is company-scoped. */
+  const staffQ = usePickableStaff();
   const staffList = (staffQ.data ?? []).filter((s) => s.active);
   /* Commander 2026-05-27: Venue is locked to the picked salesperson's
      staff.venue_id; only admin / sales_director may swap the salesperson.

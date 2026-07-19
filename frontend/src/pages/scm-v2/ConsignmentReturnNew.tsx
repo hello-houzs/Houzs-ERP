@@ -30,7 +30,7 @@ import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useCreateConsignmentReturn } from '../../vendor/scm/lib/consignment-return-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
 import { useConsignmentNoteDetail } from '../../vendor/scm/lib/consignment-note-queries';
-import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
 } from '../../vendor/scm/lib/localities-queries';
@@ -69,7 +69,7 @@ export const ConsignmentReturnNew = () => {
      stalled submit, fresh on remount. */
   const idemKey = useIdempotencyKey();
   const create = useCreateConsignmentReturn();
-  const staffQ = useStaff();
+  const staffQ = usePickableStaff();
   const loc = useLocalities();
   const cnDetail = useConsignmentNoteDetail(fromConsignmentNote);
 

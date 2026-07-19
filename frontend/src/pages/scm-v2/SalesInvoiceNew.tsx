@@ -30,7 +30,7 @@ import {
   useCreateSalesInvoice, useAddSalesInvoicePayment,
   useMfgDeliveryOrderDetail, useDeliveryOrderPayments,
 } from '../../vendor/scm/lib/sales-invoice-queries';
-import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
 } from '../../vendor/scm/lib/localities-queries';
@@ -78,7 +78,7 @@ export const SalesInvoiceNew = () => {
      so they don't double either. */
   const idemKey = useIdempotencyKey();
   const addPayment = useAddSalesInvoicePayment();
-  const staffQ = useStaff();
+  const staffQ = usePickableStaff();
   const loc = useLocalities();
 
   // Prefill source — the DO this invoice is being raised from (if any).

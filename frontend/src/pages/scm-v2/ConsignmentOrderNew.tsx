@@ -31,7 +31,7 @@ import {
   type DebtorSuggestion,
 } from '../../vendor/scm/lib/consignment-order-queries';
 import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
-import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import { useAuth } from '../../vendor/scm/lib/auth';
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { useVenues } from '../../vendor/scm/lib/venues-queries';
@@ -86,7 +86,7 @@ export const ConsignmentOrderNew = () => {
   const create     = useCreateConsignmentOrder();
   const addPayment = useAddConsignmentOrderPayment();
   const uploadPhoto = useUploadConsignmentItemPhoto();
-  const staffQ   = useStaff();
+  const staffQ   = usePickableStaff();
   const venuesQ  = useVenues();
   const loc      = useLocalities();
   const { staff: currentStaff } = useAuth();

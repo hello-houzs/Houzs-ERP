@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { authedFetch, parseSaveProblems } from "../vendor/scm/lib/authed-fetch";
 import { SaveProblemsList, saveProblemsTitle } from "../vendor/scm/components/SaveProblemsList";
 import { uploadSlipFull } from "../vendor/scm/lib/slip";
-import { useStaff } from "../vendor/scm/lib/admin-queries";
+import { useStaff, usePickableStaff } from "../vendor/scm/lib/admin-queries";
 import { useAuth, isAdminLevel } from "../vendor/scm/lib/auth";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import { useVenues, type AutoVenue } from "../vendor/scm/lib/venues-queries";
@@ -579,6 +579,10 @@ export function MobileNewSO({
      legibility; the two never run on the same mount. */
   const amendIdemKey = useIdempotencyKey();
   const staffQ = useStaff();
+  /* staffQ (FULL roster) feeds the payment children below, which display
+     persisted collected_by names. The salesperson SELECTION list (staffList) is
+     company-scoped via the Team-grant rule (usePickableStaff). */
+  const pickableStaffQ = usePickableStaff();
   const { staff: authStaff } = useAuth();
   /* FIX A — the app-level Houzs auth exposes the permission gate + the signed-in
      user (name/email/id), which the vendor auth bridge doesn't. Drives the
@@ -956,7 +960,7 @@ export function MobileNewSO({
 
   // ---- Derived Venue / Sales Location (desktop parity) ----------------------
   const venuesQ = useVenues();
-  const staffList = useMemo(() => (staffQ.data ?? []).filter((s) => s.active), [staffQ.data]);
+  const staffList = useMemo(() => (pickableStaffQ.data ?? []).filter((s) => s.active), [pickableStaffQ.data]);
   const selectedStaff = useMemo(
     () => staffList.find((s) => s.id === salespersonId) ?? null,
     [staffList, salespersonId],

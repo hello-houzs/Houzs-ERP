@@ -61,7 +61,7 @@ import {
 import {
   useSoDropdownOptions, optionsOrFallback,
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
-import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
@@ -708,7 +708,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
   const notify = useNotify();
   const localities = useLocalities();
   const localityRows = useMemo(() => localities.data ?? [], [localities.data]);
-  const staffQ = useStaff();
+  const staffQ = usePickableStaff();
   const staffList = (staffQ.data ?? []).filter((s) => s.active);
   const { can } = useHouzsAuth();
   const venuesQ = useVenues();

@@ -48,7 +48,7 @@ import {
 import { authedFetch, humanApiError, parseSaveProblems } from '../../vendor/scm/lib/authed-fetch';
 import { SaveProblemsList, saveProblemsTitle } from '../../vendor/scm/components/SaveProblemsList';
 import { useIdempotencyKey } from '../../lib/idempotency';
-import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { useAuth } from '../../vendor/scm/lib/auth';
@@ -149,7 +149,7 @@ export const SalesOrderNew = () => {
   const idemKey  = useIdempotencyKey();
   const addPayment = useAddSalesOrderPayment();
   const uploadPhoto = useUploadSoItemPhoto();
-  const staffQ   = useStaff();
+  const staffQ   = usePickableStaff();
   const venuesQ  = useVenues();
   const loc      = useLocalities();
   /* FIX (d) — fabric colour + library lookups for the scan seed (same sources

@@ -217,6 +217,21 @@ export function houzsCompanyId(c: CompanyScopeCtx): number | undefined {
   return houzs?.id != null ? Number(houzs.id) : undefined;
 }
 
+/**
+ * MIRROR-SOURCE PIN — the company code the 2990 system mirrors from. Resolved
+ * from `companies.code === '2990'` (MIRRORED_COMPANY_CODE), never hardcoded: the
+ * bigint id differs across staging/prod. Used to attribute the UNLINKED (frozen
+ * 2990 import / live staff-mirror) scm.staff rows to 2990 in the salesperson
+ * picker — those rows carry no company_id and no user_id, so grant derivation
+ * cannot reach them. undefined when the master lacks a 2990 row (single-company
+ * Houzs), which makes those rows resolve to no company → hidden (fail closed).
+ */
+export function mirrorCompanyId(c: CompanyScopeCtx): number | undefined {
+  const rows = (c.get("companies") as CompanyRow[] | undefined) ?? [];
+  const m = rows.find((r) => r.code === MIRRORED_COMPANY_CODE);
+  return m?.id != null ? Number(m.id) : undefined;
+}
+
 /** houzsCompanyIds — the array flavour for callers that take an id list
  *  (e.g. the ASSR list/export `allowed_company_ids` param). `[houzsId]` when
  *  resolved, else `undefined` — NOT `[]` — so the callee degrades to
