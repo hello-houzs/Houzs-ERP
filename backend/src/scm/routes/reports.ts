@@ -50,7 +50,8 @@ import {
   parseStage, fairReportAccess, fairSoMoney, depositByTender, paymentMethodsUsed,
   belowDeposit, doCostTotal, siCostTotal, marginPct, resolveDateWindow,
   summarizeSo, summarizeDo, summarizeInvoice,
-  type FairStage, type FairFilters, type PaymentRow,
+  fairPnlLineCost, summarizeFairPnl,
+  type FairStage, type FairFilters, type PaymentRow, type FairCostRate, type FairPnlSummaryRow,
 } from '../lib/fair-report';
 import type { AuthUser } from '../../services/auth';
 
@@ -761,6 +762,31 @@ function fairDims(
   };
 }
 
+/* Resolve a fair (project_id) → its brand and the brand's cost-rate card, both
+   from the PUBLIC schema via c.env.DB (project_cost_rates + projects live there,
+   the same binding resolveProjects + services/projectCostRates.ts read). A fair
+   whose project has no brand, or whose brand has no rate row, yields rate=null —
+   the P&L then reports zero overhead rather than blocking. Never throws. */
+async function resolveFairRate(c: any, projectId: number): Promise<{ brand: string | null; rate: FairCostRate | null }> {
+  try {
+    const proj = (await c.env.DB.prepare('SELECT brand FROM projects WHERE id = ?')
+      .bind(projectId)
+      .first()) as { brand: string | null } | null;
+    const brand = proj?.brand?.trim() ? proj.brand.trim() : null;
+    if (!brand) return { brand: null, rate: null };
+    const rate = (await c.env.DB.prepare(
+      `SELECT transport_pct, merchandise_pct, commission_normal_pct,
+              commission_boost_pct, boost_min_gp_pct, boost_min_sales
+         FROM project_cost_rates WHERE brand = ?`,
+    )
+      .bind(brand)
+      .first()) as FairCostRate | null;
+    return { brand, rate: rate ?? null };
+  } catch {
+    return { brand: null, rate: null };
+  }
+}
+
 type FairCtx = Context<{ Bindings: Env; Variables: Variables }>;
 
 /* Exported so the route test can drive the handler DIRECTLY on a bare Hono app
@@ -820,6 +846,140 @@ export const fairReportHandler = async (c: FairCtx) => {
     });
     const summary = summarizeSo(rows);
     return c.json({ stage, rows, summary, filters: filtersEcho, meta: { access_tier: access.tier } });
+  }
+
+  // ── stage=pnl ───────────────────────────────────────────────────────────────
+  // Per fair: revenue (confirmed SO amount) vs the three-way fulfillment cost
+  // (most-progressed booked stage per order) vs the project_cost_rates overhead.
+  // REQUIRES a fair (project) so the per-brand rate card resolves to one row.
+  if (stage === 'pnl') {
+    if (filters.project == null) {
+      return c.json({
+        stage,
+        rows: [],
+        summary: summarizeFairPnl([], null),
+        filters: filtersEcho,
+        meta: { access_tier: access.tier, needs_project: true, brand: null, rate_present: false },
+      });
+    }
+
+    const pnlDocNos = soRows.map((r) => r.doc_no);
+
+    // DO cost per SO — Σ COALESCE(ship_cost_centi, unit_cost_centi) × qty over
+    // the SO's delivery-order lines. Absent (null) when the SO has no DO.
+    const doCostBySo = new Map<string, number>();
+    if (pnlDocNos.length > 0) {
+      const { data: doData, error: doErr } = await chunkIn(pnlDocNos, (batch: string[], pFrom: number, pTo: number) => scopeToCompany(sb
+        .from('delivery_orders')
+        .select('id, so_doc_no')
+        .in('so_doc_no', batch), c)
+        .range(pFrom, pTo));
+      if (doErr) return c.json({ error: 'load_failed', reason: doErr.message }, 500);
+      const dos = (doData ?? []) as Array<{ id: string; so_doc_no: string | null }>;
+      const doIdToSo = new Map(dos.map((d) => [d.id, d.so_doc_no] as const));
+      const doIds = dos.map((d) => d.id);
+      if (doIds.length > 0) {
+        const { data: liData, error: liErr } = await chunkIn(doIds, (batch: string[], pFrom: number, pTo: number) => scopeToCompany(sb
+          .from('delivery_order_items')
+          .select('delivery_order_id, qty, unit_cost_centi, ship_cost_centi')
+          .in('delivery_order_id', batch), c)
+          .range(pFrom, pTo));
+        if (liErr) return c.json({ error: 'load_failed', reason: liErr.message }, 500);
+        const linesByDo = new Map<string, Array<{ qty: number | null; unit_cost_centi: number | null; ship_cost_centi: number | null }>>();
+        for (const l of (liData ?? []) as Array<{ delivery_order_id: string; qty: number | null; unit_cost_centi: number | null; ship_cost_centi: number | null }>) {
+          const arr = linesByDo.get(l.delivery_order_id) ?? [];
+          arr.push({ qty: l.qty, unit_cost_centi: l.unit_cost_centi, ship_cost_centi: l.ship_cost_centi });
+          linesByDo.set(l.delivery_order_id, arr);
+        }
+        for (const [doId, lines] of linesByDo) {
+          const so = doIdToSo.get(doId);
+          if (!so) continue;
+          doCostBySo.set(so, (doCostBySo.get(so) ?? 0) + doCostTotal(lines).total_do_cost_centi);
+        }
+      }
+    }
+
+    // SI (landed) cost per SO — Σ line cost over the SO's sales-invoice lines.
+    // Absent (null) when the SO has no SI.
+    const siCostBySo = new Map<string, number>();
+    if (pnlDocNos.length > 0) {
+      const { data: siData, error: siErr } = await chunkIn(pnlDocNos, (batch: string[], pFrom: number, pTo: number) => scopeToCompany(sb
+        .from('sales_invoices')
+        .select('id, so_doc_no')
+        .in('so_doc_no', batch), c)
+        .range(pFrom, pTo));
+      if (siErr) return c.json({ error: 'load_failed', reason: siErr.message }, 500);
+      const sis = (siData ?? []) as Array<{ id: string; so_doc_no: string | null }>;
+      const siIdToSo = new Map(sis.map((s) => [s.id, s.so_doc_no] as const));
+      const siIds = sis.map((s) => s.id);
+      if (siIds.length > 0) {
+        const { data: liData, error: liErr } = await chunkIn(siIds, (batch: string[], pFrom: number, pTo: number) => scopeToCompany(sb
+          .from('sales_invoice_items')
+          .select('sales_invoice_id, qty, unit_cost_centi, line_cost_centi')
+          .in('sales_invoice_id', batch), c)
+          .range(pFrom, pTo));
+        if (liErr) return c.json({ error: 'load_failed', reason: liErr.message }, 500);
+        const linesBySi = new Map<string, Array<{ qty: number | null; unit_cost_centi: number | null; line_cost_centi: number | null }>>();
+        for (const l of (liData ?? []) as Array<{ sales_invoice_id: string; qty: number | null; unit_cost_centi: number | null; line_cost_centi: number | null }>) {
+          const arr = linesBySi.get(l.sales_invoice_id) ?? [];
+          arr.push({ qty: l.qty, unit_cost_centi: l.unit_cost_centi, line_cost_centi: l.line_cost_centi });
+          linesBySi.set(l.sales_invoice_id, arr);
+        }
+        for (const [siId, lines] of linesBySi) {
+          const so = siIdToSo.get(siId);
+          if (!so) continue;
+          siCostBySo.set(so, (siCostBySo.get(so) ?? 0) + siCostTotal(lines));
+        }
+      }
+    }
+
+    const { brand, rate } = await resolveFairRate(c, filters.project);
+
+    const rows = soRows.map((h) => {
+      const money = fairSoMoney(h);
+      const doCost = doCostBySo.has(h.doc_no) ? (doCostBySo.get(h.doc_no) as number) : null;
+      const siCost = siCostBySo.has(h.doc_no) ? (siCostBySo.get(h.doc_no) as number) : null;
+      const cost = fairPnlLineCost({
+        amount_centi: money.amount_centi,
+        so_cost_centi: money.total_so_cost_centi,
+        do_cost_centi: doCost,
+        si_cost_centi: siCost,
+      });
+      return {
+        ...fairDims(h, staffNames, projects),
+        so_date: h.so_date,
+        so_no: h.doc_no,
+        order_form: h.ref,
+        revenue_centi: money.amount_centi,
+        product_rev_centi: money.selling_centi,
+        service_rev_centi: money.service_rev_centi,
+        so_cost_centi: money.total_so_cost_centi,
+        do_cost_centi: doCost,
+        si_cost_centi: siCost,
+        effective_cost_centi: cost.effective_cost_centi,
+        effective_cost_stage: cost.effective_cost_stage,
+        gross_profit_centi: cost.gross_profit_centi,
+        margin_pct: cost.margin_pct,
+      };
+    });
+
+    const summaryRows: FairPnlSummaryRow[] = rows.map((r) => ({
+      amount_centi: r.revenue_centi,
+      selling_centi: r.product_rev_centi,
+      service_rev_centi: r.service_rev_centi,
+      so_cost_centi: r.so_cost_centi,
+      do_cost_centi: r.do_cost_centi,
+      si_cost_centi: r.si_cost_centi,
+      effective_cost_centi: r.effective_cost_centi,
+    }));
+    const summary = summarizeFairPnl(summaryRows, rate);
+    return c.json({
+      stage,
+      rows,
+      summary,
+      filters: filtersEcho,
+      meta: { access_tier: access.tier, needs_project: false, brand, rate_present: rate != null },
+    });
   }
 
   const docNos = soRows.map((r) => r.doc_no);
