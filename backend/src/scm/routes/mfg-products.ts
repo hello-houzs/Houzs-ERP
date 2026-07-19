@@ -112,7 +112,7 @@ async function syncAnchorBindingFromProduct(
 }
 
 // ── GET / ──────────────────────────────────────────────────────────────
-mfgProducts.get('/', async (c) => {
+export const listMfgProductsHandler = async (c: AppContext) => {
   const category = c.req.query('category');
   const search = c.req.query('search');
   const supabase = c.get('supabase');
@@ -179,8 +179,20 @@ mfgProducts.get('/', async (c) => {
      commander price edit shows within a minute. Follows the existing
      `private, max-age` header convention used elsewhere in this router. */
   c.header('cache-control', 'private, max-age=60');
+  /* Multi-company (fix/so-product-company-scope): the 60s PRIVATE cache is keyed
+     by URL only, but the ACTIVE company travels in the X-Company-Id REQUEST header
+     (authed-fetch.ts stamps it from the top-bar switcher). WITHOUT Vary, the
+     browser reuses the PREVIOUS company's cached catalogue for up to a minute
+     after a switch — TopNavbar does window.location.reload(), but a reload does
+     NOT bypass a still-fresh fetch response. That is the owner-reported "the SO
+     product picker shows the other company's products, both directions" leak: the
+     query IS company-scoped (scopeToCompany above), the CACHED RESPONSE is the
+     stale one. Vary partitions the private cache per active company so a switch
+     misses and refetches the correct list. See BUG-HISTORY.md 2026-07-19. */
+  c.header('vary', 'X-Company-Id');
   return c.json({ products });
-});
+};
+mfgProducts.get('/', listMfgProductsHandler);
 
 // ── POST / ─────────────────────────────────────────────────────────────
 // Create a new mfg_product. id is text PK — we generate a short uuid-ish
