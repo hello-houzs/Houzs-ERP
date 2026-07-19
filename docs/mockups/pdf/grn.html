@@ -1,7 +1,12 @@
 <!-- MOCKUP — pending owner approval. Static design mock of the UNIFIED Houzs PDF
-     template applied to a GOODS RECEIPT NOTE. No real data, no code path.
-     Flex vs Sales Order: SUPPLIER party; dual-code note; Recv / Acc / Rej
-     received-quantity columns; Warehouse + Supplier Driver signature. -->
+     template applied to a GOODS RECEIPT NOTE, now with REALISTIC furniture detail.
+     No real data, no code path. Faithful to grn-pdf.ts:
+       - dual-code: Supplier Code (bold) + Our Code columns; italic dual-code note
+       - Recv / Acc / Rej received-quantity columns
+       - MODULAR sofa = one row per module (BOOQIT-1A(LHF)/-CNR/-2A(RHF))
+       - SUPPLIER-facing fabric leads with supplier colour code, ours in ()
+         "Fabric: KN390-1 (EZ-003) / SEAT 28\" / LEG 4\"" (specsLine, labelled)
+       - Warehouse + Supplier Driver signature -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -42,12 +47,14 @@
   .kv dd{color:var(--ink)}
   .codenote{font-size:8.5px;font-style:italic;color:var(--ink2);margin-top:12px}
   table.items{width:100%;border-collapse:collapse;margin-top:6px;font-size:9.5px}
-  table.items thead th{background:var(--dark);color:#fff;font-weight:600;text-align:left;padding:6px 7px;border-bottom:2px solid var(--teal);font-size:9px;letter-spacing:.02em}
+  table.items thead th{background:var(--dark);color:#fff;font-weight:600;text-align:left;padding:6px 6px;border-bottom:2px solid var(--teal);font-size:8.5px;letter-spacing:.02em}
   table.items thead th.num{text-align:right}
-  table.items tbody td{padding:5px 7px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.4}
-  table.items tbody tr:nth-child(even){background:var(--inset)}
+  table.items tbody td{padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.4}
   .num{text-align:right}
-  .sub{color:var(--muted);font-size:8.5px;display:block;margin-top:1px}
+  .dmain{font-weight:500}
+  .spec{color:var(--teal-ink);font-size:8px;display:block;margin-top:2px;font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;letter-spacing:-.2px}
+  .special{color:var(--brass);font-size:8px;display:block;margin-top:1px;font-weight:500}
+  .wip{display:inline-block;background:var(--teal-soft);color:var(--teal-ink);font-size:6.5px;font-weight:700;padding:1px 4px;border-radius:3px;margin-left:5px;letter-spacing:.04em;vertical-align:middle}
   .rej{color:var(--brass);font-weight:600}
   .sign{display:flex;gap:20px;margin-top:24px}
   .sign .box{flex:1}
@@ -62,7 +69,7 @@
 </style>
 </head>
 <body>
-  <div class="mock"><b>MOCKUP — pending owner approval</b><span>Unified PDF template &middot; Goods Receipt Note</span></div>
+  <div class="mock"><b>MOCKUP — pending owner approval</b><span>Unified PDF template &middot; Goods Receipt Note (with sofa + modular detail)</span></div>
 
   <div class="page">
     <!-- ===== UNIFIED HEADER ===== -->
@@ -94,7 +101,7 @@
         <dl class="kv">
           <dt>Company</dt><dd>Guangzhou Comfort Furniture Co., Ltd</dd>
           <dt>Code</dt><dd>S-0088</dd>
-          <dt>Note</dt><dd>2 foam sets rejected — torn outer packaging, returned on same lorry.</dd>
+          <dt>Note</dt><dd>1 ARIANI divan rejected — fabric stain on headboard, returned on same lorry.</dd>
         </dl>
       </div>
       <div>
@@ -110,60 +117,76 @@
       </div>
     </div>
 
-    <!-- ===== DUAL-CODE NOTE + RECEIVED-QTY TABLE (Recv / Acc / Rej) ===== -->
+    <!-- ===== DUAL-CODE NOTE + RECEIVED-QTY TABLE; one row per sofa module ===== -->
     <div class="codenote">Codes shown are SUPPLIER codes; our reference in the second column.</div>
     <table class="items">
       <thead>
         <tr>
-          <th class="num" style="width:5%">#</th>
-          <th style="width:14%">Supplier Code</th>
-          <th style="width:13%">Our Code</th>
+          <th class="num" style="width:4%">#</th>
+          <th style="width:13%">Supplier Code</th>
+          <th style="width:15%">Our Code</th>
           <th>Description</th>
-          <th class="num" style="width:8%">Recv</th>
-          <th class="num" style="width:8%">Acc</th>
-          <th class="num" style="width:8%">Rej</th>
-          <th style="width:16%">Reason</th>
-          <th class="num" style="width:13%">Unit Price</th>
+          <th class="num" style="width:7%">Recv</th>
+          <th class="num" style="width:7%">Acc</th>
+          <th class="num" style="width:7%">Rej</th>
+          <th style="width:13%">Reason</th>
+          <th class="num" style="width:12%">Unit Price</th>
         </tr>
       </thead>
       <tbody>
         <tr>
           <td class="num">1</td>
-          <td class="mono" style="font-weight:600">GZ-FR3</td>
-          <td class="mono">FRM-3ST</td>
-          <td>Sofa Frame 3-Seater<span class="sub">Kiln-dried hardwood</span></td>
-          <td class="num mono">20</td>
-          <td class="num mono">20</td>
+          <td class="mono" style="font-weight:700">GZ-BQ-1AL</td>
+          <td class="mono">BOOQIT-1A(LHF)</td>
+          <td><span class="dmain">Sofa BOOQIT — 1-Seater<span class="wip">1A · LHF</span></span>
+              <span class="spec">Fabric: KN390-1 (EZ-003) / SEAT 28" / LEG 4"</span></td>
+          <td class="num mono">1</td>
+          <td class="num mono">1</td>
           <td class="num mono">0</td>
           <td></td>
-          <td class="num mono">MYR 210.00</td>
+          <td class="num mono">MYR 620.00</td>
         </tr>
         <tr>
           <td class="num">2</td>
-          <td class="mono" style="font-weight:600">GZ-FOAM</td>
-          <td class="mono">FOAM-D35</td>
-          <td>High-Density Foam D35<span class="sub">Per 3-seater set</span></td>
-          <td class="num mono">20</td>
-          <td class="num mono">18</td>
-          <td class="num mono rej">2</td>
-          <td>Torn packaging</td>
-          <td class="num mono">MYR 95.00</td>
+          <td class="mono" style="font-weight:700">GZ-BQ-CNR</td>
+          <td class="mono">BOOQIT-CNR</td>
+          <td><span class="dmain">Sofa BOOQIT — Corner<span class="wip">CNR</span></span>
+              <span class="spec">Fabric: KN390-1 (EZ-003) / SEAT 28" / LEG 4"</span></td>
+          <td class="num mono">1</td>
+          <td class="num mono">1</td>
+          <td class="num mono">0</td>
+          <td></td>
+          <td class="num mono">MYR 480.00</td>
         </tr>
         <tr>
           <td class="num">3</td>
-          <td class="mono" style="font-weight:600">GZ-LEG4</td>
-          <td class="mono">LEG-CHR</td>
-          <td>Chrome Sofa Legs<span class="sub">Set of 4</span></td>
-          <td class="num mono">20</td>
-          <td class="num mono">20</td>
+          <td class="mono" style="font-weight:700">GZ-BQ-2AR</td>
+          <td class="mono">BOOQIT-2A(RHF)</td>
+          <td><span class="dmain">Sofa BOOQIT — 2-Seater<span class="wip">2A · RHF</span></span>
+              <span class="spec">Fabric: KN390-1 (EZ-003) / SEAT 28" / LEG 4"</span>
+              <span class="special">SPECIAL: Extra Seat Cushion + USB Console</span></td>
+          <td class="num mono">1</td>
+          <td class="num mono">1</td>
           <td class="num mono">0</td>
           <td></td>
-          <td class="num mono">MYR 28.00</td>
+          <td class="num mono">MYR 900.00</td>
+        </tr>
+        <tr>
+          <td class="num">4</td>
+          <td class="mono" style="font-weight:700">GZ-AR-DV</td>
+          <td class="mono">ARIANI-Q</td>
+          <td><span class="dmain">Bedframe ARIANI — Queen<span class="wip">Divan</span><span class="wip">Headboard</span></span>
+              <span class="spec">Fabric: SN-12 (BF-01) — Sand / DIVAN 10" + LEG 1" / GAP 14" / T.Heights 24"</span></td>
+          <td class="num mono">1</td>
+          <td class="num mono">0</td>
+          <td class="num mono rej">1</td>
+          <td>Fabric stain</td>
+          <td class="num mono">MYR 820.00</td>
         </tr>
       </tbody>
     </table>
 
-    <!-- ===== SIGNATURES: warehouse + supplier driver ===== -->
+    <!-- ===== SIGNATURES ===== -->
     <div class="sign">
       <div class="box"><div class="cap">Warehouse Received By</div><div class="pad"></div></div>
       <div class="box"><div class="cap">Supplier Driver Signature</div><div class="pad"></div></div>

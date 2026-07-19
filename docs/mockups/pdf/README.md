@@ -54,6 +54,38 @@ unify, not more):
 
 ---
 
+## 1B. Furniture-specific line detail — VERIFIED preserved
+
+The owner's concern: the real documents show sofa / modular / WIP furniture detail that a
+generic sample doesn't. Below is exactly how that detail renders today (traced in the real
+generators, not guessed) and confirmation it survives the restyle. **Unification is
+presentation-only — every furniture block is re-skinned in place, none is dropped.** The
+updated mockups (`sales-order.html`, `purchase-order.html`, `delivery-order.html`, `grn.html`)
+now show all of it with realistic Houzs lines: a modular **BOOQIT corner sofa** and an
+**ARIANI Queen divan bedframe**.
+
+| Furniture-specific block | Renders on | Source (verified) | Preserved in unified template? |
+|---|---|---|---|
+| **Category section rows** (SOFA / BEDFRAME / ACCESSORY / SERVICE) | Sales Order | `soLineGroupRank` + interleaved grey header rows — `sales-order-pdf.ts` | **YES** — grey section rows in `sales-order.html` |
+| **Modular sofa = one row per module** (`1A(LHF)` / `CNR` / `2A(RHF)`), ordered left-to-right | SO · DO · GRN · PO | `orderSofaModuleRowsWithinBuilds` — `so-line-display.ts` | **YES** — one module row each, all four mockups |
+| **Sofa seat-height / variant grid** (`fabric / SEAT 28" / LEG 4"`) | SO · DO (customer) · PO · GRN (supplier) | `buildVariantSummary` sofa branch — `variant-summary.ts` | **YES** — the teal `.spec` line on each sofa row |
+| **Bedframe grid** (`fabric / DIVAN 10" + LEG 1" / GAP 14" / T.Heights 24"`) | SO · DO · PO · GRN | `buildVariantSummary` bedframe branch | **YES** — the ARIANI divan row |
+| **Fabric code enrichment** — customer docs `internal (external) — description`; supplier docs `supplierColour (ourCode)` | customer vs supplier docs | `docVariantLine` vs `specsLine` — `supplier-doc-data.ts` | **YES** — SO/DO show `EZ-003 (KN390-1) — Easy Clean Velvet`; PO/GRN show `KN390-1 (EZ-003)` |
+| **SPECIAL add-ons segment** (`SPECIAL: Extra Cushion + USB Console`) | all line docs | `buildVariantSummary` specials | **YES** — the brass `SPECIAL:` line |
+| **WIP part labels** (module / part codes: `LHF` `RHF` `CNR` `NA`; `Divan` `Headboard`) | item-code suffix + description | module ids in `sofa-build.ts` | **YES** — shown as the SKU suffix + a teal WIP chip |
+| **Dual code** (supplier code + our code) | GRN (two columns) · PO (supplier code + our model in Description) | `supplierCodeFor` / `specsLine` | **YES** — GRN's Supplier Code / Our Code columns; PO's bold supplier code + model |
+| **Top-down SOFA LAYOUT schematic** (LHF/RHF + which way it faces the TV) | **Purchase Order only** | `drawSofaLayout` — `sofa-layout-pdf.ts` | **YES** — plan-view diagram in `purchase-order.html` |
+| **Per-line Delivery date** (`Delivery: 22/08/2026`) | Purchase Order | `effectiveDelivery` — `purchase-order-pdf.ts` | **YES** — the muted `Delivery:` line |
+
+**Nothing to flag as un-expressible.** Every furniture block above is already produced by, or
+composed for, the shared building blocks in `pdf-common.ts` — which is why the 7 documents on
+the shared template ALREADY render all of them. The only furniture-specific block that is
+document-specific rather than shared is the **sofa layout schematic**, which is Purchase-Order-only
+by design; the unified template keeps it exactly there (see `purchase-order.html`). Restyling
+changes the frame around this detail, never the detail itself.
+
+---
+
 ## 2. Audit matrix — document × design-element (how each renders today)
 
 "Shared" = drawn by `pdf-common.ts`. "Bespoke" = the Purchase Order draws its own.
@@ -96,13 +128,13 @@ unify, not more):
 Self-contained static HTML, A4 print CSS, Houzs brand look (IBM Plex, teal `#16695f`),
 realistic Malaysian furniture-trade sample data, RM currency, DD/MM/YYYY dates.
 
-| File | Document | Shows the template flexing to… |
-|------|----------|--------------------------------|
-| [`sales-order.html`](./sales-order.html) | Sales Order | prices + discount, deposit schedule, amount-in-words, full T&C |
-| [`delivery-order.html`](./delivery-order.html) | Delivery Order | **no prices** (qty + m³ + Source PO + Rack), customer/driver signature |
-| [`grn.html`](./grn.html) | Goods Receipt Note | **Recv/Acc/Rej** columns, dual-code note |
-| [`sales-invoice.html`](./sales-invoice.html) | Sales Invoice | full totals + Paid/Outstanding, payment terms |
-| [`purchase-order.html`](./purchase-order.html) | Purchase Order | supplier party, brought **onto** the shared template (decision doc — see §5) |
+| File | Document | Shows the template flexing to… | Furniture detail shown |
+|------|----------|--------------------------------|------------------------|
+| [`sales-order.html`](./sales-order.html) | Sales Order | prices + discount, deposit schedule, amount-in-words, full T&C | SOFA/BEDFRAME/ACCESSORY section rows; modular BOOQIT sofa (3 module rows); seat-height + fabric grid; SPECIAL add-ons |
+| [`delivery-order.html`](./delivery-order.html) | Delivery Order | **no prices** (qty + m³ + Source PO + Rack), customer/driver signature | same sofa modules + bedframe grid, quantity-only |
+| [`grn.html`](./grn.html) | Goods Receipt Note | **Recv/Acc/Rej** columns, dual-code note | modules received with **dual Supplier/Our code**, supplier-leading fabric |
+| [`sales-invoice.html`](./sales-invoice.html) | Sales Invoice | full totals + Paid/Outstanding, payment terms | (generic lines — invoice carries no sofa geometry; totals-focused) |
+| [`purchase-order.html`](./purchase-order.html) | Purchase Order | supplier party, brought **onto** the shared template (decision doc — see §5) | modules + **top-down sofa layout schematic** (LHF/RHF + TV), per-line delivery dates |
 
 The remaining documents (Purchase Invoice, Delivery Return, Purchase Return, and the 6
 Consignment docs) **follow the same skeleton** — they are the same base generators with a
