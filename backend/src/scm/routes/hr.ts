@@ -98,6 +98,7 @@ import {
   type OverrideLevel,
   type SalespersonInput,
 } from '../shared/hr-commission';
+import { MFG_PRODUCT_CATEGORIES } from './mfg-products';
 import { loadKpiUnitsByDoc } from '../lib/kpi-units';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
@@ -452,7 +453,7 @@ hr.delete('/profiles/:id', async (c) => {
 const ITEM_KPI_SELECT = 'id, flag_type, ref, label, bonus_centi, active, created_at, updated_at';
 
 type ItemKpiRow = {
-  id: string; flag_type: 'product' | 'fabric' | 'special'; ref: string;
+  id: string; flag_type: 'product' | 'category' | 'fabric' | 'special'; ref: string;
   label: string; bonus_centi: number; active: boolean;
 };
 
@@ -482,7 +483,7 @@ hr.get('/item-kpi', async (c) => {
 });
 
 const itemKpiCreateSchema = z.object({
-  flagType: z.enum(['product', 'fabric', 'special']),
+  flagType: z.enum(['product', 'category', 'fabric', 'special']),
   ref: z.string().min(1),
   label: z.string().default(''),
   bonusCenti: z.number().int().nonnegative(),
@@ -742,6 +743,11 @@ hr.get('/pickers', async (c) => {
     staff: (staffRes.data ?? []).map((s) => ({ id: s.id, name: s.name, staffCode: s.staff_code, role: s.role })),
     showrooms: (showroomRes.data ?? []).map((s) => ({ id: s.id, name: s.name })),
     products: (productRes.data ?? []).map((p) => ({ ref: p.code, label: `${p.code} — ${p.name}` })),
+    /* Categories are the mfg_product_category ENUM, not a table — there is no
+       row to read and no company scoping to apply. Imported from mfg-products so
+       the picker cannot offer a value mfg_products.category could not hold; a
+       category rule is matched against exactly that column (kpi-units.ts). */
+    categories: MFG_PRODUCT_CATEGORIES.map((code) => ({ ref: code, label: code })),
     fabrics: (fabricRes.data ?? []).map((f) => ({ ref: f.id, label: f.label })),
     specials: (specialRes.data ?? []).map((s) => ({ ref: s.code, label: s.label })),
   });
@@ -1045,7 +1051,10 @@ async function buildCommissionLive(
         if (excluded > 0) kpiExcludedGoods.set(sp, (kpiExcludedGoods.get(sp) ?? 0) + excluded);
         if (bonus <= 0) continue;
         for (const f of flags) {
-          if (!kpiFlagFiresOnUnit(f, u)) continue;
+          // The WHOLE flag list is load-bearing: a category rule suppressed by a
+          // product rule on this unit paid nothing, so it must not appear in the
+          // breakdown either — the detail lines have to sum back to `bonus`.
+          if (!kpiFlagFiresOnUnit(f, u, flags)) continue;
           const key = `${f.flagType}:${f.ref}`;
           if (!kpiDetail.has(sp)) kpiDetail.set(sp, new Map());
           const m = kpiDetail.get(sp)!;

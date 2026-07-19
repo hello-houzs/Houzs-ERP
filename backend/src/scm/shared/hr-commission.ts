@@ -17,8 +17,12 @@ export type HrTier = 'sales' | 'manager';
  *
  * v1 = the 2990-parity engine (flat showroom override) + the 2026-07-17 owner
  * rulings: DRAFT excluded from goods, and the chain override mode.
+ * v2 = adds the `category` item-KPI flag type and its precedence rule (a product
+ * rule beats a category rule on the same unit — see categorySuppressed). A v1
+ * period contains no category rules at all, so replaying one under v2 yields the
+ * identical figure; the bump records WHICH engine produced it, not a repricing.
  */
-export const COMMISSION_ENGINE_VERSION = 'v1';
+export const COMMISSION_ENGINE_VERSION = 'v2';
 
 /**
  * SO statuses that earn NO commission (owner 2026-07-17: "draft肯定不算").
@@ -249,8 +253,24 @@ export const computeChainCommission = (
   });
 };
 
+/**
+ * What an item-KPI rule targets.
+ *
+ * Every type EXCEPT `category` names exactly ONE purchasable thing (owner
+ * 2026-07-18: commission "是看 by item" — a rule is read per item). `category` is
+ * the deliberate exception: it targets EVERY item in a product category with one
+ * rule, which is why it needs the precedence rule in unitKpiCenti below.
+ *   · product  → mfg_products.code           (the SKU itself)
+ *   · category → mfg_products.category       (the mfg_product_category enum,
+ *                                             UPPERCASE: SOFA / BEDFRAME / ...)
+ *   · fabric   → fabric_library.id           (the fabric SERIES, e.g. 'BF' —
+ *                                             already series-level, never colour)
+ *   · special  → the special-order code on the line
+ */
+export type HrFlagType = 'product' | 'category' | 'fabric' | 'special';
+
 export interface ItemKpiFlag {
-  flagType: 'product' | 'fabric' | 'special';
+  flagType: HrFlagType;
   ref: string;
   bonusCenti: number;
 }
@@ -301,6 +321,11 @@ export interface KpiUnit {
   itemCodes: string[];
   /** Items purchased (a build's qty; uniform across its module lines). */
   qty: number;
+  /** The unit's product category, UPPERCASE mfg_product_category ('SOFA',
+   *  'BEDFRAME', ...). NULL when it could not be resolved — a category flag then
+   *  simply does not fire, rather than guessing a category and paying a bonus
+   *  nobody configured for this item. */
+  category: string | null;
   fabricId: string | null;
   specialCodes: string[];
   /** Σ of the unit's line totals (goods, qty-inclusive, post-discount), centi. */
@@ -313,24 +338,69 @@ export interface KpiUnit {
 
 const flagMatchesUnit = (
   f: ItemKpiFlag,
-  u: Pick<KpiUnit, 'itemCodes' | 'fabricId' | 'specialCodes'>,
+  u: Pick<KpiUnit, 'itemCodes' | 'category' | 'fabricId' | 'specialCodes'>,
 ): boolean =>
   (f.flagType === 'product' && u.itemCodes.includes(f.ref)) ||
+  // NULL category never matches — see KpiUnit.category.
+  (f.flagType === 'category' && u.category !== null && u.category === f.ref) ||
   (f.flagType === 'fabric' && u.fabricId === f.ref) ||
   (f.flagType === 'special' && u.specialCodes.includes(f.ref));
 
+/**
+ * PRECEDENCE: a product rule BEATS a category rule on the same unit.
+ *
+ * This is a money decision, so it is stated once, here, and both the bonus and
+ * the goods-exclusion below obey it. Without it a sofa that is BOTH flagged by
+ * SKU and covered by a "every SOFA" rule would collect BOTH bonuses off one
+ * purchase — the exact double-pay the item-KPI model exists to prevent (Loo
+ * 2026-06-20: "no double commission"), and it would do it silently.
+ *
+ * Product wins because it is the more SPECIFIC statement of intent: naming one
+ * SKU is a deliberate override of the blanket category rate, in the same way a
+ * per-model fabric override beats the config default. The category rule is the
+ * fallback for everything in the category the owner did NOT name individually.
+ *
+ * Only product-vs-category needs a rule. Every other pair targets a different
+ * DIMENSION of the same purchase (the SKU, its fabric series, its special-order
+ * surcharge) and those deliberately stack, exactly as they did before this file
+ * knew what a category was — see unitKpiExcludedCenti, where each type removes
+ * its own slice of goods and nothing overlaps.
+ */
+const categorySuppressed = (u: Pick<KpiUnit, 'itemCodes'>, flags: ItemKpiFlag[]): boolean =>
+  flags.some((f) => f.flagType === 'product' && u.itemCodes.includes(f.ref));
+
+/** The flags that actually FIRE on this unit, after precedence. The one list
+ *  every payout figure below is derived from, so the bonus, the goods exclusion
+ *  and the on-screen breakdown can never disagree about which rules applied. */
+export const firingFlags = (
+  u: Pick<KpiUnit, 'itemCodes' | 'category' | 'fabricId' | 'specialCodes'>,
+  flags: ItemKpiFlag[],
+): ItemKpiFlag[] => {
+  const suppressed = categorySuppressed(u, flags);
+  return flags.filter((f) => flagMatchesUnit(f, u) && !(suppressed && f.flagType === 'category'));
+};
+
 /** Does any active flag fire on this unit? (drives the kpiDetail breakdown.) */
 export const unitMatchesAnyKpi = (u: KpiUnit, flags: ItemKpiFlag[]): boolean =>
-  flags.some((f) => flagMatchesUnit(f, u));
+  firingFlags(u, flags).length > 0;
 
 /** Whether one flag fires on this unit — exported so the API's per-flag detail
- *  rollup matches this single source of truth instead of re-deriving the test. */
-export const kpiFlagFiresOnUnit = flagMatchesUnit;
+ *  rollup matches this single source of truth instead of re-deriving the test.
+ *  Takes the WHOLE flag list because firing is not a property of one flag alone:
+ *  a category flag is suppressed by the presence of a product flag on the same
+ *  unit. Callers that pass only the one flag would miss that and report a
+ *  breakdown line for a rule that paid nothing. */
+export const kpiFlagFiresOnUnit = (
+  f: ItemKpiFlag,
+  u: Pick<KpiUnit, 'itemCodes' | 'category' | 'fabricId' | 'specialCodes'>,
+  flags: ItemKpiFlag[],
+): boolean => firingFlags(u, flags).some((x) => x.flagType === f.flagType && x.ref === f.ref);
 
-/** Fixed item-KPI bonus earned by one unit (qty × amount, summed over matches). */
+/** Fixed item-KPI bonus earned by one unit (qty × amount, summed over the flags
+ *  that FIRE — so a category rule suppressed by a product rule pays nothing). */
 export const unitKpiCenti = (u: KpiUnit, flags: ItemKpiFlag[]): number => {
   let total = 0;
-  for (const f of flags) if (flagMatchesUnit(f, u)) total += u.qty * f.bonusCenti;
+  for (const f of firingFlags(u, flags)) total += u.qty * f.bonusCenti;
   return total;
 };
 
@@ -340,9 +410,13 @@ export const unitKpiCenti = (u: KpiUnit, flags: ItemKpiFlag[]): number => {
 export const unitKpiExcludedCenti = (u: KpiUnit, flags: ItemKpiFlag[]): number => {
   let excluded = 0;
   let wholeUnit = false;
-  for (const f of flags) {
-    if (!flagMatchesUnit(f, u)) continue;
-    if (f.flagType === 'product') wholeUnit = true;
+  for (const f of firingFlags(u, flags)) {
+    // `category` excludes the WHOLE unit exactly as `product` does: both target
+    // the purchased item itself, so the item earns its fixed bonus INSTEAD of
+    // percentage commission. (fabric / special only ever target an add-on ON the
+    // item, so they remove only that add-on.) Precedence already guaranteed at
+    // most one of product/category is in this list, so this cannot double-count.
+    if (f.flagType === 'product' || f.flagType === 'category') wholeUnit = true;
     else if (f.flagType === 'fabric') excluded += u.qty * u.fabricAddonUnitCenti;
     else if (f.flagType === 'special') excluded += u.qty * u.specialSurchargeUnitCenti;
   }

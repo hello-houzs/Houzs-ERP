@@ -120,6 +120,7 @@ export async function loadKpiUnitsByDoc(
     flagRows.map((f: any) => [`${f.flag_type}:${f.ref}`, (f.label as string) ?? f.ref]),
   );
   const hasFabricFlag = flags.some((f) => f.flagType === 'fabric');
+  const hasCategoryFlag = flags.some((f) => f.flagType === 'category');
 
   // 1. gather every non-cancelled line for these docs (paged — PORT NOTE 3).
   const lineRes = await chunkIn<LineRow>(
@@ -160,6 +161,14 @@ export async function loadKpiUnitsByDoc(
   // would under-report on model-only resolution, so the reported Δ matches what
   // was billed (keeps the "never drift" promise true).
   const compartmentOverrides = hasFabricFlag ? await loadCompartmentFabricTierOverrides(sb) : new Map<string, FabricTierModelOverride>();
+  /* A category flag is matched on mfg_products.category, so EVERY line needs its
+     product row — not just the fabric-flagged ones. Loading the whole set is
+     gated on a category flag actually existing so a company with none pays
+     nothing extra for this. */
+  if (hasCategoryFlag) {
+    for (const b of chunk(uniqNonEmpty(lines.map((l) => l.item_code)), 200))
+      for (const [k, v] of await loadProductsByCodes(sb, b)) productByCode.set(k, v as ProductLite);
+  }
   if (hasFabricFlag) {
     // These two loaders are shared with the SO recompute and are read here with
     // the SAME (unscoped) call the billing path makes — deliberately. Scoping
@@ -221,6 +230,22 @@ export async function loadKpiUnitsByDoc(
     return fabricTierAddon(category, tier ?? null, addonConfig, override) * 100;
   };
 
+  /* The unit's product category, for `category` item-KPI rules.
+     Resolved from mfg_products.category ONLY — the authoritative
+     mfg_product_category enum the rule's ref is picked from.
+
+     A product-lookup miss returns NULL and the category rule simply does not
+     fire. It deliberately does NOT fall back to the item_group text heuristic
+     used for the fabric Δ above: that heuristic answers "is this sofa-ish enough
+     to carry a fabric surcharge", which is a safe guess about an add-on already
+     on the invoice. Guessing here would INVENT a bonus payment out of a
+     free-text field — an unreadable category is an unpaid one, not a paid one. */
+  const categoryOf = (l: LineRow): string | null => {
+    if (!hasCategoryFlag) return null;
+    const cat = norm(productByCode.get(norm(l.item_code))?.category).toUpperCase();
+    return cat || null;
+  };
+
   // 3. collapse split-sofa module lines (shared variants.buildKey, same doc)
   //    into ONE unit; every other line is its own unit.
   const unitsByDoc = new Map<string, KpiUnit[]>();
@@ -229,6 +254,7 @@ export async function loadKpiUnitsByDoc(
     const unit: KpiUnit = {
       itemCodes: [norm(l.item_code)],
       qty: Number(l.qty) || 0,
+      category: categoryOf(l),
       fabricId: fabricIdOf(l.variants),
       specialCodes: specialsOf(l.variants),
       lineTotalCenti: Number(l.total_centi) || 0,
@@ -245,6 +271,11 @@ export async function loadKpiUnitsByDoc(
     if (!existing) { buildIndex.set(key, unit); arr.push(unit); continue; }
     // merge a module line into its build's unit.
     existing.itemCodes.push(...unit.itemCodes);
+    /* One build is ONE item, so it has ONE category. Keep the first non-null the
+       modules resolve to: a split sofa's modules are all SOFA, but an individual
+       module's product row can be missing, and letting that null overwrite a
+       resolved category would silently stop the build's rule firing. */
+    existing.category = existing.category ?? unit.category;
     existing.lineTotalCenti += unit.lineTotalCenti;            // Σ → whole build's goods
     // fabric Δ + special surcharge are per-BUILD figures on the lead module line;
     // keep the lead's value (max picks it over the 0s), never sum. qty is uniform.
