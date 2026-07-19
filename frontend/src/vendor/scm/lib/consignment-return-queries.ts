@@ -27,13 +27,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { serviceNotify } from './dialog-service';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── Consignment Note detail (for ?fromNote prefill on the New page) ───── */
 export const useConsignmentNoteDetailForReturn = (id: string | null) => useQuery({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   queryKey: ['consignment-note-detail', id],
   queryFn: () => authedFetch<{ deliveryOrder: any; items: any[] }>(`/consignment-notes/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 
 /* ── List ────────────────────────────────────────────────────────────── */
@@ -44,7 +45,7 @@ export const useConsignmentReturns = (status?: string) => useQuery({
     `/consignment-returns${status ? `?status=${status}` : ''}`,
   ),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* ── List (opt-in server-side pagination) ────────────────────────────────
@@ -82,7 +83,7 @@ export const useConsignmentReturnsPaged = (params: {
     queryFn: () => authedFetch<{ deliveryReturns: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentReturnAggregates }>(`/consignment-returns?${usp.toString()}`),
     placeholderData: (prev: unknown) => prev as { deliveryReturns: unknown[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentReturnAggregates } | undefined,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 };
@@ -114,7 +115,7 @@ export const useReturnableNoteLines = () => useQuery({
     `/consignment-returns/returnable-note-lines`,
   ).then((r) => r.lines),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* ── Detail ──────────────────────────────────────────────────────────── */
@@ -122,7 +123,7 @@ export const useConsignmentReturnDetail = (id: string | null) => useQuery({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   queryKey: ['consignment-return-detail', id],
   queryFn: () => authedFetch<{ deliveryReturn: any; items: any[] }>(`/consignment-returns/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 
 /* ── Create ──────────────────────────────────────────────────────────── */

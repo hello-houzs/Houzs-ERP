@@ -9,6 +9,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { createElement, Fragment } from 'react';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 export type CurrencyRow = {
   code: string;
@@ -30,7 +31,7 @@ export function useCurrencies(opts?: { activeOnly?: boolean }) {
         `/currencies${activeOnly ? '?active=true' : ''}`,
       ).then((r) => r.currencies),
     staleTime: 5 * 60_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 

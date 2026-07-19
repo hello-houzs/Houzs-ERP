@@ -12,6 +12,7 @@ import { authedFetch } from './authed-fetch';
 import { serviceNotify } from './dialog-service';
 import { verifiedSave, readbackGet, friendlySaveMessage } from './verified-save';
 import type { MaintPoolEntry } from '@2990s/shared';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 import type {
   MaintenanceConfig as MfgMaintenanceConfig,
   MfgPricedOption,
@@ -115,7 +116,7 @@ export function useMaintenanceConfig(
     enabled,
     staleTime: 60_000,
     // See useMfgProducts comment — settle errors fast for the migration-pending case.
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -236,7 +237,7 @@ export function useMfgProducts(opts?: {
        Catalog" on every open/keystroke. */
     staleTime: 5 * 60_000,
     placeholderData: keepPreviousData,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }

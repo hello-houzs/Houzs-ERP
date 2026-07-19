@@ -9,6 +9,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 // baseQuery is a custom-hook factory — only ever called from use* hooks below.
 // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -16,7 +17,7 @@ const baseQuery = <T>(key: string[], path: string) => useQuery({
   queryKey: key,
   queryFn: () => authedFetch<T>(path),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 

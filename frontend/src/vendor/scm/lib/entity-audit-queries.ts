@@ -12,6 +12,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 export type EntityAuditFieldChange = {
   field: string;
@@ -64,5 +65,5 @@ export const useEntityAuditLog = (
   ).then((r) => r.entries),
   enabled: Boolean(entityId),
   staleTime: 0,
-  retry: 1,
+  retry: retryUnlessClientError,
 });

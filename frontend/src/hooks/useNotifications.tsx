@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -51,9 +52,6 @@ interface Ctx {
   unreadByProject: Record<number, number>;
   totalUnread: number;
   reload: () => void;
-  /** Event timestamp whenever a fresh payload lands; Profile uses this
-   *  to detect new items for browser push firing. */
-  lastTick: number;
   // Houzs Points — present once the first poll lands.
   pointsBalance: number;
   giftingBalance: number;
@@ -65,11 +63,34 @@ const NotificationsContext = createContext<Ctx>({
   unreadByProject: {},
   totalUnread: 0,
   reload: () => {},
-  lastTick: 0,
   pointsBalance: 0,
   giftingBalance: 0,
   currentStreak: 0,
 });
+
+/* lastTick lives in its OWN context (2026-07-19 perf).
+   -------------------------------------------------------------------------
+   It is a POLL HEARTBEAT: it changes every 30s by definition, whether or not
+   anything about the notifications actually changed. While it sat in the main
+   context value, that value was a new object every 30 seconds, so all EIGHT
+   consumers of useNotifications() re-rendered on a fixed timer — forever, on
+   every page. Two of those consumers are the heaviest trees in the app
+   (pages/Projects.tsx and the Layout's MobileTabBar), and the provider is
+   mounted at the App root, so the whole screen paid a re-render every half
+   minute regardless of what the user was doing. That is a timer-driven 卡顿
+   with no data behind it.
+
+   Exactly ONE consumer needs the heartbeat — components/BrowserPushSink.tsx,
+   which renders null and uses it to decide whether to fire an OS banner. Giving
+   it a dedicated context means the tick re-renders that one null-rendering
+   component and nothing else.
+
+   The heartbeat is deliberately still set on EVERY poll, even when the payload
+   is unchanged. BrowserPushSink's priming step (`!primed && lastTick > 0`)
+   depends on the tick advancing after the first successful poll, and a first
+   poll that legitimately returns an empty feed must still prime — otherwise the
+   next poll's items would be silently marked seen instead of notified. */
+const NotificationsTickContext = createContext<number>(0);
 
 // ── Provider ─────────────────────────────────────────────────
 // One poller per app, driven by the signed-in user's session.
@@ -88,6 +109,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [giftingBalance, setGifting] = useState(0);
   const [currentStreak, setStreak] = useState(0);
   const timerRef = useRef<number | null>(null);
+  /* Signature of the last payload we committed to state, so an unchanged poll
+     is a no-op instead of a new object identity. A ref, not state — writing it
+     must not itself cause a render. */
+  const lastPayloadSigRef = useRef<string | null>(null);
 
   const fetchOnce = useCallback(async () => {
     if (!user?.id) return;
@@ -98,13 +123,36 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       const r = await api.get<NotificationsPayload>(
         "/api/notifications?unread=1&limit=20"
       );
-      setFeed(r.feed);
-      setUnread(r.unread_by_project);
-      setTotal(r.total_unread);
+      /* Only push state when the payload ACTUALLY changed (2026-07-19 perf).
+         `setFeed(r.feed)` stored a brand-new array every 30 seconds even when
+         the server returned byte-identical rows, and a new array identity is a
+         new context value, which re-rendered every consumer on a timer. The
+         common case by far is "nothing happened since the last poll", so a
+         cheap identity check on a ≤20-row payload buys back an app-wide render
+         every half minute for the cost of one JSON.stringify.
+         Note this compares the RAW payload, not derived state, so it cannot
+         drift from what the setters below write. */
+      const sig = JSON.stringify([
+        r.feed,
+        r.unread_by_project,
+        r.total_unread,
+        r.points_balance,
+        r.gifting_balance,
+        r.current_streak,
+      ]);
+      if (sig !== lastPayloadSigRef.current) {
+        lastPayloadSigRef.current = sig;
+        setFeed(r.feed);
+        setUnread(r.unread_by_project);
+        setTotal(r.total_unread);
+        if (typeof r.points_balance === "number") setPoints(r.points_balance);
+        if (typeof r.gifting_balance === "number") setGifting(r.gifting_balance);
+        if (typeof r.current_streak === "number") setStreak(r.current_streak);
+      }
+      /* Heartbeat advances on EVERY successful poll regardless — see the comment
+         on NotificationsTickContext for why BrowserPushSink needs that. It is in
+         its own context, so this line no longer re-renders the app. */
       setLastTick(Date.now());
-      if (typeof r.points_balance === "number") setPoints(r.points_balance);
-      if (typeof r.gifting_balance === "number") setGifting(r.gifting_balance);
-      if (typeof r.current_streak === "number") setStreak(r.current_streak);
     } catch {
       // Swallow — polling error shouldn't noise the UI. Next tick retries.
     }
@@ -115,6 +163,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       setFeed([]);
       setUnread({});
       setTotal(0);
+      /* Clear the signature too, or the next user to sign in on this tab whose
+         first payload happens to equal the previous user's would be skipped and
+         see the cleared-out empty state. */
+      lastPayloadSigRef.current = null;
       return;
     }
     fetchOnce();
@@ -140,24 +192,42 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     };
   }, [user?.id, fetchOnce]);
 
+  /* Memoised so the value's identity changes only when the DATA changes. An
+     inline object literal here was a new value on every render of this provider
+     — and the provider sits at the App root, so it re-renders whenever anything
+     above it does. Together with the unchanged-payload skip above, a consumer
+     now re-renders only when its notifications genuinely moved.
+     `fetchOnce` is already a useCallback keyed on user?.id, so it is stable. */
+  const value = useMemo<Ctx>(
+    () => ({
+      feed,
+      unreadByProject,
+      totalUnread,
+      reload: fetchOnce,
+      pointsBalance,
+      giftingBalance,
+      currentStreak,
+    }),
+    [feed, unreadByProject, totalUnread, fetchOnce, pointsBalance, giftingBalance, currentStreak],
+  );
+
   return (
-    <NotificationsContext.Provider
-      value={{
-        feed,
-        unreadByProject,
-        totalUnread,
-        reload: fetchOnce,
-        lastTick,
-        pointsBalance,
-        giftingBalance,
-        currentStreak,
-      }}
-    >
-      {children}
+    <NotificationsContext.Provider value={value}>
+      <NotificationsTickContext.Provider value={lastTick}>
+        {children}
+      </NotificationsTickContext.Provider>
     </NotificationsContext.Provider>
   );
 }
 
 export function useNotifications(): Ctx {
   return useContext(NotificationsContext);
+}
+
+/** The poll heartbeat — advances on every successful poll. Subscribe ONLY if you
+ *  need to react to "a poll happened" rather than to the data itself; it changes
+ *  every 30s by design, so any component reading it re-renders on that timer.
+ *  Today that is BrowserPushSink alone, which renders null. */
+export function useNotificationsTick(): number {
+  return useContext(NotificationsTickContext);
 }

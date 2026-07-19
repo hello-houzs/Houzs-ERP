@@ -221,11 +221,36 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const houzsAuth = useHouzsAuth();
   const h = detail.data?.salesOrder as SoHeader | undefined;
   const items = (detail.data?.items ?? []) as SoItem[];
-  const payments = (paymentsQ.data ?? []) as SoPayment[];
+  /* MONEY IS EITHER KNOWN OR UNKNOWN — the MobilePOD (#653) rule, applied to the
+     sibling screen that runs the same subtraction. `paymentsQ.data ?? []` folded
+     a FAILED payments read into "no payments", and `data` is set only by a
+     SUCCESSFUL fetch, so an empty array meant two different things. An empty
+     array is an ANSWER (a genuinely unpaid SO has none); the ABSENCE of one is
+     not. */
+  const paymentsKnown = paymentsQ.error === null && Array.isArray(paymentsQ.data);
+  const payments = (paymentsKnown ? paymentsQ.data! : []) as SoPayment[];
   /* Download the SO PDF — reuses the SAME desktop generator (per-brand letterhead)
      so the phone produces byte-identical output. 'save' = normal download. */
   const onPdf = async () => {
     if (!h) return;
+    /* This PDF is handed to the CUSTOMER. Generating it from an unknown payments
+       ledger prints an empty Payments table, which does not read as "we could not
+       load this" — it reads as "you have paid nothing and owe the full total".
+       Refusing to print is recoverable; a wrong statement of what a customer owes
+       is not. Same guard as the desktop SalesOrderDetail print path. */
+    if (!paymentsKnown) {
+      void notifyTop({
+        title: "Can't generate the PDF yet",
+        body: paymentsQ.isFetching
+          ? "Still loading this order's payments. Please try again in a moment."
+          : `${
+              paymentsQ.error instanceof Error
+                ? paymentsQ.error.message
+                : "This order's payments could not be read."
+            } Printing now would show the customer an empty Payments table.`,
+      });
+      return;
+    }
     try {
       const { generateSalesOrderPdf } = await import("../vendor/scm/lib/sales-order-pdf");
       await generateSalesOrderPdf(h as never, items as never, payments as never, "save", []);
@@ -259,7 +284,16 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   };
 
   const ph = h ? phase(h.status) : "submitted";
-  const bal = h ? deriveBalance(h, payments) : 0;
+  /* Balance — null means UNKNOWN, not zero. deriveBalance prefers the
+     server-stamped `balance_centi`, then `paid_centi_total`, and only falls
+     through to summing the payments ledger when BOTH header fields are null.
+     That is the one case where a failed payments read corrupts the answer:
+     paid becomes 0 and the balance renders as the FULL order total. Narrow, but
+     it is the #653 loss exactly (an already-paid order shown as owing
+     everything), so it fails closed instead of guessing. */
+  const balanceUnknown =
+    h != null && h.balance_centi == null && h.paid_centi_total == null && !paymentsKnown;
+  const bal = h && !balanceUnknown ? deriveBalance(h, payments) : null;
 
   /* Parity with desktop SO Detail / list gating — the primitives now come from
      the SHARED vendor/scm/lib/so-detail-gates module so a fix lands once for
@@ -528,7 +562,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             <div style={{ display: "flex", gap: 7, marginBottom: 12 }}>
               <Kpi label="Total" centi={total(h)} color="#0c3f39" />
               <Kpi label="Paid" centi={h.paid_centi_total} color="#0c3f39" />
-              <Kpi label="Balance" centi={bal} color="#b23a3a" />
+              <Kpi label="Balance" centi={bal} color="#b23a3a" unknown={balanceUnknown} />
             </div>
 
             {/* Customer — locked .fld-ro fields (design layout VERBATIM) */}
@@ -792,15 +826,21 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
    6 digits (>= RM 10,000.00); the "RM" prefix rides smaller so the digits keep
    the room. Visual style (card / .fld-l label / weights / colours) unchanged
    from the design. */
-function Kpi({ label, centi, color }: { label: string; centi: number | null | undefined; color: string }) {
-  const v = rm(centi);
+/* `unknown` is NOT the same as a null `centi`. fmtAmt deliberately renders null
+   as "0.00" (see lib/scm.ts — six mobile screens depend on that), which is the
+   right call for a figure the ERP genuinely holds as zero and the WRONG one for
+   a figure it failed to read. A card that could not be computed says so. */
+function Kpi({ label, centi, color, unknown }: { label: string; centi: number | null | undefined; color: string; unknown?: boolean }) {
+  const v = unknown ? "—" : rm(centi);
   const big = v.replace(/\D/g, "").length > 6;
   return (
     <div className="card" style={{ flex: "1 1 0", minWidth: 0, marginBottom: 0 }}>
       <div className="card-b" style={{ padding: "9px 9px" }}>
         <div className="fld-l" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
         <div className="money" style={{ fontSize: big ? 12 : 13.5, fontWeight: 800, color, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          <span style={{ fontSize: big ? 9 : 10, fontWeight: 700, opacity: 0.75, marginRight: 3 }}>RM</span>{v}
+          {/* No "RM" in front of an em-dash — "RM —" reads as a broken amount
+              rather than an absent one. */}
+          {unknown ? null : <span style={{ fontSize: big ? 9 : 10, fontWeight: 700, opacity: 0.75, marginRight: 3 }}>RM</span>}{v}
         </div>
       </div>
     </div>

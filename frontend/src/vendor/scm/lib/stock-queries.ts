@@ -18,6 +18,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    INVENTORY — movements / balances / adjustment / breakdown / buckets
@@ -86,7 +87,7 @@ export function useInventoryBalances(opts?: {
     // filter change loads, instead of flashing an empty table (keepPreviousData).
     placeholderData: (prev) => prev,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -126,7 +127,7 @@ export function useInventoryMovements(opts?: {
       ).then((r) => r.movements);
     },
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -178,7 +179,7 @@ export function useInventoryBuckets(productCode: string | null, warehouseId: str
     },
     enabled: Boolean(productCode && warehouseId),
     staleTime: 15_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -251,7 +252,7 @@ export function useStockTransfers(opts?: StockTransferListFilters) {
       ).then((r) => r.transfers);
     },
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -262,7 +263,7 @@ export function useStockTransferDetail(id: string | null) {
       authedFetch<StockTransferDetail>(`/stock-transfers/${encodeURIComponent(id ?? '')}`),
     enabled: Boolean(id),
     staleTime: 15_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -450,7 +451,7 @@ export function useStockTakes(opts?: StockTakeListFilters) {
       ).then((r) => r.takes);
     },
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -461,7 +462,7 @@ export function useStockTakeDetail(id: string | null) {
       authedFetch<StockTakeDetail>(`/stock-takes/${encodeURIComponent(id ?? '')}`),
     enabled: Boolean(id),
     staleTime: 15_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 

@@ -817,7 +817,17 @@ export function MobileNewSO({
       try {
         const [detail, payResp] = await Promise.all([
           authedFetch<DetailResp>(`/mfg-sales-orders/${encodeURIComponent(docNo)}`),
-          authedFetch<PaymentsResp>(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`).catch(() => ({ payments: [] })),
+          /* NO `.catch(() => ({ payments: [] }))` here (removed 2026-07-19).
+             This response seeds `existingPays` — what the order has ALREADY been
+             paid. Folding a failed read into "no payments" showed the operator an
+             edit screen stating this order has never been paid, on the one screen
+             whose job is to record a payment: the invitation is to enter the
+             deposit a second time. Same class as #653 / #1158 — "the read failed"
+             rendered as "nothing was paid".
+             The surrounding try/catch already sets the form's `error` state from
+             the message authedFetch built via humanApiError, so the failure now
+             surfaces as a plain sentence instead of a confident wrong number. */
+          authedFetch<PaymentsResp>(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`),
         ]);
         if (cancelled) return;
         const h = detail.salesOrder;

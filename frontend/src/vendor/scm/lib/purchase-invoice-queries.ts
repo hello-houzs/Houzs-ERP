@@ -17,6 +17,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── Purchase Invoice ────────────────────────────────────────────────── */
 export const usePurchaseInvoices = (status?: string) =>
@@ -24,7 +25,7 @@ export const usePurchaseInvoices = (status?: string) =>
     queryKey: ['purchase-invoices', status ?? 'all'],
     queryFn: () => authedFetch<{ purchaseInvoices: any[] }>(`/purchase-invoices${status ? `?status=${status}` : ''}`),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 
@@ -48,14 +49,14 @@ export function usePurchaseInvoicesPaged(params: { page: number; pageSize: numbe
     queryFn: () => authedFetch<{ purchaseInvoices: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; posted: number; partial: number; paid: number; cancelled: number } }>(`/purchase-invoices?${usp.toString()}`),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
 export const usePurchaseInvoiceDetail = (id: string | null) => useQuery({
   queryKey: ['purchase-invoice-detail', id],
   queryFn: () => authedFetch<{ purchaseInvoice: any; items: any[] }>(`/purchase-invoices/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 export const usePostPurchaseInvoice = () => {
   const qc = useQueryClient();

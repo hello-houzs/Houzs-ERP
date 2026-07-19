@@ -29,6 +29,7 @@ import type {
 } from './suppliers-queries';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── List ────────────────────────────────────────────────────────────── */
 export function usePurchaseConsignmentOrders(opts?: { status?: PoStatus; supplierId?: string }) {
@@ -44,7 +45,7 @@ export function usePurchaseConsignmentOrders(opts?: { status?: PoStatus; supplie
       return res.purchaseOrders;
     },
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -56,7 +57,7 @@ export function usePurchaseConsignmentOrderDetail(id: string | null) {
     queryFn: () => authedFetch<{ purchaseOrder: PoHeaderRow; items: PoItemRow[] }>(`/purchase-consignment-orders/${id}`),
     enabled: Boolean(id),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }

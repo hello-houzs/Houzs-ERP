@@ -19,6 +19,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── Batch conversions ────────────────────────────────────────────────
    BOTH hooks below have ZERO callers as of 2026-07-17 (verified across every
@@ -78,7 +79,7 @@ export const useGrns = (status?: string) =>
     queryKey: ['grns', status ?? 'all'],
     queryFn: () => authedFetch<{ grns: any[] }>(`/grns${status ? `?status=${status}` : ''}`),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 
@@ -102,14 +103,14 @@ export function useGrnsPaged(params: { page: number; pageSize: number; status?: 
     queryFn: () => authedFetch<{ grns: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; posted: number; cancelled: number } }>(`/grns?${usp.toString()}`),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
 export const useGrnDetail = (id: string | null) => useQuery({
   queryKey: ['grn-detail', id],
   queryFn: () => authedFetch<{ grn: any; items: any[] }>(`/grns/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 /* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
    rest-spread would otherwise post it as a GRN field. Pass one per GRN intent

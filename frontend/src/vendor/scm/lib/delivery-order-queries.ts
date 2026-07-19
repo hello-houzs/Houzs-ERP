@@ -23,6 +23,7 @@ import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
 import { invalidateSoLists } from './sales-order-queries';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 // Re-export the SO-side prefill hooks the New-DO page pulls from this module in
 // the source (they live in the vendored SO slice — single source of truth).
@@ -55,7 +56,7 @@ export const useDeliverableSoLines = () => useQuery({
     `/delivery-orders-mfg/deliverable-so-lines`,
   ).then((r) => r.lines),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* SO customer/delivery header for the New-DO form's PREFILL. Reads the dedicated
@@ -103,7 +104,7 @@ export const useSoConvertHeader = (docNo: string | null) => useQuery({
     `/delivery-orders-mfg/so-convert-header/${encodeURIComponent(docNo!)}`,
   ).then((r) => r.header),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 
@@ -118,7 +119,7 @@ export const useDeliverableSoLinesForDoc = (docNo: string | null) => useQuery({
     `/delivery-orders-mfg/deliverable-so-lines?docNos=${encodeURIComponent(docNo!)}`,
   ).then((r) => r.lines),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* ── DO (mfg) ─────────────────────────────────────────────────────────── */
@@ -141,7 +142,7 @@ export const useMfgDeliveryOrders = (status?: string) => useQuery({
   queryKey: ['mfg-delivery-orders', status ?? 'all'],
   queryFn: () => authedFetch<{ deliveryOrders: any[] }>(`/delivery-orders-mfg${status ? `?status=${status}` : ''}`),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 
@@ -167,7 +168,7 @@ export function useMfgDeliveryOrdersPaged(params: { page: number; pageSize: numb
     queryFn: () => authedFetch<{ deliveryOrders: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; open: number; in_transit: number; delivered: number; cancelled: number } }>(`/delivery-orders-mfg?${usp.toString()}`),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -175,7 +176,7 @@ export function useMfgDeliveryOrdersPaged(params: { page: number; pageSize: numb
 export const useMfgDeliveryOrderDetail = (id: string | null) => useQuery({
   queryKey: ['mfg-delivery-order-detail', id],
   queryFn: () => authedFetch<{ deliveryOrder: any; items: any[] }>(`/delivery-orders-mfg/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 
 /* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
@@ -313,7 +314,7 @@ export const useDeliveryOrderPayments = (id: string | null) => useQuery({
   queryFn: () => authedFetch<{ payments: DoPayment[] }>(`/delivery-orders-mfg/${id}/payments`).then((r) => r.payments),
   enabled: Boolean(id),
   staleTime: 2 * 60_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 

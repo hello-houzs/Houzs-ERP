@@ -286,7 +286,13 @@ export const SupplierDetail = () => {
 
   const [editingInfo, setEditingInfo] = useState(false);
 
-  if (detail.isLoading) {
+  /* isPending, NOT isLoading (BUG-HISTORY 2026-07-16, "打開會 error 先然後再
+     loading 出來"). isLoading is (isPending && isFetching) → false while the query
+     is pending but not actively fetching (disabled, or paused offline). The
+     `!supplier` half of the error branch below then fires on a merely-PENDING
+     query and paints "Supplier not found or failed to load" before anything has
+     been asked. isPending holds this branch until the query settles. */
+  if (detail.isPending) {
     return (
       <div className="space-y-4">
         <p className={styles.infoLabel}>Loading supplier…</p>

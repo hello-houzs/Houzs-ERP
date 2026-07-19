@@ -21,6 +21,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 // The vendored authedFetch already handles FormData correctly (it omits the
 // JSON content-type for non-string bodies so the multipart boundary survives),
@@ -37,7 +38,7 @@ export const useMfgSalesOrders = (status?: string) =>
     // status loads, instead of flashing an empty table (keepPreviousData).
     placeholderData: (prev) => prev,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 
@@ -60,7 +61,7 @@ export function useMfgSalesOrdersPaged(params: { page: number; pageSize: number;
     queryFn: () => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; confirmed: number; cancelled: number }; aggregates?: { revenueCenti: number; outstandingCenti: number; paidCenti: number } }>(`/mfg-sales-orders?${usp.toString()}`),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -84,7 +85,7 @@ export const useMfgSalesOrdersSummary = () =>
     queryFn: () => authedFetch<{ salesOrders: SoSummaryRow[] }>(`/mfg-sales-orders?summary=1`),
     placeholderData: (prev) => prev,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 
@@ -115,14 +116,14 @@ export const useMfgCustomers = () =>
     queryFn: () => authedFetch<{ customers: ScmCustomer[] }>(`/mfg-sales-orders/customers`),
     placeholderData: (prev) => prev,
     staleTime: 60_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 
 export const useMfgSalesOrderDetail = (docNo: string | null) => useQuery({
   queryKey: ['mfg-sales-order-detail', docNo],
   queryFn: () => authedFetch<{ salesOrder: any; items: any[] }>(`/mfg-sales-orders/${docNo}`),
-  enabled: Boolean(docNo), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(docNo), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 
 export type DebtorSuggestion = {
@@ -142,7 +143,7 @@ export const useDebtorSearch = (q: string) => useQuery({
   ),
   enabled: q.trim().length >= 2,
   staleTime: 5 * 60_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 export type SoAuditFieldChange = {
@@ -168,7 +169,7 @@ export const useSalesOrderAuditLog = (docNo: string | null) => useQuery({
   queryFn: () => authedFetch<{ entries: SoAuditEntry[] }>(`/mfg-sales-orders/${docNo}/audit-log`).then((r) => r.entries),
   enabled: Boolean(docNo),
   staleTime: 5 * 60_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 export type SoPayment = {
@@ -195,7 +196,7 @@ export const useSalesOrderPayments = (docNo: string | null) => useQuery({
   queryFn: () => authedFetch<{ payments: SoPayment[] }>(`/mfg-sales-orders/${docNo}/payments`).then((r) => r.payments),
   enabled: Boolean(docNo),
   staleTime: 2 * 60_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 

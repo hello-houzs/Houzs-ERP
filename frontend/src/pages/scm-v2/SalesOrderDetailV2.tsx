@@ -704,7 +704,15 @@ function SalesOrderDetailV2ReadOnly() {
       <div className="p-8 text-center text-ink-muted">No sales order specified.</div>
     );
   }
-  if (detail.isLoading) {
+  /* isPending, NOT isLoading — the same rule as SalesOrderDetail.tsx:1207, which
+     carries the full write-up. isLoading is (isPending && isFetching), so it is
+     FALSE while a query is pending but not actively fetching: disabled, or PAUSED
+     because the device is briefly offline. Gating on isLoading let those states
+     fall through to the error branch below and paint "Couldn't load <docNo>"
+     before the fetch had ever run, then swap to the real order once it resolved —
+     the "打開會 error 先然後再 loading 出來" the owner reported (BUG-HISTORY
+     2026-07-16). The V2 rewrite of this page regressed it; this restores it. */
+  if (detail.isPending) {
     return (
       <div className="animate-fade-in p-8 text-center text-ink-muted">
         Loading {docNo}…

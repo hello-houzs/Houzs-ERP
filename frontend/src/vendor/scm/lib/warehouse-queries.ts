@@ -11,6 +11,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 export type RackStatus = 'OCCUPIED' | 'EMPTY' | 'RESERVED';
 
@@ -62,7 +63,7 @@ export function useRacks(opts?: { warehouseId?: string }) {
       );
     },
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -227,6 +228,6 @@ export function useMovements(opts?: {
       ).then((r) => r.movements);
     },
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }

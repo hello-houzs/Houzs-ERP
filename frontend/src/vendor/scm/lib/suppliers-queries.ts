@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { invalidateSoLists } from './sales-order-queries';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 export type SupplierStatus = 'ACTIVE' | 'INACTIVE' | 'BLOCKED';
 export type Currency = 'MYR' | 'RMB' | 'USD' | 'SGD';
@@ -252,7 +253,7 @@ export function useSuppliers(opts?: { status?: SupplierStatus; search?: string }
       return res.suppliers;
     },
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -292,7 +293,7 @@ export function useSuppliersPaged(params: {
     queryFn: () => authedFetch<{ suppliers: SupplierRow[]; total: number; page: number; pageSize: number }>(`/suppliers?${usp.toString()}`),
     placeholderData: (prev: unknown) => prev as { suppliers: SupplierRow[]; total: number; page: number; pageSize: number } | undefined,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -303,7 +304,7 @@ export function useSupplierDetail(id: string | null) {
     queryFn: () => authedFetch<{ supplier: SupplierRow; bindings: BindingRow[] }>(`/suppliers/${id}`),
     enabled: Boolean(id),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -335,7 +336,7 @@ export function useSupplierScorecard(id: string | null) {
     queryFn: () => authedFetch<SupplierScorecard>(`/suppliers/${id}/scorecard`),
     enabled: Boolean(id),
     staleTime: 60_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -478,7 +479,7 @@ export function useSuppliersForMaterial(kind: MaterialKind | null, code: string 
     ),
     enabled: Boolean(kind && code),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -505,7 +506,7 @@ export function usePurchaseOrders(opts?: { status?: PoStatus; supplierId?: strin
       return res.purchaseOrders;
     },
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -533,7 +534,7 @@ export function usePurchaseOrdersPaged(params: { page: number; pageSize: number;
     queryFn: () => authedFetch<{ purchaseOrders: PoHeaderRow[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; open: number; partial: number; received: number; cancelled: number } }>(`/mfg-purchase-orders?${usp.toString()}`),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
@@ -544,7 +545,7 @@ export function usePurchaseOrderDetail(id: string | null) {
     queryFn: () => authedFetch<{ purchaseOrder: PoHeaderRow; items: PoItemRow[] }>(`/mfg-purchase-orders/${id}`),
     enabled: Boolean(id),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }

@@ -15,6 +15,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 export type HrTier = 'sales' | 'manager';
 /** What one bonus rule targets. `category` covers EVERY item in a product
@@ -155,7 +156,7 @@ export function useHrConfig() {
     queryKey: ['hr', 'config'],
     queryFn: () => authedFetch<{ config: HrConfig }>('/hr/config').then((r) => r.config),
     staleTime: 60_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -178,7 +179,7 @@ export function useHrProfiles() {
     queryKey: ['hr', 'profiles'],
     queryFn: () => authedFetch<{ profiles: HrProfile[] }>('/hr/profiles').then((r) => r.profiles),
     staleTime: 60_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -215,7 +216,7 @@ export function useHrItemKpi() {
     queryKey: ['hr', 'item-kpi'],
     queryFn: () => authedFetch<{ items: HrItemKpi[] }>('/hr/item-kpi').then((r) => r.items),
     staleTime: 60_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -256,7 +257,7 @@ export function useHrOverrideLevels() {
     queryKey: ['hr', 'override-levels'],
     queryFn: () => authedFetch<{ levels: HrOverrideLevel[] }>('/hr/override-levels').then((r) => r.levels),
     staleTime: 60_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -296,7 +297,7 @@ export function useHrPayoutPeriods() {
     queryKey: ['hr', 'payout', 'periods'],
     queryFn: () => authedFetch<{ periods: HrPayoutPeriod[] }>('/hr/payout/periods').then((r) => r.periods),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -328,7 +329,7 @@ export function useHrPickers() {
     queryKey: ['hr', 'pickers'],
     queryFn: () => authedFetch<HrPickers>('/hr/pickers'),
     staleTime: 5 * 60_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
 
@@ -346,6 +347,6 @@ export function useHrCommission(from: string, to: string) {
     },
     enabled: Boolean(from) && Boolean(to),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 }
