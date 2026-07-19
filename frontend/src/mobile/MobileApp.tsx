@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
-import { isDirectorUser } from "../auth/salesAccess";
+import { isDirectorUser, canViewFairReport } from "../auth/salesAccess";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { makeNavVisible } from "../components/navFilter";
 import { NotifyProvider, useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -44,6 +44,7 @@ const MobilePOD = lazy(() => import("./MobilePOD").then((m) => ({ default: m.Mob
 const MobileProfile = lazy(() => import("./MobileProfile").then((m) => ({ default: m.MobileProfile })));
 const MobileStockCard = lazy(() => import("./MobileStockCard").then((m) => ({ default: m.MobileStockCard })));
 const MobileStockTransferNew = lazy(() => import("./MobileStockTransferNew").then((m) => ({ default: m.MobileStockTransferNew })));
+const MobileFairReport = lazy(() => import("./MobileFairReport").then((m) => ({ default: m.MobileFairReport })));
 // SO Maintenance is the SAME desktop page (/scm/sales-orders/maintenance) — the
 // director-only State→Warehouse / Localities / SO-dropdown CRUD surface. Mobile
 // has no route table, so the vendored desktop page is mounted directly inside
@@ -61,6 +62,7 @@ type Screen =
   | { t: "so-detail"; docNo: string }
   | { t: "amendments" }
   | { t: "so-maintenance" }
+  | { t: "fair-report" }
   | { t: "new-so"; mode: "new" | "edit" | "edit-draft"; docNo?: string; scanPrefill?: MobileScanPrefill }
   | { t: "scan" }
   | { t: "module"; key: string; title: string }
@@ -94,6 +96,7 @@ function destinationScreen(to: string, label: string): DestinationTarget {
   const path = (to || "").split("?")[0];
   if (path === "/scm/sales-orders") return { t: "orders-tab" };
   if (path === "/scm/sales-orders/maintenance") return { t: "so-maintenance" };
+  if (path === "/reports/fair-report") return { t: "fair-report" };
   if (path === "/scm/amendments") return { t: "amendments" };
   if (path === "/assr") return { t: "service" };
   if (path === "/projects") return { t: "pms" };
@@ -192,6 +195,14 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; a
   ]},
   { group: "Projects · PMS", items: [
     { to: "/projects", label: "Projects" },
+    /* Fair Report — exhibition sales by document stage (SO / DO / Invoice).
+       Same cohort the desktop nav entry admits (NAV_TABS requireFairReport =
+       auth/salesAccess.canViewFairReport): management + the Sales Director only.
+       `allowed("/reports/fair-report")` resolves to exactly that gate, so an
+       ordinary salesperson never gets this row (off, not hide); the overlay is
+       independently guarded on canViewFairReport below. Routes to the MOBILE
+       screen (MobileFairReport), NOT the desktop table. */
+    { to: "/reports/fair-report", label: "Fair Report" },
   ]},
   { group: "After-sales", items: [
     { to: "/assr", label: "Service Case" },
@@ -482,6 +493,12 @@ function MobileAppInner() {
         </div>
       </div>
     );
+  }
+  else if (screen.t === "fair-report") {
+    // Guard the screen too (not just the menu row) — a Fair-Report URL must not
+    // mount the screen (or fire its queries) for a user outside the cohort.
+    // Mirrors the desktop FairReport route guard; OFF, not hide.
+    overlay = !canViewFairReport(user) ? <TabLocked title="Fair Report" /> : <MobileFairReport onBack={back} />;
   }
   else if (screen.t === "new-so") overlay = <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
   else if (screen.t === "scan") overlay = <MobileScan onBack={back} onDrafted={onScanDrafted} onOpenSo={(docNo) => setScreen({ t: "so-detail", docNo })} />;
