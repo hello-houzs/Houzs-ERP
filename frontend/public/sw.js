@@ -327,7 +327,21 @@
 // on deploy.yml (paths-filter has no `before` on a dispatch, so it needs both);
 // until that exists, ANY burst merge must be followed by checking that the last
 // deploy's `frontend` job says success, not skipped.
-const VERSION = "houzs-erp-v188-__SW_BUILD_ID__";
+// v189 (2026-07-19) — canonical-redirect fix. The pages.dev -> houzscentury.com
+// 302 shipped in #855 never reached returning PWA users: THIS worker intercepts
+// the navigation, and because navigationNetworkFirst fetches it with redirect
+// mode "manual" (all navigation requests are manual-redirect), the edge 302
+// comes back as an opaqueredirect (status 0, not `ok`), so the catch below
+// serves the cached index.html — the app kept rendering on pages.dev, address
+// bar unchanged. Worse, the edge ALSO 302'd /sw.js, and a redirected worker
+// script fails the SW update, so no corrected worker could ever install. This
+// build fixes both ends: functions/[[path]].ts now redirects only document
+// navigations (so /sw.js + assets are served, unblocking this very update), and
+// on the legacy host this worker retires itself and stops intercepting so the
+// browser's own navigation reaches the edge 302 (see ON_LEGACY_PROD_HOST). The
+// one-shot cache purge also drops the stale shell. Installed clients redirect on
+// their next navigation / reload.
+const VERSION = "houzs-erp-v189-__SW_BUILD_ID__";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
@@ -397,9 +411,40 @@ const IS_LOCAL_DEV =
   self.location.hostname === "localhost" ||
   self.location.hostname === "127.0.0.1";
 
+// The Cloudflare Pages default host for PRODUCTION. A worker installed here
+// before the canonical-domain redirect existed keeps serving the cached shell
+// for navigations, which is why the #855 redirect never reached returning PWA
+// users. On this host the worker gets out of the way (retires + stops
+// intercepting) so the browser's navigation reaches the edge 302 to the
+// canonical domain — the browser carries the original #fragment across the hop.
+// EXACT host only: staging (houzs-erp-staging.pages.dev), previews
+// (<hash>.houzs-erp.pages.dev), erp.2990shome.com, the canonical domain and
+// localhost all keep the normal worker (their hostname !== this constant).
+const LEGACY_PROD_HOST = "houzs-erp.pages.dev";
+const ON_LEGACY_PROD_HOST = self.location.hostname === LEGACY_PROD_HOST;
+let legacyHostRetired = false;
+
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
+
+  // Legacy production host (houzs-erp.pages.dev): step aside. Do NOT intercept —
+  // returning without respondWith() hands the request back to the browser, whose
+  // navigation then reaches the edge and follows its 302 to erp.houzscentury.com
+  // (fragment preserved). Serving the cached shell here is exactly what kept the
+  // app on pages.dev. Also retire this worker + purge its caches (once) so it
+  // stops controlling the origin entirely on the next visit.
+  if (ON_LEGACY_PROD_HOST) {
+    if (!legacyHostRetired) {
+      legacyHostRetired = true;
+      self.registration.unregister().catch(() => {});
+      caches
+        .keys()
+        .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+        .catch(() => {});
+    }
+    return;
+  }
 
   // Local dev (vite): never intercept. Caching the module graph cache-first
   // shadows HMR — edits don't show until the SW is cleared. Belt-and-suspenders
