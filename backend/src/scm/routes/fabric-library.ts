@@ -4,7 +4,8 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { canWriteScmConfig } from '../lib/houzs-perms';
-import { scopeToCompany } from '../lib/companyScope';
+import { scopeToCompany,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const fabricLibrary = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -67,15 +68,19 @@ fabricLibrary.patch('/:id/tier', async (c) => {
   if (!body.tier  || !VALID_TIERS.has(body.tier))        return c.json({ error: 'invalid_tier',  allowed: [...VALID_TIERS] }, 400);
 
   const col = TIER_FIELD_TO_COL[body.field]!;
+  // Multi-company: scope the write to the active company so a blind id from
+  // another company matches nothing.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   // .select() so an RLS USING-filter (0 rows touched) surfaces as an error
   // instead of a phantom ok:true.
-  const { data: updated, error } = await supabase.from('fabric_library').update({ [col]: body.tier }).eq('id', id).select('id');
+  const { data: updated, error } = await scopeToCompanyId(supabase.from('fabric_library').update({ [col]: body.tier }).eq('id', id), co.companyId).select('id');
   if (error) {
     if (error.code === '42501' || /permission denied/i.test(error.message)) {
       return c.json({ error: 'forbidden', reason: error.message }, 403);
     }
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
-  if (!updated || updated.length === 0) return c.json({ error: 'update_failed', reason: 'not_found_or_rls_blocked' }, 404);
+  if (!updated || updated.length === 0) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true });
 });

@@ -24,7 +24,8 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
-import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const fabricTracking = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -243,12 +244,17 @@ fabricTracking.post('/bulk-upsert', async (c) => {
 fabricTracking.delete('/:id', async (c) => {
   const id = c.req.param('id');
   const sb = c.get('supabase');
-  const { error } = await sb.from('fabric_trackings').delete().eq('id', id);
+  // Multi-company: scope the delete; select reports whether a row in THIS
+  // company was actually removed (a blind id from another company is not found).
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(sb.from('fabric_trackings').delete().eq('id', id), co.companyId).select('id').maybeSingle();
   if (error) {
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
     if (error.code === '23503') return c.json({ error: 'fabric_in_use', reason: 'Fabric is referenced by a product or PO; remove those links first.' }, 409);
     return c.json({ error: 'delete_failed', reason: error.message }, 500);
   }
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.body(null, 204);
 });
 
@@ -299,10 +305,13 @@ fabricTracking.patch('/:id/active', async (c) => {
   }
 
   const supabase = c.get('supabase');
-  const { error } = await supabase
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(supabase
     .from('fabric_trackings')
     .update({ is_active: body.isActive })
-    .eq('id', id);
+    .eq('id', id), co.companyId)
+    .select('id').maybeSingle();
 
   if (error) {
     if (error.code === '42501' || /permission denied/i.test(error.message)) {
@@ -313,6 +322,7 @@ fabricTracking.patch('/:id/active', async (c) => {
     }
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true, isActive: body.isActive });
 });
 
@@ -324,13 +334,16 @@ fabricTracking.patch('/:id/series', async (c) => {
   catch { return c.json({ error: 'invalid_json' }, 400); }
 
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const trimmed = typeof body.series === 'string' ? body.series.trim() : null;
   const next = trimmed === '' ? null : trimmed;
 
-  const { error } = await supabase
+  const { data, error } = await scopeToCompanyId(supabase
     .from('fabric_trackings')
     .update({ series: next })
-    .eq('id', id);
+    .eq('id', id), co.companyId)
+    .select('id').maybeSingle();
 
   if (error) {
     if (error.code === '42501' || /permission denied/i.test(error.message)) {
@@ -341,6 +354,7 @@ fabricTracking.patch('/:id/series', async (c) => {
     }
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true, series: next });
 });
 
@@ -357,13 +371,16 @@ fabricTracking.patch('/:id/supplier-code', async (c) => {
   }
 
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const trimmed = typeof body.supplierCode === 'string' ? body.supplierCode.trim() : null;
   const next = trimmed === '' ? null : trimmed;
 
-  const { error } = await supabase
+  const { data, error } = await scopeToCompanyId(supabase
     .from('fabric_trackings')
     .update({ supplier_code: next })
-    .eq('id', id);
+    .eq('id', id), co.companyId)
+    .select('id').maybeSingle();
 
   if (error) {
     if (error.code === '42501' || /permission denied/i.test(error.message)) {
@@ -374,6 +391,7 @@ fabricTracking.patch('/:id/supplier-code', async (c) => {
     }
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true, supplierCode: next });
 });
 
@@ -385,18 +403,22 @@ fabricTracking.patch('/:id/description', async (c) => {
   catch { return c.json({ error: 'invalid_json' }, 400); }
 
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const trimmed = typeof body.description === 'string' ? body.description.trim() : null;
   const next = trimmed === '' ? null : trimmed;
 
-  const { error } = await supabase
+  const { data, error } = await scopeToCompanyId(supabase
     .from('fabric_trackings')
     .update({ fabric_description: next })
-    .eq('id', id);
+    .eq('id', id), co.companyId)
+    .select('id').maybeSingle();
 
   if (error) {
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true, description: next });
 });
 
@@ -418,19 +440,24 @@ fabricTracking.patch('/:id/tier', async (c) => {
 
   const col = TIER_FIELD_TO_COL[body.field]!;
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   // Load the fabric code before update so we can count affected products
   // tagged with this fabric_color. This gives the UI a "propagation hint"
   // — N products now use the new tier when their price is read.
-  const { data: fabric } = await supabase
+  // Multi-company: scoped so a blind id from another company is not found and
+  // the tier write below can never re-price the other company's fabric.
+  const { data: fabric } = await scopeToCompanyId(supabase
     .from('fabric_trackings')
     .select('fabric_code')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
+  if (!fabric) return c.json(NOT_THIS_COMPANY, 404);
   const fabricCode = (fabric as { fabric_code: string } | null)?.fabric_code ?? null;
 
   const updates: Record<string, string> = { [col]: body.tier };
-  const { error } = await supabase.from('fabric_trackings').update(updates).eq('id', id);
+  const { error } = await scopeToCompanyId(supabase.from('fabric_trackings').update(updates).eq('id', id), co.companyId);
 
   if (error) {
     if (error.code === '42501' || /permission denied/i.test(error.message)) {

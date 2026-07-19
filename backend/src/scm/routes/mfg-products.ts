@@ -25,7 +25,8 @@ import { productToBindingPatch, type ProductSeatCost } from '../lib/cost-anchor-
 import { moduleCodeFromSku, normalizeSofaTier, parseDefaultFreeGifts } from '../shared';
 import { canWriteScmConfig, canViewScmProductCost } from '../lib/houzs-perms';
 import { PRODUCT_FINANCE_KEYS, stripProductPriceHistory } from '../lib/finance-keys';
-import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const mfgProducts = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -389,22 +390,29 @@ mfgProducts.post('/batch-import', async (c) => {
 // material_code / product_code) then drops the SKU row. Front-end exposes
 // it as a follow-up "Force delete" button after a normal delete fails so
 // commander never destroys side data unintentionally.
-mfgProducts.delete('/:id', async (c) => {
+export const deleteMfgProductHandler = async (c: any) => {
   const gate = await requireRole(c);
   if (!gate.ok) return gate.res;
   const id    = c.req.param('id');
   const force = c.req.query('force') === 'true';
   const supabase = c.get('supabase');
+  /* Multi-company: a delete (and its force-cleanup) must act only on THIS
+     company's SKU. Resolve the active company strictly up front — a delete
+     across all companies on an unresolved context is exactly the trade the
+     write helpers refuse. Scope the load so a blind id from another company
+     reads as not-found. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   // Resolve the SKU code up front — needed for both the usage guard and the
   // force-cleanup side tables (which key off code, not id).
-  const { data: row, error: loadErr } = await supabase
+  const { data: row, error: loadErr } = await scopeToCompanyId(supabase
     .from('mfg_products')
     .select('code')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (loadErr) return c.json({ error: 'load_failed', reason: loadErr.message }, 500);
-  if (!row)    return c.json({ error: 'not_found' }, 404);
+  if (!row)    return c.json(NOT_THIS_COMPANY, 404);
   const code = row.code;
 
   // (C) Wei Siang 2026-06-08 — lock USED SKUs. If this SKU has been sold on an
@@ -423,12 +431,8 @@ mfgProducts.delete('/:id', async (c) => {
     // Multi-company: product code/material_code is shared across companies
     // (UNIQUE(company_id, code)), so cleaning side tables by code ALONE would
     // wipe the OTHER company's rows for the same code. Scope every code-keyed
-    // delete to the active company. Force-delete therefore requires a resolved
-    // company so the cleanup can't run un-scoped.
-    const cid = activeCompanyId(c);
-    if (cid == null) {
-      return c.json({ error: 'company_unresolved', reason: 'Force delete needs an active company to scope the cleanup safely. Please retry.' }, 409);
-    }
+    // delete to the active company (resolved strictly above).
+    const cid = co.companyId;
     const cleanup: Array<{ table: string; column: string; value: string; scoped: boolean }> = [
       // Inventory side — movements key off product_code (per-company; company_id NOT NULL).
       // inventory_stock_lots has no company_id column (legacy/absent table) — leave unscoped;
@@ -453,7 +457,7 @@ mfgProducts.delete('/:id', async (c) => {
     }
   }
 
-  const { error } = await supabase.from('mfg_products').delete().eq('id', id);
+  const { error } = await scopeToCompanyId(supabase.from('mfg_products').delete().eq('id', id), co.companyId);
   if (error) {
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
     if (error.code === '23503') {
@@ -469,7 +473,8 @@ mfgProducts.delete('/:id', async (c) => {
     return c.json({ error: 'delete_failed', reason: error.message }, 500);
   }
   return c.body(null, 204);
-});
+};
+mfgProducts.delete('/:id', deleteMfgProductHandler);
 
 // ── GET /:id ───────────────────────────────────────────────────────────
 mfgProducts.get('/:id', async (c) => {
@@ -562,14 +567,20 @@ mfgProducts.patch('/:id', async (c) => {
 
   const supabase = c.get('supabase');
   const user = c.get('user');
+  /* Multi-company: pricing + the code-rename cascade below both write, so
+     resolve the active company strictly and scope the load — a blind id from
+     another company is not found, and the rename cascade can never rewrite the
+     other company's snapshots. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: current, error: loadErr } = await supabase
+  const { data: current, error: loadErr } = await scopeToCompanyId(supabase
     .from('mfg_products')
     .select('code, base_price_sen, price1_sen, cost_price_sen, sell_price_sen, pwp_price_sen, default_variants, seat_height_prices')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (loadErr) return c.json({ error: 'load_failed', reason: loadErr.message }, 500);
-  if (!current) return c.json({ error: 'not_found' }, 404);
+  if (!current) return c.json(NOT_THIS_COMPANY, 404);
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
   const priceChanges: Array<{ field: string; oldValueSen: number | null; newValueSen: number | null }> = [];
@@ -718,16 +729,16 @@ mfgProducts.patch('/:id', async (c) => {
 
      Houzs adaptation: every cascade table carries company_id (migrations
      0083/0089), so both the duplicate precheck and each UPDATE are scoped to
-     the active company via scopeToCompany — company A's rename must never
+     the active company via scopeToCompanyId — company A's rename must never
      rewrite company B's snapshots. */
   const cascadeCounts: Record<string, number> = {};
   {
     const oldCode = current.code as string;
     const newCode = typeof updates.code === 'string' ? (updates.code as string) : null;
     if (newCode && newCode !== oldCode) {
-      const { data: dup } = await scopeToCompany(
+      const { data: dup } = await scopeToCompanyId(
         supabase.from('mfg_products').select('id').eq('code', newCode).neq('id', id),
-        c,
+        co.companyId,
       ).limit(1);
       if (dup && dup.length > 0) {
         return c.json({ error: 'duplicate_code', reason: 'Another SKU already uses that code.' }, 409);
@@ -759,11 +770,11 @@ mfgProducts.patch('/:id', async (c) => {
         { table: 'warehouse_rack_movements',   col: 'product_code' },
       ];
       for (const t of CASCADE) {
-        let q = scopeToCompany(
+        let q = scopeToCompanyId(
           supabase.from(t.table)
             .update({ [t.col]: newCode }, { count: 'exact' })
             .eq(t.col, oldCode),
-          c,
+          co.companyId,
         );
         if (t.kind) q = q.eq('material_kind', 'mfg_product');
         const { error: cErr, count } = await q;
@@ -781,7 +792,7 @@ mfgProducts.patch('/:id', async (c) => {
     }
   }
 
-  const { error: updErr } = await supabase.from('mfg_products').update(updates).eq('id', id);
+  const { error: updErr } = await scopeToCompanyId(supabase.from('mfg_products').update(updates).eq('id', id), co.companyId);
   if (updErr) {
     if (updErr.code === '42501' || /permission denied/i.test(updErr.message)) {
       return c.json({ error: 'forbidden', reason: updErr.message }, 403);
@@ -868,31 +879,38 @@ mfgProducts.post('/:id/activate-one-shot', async (c) => {
   const gate = await requireRole(c);
   if (!gate.ok) return gate.res;
   const id = c.req.param('id');
+  /* Multi-company: this handler uses the service-role admin client (RLS
+     bypassed), so the company_id predicate on every read/write below IS the
+     isolation boundary. Resolve the active company strictly and scope the SKU
+     and its Model so a blind id from another company can't be activated. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const admin = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const { data: sku, error: skuErr } = await admin
     .from('mfg_products')
     .select('id, code, category, base_model, model_id, one_shot')
-    .eq('id', id).maybeSingle();
+    .eq('id', id).eq('company_id', co.companyId).maybeSingle();
   if (skuErr) return c.json({ error: 'lookup_failed', reason: skuErr.message }, 500);
-  if (!sku || !(sku as { one_shot?: boolean }).one_shot) return c.json({ error: 'not_one_shot' }, 400);
+  if (!sku) return c.json(NOT_THIS_COMPANY, 404);
+  if (!(sku as { one_shot?: boolean }).one_shot) return c.json({ error: 'not_one_shot' }, 400);
 
-  const { error: upErr } = await admin.from('mfg_products').update({ pos_active: true }).eq('id', id);
+  const { error: upErr } = await admin.from('mfg_products').update({ pos_active: true }).eq('id', id).eq('company_id', co.companyId);
   if (upErr) return c.json({ error: 'activate_failed', reason: upErr.message }, 500);
 
   const s = sku as { category: string; code: string; base_model: string | null; model_id: string | null };
   if (s.category === 'SOFA' && s.model_id) {
     const moduleCode = moduleCodeFromSku(s.code, s.base_model);
     const { data: model } = await admin.from('product_models')
-      .select('allowed_options').eq('id', s.model_id).maybeSingle();
+      .select('allowed_options').eq('id', s.model_id).eq('company_id', co.companyId).maybeSingle();
     const opts = ((model as { allowed_options?: Record<string, unknown> } | null)?.allowed_options) ?? {};
     const comps = Array.isArray((opts as { compartments?: unknown }).compartments)
       ? ((opts as { compartments: unknown[] }).compartments).map(String) : [];
     if (!comps.includes(moduleCode)) {
       const next = { ...opts, compartments: [...comps, moduleCode] };
       const { error: moErr } = await admin.from('product_models')
-        .update({ allowed_options: next }).eq('id', s.model_id);
+        .update({ allowed_options: next }).eq('id', s.model_id).eq('company_id', co.companyId);
       if (moErr) return c.json({ error: 'allowed_options_update_failed', reason: moErr.message }, 500);
     }
   }

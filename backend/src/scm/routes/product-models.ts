@@ -26,7 +26,8 @@ import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import { findModelUsage } from '../lib/sku-usage';
-import { activeCompanyId, stampCompany, scopeToCompany } from '../lib/companyScope';
+import { activeCompanyId, stampCompany, scopeToCompany,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { canWriteScmConfig, canViewScmProductCost } from '../lib/houzs-perms';
 import { PRODUCT_FINANCE_KEYS } from '../lib/finance-keys';
 import { todayMyt } from '../lib/my-time';
@@ -473,17 +474,21 @@ productModels.patch('/:id', async (c) => {
   }
 
   const supabase = c.get('supabase');
+  // Multi-company: scope the snapshot AND the write to the active company so a
+  // blind model id from another company matches nothing.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   // Snapshot the pre-update compartments so we can tell which ones the admin
   // just ACTIVATED (sofa auto-SKU rule below — Chairman 2026-06-02).
-  const { data: before } = await supabase
+  const { data: before } = await scopeToCompanyId(supabase
     .from('product_models')
     .select('allowed_options')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
-  const { data, error } = await supabase
+  const { data, error } = await scopeToCompanyId(supabase
     .from('product_models')
     .update(u)
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .select(COLS)
     .maybeSingle();
   if (error) {
@@ -492,7 +497,7 @@ productModels.patch('/:id', async (c) => {
     }
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
 
   // Chairman 2026-06-01: Modular's allowed_options is the SINGLE source of truth
   // for ON/OFF — there is no separate per-SKU "Visible" toggle anymore. For
@@ -505,10 +510,11 @@ productModels.patch('/:id', async (c) => {
   const aoSizes = (parsed.data.allowedOptions as { sizes?: unknown } | undefined)?.sizes;
   if ((cat === 'MATTRESS' || cat === 'BEDFRAME') && Array.isArray(aoSizes) && aoSizes.length > 0) {
     const allowedSet = new Set((aoSizes as unknown[]).map((s) => String(s).toUpperCase()));
-    const { data: skus } = await supabase
+    // Scoped so the derived toOn/toOff id set is strictly this company's SKUs.
+    const { data: skus } = await scopeToCompanyId(supabase
       .from('mfg_products')
       .select('id, size_code, pos_active')
-      .eq('model_id', id);
+      .eq('model_id', id), co.companyId);
     const toOn:  string[] = [];
     const toOff: string[] = [];
     for (const s of (skus ?? []) as Array<{ id: string; size_code: string | null; pos_active: boolean | null }>) {
@@ -653,6 +659,10 @@ function resolveSizeInfoServer(
 productModels.post('/:id/generate-skus', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
+  // Multi-company: scope the model load so SKUs can only be minted for THIS
+  // company's model (a blind model id from another company is not found).
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   // PR #51 + #69 — body shapes:
   //   { rows: [{code, name, size_code?, size_label?}] }
@@ -673,13 +683,13 @@ productModels.post('/:id/generate-skus', async (c) => {
     ? new Set(body.codes)
     : null;
 
-  const { data: model, error: mErr } = await supabase
+  const { data: model, error: mErr } = await scopeToCompanyId(supabase
     .from('product_models')
     .select('id, branding, model_code, name, category, allowed_options')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (mErr) return c.json({ error: 'load_failed', reason: mErr.message }, 500);
-  if (!model) return c.json({ error: 'not_found' }, 404);
+  if (!model) return c.json(NOT_THIS_COMPANY, 404);
 
   // PR #92 — Maintenance sizeLabels override. Load the resolved maintenance
   // config so generated SKU names pick up commander's relabel ("K → 6FT (NEW)"
@@ -971,6 +981,12 @@ productModels.post('/:id/generate-skus', async (c) => {
 productModels.delete('/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
+  // Multi-company: confirm the model is THIS company's before the usage probe
+  // (so another company's model can't be probed) and scope the delete.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: exists } = await scopeToCompanyId(supabase.from('product_models').select('id').eq('id', id), co.companyId).maybeSingle();
+  if (!exists) return c.json(NOT_THIS_COMPANY, 404);
   // (C) Wei Siang 2026-06-08 — lock USED models. If any SKU under this model has
   // been sold / ordered / moved in stock, block the delete: removing it would
   // orphan live order lines. Unused models (setup-phase typos) stay deletable.
@@ -982,7 +998,7 @@ productModels.delete('/:id', async (c) => {
         `${used.doc ? ` (${used.doc})` : ''} — it can’t be deleted.`,
     }, 409);
   }
-  const { error } = await supabase.from('product_models').delete().eq('id', id);
+  const { error } = await scopeToCompanyId(supabase.from('product_models').delete().eq('id', id), co.companyId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   return c.json({ ok: true });
 });
@@ -1023,14 +1039,17 @@ productModels.post('/:id/photo', async (c) => {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
   }
 
-  // Cheap existence check before consuming the upload body.
-  const { data: model, error: mErr } = await supabase
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  // Cheap existence check before consuming the upload body. Scoped so a blind
+  // model id from another company is not found (no R2 object is written for it).
+  const { data: model, error: mErr } = await scopeToCompanyId(supabase
     .from('product_models')
     .select('id, photo_url')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (mErr) return c.json({ error: 'load_failed', reason: mErr.message }, 500);
-  if (!model) return c.json({ error: 'not_found' }, 404);
+  if (!model) return c.json(NOT_THIS_COMPANY, 404);
 
   let form: Record<string, unknown>;
   try {
@@ -1082,10 +1101,10 @@ productModels.post('/:id/photo', async (c) => {
     }
   }
 
-  const { error: updErr } = await supabase
+  const { error: updErr } = await scopeToCompanyId(supabase
     .from('product_models')
     .update({ photo_url: photoUrl })
-    .eq('id', id);
+    .eq('id', id), co.companyId);
   if (updErr) {
     // Rollback the just-uploaded blob so we don't leak.
     await c.env.SO_ITEM_PHOTOS.delete(photoKey).catch(() => {});
@@ -1103,13 +1122,15 @@ productModels.delete('/:id/photo', async (c) => {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
   }
 
-  const { data: model, error: mErr } = await supabase
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: model, error: mErr } = await scopeToCompanyId(supabase
     .from('product_models')
     .select('id, photo_url')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
   if (mErr) return c.json({ error: 'load_failed', reason: mErr.message }, 500);
-  if (!model) return c.json({ error: 'not_found' }, 404);
+  if (!model) return c.json(NOT_THIS_COMPANY, 404);
 
   const m = model as { id: string; photo_url: string | null };
   if (m.photo_url) {
@@ -1117,10 +1138,10 @@ productModels.delete('/:id/photo', async (c) => {
     if (key) await c.env.SO_ITEM_PHOTOS.delete(key).catch(() => {});
   }
 
-  const { error: updErr } = await supabase
+  const { error: updErr } = await scopeToCompanyId(supabase
     .from('product_models')
     .update({ photo_url: null })
-    .eq('id', id);
+    .eq('id', id), co.companyId);
   if (updErr) return c.json({ error: 'db_update_failed', reason: updErr.message }, 500);
 
   return c.json({ ok: true });
@@ -1236,13 +1257,15 @@ productModels.post('/:id/photos', async (c) => {
     return c.json({ error: 'too_large', max_bytes: GALLERY_MAX_BYTES }, 413);
   }
 
-  // Confirm the model exists before minting a key / uploading.
-  const { data: model } = await supabase
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  // Confirm the model exists (in THIS company) before minting a key / uploading.
+  const { data: model } = await scopeToCompanyId(supabase
     .from('product_models')
     .select('id')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
-  if (!model) return c.json({ error: 'model_not_found' }, 404);
+  if (!model) return c.json(NOT_THIS_COMPANY, 404);
 
   // Mint a unique key under this model's prefix. Use crypto.randomUUID for
   // collision-safety; extension derived from MIME so the bucket reads back
@@ -1311,22 +1334,27 @@ productModels.delete('/:id/photos/:photoId', async (c) => {
   const supabase = c.get('supabase');
   const id = c.req.param('id');
   const photoId = c.req.param('photoId');
+  // Multi-company: scope the load + delete (and the re-promote below) so a blind
+  // photo id from another company can't be read, have its R2 object deleted, or
+  // be removed.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   // Load the row first so we know which R2 key to drop + can re-promote a
   // new primary if we deleted the existing one.
-  const { data: row } = await supabase
+  const { data: row } = await scopeToCompanyId(supabase
     .from('product_model_photos')
     .select('id, r2_key, is_primary')
     .eq('model_id', id)
-    .eq('id', photoId)
+    .eq('id', photoId), co.companyId)
     .maybeSingle();
-  if (!row) return c.json({ error: 'photo_not_found' }, 404);
+  if (!row) return c.json(NOT_THIS_COMPANY, 404);
   const target = row as { id: string; r2_key: string; is_primary: boolean };
 
-  const { error: delErr } = await supabase
+  const { error: delErr } = await scopeToCompanyId(supabase
     .from('product_model_photos')
     .delete()
-    .eq('id', photoId);
+    .eq('id', photoId), co.companyId);
   if (delErr) return c.json({ error: 'db_delete_failed', reason: delErr.message }, 500);
 
   // Best-effort R2 cleanup — if the bucket call fails we DON'T re-insert the
@@ -1339,19 +1367,19 @@ productModels.delete('/:id/photos/:photoId', async (c) => {
   // If the deleted row was the primary, promote the lowest-order remaining
   // photo so the gallery never sits primary-less while photos exist.
   if (target.is_primary) {
-    const { data: next } = await supabase
+    const { data: next } = await scopeToCompanyId(supabase
       .from('product_model_photos')
       .select('id')
-      .eq('model_id', id)
+      .eq('model_id', id), co.companyId)
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: true })
       .limit(1)
       .maybeSingle();
     if (next) {
-      await supabase
+      await scopeToCompanyId(supabase
         .from('product_model_photos')
         .update({ is_primary: true })
-        .eq('id', (next as { id: string }).id);
+        .eq('id', (next as { id: string }).id), co.companyId);
     }
   }
 
@@ -1368,29 +1396,33 @@ productModels.patch('/:id/photos/:photoId', async (c) => {
   const supabase = c.get('supabase');
   const id = c.req.param('id');
   const photoId = c.req.param('photoId');
+  // Multi-company: scope the load + every write so a blind photo id from another
+  // company can't be re-ordered or promoted.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   // Validate target exists + belongs to this model.
-  const { data: row } = await supabase
+  const { data: row } = await scopeToCompanyId(supabase
     .from('product_model_photos')
     .select('id, is_primary, sort_order')
     .eq('model_id', id)
-    .eq('id', photoId)
+    .eq('id', photoId), co.companyId)
     .maybeSingle();
-  if (!row) return c.json({ error: 'photo_not_found' }, 404);
+  if (!row) return c.json(NOT_THIS_COMPANY, 404);
   const target = row as { id: string; is_primary: boolean; sort_order: number };
 
   // is_primary: setting true → demote the current primary on the same model
   // first (the partial unique index would otherwise reject the insert).
   if (body.is_primary === true) {
-    await supabase
+    await scopeToCompanyId(supabase
       .from('product_model_photos')
       .update({ is_primary: false })
       .eq('model_id', id)
-      .eq('is_primary', true);
-    const { error } = await supabase
+      .eq('is_primary', true), co.companyId);
+    const { error } = await scopeToCompanyId(supabase
       .from('product_model_photos')
       .update({ is_primary: true })
-      .eq('id', photoId);
+      .eq('id', photoId), co.companyId);
     if (error) return c.json({ error: 'patch_failed', reason: error.message }, 500);
   }
 
@@ -1403,10 +1435,10 @@ productModels.patch('/:id/photos/:photoId', async (c) => {
     if (!Number.isInteger(n) || n < 0) {
       return c.json({ error: 'order_invalid', expected: 'non-negative integer' }, 400);
     }
-    const { error } = await supabase
+    const { error } = await scopeToCompanyId(supabase
       .from('product_model_photos')
       .update({ sort_order: n })
-      .eq('id', photoId);
+      .eq('id', photoId), co.companyId);
     if (error) return c.json({ error: 'patch_failed', reason: error.message }, 500);
   }
 

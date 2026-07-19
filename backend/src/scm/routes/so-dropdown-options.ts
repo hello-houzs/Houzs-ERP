@@ -29,7 +29,8 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { isCorePaymentMethodRow } from "../shared/payment-methods";
 import { supabaseAuth } from "../middleware/auth";
-import { scopeToCompany, activeCompanyId } from "../lib/companyScope";
+import { scopeToCompany, activeCompanyId,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from "../lib/companyScope";
 import type { Env, Variables } from "../env";
 
 export const soDropdownOptions = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -232,15 +233,19 @@ soDropdownOptions.patch("/:id", async (c) => {
   if (Object.keys(patch).length === 0) return c.json({ ok: true, changed: 0 });
 
   const sb = c.get("supabase");
+  // Multi-company: scope the lookup AND the write to the active company so a
+  // blind id from another company is not found (and can't be re-labelled).
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   /* Locked-set gate — look the row up first so we know its category+value.
      Core payment_method rows accept label / sortOrder / active=true only. */
-  const { data: existing } = await sb
+  const { data: existing } = await scopeToCompanyId(sb
     .from("so_dropdown_options")
     .select("category, value")
-    .eq("id", id)
+    .eq("id", id), co.companyId)
     .maybeSingle();
-  if (!existing) return c.json({ error: "not_found" }, 404);
+  if (!existing) return c.json(NOT_THIS_COMPANY, 404);
   const existingRow = existing as Record<string, unknown>;
   if (isCorePaymentMethodRow(existingRow.category as string, existingRow.value as string)) {
     const valueChanged =
@@ -250,10 +255,10 @@ soDropdownOptions.patch("/:id", async (c) => {
     }
   }
 
-  const { data, error } = await sb
+  const { data, error } = await scopeToCompanyId(sb
     .from("so_dropdown_options")
     .update(patch)
-    .eq("id", id)
+    .eq("id", id), co.companyId)
     .select("id, category, value, label, sort_order, active")
     .maybeSingle();
   if (error) {
@@ -274,19 +279,22 @@ soDropdownOptions.patch("/:id", async (c) => {
 soDropdownOptions.delete("/:id", async (c) => {
   const id = c.req.param("id");
   const sb = c.get("supabase");
+  // Multi-company: scope the lookup AND the delete to the active company.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: existing } = await sb
+  const { data: existing } = await scopeToCompanyId(sb
     .from("so_dropdown_options")
     .select("category, value")
-    .eq("id", id)
+    .eq("id", id), co.companyId)
     .maybeSingle();
-  if (!existing) return c.json({ error: "not_found" }, 404);
+  if (!existing) return c.json(NOT_THIS_COMPANY, 404);
   const existingRow = existing as Record<string, unknown>;
   if (isCorePaymentMethodRow(existingRow.category as string, existingRow.value as string)) {
     return c.json({ error: "payment_method_locked", reason: PAYMENT_METHOD_LOCK_REASON }, 409);
   }
 
-  const { error } = await sb.from("so_dropdown_options").delete().eq("id", id);
+  const { error } = await scopeToCompanyId(sb.from("so_dropdown_options").delete().eq("id", id), co.companyId);
   if (error) return c.json({ error: "delete_failed", reason: error.message }, 500);
   return c.json({ ok: true });
 });

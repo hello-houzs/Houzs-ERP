@@ -7,7 +7,8 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import { canWriteScmConfig } from '../lib/houzs-perms';
-import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
@@ -174,11 +175,15 @@ pwpRules.patch('/:id', async (c) => {
   if (parsed.data.active                  !== undefined) patch.active                     = parsed.data.active;
 
   const supabase = c.get('supabase');
-  const { data, error } = await supabase.from('pwp_rules').update(patch).eq('id', id).select(SELECT).maybeSingle();
+  // Multi-company: scope the write to the active company so a blind id from
+  // another company matches nothing (reported as not-found, not mutated).
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(supabase.from('pwp_rules').update(patch).eq('id', id), co.companyId).select(SELECT).maybeSingle();
   if (error) {
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ rule: toApi(data as RuleRow) });
 });
 
@@ -188,7 +193,12 @@ pwpRules.delete('/:id', async (c) => {
   if (!gate.ok) return gate.res;
   const id = c.req.param('id');
   const supabase = c.get('supabase');
-  const { error } = await supabase.from('pwp_rules').delete().eq('id', id);
+  // Multi-company: scope the delete; select reports whether a row in THIS
+  // company was actually removed.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(supabase.from('pwp_rules').delete().eq('id', id), co.companyId).select('id').maybeSingle();
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true });
 });
