@@ -1060,7 +1060,7 @@ consignmentOrders.get('/:docNo/audit-log', async (c) => {
      salesperson's history by enumerating doc_nos. Out-of-scope /
      missing → 404. Directors/view-all bypass. */
   {
-    const { data: hdr } = await sb.from('consignment_sales_orders').select('salesperson_id').eq('doc_no', docNo).maybeSingle();
+    const { data: hdr } = await scopeToCompany(sb.from('consignment_sales_orders').select('salesperson_id').eq('doc_no', docNo), c).maybeSingle();
     if (!hdr) return c.json({ error: 'not_found' }, 404);
     const sp = (hdr as { salesperson_id?: number | string | null }).salesperson_id;
     if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
@@ -2150,17 +2150,17 @@ consignmentOrders.get('/:docNo/payments', async (c) => {
      salesperson's payment ledger by enumerating doc_nos. Out-of-scope /
      missing → 404. Directors/view-all bypass. */
   {
-    const { data: hdr } = await sb.from('consignment_sales_orders').select('salesperson_id').eq('doc_no', docNo).maybeSingle();
+    const { data: hdr } = await scopeToCompany(sb.from('consignment_sales_orders').select('salesperson_id').eq('doc_no', docNo), c).maybeSingle();
     if (!hdr) return c.json({ error: 'not_found' }, 404);
     const sp = (hdr as { salesperson_id?: number | string | null }).salesperson_id;
     if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
       return c.json({ error: 'not_found' }, 404);
     }
   }
-  const { data, error } = await sb
+  const { data, error } = await scopeToCompany(sb
     .from('consignment_sales_order_payments')
     .select(`${PAYMENT_COLS}, staff:collected_by ( name )`)
-    .eq('so_doc_no', docNo)
+    .eq('so_doc_no', docNo), c)
     .order('paid_at', { ascending: false })
     .order('created_at', { ascending: false });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
