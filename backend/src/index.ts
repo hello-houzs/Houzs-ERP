@@ -13,6 +13,9 @@ import assr from "./routes/assr";
 import logs from "./routes/logs";
 import auditRoutes from "./routes/audit";
 import systemHealthRoutes from "./routes/systemHealth";
+// Self-hosted client error reporting (no Sentry): the SPA's global reporter
+// POSTs batched uncaught errors here; the daily 02:00 cron mails IT a digest.
+import clientErrors from "./routes/clientErrors";
 import udf from "./routes/udf";
 import authRoutes from "./routes/auth";
 import totpRoutes from "./routes/totp";
@@ -83,6 +86,7 @@ import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
 import { companyContext } from "./middleware/companyContext";
 import { drainEmailOutbox } from "./services/email";
+import { runClientErrorDigest } from "./services/clientErrors";
 import { runSlaEscalation } from "./services/assrEscalation";
 import { runAssrAlerts, runAssrDailyDigest } from "./services/assrAlerts";
 import { runScheduledLeadTimeActivations } from "./services/assrLeadTime";
@@ -227,6 +231,9 @@ app.route("/api/assr", assr);
 app.route("/api/logs", logs);
 app.route("/api/audit", auditRoutes);
 app.route("/api/admin/health", systemHealthRoutes);
+// Behind the /api/* auth gate: intake needs a session (identity is stamped from
+// it, never from the body); the /summary read is super-admin inside the router.
+app.route("/api/client-errors", clientErrors);
 app.route("/api/udf", udf);
 app.route("/api/totp", totpRoutes);
 app.route("/api/users", users);
@@ -437,6 +444,19 @@ export default {
             )
           )
           .catch((e) => console.error("[cron proj-reminders]", e))
+      );
+      // Client-error digest: one email to IT when anything crashed in the last
+      // 24h (zero errors = no email), plus the 90-day retention sweep.
+      // Best-effort — a digest failure can never break the other crons.
+      ctx.waitUntil(
+        runClientErrorDigest(env)
+          .then((r) => {
+            if (r.errors || r.purged)
+              console.log(
+                `[cron client-errors] sent=${r.sent} errors=${r.errors} occurrences=${r.occurrences} purged=${r.purged}`
+              );
+          })
+          .catch((e) => console.error("[cron client-errors]", e))
       );
       // Idempotency-key TTL sweep. Keys only need to outlive a client's retry
       // window; 24h is generous. Cheap (indexed on created_at).

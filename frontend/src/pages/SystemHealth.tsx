@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
+  Bug,
   Database,
   Gauge,
   ShieldAlert,
@@ -19,7 +20,8 @@ import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { DashboardBreakdown } from "../components/Dashboard";
 import { ListSkeleton } from "../components/Skeleton";
-import { useQuery } from "../hooks/useQuery";
+import { useQuery, type QueryState } from "../hooks/useQuery";
+import { useAuth } from "../auth/AuthContext";
 import { api } from "../api/client";
 import { cn, relativeTime } from "../lib/utils";
 
@@ -85,6 +87,26 @@ type AuditFeed = {
     byAction: Array<{ action: string; n: number }>;
     byResource: Array<{ resource: string; n: number }>;
   };
+};
+
+// Self-hosted client error reporting (no Sentry): grouped 7-day summary from
+// GET /api/client-errors/summary. Super-admin only — the query is hard-gated
+// (enabled:false) AND the section not rendered for anyone else, per "off, not
+// hide".
+type ClientErrorsSummary = {
+  success: boolean;
+  days: number;
+  data: Array<{
+    dedup_hash: string;
+    message: string;
+    route: string;
+    build_id: string;
+    count: number;
+    affected_users: number;
+    last_seen_at: string;
+  }>;
+  totals: { errors: number; occurrences: number };
+  error?: string;
 };
 
 type Range = "24h" | "7d" | "30d" | "90d";
@@ -180,12 +202,23 @@ export function SystemHealth() {
   const [range, setRange] = useState<Range>("24h");
   const [sensitiveOnly, setSensitiveOnly] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
+  const { can } = useAuth();
+  // Client errors panel is super-admin only (the backend gates /summary on "*"
+  // too). Hard-gate the query so a non-owner with system_health page access
+  // never fires a 403 fetch.
+  const isOwner = can("*");
 
   const live = useQuery<LivePayload>("/api/admin/health/live", () => api.get("/api/admin/health/live"));
   // Inventory-ledger integrity — the working corruption-check endpoint that was
   // previously never called by the frontend. Surfaces silent partial stock
   // writes as a count the operator can act on.
   const ledger = useQuery<LedgerPayload>("/api/admin/health/ledger", () => api.get("/api/admin/health/ledger"));
+  const clientErrors = useQuery<ClientErrorsSummary>(
+    "/api/client-errors/summary?days=7",
+    () => api.get("/api/client-errors/summary?days=7"),
+    [],
+    { enabled: isOwner }
+  );
   const feed = useQuery<AuditFeed>("/api/admin/health/audit-feed?range=::",
     () =>
       api.get(
@@ -255,6 +288,8 @@ export function SystemHealth() {
                 live.reload();
                 feed.reload();
                 ledger.reload();
+                // reload() bypasses `enabled`, so only refetch for the owner.
+                if (isOwner) clientErrors.reload();
               }}
             >
               Refresh
@@ -503,9 +538,83 @@ export function SystemHealth() {
               )}
             </div>
 
+            {isOwner && <ClientErrorsPanel q={clientErrors} />}
+
             <PerformancePhase2 onOpenSetup={() => setShowSetup(true)} />
           </>
         )
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Client Errors (7d) — read-only rollup of the self-hosted error reporter
+// (client_errors table, grouped by dedup hash). Super-admin only: the caller
+// renders it behind can("*") and the query is hard-gated to match the
+// backend's requirePermission("*") on /api/client-errors/summary.
+// ---------------------------------------------------------------------------
+
+function ClientErrorsPanel({ q }: { q: QueryState<ClientErrorsSummary> }) {
+  const rows = q.data?.data ?? [];
+  return (
+    <div className="rounded-lg border border-border bg-surface px-5 py-5 shadow-stone">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+          <Bug size={13} className={rows.length > 0 ? "text-err" : "text-accent"} />
+          Client errors — last 7 days
+        </div>
+        {q.data && (
+          <span className="text-[10.5px] text-ink-muted">
+            {q.data.totals.errors} distinct · {q.data.totals.occurrences} occurrence
+            {q.data.totals.occurrences === 1 ? "" : "s"}
+          </span>
+        )}
+      </div>
+
+      {q.loading && !q.data ? (
+        <ListSkeleton rows={3} />
+      ) : q.error || (q.data && !q.data.success) ? (
+        <div className="py-4 text-center text-[12px] text-ink-muted">
+          Could not load client errors{q.data?.error ? `: ${q.data.error}` : ""}.
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="py-6 text-center text-[12px] text-ink-muted">
+          No client errors reported in the last 7 days.
+        </div>
+      ) : (
+        <div className="thin-scroll max-h-[22rem] overflow-auto">
+          <table className="w-full text-[12px]">
+            <thead className="sticky top-0">
+              <tr className="border-b-2 border-border bg-surface-dim text-left text-[10px] font-semibold uppercase tracking-brand text-ink-secondary">
+                <th className="py-1.5 pr-3">Route</th>
+                <th className="py-1.5 pr-3">Message</th>
+                <th className="py-1.5 pr-3 text-right">Count</th>
+                <th className="py-1.5 pr-3 text-right">Users</th>
+                <th className="py-1.5">Last seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.dedup_hash} className="border-b border-border/60 align-top">
+                  <td className="whitespace-nowrap py-1.5 pr-3 font-mono text-[10.5px] text-ink">
+                    {r.route || "—"}
+                  </td>
+                  <td className="max-w-[28rem] break-words py-1.5 pr-3 text-ink-secondary" title={r.build_id ? `build ${r.build_id}` : undefined}>
+                    {r.message}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right font-semibold text-ink">
+                    {r.count.toLocaleString()}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right text-ink-secondary">{r.affected_users}</td>
+                  <td className="whitespace-nowrap py-1.5 font-mono text-[10.5px] text-ink-muted" title={r.last_seen_at}>
+                    {relativeTime(r.last_seen_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

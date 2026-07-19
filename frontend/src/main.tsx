@@ -15,6 +15,7 @@ import { AuthGate, AcceptInviteScreen } from "./auth/AuthScreens";
 import { PwaBanners } from "./components/PwaBanners";
 import { ChunkReloadBoundary } from "./components/RouteFallback";
 import { registerPwa } from "./pwa";
+import { installGlobalErrorReporting } from "./lib/errorReporter";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "./lib/queryClient";
 import { tokenStore } from "./api/client";
@@ -33,6 +34,12 @@ function PublicFallback() {
 // Register the service worker + capture installability events.
 // Safe on every page (survey/portal/supplier all benefit too).
 registerPwa();
+
+// Self-hosted client error reporting: window error + unhandledrejection
+// listeners, batched to POST /api/client-errors. Installed BEFORE React renders
+// so even a first-render crash is captured. Prod builds only; reporting never
+// changes behaviour (see lib/errorReporter.ts).
+installGlobalErrorReporting();
 
 // View-as hand-off (owner 2026-07-17): the owner's local "Portal Viewer"
 // launcher opens this app with #login-as=<token> so they can hop between
