@@ -125,6 +125,11 @@ export interface NavTab {
    *  (`user.project_finance_viewer`). ANDed with any `pageAccess` gate —
    *  used to hide the Projects "Finances" sub-page from sales staff. */
   requireFinanceViewer?: boolean;
+  /** Show ONLY to the Fair Report cohort — management + the Sales Director
+   *  (auth/salesAccess.canViewFairReport), the exact union the backend
+   *  fairReportAccess admits. A hard gate keyed off org fields (no `perm` /
+   *  `pageAccess`), so ordinary sales AND non-director office never see it. */
+  requireFairReport?: boolean;
   /** Sales-access model (code-keyed off org fields — auth/salesAccess.ts):
    *  hide this entry from ALL Sales-department users, INCLUDING the Sales
    *  Director (owner rule 2026-07 — Delivery Returns is off for the whole Sales
@@ -334,6 +339,19 @@ export const NAV_TABS: NavTab[] = [
         pageAccessFull: "projects.maintenance",
       },
     ],
+  },
+
+  // ── Fair Report — exhibition sales performance (SO / DO / Invoice stages).
+  // Flat top-level entry (NOT nested under Supply Chain — the owner questioned
+  // deep SCM nesting) sitting next to Projects, since a "fair" IS a Project.
+  // requireFairReport = management + the Sales Director only (the exact backend
+  // fairReportAccess cohort); ordinary sales / office never see it.
+  {
+    section: "operations",
+    to: "/reports/fair-report",
+    label: "Fair Report",
+    icon: BarChart3,
+    requireFairReport: true,
   },
 
   // ── Supply Chain — ported 2990's furniture SCM (/api/scm) ────

@@ -5,6 +5,7 @@ import {
   isSalesDirectorUser,
   isSalesNonDirector,
   isDirectorUser,
+  canViewFairReport,
 } from "../auth/salesAccess";
 
 /**
@@ -110,6 +111,9 @@ export function makeNavVisible({ user, can, pageAccess }: NavFilterCtx) {
     }
     if (t.hidePerm && can(t.hidePerm)) return false;
     if (t.requireFinanceViewer && !user?.project_finance_viewer) return false;
+    // Fair Report cohort — management + the Sales Director only (mirrors the
+    // backend fairReportAccess). A hard gate: no show-bypass can re-open it.
+    if (t.requireFairReport && !canViewFairReport(user)) return false;
     return true;
   };
 }
