@@ -249,12 +249,11 @@ export function Team() {
     { value: "mail", label: "Mailboxes", show: canManageMail },
     // Positions tab removed from the strip (owner: "那個team的矩陣拆掉") — the
     // same treatment the Roles tab got, which is why neither is in the strip.
-    // The 4-level position_page_access matrix and its read path (auth.ts ->
-    // loadPageAccessForPosition) are untouched, so no position gains or loses
-    // access — only the editor's place in the nav is gone. The editor stays live
-    // and URL-reachable at /team?tab=positions (honoured by canViewTab below for
-    // users.manage) so the sole writer of that live-enforced table is never
-    // stranded. Re-add this line to restore the tab.
+    // A positioned user's page access is resolved from position defaults
+    // (services/positionPolicy.ts, read at login), NOT from the 4-level
+    // position_page_access matrix this tab edited — that table is no longer read
+    // for them, so removing the tab changes no one's access. Re-add this line to
+    // restore the tab in the strip (it is also gated off in canViewTab below).
     // Roles tab removed (owner: "删了role") — Position governs page access; a
     // baseline role is auto-assigned on invite. Re-add this line to restore.
   ];
@@ -265,8 +264,9 @@ export function Team() {
   // Whether the user can open a tab's CONTENT — deliberately not the same list
   // as the strip. Entry to /team is granted by the POSITION page matrix
   // (PageGuard) while every tab below is gated by ROLE permissions, and the two
-  // hydrate from different tables (position_page_access vs roles.permissions
-  // — services/auth.ts), so they can disagree and an admitted user may be able
+  // come from different sources (position page access from position defaults via
+  // resolvePositionPolicy vs roles.permissions — services/auth.ts), so they can
+  // disagree and an admitted user may be able
   // to open nothing. `roles` is absent from the strip (owner: "删了role") but
   // the editor is still live and reachable by URL, so it stays viewable for
   // roles.read. `hub` has something to list only if some tab is visible.
@@ -280,9 +280,11 @@ export function Team() {
     // the user's first real tab (or the same Forbidden safe-landing #722 gives
     // any admitted-but-empty user), so `active` can never resolve to "positions"
     // and PositionsTab never mounts — its data query never fires. Enforcement is
-    // untouched: this only governs the editor's reachability in the browser, not
-    // the position_page_access matrix or its read path. The sole writer,
-    // POST /api/positions/:id/page-access, stays mounted for backend/tooling use.
+    // untouched: a positioned user's access is resolved from position defaults
+    // (services/positionPolicy.ts), which this gate does not affect. The former
+    // writer PATCH /api/positions/:id/page-access is now DISABLED (it short-
+    // circuits without writing); its route and the position_page_access table
+    // are kept for a future rework, and the tab's page-access editor is read-only.
     positions: false,
     orgchart: canSeeMembers,
     departments: canSeeMembers,

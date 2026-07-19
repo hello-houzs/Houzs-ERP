@@ -2,10 +2,20 @@
 // positionAccessShadow — resolve page-access from the SNAPSHOT alongside the
 // live table, serve the TABLE, and report any cell where the two disagree.
 //
-// WHAT THIS IS NOT: it is not the cutover. Nothing here changes what any user
-// can see or do. `auth.ts` still hydrates from `position_page_access` and still
-// serves that map. This module reads the same rows a second way and says so when
-// the answers differ.
+// STATUS (2026-07-20): THE CUTOVER HAS SINCE SHIPPED. `auth.ts` now resolves a
+// positioned user's page access from `resolvePositionPolicy`
+// (services/positionPolicy.ts), NOT from `position_page_access` — so the premise
+// this module was written under ("auth.ts still hydrates from
+// position_page_access and still serves that map") no longer holds, and nothing
+// calls `shadowComparePositionAccess` anymore. The module is kept as the record
+// of how the cutover was de-risked, and is revivable if the table is ever wired
+// back. Everything below describes the PRE-cutover shadow — read it as history,
+// not as current behaviour.
+//
+// WHAT THIS WAS (pre-cutover): it was not itself the cutover. Nothing here
+// changed what any user could see or do. `auth.ts` hydrated from
+// `position_page_access` and served that map; this module read the same rows a
+// second way and said so when the answers differed.
 //
 // WHY A SHADOW AND NOT THE SWITCH. The owner's instruction is
 // "你把目前的矩阵先用 backend 写进去，然后一层一层拆掉" — the snapshot (step 1,
