@@ -43,7 +43,7 @@ import { postSiRevenue, reverseSiRevenue, resyncSiRevenue } from '../lib/post-si
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
-import { escapeForOr } from '../lib/postgrest-search';
+import { escapeForOr, phoneSearchOrParts } from '../lib/postgrest-search';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { doLineRemaining, doRemainingByItemId, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
@@ -699,7 +699,13 @@ salesInvoices.get('/', async (c) => {
   const search = c.req.query('q');
   if (search) {
     const s = escapeForOr(search);
-    if (s) q = q.or(`invoice_number.ilike.%${s}%,so_doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%,ref.ilike.%${s}%,branding.ilike.%${s}%,sales_location.ilike.%${s}%`);
+    // Match customer NAME (debtor_name), PHONE, and the linked SO REFERENCE
+    // (ref, snapshotted onto the SI) — plus the doc numbers it already covered.
+    if (s) q = q.or([
+      `invoice_number.ilike.%${s}%`, `so_doc_no.ilike.%${s}%`, `debtor_name.ilike.%${s}%`,
+      `debtor_code.ilike.%${s}%`, `ref.ilike.%${s}%`, `branding.ilike.%${s}%`, `sales_location.ilike.%${s}%`,
+      ...phoneSearchOrParts(s, search, normalizePhone),
+    ].join(','));
   }
   const from = c.req.query('from'); if (from) q = q.gte('invoice_date', from);
   const to = c.req.query('to'); if (to) q = q.lte('invoice_date', to);

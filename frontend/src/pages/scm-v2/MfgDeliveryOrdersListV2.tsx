@@ -1625,7 +1625,7 @@ export function MfgDeliveryOrdersListV2() {
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search DO, customer, driver…"
+          placeholder="Search DO, customer, phone, driver…"
           className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
       </div>
@@ -1728,7 +1728,7 @@ export function MfgDeliveryOrdersListV2() {
               search={{
                 value: search,
                 onChange: setSearch,
-                placeholder: "Search DO no, customer, driver, ref…",
+                placeholder: "Search DO no, customer, phone, driver, ref…",
               }}
               resetFilters={{
                 active: filtersActive,
@@ -1752,7 +1752,7 @@ export function MfgDeliveryOrdersListV2() {
                   type="search"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search DO no, customer, driver, ref…"
+                  placeholder="Search DO no, customer, phone, driver, ref…"
                   className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
                 />
                 {filtersActive && (

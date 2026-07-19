@@ -1887,7 +1887,7 @@ export function MfgSalesOrdersListV2() {
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search SO, customer, ref…"
+          placeholder="Search SO, customer, phone, ref…"
           className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
       </div>
@@ -1970,7 +1970,7 @@ export function MfgSalesOrdersListV2() {
             search={{
               value: search,
               onChange: setSearch,
-              placeholder: "Search doc no, customer, ref…",
+              placeholder: "Search doc no, customer, phone, ref…",
             }}
             resetFilters={{
               active: filtersActive,
@@ -1994,7 +1994,7 @@ export function MfgSalesOrdersListV2() {
                 type="search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search doc no, customer, ref…"
+                placeholder="Search doc no, customer, phone, ref…"
                 className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
               {filtersActive && (
