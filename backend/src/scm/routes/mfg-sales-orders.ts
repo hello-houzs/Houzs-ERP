@@ -79,6 +79,12 @@ import { SESSION_ORIGIN_POS } from '../../services/auth';
 import { loadLeadBuffers } from '../../services/agents/procurement-learning';
 import { SO_FINANCE_KEYS, SO_ITEM_FINANCE_KEYS, stripAuditFinance } from '../lib/finance-keys';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
+import {
+  resolveVenueBinding,
+  loadVenueBindingInputs,
+  type VenueSource,
+  type VenueBindingSb,
+} from '../lib/venue-binding';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 import { buildAmendmentLineRows, LINE_BUILD_ERRORS } from '../lib/amendment-lines';
 // OCR self-learning: a DRAFT confirm is the review event the background scan
@@ -2123,57 +2129,79 @@ mfgSalesOrders.get('/customer-search', async (c) => {
   return c.json({ customers: [...byKey.values()].slice(0, 8) });
 });
 
-// Houzs — resolve the logged-in salesperson's ACTIVE exhibition project venue
-// so the New-SO / OCR form can auto-select it in the Venue dropdown. MUST be
-// registered BEFORE "/:docNo" (single-segment static path, else Hono treats
-// "active-venue" as a docNo). Returns the project venue NAME + the matching
-// project_venues id (string, by name; null if the venue isn't in the master) +
-// the project name (for the FE hint). Resolution = the latest project (by
-// start_date <= date) the user is the PIC of OR a Sales Attending rep of.
+// Houzs — resolve the venue the logged-in salesperson is BOUND to on a given
+// date, so the New-SO / OCR form (desktop AND mobile) can pre-select it in the
+// Venue dropdown. MUST be registered BEFORE "/:docNo" (single-segment static
+// path, else Hono treats "active-venue" as a docNo).
+//
+// The rule itself lives in lib/venue-binding.ts and is shared with the SO create
+// path — this endpoint only fetches, calls it, and maps the venue NAME onto the
+// project_venues master id the dropdown compares against. The route name is
+// kept as "active-venue" (rather than renamed to match the resolver) because the
+// desktop form, the mobile form and the vendored SCM client all call this exact
+// path; the concept it returns is now "the rep's bound venue", of which the
+// active exhibition is one of two sources.
+//
+// ZERO PMS DATA IS THE NORMAL CASE: showroom parking is the primary binding, and
+// a rep on no projects at all must still get their showroom's venue back here.
+// Nothing on this path warns, errors or degrades because no project has a team.
+//
+// venueId is null when the resolved venue text isn't in the project_venues
+// master — a KNOWN and tolerated gap (projects reference ~60 distinct venues,
+// the master holds ~38). The form stamps the text anyway and hints that it is
+// unmastered; it does NOT reject the order. Rejecting unmastered venues would
+// block real sales to enforce a list nobody has finished filling in.
 mfgSalesOrders.get('/active-venue', async (c) => {
   const hu = c.get('houzsUser');
   const uid = hu?.id != null ? Number(hu.id) : NaN;
   const dateRaw = c.req.query('date');
+  /* The ORDER's date when the form supplies one (a backdated slip must resolve
+     against the fair that was running the day it was written), else today in
+     MYT — never the UTC date, which is yesterday until 08:00 local. */
   const soDate =
     typeof dateRaw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateRaw)
       ? dateRaw.slice(0, 10)
       : todayMyt();
-  if (!Number.isFinite(uid)) {
-    return c.json({ venueId: null, venueName: null, projectName: null });
-  }
+  const EMPTY = {
+    venueId: null, venueName: null, projectName: null,
+    source: null, projectId: null, showroomName: null,
+  };
+  if (!Number.isFinite(uid)) return c.json(EMPTY);
   try {
-    const row = await c.env.DB.prepare(
-      `SELECT p.venue AS venue, p.name AS projectname, v.id AS masterid
-         FROM projects p
-         LEFT JOIN project_venues v
-           ON lower(trim(v.name)) = lower(trim(p.venue)) AND v.active = 1
-        WHERE p.start_date IS NOT NULL
-          AND p.start_date <= ?
-          AND p.venue IS NOT NULL AND p.venue <> ''
-          AND (
-            p.pic_id = ?
-            OR EXISTS (
-              SELECT 1 FROM project_sales_attendees psa
-                JOIN sales_reps sr ON sr.id = psa.sales_rep_id
-               WHERE psa.project_id = p.id AND sr.user_id = ?
-            )
-          )
-        ORDER BY p.start_date DESC
-        LIMIT 1`,
-    )
-      .bind(soDate, uid, uid)
-      .first<{ venue?: string | null; projectname?: string | null; masterid?: number | null }>();
-    const venueName = typeof row?.venue === 'string' && row.venue.trim() ? row.venue.trim() : null;
-    const projectName =
-      typeof row?.projectname === 'string' && row.projectname.trim() ? row.projectname.trim() : null;
-    const masterId = row?.masterid ?? null;
+    const sb = c.get('supabase');
+    const staffId = await resolveCallerStaffId(sb, uid);
+    const { pmsCandidates, showroom } = await loadVenueBindingInputs({
+      db: c.env.DB, sb: sb as unknown as VenueBindingSb, userId: uid, staffId,
+    });
+    const binding = resolveVenueBinding({ soDate, pmsCandidates, showroom });
+    if (!binding.venueName) return c.json(EMPTY);
+
+    /* Map the resolved venue TEXT onto the project_venues master id, so the
+       dropdown can SELECT the row rather than only display the text. Lives here
+       and not in the resolver because it is a presentation concern — the venue
+       that gets stamped is the text either way. */
+    let venueId: string | null = null;
+    try {
+      const row = await c.env.DB.prepare(
+        `SELECT id FROM project_venues
+          WHERE lower(trim(name)) = lower(trim(?)) AND active = 1 LIMIT 1`,
+      )
+        .bind(binding.venueName)
+        .first<{ id?: number | null }>();
+      venueId = row?.id != null ? String(row.id) : null;
+    } catch {
+      venueId = null; // unmastered venue — the text still stands
+    }
     return c.json({
-      venueId: masterId != null ? String(masterId) : null,
-      venueName,
-      projectName,
+      venueId,
+      venueName: binding.venueName,
+      projectName: binding.projectName,
+      projectId: binding.projectId,
+      source: binding.source,
+      showroomName: showroom && binding.source === 'SHOWROOM' ? showroom.warehouseName : null,
     });
   } catch {
-    return c.json({ venueId: null, venueName: null, projectName: null });
+    return c.json(EMPTY);
   }
 });
 
@@ -3010,123 +3038,91 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      report flatten. */
   let resolvedVenueName: string | null =
     typeof body.venue === 'string' && body.venue.trim() ? body.venue.trim() : null;
+  /* A venue the CLIENT sent is a human's pick — the operator either accepted the
+     pre-filled default or typed over it, and either way they are the person who
+     knows where they are standing. Marking it MANUAL is what stops any later
+     automatic re-resolve (amendment, backfill, re-scan) from quietly replacing
+     it; see canAutoResolveVenue. The binding is a DEFAULT, never a lock. */
+  let venueSource: VenueSource | null = resolvedVenueName ? 'MANUAL' : null;
   if (!resolvedVenueName && venueIdToStamp) {
     const { data: venueRow } = await sb
       .from('venues').select('name').eq('id', venueIdToStamp).maybeSingle();
     resolvedVenueName = (venueRow as { name?: string } | null)?.name ?? null;
+    /* Not MANUAL: nobody typed this, it was derived from the salesperson's
+       scm.venues home venue. It stays eligible for a re-resolve. */
+    if (resolvedVenueName) venueSource = 'SHOWROOM';
   }
 
-  /* Houzs venue-by-project (owner 2026-06-25) — LAST resort, and only when the
-     home-venue logic above resolved nothing.
-     DO NOT DELETE THAT LOGIC: it is LIVE, not dead. This comment used to claim
-     "scm.staff is unused in Houzs, so the home-venue logic above always leaves
-     venue NULL" — both halves are false. scm.staff is the salesperson vocabulary
-     (migration 0066 syncs every non-disabled user into it; salesperson_id IS a
-     staff uuid; `callerStaff` is read from it ~60 lines above and its `role`
-     drives the POS-role venue branch). And the home-venue chain does stamp:
-     staff.venue_id -> venueIdToStamp -> venues.name -> resolvedVenueName, plus
-     venue_id itself via venueIdUuid below. It resolves nothing TODAY only for two
-     DATA reasons — nothing in Houzs writes scm.staff.venue_id (0066 does not set
-     it; /api/scm/staff only reads it), and scm.venues has no rows — so the moment
-     a staff row carries a real scm.venues venue_id, that path stamps the venue and
-     this fallback correctly stands down. Deleting it would silently re-attribute
-     every venue-assigned salesperson's SO to their project instead of their venue.
-     Fall back to the LOGGED-IN salesperson's currently-active exhibition project:
-     the latest project (by start_date, <= the SO date) they are the PIC of OR a
-     Sales Attending rep of (owner 2026-06-25: "PIC 或 Sales Attending 都算"). The
-     over-assigned PICs in Houzs data are NON-salespeople (user 1 = the HOUZS
-     CENTURY system account; orphan pic_ids with no users row) who never log in
-     to create SOs, so they don't mis-resolve; real salesperson-PICs are clean.
-     Stamps the venue TEXT only (the project venue isn't a scm.venues row, so
-     venue_id stays NULL); an explicit body.venue still wins. Reads the PUBLIC
-     schema via c.env.DB — the scm supabase client can't reach public. */
-  if (!resolvedVenueName) {
-    const houzsUser = c.get('houzsUser');
-    const uid = houzsUser?.id != null ? Number(houzsUser.id) : NaN;
-    if (Number.isFinite(uid)) {
-      const soDateForVenue =
-        typeof body.soDate === 'string' && body.soDate.trim()
-          ? body.soDate.trim().slice(0, 10)
-          : todayMyt();
-      try {
-        const projRow = await c.env.DB.prepare(
-          `SELECT p.venue AS venue
-             FROM projects p
-            WHERE p.start_date IS NOT NULL
-              AND p.start_date <= ?
-              AND p.venue IS NOT NULL AND p.venue <> ''
-              AND (
-                p.pic_id = ?
-                OR EXISTS (
-                  SELECT 1 FROM project_sales_attendees psa
-                    JOIN sales_reps sr ON sr.id = psa.sales_rep_id
-                   WHERE psa.project_id = p.id AND sr.user_id = ?
-                )
-              )
-            ORDER BY p.start_date DESC
-            LIMIT 1`,
-        )
-          .bind(soDateForVenue, uid, uid)
-          .first<{ venue?: string | null }>();
-        const v = projRow?.venue ?? null;
-        if (typeof v === 'string' && v.trim()) resolvedVenueName = v.trim();
-      } catch {
-        /* non-fatal — leave venue NULL if the project lookup fails */
-      }
-    }
-  }
+  /* ── VENUE BINDING (owner 2026-07-19) ────────────────────────────────────
+     The two remaining sources, resolved by ONE shared rule in
+     lib/venue-binding.ts and consumed identically by desktop, mobile and the
+     OCR scan path:
+       1. PMS / exhibition — the rep is PIC or Sales Attending on a project whose
+          PERIOD CONTAINS the SO date -> that project's venue (and its id, which
+          hard-links this SO to its fair for the Fair Report, #814).
+       2. Showroom — the rep is parked under a Showroom (a scm.warehouses row
+          flagged is_showroom) on the Members page -> that showroom's venue.
+     Then NOTHING. No company default, no first-venue-in-the-list, no `?? ''`.
+     An unresolvable venue stays NULL, because venue feeds exhibition P&L and
+     commission and a guessed venue is a wrong profit figure paid to a real
+     person. Empty is visibly incomplete; wrong is not.
 
-  /* Fair Report FOUNDATION (owner 2026-07-19) — HARD-LINK this SO to the fair
-     (= exhibition PROJECT) it was written at, by stamping the resolved project's
-     id into mfg_sales_orders.project_id. It runs the SAME active-fair resolver
-     the venue logic above uses — the latest project (by start_date <= the SO
-     date) the logged-in salesperson is the PIC of OR a Sales Attending rep of
-     (owner 2026-06-25: "PIC 或 Sales Attending 都算"), venue non-empty — NOT
-     venue+date inference. It is deliberately resolved INDEPENDENTLY of
-     resolvedVenueName: the Backend New-SO form pre-fills body.venue from
-     /active-venue, which makes the venue fallback query above skip, so hooking
-     the link onto that query would leave project_id NULL for the very flow the
-     report needs. Mirroring the resolver's filters keeps project_id and the
-     stamped venue pointing at the SAME fair. STRICTLY ADDITIVE + NON-FATAL: any
-     error, or no active fair, leaves project_id NULL and MUST NEVER block SO
-     creation — an unlinked SO is merely unreported (a later PR), never a lost
-     sale. Reads the PUBLIC schema via c.env.DB (projects live there, not scm). */
+     WHY THIS REPLACED THREE COPIES OF ONE QUERY: the same SELECT was written out
+     here, in the project_id stamp below, and in GET /active-venue — and had
+     already begun to differ. They are now one call.
+
+     SHOWROOM PARKING IS THE PRIMARY PATH, and this block must be correct with
+     ZERO project assignments in the system — which is the actual production
+     state and the expected steady state. A rep on no projects is NORMAL: they
+     take rule 2 silently. Nothing here warns or errors because a project has no
+     team.
+
+     TWO FIXES vs the rule this replaces: it never tested end_date (so a fair
+     that ended in March claimed every order forever, for anyone ever assigned to
+     it), and `ORDER BY start_date DESC LIMIT 1` was arbitrary among same-day
+     projects (the same rep could get two different venues on two identical
+     orders). See BUG-HISTORY.md.
+
+     project_id is deliberately still resolved even when the venue came from the
+     client: the New-SO form pre-fills body.venue from /active-venue, which marks
+     it MANUAL, and hanging the fair link off the venue branch would leave
+     project_id NULL for the very flow the Fair Report needs. NON-FATAL
+     throughout — no lookup failure may ever block a sale. */
   let projectIdToStamp: number | null = null;
   {
     const houzsUser = c.get('houzsUser');
     const uid = houzsUser?.id != null ? Number(houzsUser.id) : NaN;
     if (Number.isFinite(uid)) {
-      const soDateForProject =
+      /* The ORDER's date, not today's — a backdated slip must resolve against
+         the fair that was running the day it was written, in MYT. */
+      const soDateForVenue =
         typeof body.soDate === 'string' && body.soDate.trim()
           ? body.soDate.trim().slice(0, 10)
           : todayMyt();
       try {
-        const projRow = await c.env.DB.prepare(
-          `SELECT p.id AS id
-             FROM projects p
-            WHERE p.start_date IS NOT NULL
-              AND p.start_date <= ?
-              AND p.venue IS NOT NULL AND p.venue <> ''
-              AND (
-                p.pic_id = ?
-                OR EXISTS (
-                  SELECT 1 FROM project_sales_attendees psa
-                    JOIN sales_reps sr ON sr.id = psa.sales_rep_id
-                   WHERE psa.project_id = p.id AND sr.user_id = ?
-                )
-              )
-            ORDER BY p.start_date DESC
-            LIMIT 1`,
-        )
-          .bind(soDateForProject, uid, uid)
-          .first<{ id?: number | null }>();
-        const pid = projRow?.id ?? null;
-        if (typeof pid === 'number' && Number.isFinite(pid)) projectIdToStamp = pid;
+        const { pmsCandidates, showroom } = await loadVenueBindingInputs({
+          /* Cast: SupabaseClient's generics are deep enough that structurally
+             matching them here trips TS2589. The loader only ever calls
+             .from().select().eq().maybeSingle(), which VenueBindingSb pins. */
+          db: c.env.DB, sb: sb as unknown as VenueBindingSb, userId: uid,
+          /* The SALESPERSON the order is attributed to, not necessarily the
+             caller: an admin keying an order in for a showroom rep must stamp
+             the REP's showroom, exactly as the home-venue chain above follows
+             the selected salesperson. */
+          staffId: salespersonIdToStamp ?? callerStaffId,
+        });
+        const binding = resolveVenueBinding({ soDate: soDateForVenue, pmsCandidates, showroom });
+        projectIdToStamp = binding.projectId;
+        if (!resolvedVenueName && binding.venueName) {
+          resolvedVenueName = binding.venueName;
+          venueSource = binding.source;
+        }
       } catch {
-        /* non-fatal — leave project_id NULL if the project lookup fails */
+        /* non-fatal — leave venue + project_id NULL if the lookup fails */
       }
     }
   }
+
 
   /* Houzs venue_id guard — the New-SO Venue dropdown is sourced from
      public.project_venues (INTEGER ids, mapped to string in the FE), but
@@ -4471,6 +4467,14 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     /* SO-SKU spec P5 — the resolved venue NAME (explicit body.venue wins,
        else looked up from the stamped venue_id) so the column finally lights. */
     venue: resolvedVenueName,
+    /* Migration 0148 — HOW the venue above got here: 'MANUAL' (a human picked
+       or accepted it on the form), 'PMS' (an in-period exhibition project) or
+       'SHOWROOM' (the rep's parked showroom). This is what protects the human's
+       choice: canAutoResolveVenue() refuses to let any later automatic
+       re-resolve overwrite a MANUAL venue. The binding is a DEFAULT, not a
+       lock — the operator is the person who actually knows where they are
+       standing, and their pick is the backstop for both mechanisms. */
+    venue_source: venueSource,
     /* Migration 0086 — venue master FK (separate from legacy `venue` text).
        Guarded to a real uuid; project_venues integer ids are nulled (the venue
        TEXT carries the value). See the venueIdUuid guard above. */
@@ -5706,6 +5710,25 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
       updates[to] = body[from];
     }
   }
+  /* VENUE OVERRIDE (owner 2026-07-19, migration 0148) — the operator has just
+     edited the venue on this order, so the value is now theirs, not the
+     resolver's. Marking it MANUAL is the whole protection: canAutoResolveVenue()
+     makes every automatic writer stand down on this row, so no later amendment,
+     backfill or re-scan can quietly put the resolved default back.
+     THIS IS THE BACKSTOP FOR BOTH BINDINGS. The salesperson is the person who
+     actually knows where they are standing — a showroom rep sent to an
+     exhibition, or an exhibition rep back on the floor, corrects it HERE, and
+     that correction has to stick.
+     The change itself is already recorded who/when/from->to by the existing
+     `['venue', 'venue']` entry in the field map above, which diffFields picks up
+     and recordSoAudit writes to mfg_so_audit_log — the house audit trail, not a
+     second one. Clearing the venue to blank is just as deliberate as setting
+     one, so it is marked MANUAL too: "this order has no venue" is an answer, and
+     a re-resolve must not treat it as an invitation to fill the gap. */
+  if (body['venue'] !== undefined) {
+    updates['venue_source'] = 'MANUAL' satisfies VenueSource;
+  }
+
   /* Task #121 — when customerState changes, re-derive customer_country
      from my_localities so the SO snapshot follows the new state's country.
      A null state explicitly clears the snapshot (so an SO whose state is

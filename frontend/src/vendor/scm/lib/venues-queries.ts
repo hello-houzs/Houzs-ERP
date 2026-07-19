@@ -35,6 +35,39 @@ export type VenueRow = {
   state: string | null;
   active: boolean;
   created_at: string;
+  /** Where this venue comes from. 'PROJECT' = the Project Maintenance venue
+   *  master (an exhibition venue). 'SHOWROOM' = a warehouse flagged as a
+   *  Showroom, contributing its venue_name. The owner asked to be able to tell
+   *  the two apart in the list, so the origin travels with the row instead of
+   *  being guessed from the name. */
+  origin: VenueOrigin;
+  /** Set only when origin is 'SHOWROOM' — the source warehouse. */
+  warehouseId: string | null;
+};
+
+export type VenueOrigin = 'PROJECT' | 'SHOWROOM';
+
+/** Response of GET /mfg-sales-orders/active-venue — the venue the logged-in
+ *  salesperson is BOUND to, which the New-SO form offers as a DEFAULT.
+ *
+ *  Declared HERE, once, because desktop (pages/scm-v2/SalesOrderNew) and mobile
+ *  (mobile/MobileNewSO) both consume it and the two must not drift: the rule
+ *  that produced it lives in ONE place on the backend
+ *  (scm/lib/venue-binding.ts), and its wire shape belongs in one place too.
+ *
+ *  - `source` says WHICH binding fired, so the form can name it. 'PMS' = an
+ *    exhibition project the rep is on; 'SHOWROOM' = the showroom they are
+ *    parked under; null = nothing resolved, which is a legitimate answer and
+ *    NOT an error — the operator simply picks a venue.
+ *  - `venueId` is null when the venue text is not in the venue master. The
+ *    order still saves with the text; this is a known, tolerated gap. */
+export type AutoVenue = {
+  venueId: string | null;
+  venueName: string | null;
+  projectName: string | null;
+  projectId: number | null;
+  source: 'PMS' | 'SHOWROOM' | null;
+  showroomName: string | null;
 };
 
 export type NewVenue = {
@@ -45,11 +78,13 @@ export type NewVenue = {
 
 // Raw row as returned by GET /api/projects/venues.
 type ProjectVenueRow = {
-  id: number;
+  id: number | string;
   name: string;
   state: string | null;
   notes: string | null;
   active: number | boolean;
+  origin?: VenueOrigin;
+  warehouseId?: string | null;
 };
 
 function mapVenue(r: ProjectVenueRow): VenueRow {
@@ -60,6 +95,10 @@ function mapVenue(r: ProjectVenueRow): VenueRow {
     state: r.state ?? null,
     active: r.active === 1 || r.active === true,
     created_at: '',
+    /* Default to PROJECT only because that is what an un-upgraded backend
+       returns; it is a shape fallback, not a guess about the data. */
+    origin: r.origin ?? 'PROJECT',
+    warehouseId: r.warehouseId ?? null,
   };
 }
 
@@ -71,7 +110,10 @@ export function useVenues(_opts?: { includeInactive?: boolean }) {
     queryKey: ['venues'],
     queryFn: () =>
       api
-        .get<{ data: ProjectVenueRow[] }>('/api/projects/venues')
+        /* includeShowrooms: the SCM venue list is fed from project venues AND
+           from Showroom-flagged warehouses (owner 2026-07-19). Opt-in, so
+           Project Maintenance's own CRUD list stays exactly the rows it owns. */
+        .get<{ data: ProjectVenueRow[] }>('/api/projects/venues?includeShowrooms=1')
         .then((r) => (r.data ?? []).map(mapVenue)),
     staleTime: 60_000,
   });

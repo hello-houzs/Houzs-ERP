@@ -29,6 +29,15 @@ export type Warehouse = {
   location: string | null;
   is_active: boolean;
   is_default: boolean;
+  /* SHOWROOM (migration 0148) — flagging a warehouse as a Showroom makes it a
+     VENUE source: it feeds the Sales Maintenance venue list, and salespeople
+     parked under it on the Members page attribute their orders to venue_name.
+     venue_name is deliberately separate from `name` — a warehouse is named for
+     stock, a venue for the report — and a flagged showroom with no venue_name
+     resolves to no venue at all rather than to its own code. Optional on the
+     type so a pre-migration response still parses. */
+  is_showroom?: boolean;
+  venue_name?: string | null;
 };
 
 export type InventoryBalance = {
@@ -147,7 +156,7 @@ export function useWarehouses(opts?: { includeInactive?: boolean }) {
 export function useCreateWarehouse() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { code: string; name: string; location?: string; isDefault?: boolean }) =>
+    mutationFn: (body: { code: string; name: string; location?: string; isDefault?: boolean; isShowroom?: boolean; venueName?: string | null }) =>
       authedFetch<{ warehouse: Warehouse }>(`/inventory/warehouses`, { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouses'] }),
   });
@@ -156,7 +165,7 @@ export function useCreateWarehouse() {
 export function useUpdateWarehouse() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...body }: { id: string; code?: string; name?: string; location?: string; isActive?: boolean; isDefault?: boolean }) =>
+    mutationFn: ({ id, ...body }: { id: string; code?: string; name?: string; location?: string; isActive?: boolean; isDefault?: boolean; isShowroom?: boolean; venueName?: string | null }) =>
       authedFetch<{ warehouse: Warehouse }>(`/inventory/warehouses/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouses'] }),
   });

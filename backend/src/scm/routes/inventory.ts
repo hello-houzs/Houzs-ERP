@@ -40,7 +40,7 @@ inventory.get('/warehouses', async (c) => {
   const sb = c.get('supabase');
   const includeInactive = c.req.query('includeInactive') === 'true';
   let q = scopeToCompany(
-    sb.from('warehouses').select('id, code, name, location, is_active, is_default'),
+    sb.from('warehouses').select('id, code, name, location, is_active, is_default, is_showroom, venue_name'),
     c,
   ).order('code');
   if (!includeInactive) q = q.eq('is_active', true);
@@ -64,7 +64,17 @@ inventory.post('/warehouses', async (c) => {
     location: (body.location as string) ?? null,
     is_active: body.isActive === false ? false : true,
     is_default: body.isDefault === true,
-  }).select('id, code, name, location, is_active, is_default').single();
+    /* SHOWROOM (migration 0148) — "Mark as Showroom" makes this warehouse a
+       venue source: it appears in the Sales Maintenance venue list, and any
+       salesperson parked under it on the Members page attributes their orders
+       to venue_name. venue_name is NOT derived from `name`: a warehouse is
+       named for stock ("KL-WH-02"), a venue for the report ("Kuala Lumpur
+       Showroom"), and auto-deriving would put a stock code into exhibition
+       P&L. A flagged showroom with no venue_name simply resolves to nothing. */
+    is_showroom: body.isShowroom === true,
+    venue_name: typeof body.venueName === 'string' && body.venueName.trim()
+      ? body.venueName.trim() : null,
+  }).select('id, code, name, location, is_active, is_default, is_showroom, venue_name').single();
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_code' }, 409);
     return c.json({ error: 'insert_failed', reason: error.message }, 500);
@@ -91,10 +101,20 @@ inventory.patch('/warehouses/:id', async (c) => {
   if (typeof body.location === 'string')  updates.location = body.location;
   if (typeof body.isActive === 'boolean') updates.is_active = body.isActive;
   if (typeof body.isDefault === 'boolean') updates.is_default = body.isDefault;
+  /* SHOWROOM (migration 0148). Un-flagging is deliberately NOT cascaded to the
+     staff parked under this warehouse: the resolver re-checks is_showroom at
+     resolve time, so clearing the flag stops it supplying venues immediately
+     while the parkings stay visible on the Members page for whoever has to
+     re-home those people. A silent mass-unpark would lose that information. */
+  if (typeof body.isShowroom === 'boolean') updates.is_showroom = body.isShowroom;
+  if (body.venueName !== undefined) {
+    const v = typeof body.venueName === 'string' ? body.venueName.trim() : '';
+    updates.venue_name = v || null;
+  }
   if (Object.keys(updates).length === 0) return c.json({ error: 'no_changes' }, 400);
 
   const { data, error } = await sb.from('warehouses').update(updates).eq('id', id)
-    .select('id, code, name, location, is_active, is_default').single();
+    .select('id, code, name, location, is_active, is_default, is_showroom, venue_name').single();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   /* Audit 2026-06-20 — single-default enforcement (see POST): promoting this
      warehouse to default demotes every other one. */
