@@ -356,6 +356,13 @@ function ChatSystemRow({ a }: { a: ActivityRow }) {
         {a.to_value && !a.from_value && (
           <span className="ml-1 font-mono">{a.to_value}</span>
         )}
+        {/* Removal — from_value with no to_value. Without this branch an
+            unassignment (PIC cleared, rep removed) rendered its label with no
+            subject at all, so the trail recorded that something was removed
+            but never what. */}
+        {a.from_value && !a.to_value && (
+          <span className="ml-1 font-mono">{a.from_value}</span>
+        )}
         {a.note && <span className="ml-1">· {a.note}</span>}
         {a.user_name && (
           <span className="ml-1 text-ink-muted/80">· {a.user_name}</span>
@@ -447,6 +454,12 @@ function actionLabel(action: string): string {
       return "Checklist item removed";
     case "finance_edit":
       return "Finance updated";
+    case "pic_change":
+      return "PIC changed";
+    case "sales_attendee_add":
+      return "Sales attending added";
+    case "sales_attendee_remove":
+      return "Sales attending removed";
     case "archived":
       return "Archived";
     case "restored":
