@@ -20,10 +20,20 @@
 // ----------------------------------------------------------------------------
 
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { canWriteScmConfig } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import {
+  CONFIG_CACHE_TTL_SECONDS,
+  bumpConfigVersion,
+  configCacheKeyUrl,
+  configCacheMatch,
+  configCachePut,
+  configCacheVersion,
+  toClientResponse,
+} from '../../services/configCache';
 import type { Env, Variables } from '../env';
 
 export const maintenanceConfig = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -76,15 +86,49 @@ function genId(): string {
 // caller to one super_admin row). Both writer routes now gate on the flat
 // permission key `scm.config.write` against the REAL Houzs caller.
 
+type McCtx = Context<{ Bindings: Env; Variables: Variables }>;
+
 // ── GET /resolved ──────────────────────────────────────────────────────
 // Returns the currently-effective config for the given scope (newest row
 // with effective_from <= asOf). asOf defaults to today.
-maintenanceConfig.get('/resolved', async (c) => {
+//
+// Exported (fairReportHandler precedent) so the route test can drive it on a
+// bare Hono app with an injected fake supabase + companyId — the supabaseAuth
+// bridge cannot run in the harness.
+export const resolvedHandler = async (c: McCtx) => {
   const scope = parseScope(c.req.query('scope'));
   if (!scope) return c.json({ error: 'scope_required' }, 400);
 
   const asOfRaw = (c.req.query('asOf') ?? '').trim();
   const asOf = ISO_DATE.test(asOfRaw) ? asOfRaw : todayIso();
+
+  // Shared PER-COMPANY read cache. The ACTIVE company id is a REQUIRED key
+  // segment (alongside the scope + asOf params the query is built from), so
+  // company A's entry can never answer company B. Cache ONLY when the company
+  // is RESOLVED to a real id: an unresolved context (pre-migration /
+  // cold-start) or a restricted-to-no-company caller BYPASSES caching rather
+  // than minting a company-less shared key — never guess the scope. The
+  // family version is bumped by every config writer (POST /changes, DELETE
+  // /changes/:id, compartment rename, compartment photo set/remove). The asOf
+  // segment defaults to today MYT, so cached "today" entries roll naturally
+  // at midnight.
+  const companyId = activeCompanyId(c);
+  let keyUrl: string | null = null;
+  if (typeof companyId === 'number' && Number.isInteger(companyId) && companyId > 0) {
+    const version = await configCacheVersion(c.env, 'maintcfg');
+    if (version != null) {
+      keyUrl = configCacheKeyUrl(
+        new URL(c.req.url).origin,
+        'maintcfg',
+        `co=${companyId}&scope=${encodeURIComponent(scope)}&asOf=${encodeURIComponent(asOf)}`,
+        version,
+      );
+    }
+  }
+  if (keyUrl) {
+    const hit = await configCacheMatch(keyUrl);
+    if (hit) return toClientResponse(hit);
+  }
 
   const supabase = c.get('supabase');
 
@@ -101,30 +145,51 @@ maintenanceConfig.get('/resolved', async (c) => {
     .limit(1);
 
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  if (!rows?.length) return c.json({ data: null, effectiveFrom: null, hasPendingPriceChange: false, pendingEffectiveFrom: null });
 
-  const row = rows[0] as Row;
+  let payload: {
+    data: unknown;
+    effectiveFrom: string | null;
+    hasPendingPriceChange: boolean;
+    pendingEffectiveFrom: string | null;
+  };
+  if (!rows?.length) {
+    // A company with no config row yet is a real, cacheable state — without
+    // caching it, every SO-form load for that company re-runs the query.
+    payload = { data: null, effectiveFrom: null, hasPendingPriceChange: false, pendingEffectiveFrom: null };
+  } else {
+    const row = rows[0] as Row;
 
-  // Lookahead for a pending future change so the UI can show "Pricing
-  // updates 2026-06-15" banner above the live config.
-  const { data: pending } = await scopeToCompany(
-    supabase
-      .from('maintenance_config_history')
-      .select('effective_from')
-      .eq('scope', scope),
-    c,
-  )
-    .gt('effective_from', asOf)
-    .order('effective_from', { ascending: true })
-    .limit(1);
+    // Lookahead for a pending future change so the UI can show "Pricing
+    // updates 2026-06-15" banner above the live config.
+    const { data: pending } = await scopeToCompany(
+      supabase
+        .from('maintenance_config_history')
+        .select('effective_from')
+        .eq('scope', scope),
+      c,
+    )
+      .gt('effective_from', asOf)
+      .order('effective_from', { ascending: true })
+      .limit(1);
 
-  return c.json({
-    data: row.config,
-    effectiveFrom: row.effective_from,
-    hasPendingPriceChange: Boolean(pending?.length),
-    pendingEffectiveFrom: pending?.[0]?.effective_from ?? null,
+    payload = {
+      data: row.config,
+      effectiveFrom: row.effective_from,
+      hasPendingPriceChange: Boolean(pending?.length),
+      pendingEffectiveFrom: pending?.[0]?.effective_from ?? null,
+    };
+  }
+
+  const body = JSON.stringify(payload);
+  if (keyUrl) {
+    await configCachePut(keyUrl, body, CONFIG_CACHE_TTL_SECONDS.maintcfg);
+  }
+  return c.body(body, 200, {
+    'content-type': 'application/json',
+    'x-config-cache': keyUrl ? 'miss' : 'bypass',
   });
-});
+};
+maintenanceConfig.get('/resolved', resolvedHandler);
 
 // ── GET /history ───────────────────────────────────────────────────────
 // Full append-only history for the scope. Each row carries an isPending
@@ -165,7 +230,8 @@ maintenanceConfig.get('/history', async (c) => {
 // Editor-only (Commander 2026-06-18) — pricing config feeds SO/PO cost and was
 // previously writable by ANY authed staff. Now gated app-side to WRITE_ROLES,
 // matching the sibling pricing editors. (RLS defence-in-depth can follow.)
-maintenanceConfig.post('/changes', async (c) => {
+// Exported for the same bare-app route test as resolvedHandler above.
+export const createChangeHandler = async (c: McCtx) => {
   if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
   }
@@ -212,6 +278,10 @@ maintenanceConfig.post('/changes', async (c) => {
     return c.json({ error: 'insert_failed', reason: error.message }, 500);
   }
 
+  // A new effective-dated row can change /resolved for ANY (scope, asOf)
+  // pair — orphan the whole family rather than guessing affected keys.
+  await bumpConfigVersion(c.env, 'maintcfg');
+
   return c.json(
     {
       id: data.id,
@@ -222,7 +292,8 @@ maintenanceConfig.post('/changes', async (c) => {
     },
     201,
   );
-});
+};
+maintenanceConfig.post('/changes', createChangeHandler);
 
 // ── POST /sofa-compartments/rename ─────────────────────────────────────
 // Maintenance-is-master cascade rename (Loo 2026-06-04: "what maintenance
@@ -257,6 +328,8 @@ maintenanceConfig.post('/sofa-compartments/rename', async (c) => {
     if (/same_code|empty_code/.test(error.message)) return c.json({ error: 'invalid_code' }, 400);
     return c.json({ error: 'rename_failed', reason: error.message }, 500);
   }
+  // The cascade rename rewrites the maintenance config blobs themselves.
+  await bumpConfigVersion(c.env, 'maintcfg');
   return c.json({ ok: true, result: data });
 });
 
@@ -292,5 +365,8 @@ maintenanceConfig.delete('/changes/:id', async (c) => {
     }
     return c.json({ error: 'delete_failed', reason: error.message }, 500);
   }
+  // Cancelling a (typically pending) row changes /resolved's lookahead and
+  // possibly the live row — orphan the family.
+  await bumpConfigVersion(c.env, 'maintcfg');
   return c.body(null, 204);
 });

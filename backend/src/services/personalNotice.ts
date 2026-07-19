@@ -17,6 +17,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 import type { Env } from "../types";
+import { bustBannerForUser } from "./configCache";
 
 // The announcements category CHECK constraint (mig 0058) allows only these.
 export type PersonalNoticeCategory = "GENERAL" | "WARNING" | "SOP" | "LEARNING";
@@ -75,6 +76,11 @@ export async function postPersonalNotice(
         opts.source,
       )
       .run();
+    // A private notice only changes its TARGETED users' banners — bust just
+    // those snapshots (usually one), not the whole family version.
+    for (const uid of ids) {
+      await bustBannerForUser(env, uid);
+    }
   } catch (e) {
     console.error(
       `[personal-notice] insert failed (source=${opts.source}):`,

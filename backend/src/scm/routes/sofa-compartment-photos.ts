@@ -32,6 +32,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { todayMyt } from '../lib/my-time';
 import { scopeToCompany } from '../lib/companyScope';
+import { bumpConfigVersion } from '../../services/configCache';
 
 export const sofaCompartmentPhotos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -217,6 +218,10 @@ sofaCompartmentPhotos.post('/:code/photo', async (c) => {
     return c.json({ error: 'db_update_failed', reason: updErr.message }, 500);
   }
 
+  // The write above mutated the live master config row — orphan the
+  // /maintenance-config/resolved read cache.
+  await bumpConfigVersion(c.env, 'maintcfg');
+
   // Best-effort cleanup of the previous photo so commander doesn't leak R2
   // storage by overwriting. Only delete if the previous key sits under this
   // compartment's prefix — defensive against a manually-typed override.
@@ -279,6 +284,9 @@ sofaCompartmentPhotos.delete('/:code/photo', async (c) => {
     .update({ config: cfg })
     .eq('id', row.id);
   if (updErr) return c.json({ error: 'db_update_failed', reason: updErr.message }, 500);
+
+  // Same as the upload path — the master config row changed.
+  await bumpConfigVersion(c.env, 'maintcfg');
 
   return c.json({ ok: true });
 });

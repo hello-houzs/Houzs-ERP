@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { bumpConfigVersion } from "./configCache";
 
 // ── Branding (company identity) ───────────────────────────────
 //
@@ -269,6 +270,10 @@ export async function setBrandingForCompany(
   )
     .bind(brandingKeyForCompany(code), json, updatedBy ?? null)
     .run();
+  // EVERY branding writer funnels through here (Settings PUT, logo upload,
+  // logo remove) — so this is the one invalidation point for the GET
+  // /api/branding read cache. Bump AFTER the upsert commits.
+  await bumpConfigVersion(env, "branding");
 }
 
 /** Legacy signature — writes the HOUZS row. Kept so untouched callers break
