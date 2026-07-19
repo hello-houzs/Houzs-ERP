@@ -13,6 +13,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import postgres from "postgres";
+import { splitSqlStatements } from "./lib/split-sql.mjs";
 
 const DRY = process.argv.includes("--dry-run");
 const DIR = "src/db/migrations-pg";
@@ -59,12 +60,11 @@ if (DRY) {
 
 for (const f of pending) {
   const sql = readFileSync(path.join(DIR, f), "utf8");
-  // Split on ";\n" so multi-statement files run statement-by-statement inside
-  // one transaction (postgres.js .unsafe runs a single statement at a time).
-  const stmts = sql
-    .split(/;\s*\n/)
-    .map((s) => s.replace(/^\s*--.*$/gm, "").trim())
-    .filter(Boolean);
+  // Multi-statement files run statement-by-statement inside one transaction
+  // (postgres.js .unsafe runs a single statement at a time). The splitter is
+  // dollar-quote aware, so a PL/pgSQL body survives intact — see
+  // scripts/lib/split-sql.mjs.
+  const stmts = splitSqlStatements(sql);
   try {
     await pg.begin(async (tx) => {
       for (const s of stmts) await tx.unsafe(s);
