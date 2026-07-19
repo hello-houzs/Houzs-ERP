@@ -63,9 +63,9 @@ export interface FairAccessResult {
 }
 
 const DENY_ORDINARY =
-  'The Fair Report is limited to management and the Sales Director. Ask an administrator if you need access.';
+  'The Sales Report is limited to management and the Sales Director. Ask an administrator if you need access.';
 const DENY_SD_BEYOND_SO =
-  'As Sales Director you can view the Sales Order stage of the Fair Report only. The Delivery and Invoice stages are limited to management.';
+  'As Sales Director you can view the Sales Order stage of the Sales Report only. The Delivery and Invoice stages are limited to management.';
 
 /**
  * The whole gate. `stage=so` is allowed for management OR the Sales Director;
