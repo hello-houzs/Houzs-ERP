@@ -34,7 +34,7 @@ import {
   type MfgFabricTier,
 } from '@2990s/shared/mfg-pricing';
 import { missingVariantAxes } from '@2990s/shared/so-variant-rule';
-import { activeOptions, lineIdentity, maintPickerValues } from '@2990s/shared';
+import { activeOptions, lineIdentity, maintPickerValues, fmtMoneyCenti } from '@2990s/shared';
 import {
   useMfgProducts,
   useMaintenanceConfig,
@@ -61,10 +61,7 @@ import styles from './SoLineCard.module.css';
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
 
-const fmtRm = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  })}`;
+const fmtRm = (centi: number, currency = 'MYR'): string => fmtMoneyCenti(centi, currency);
 
 const isBlankVariant = (v: unknown): boolean =>
   v === undefined || v === null || String(v).trim() === '';

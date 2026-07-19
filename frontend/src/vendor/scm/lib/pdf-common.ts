@@ -7,7 +7,7 @@
 // now carries HOUZS's registered entity (see below), not 2990's.
 // ----------------------------------------------------------------------------
 
-import { fmtDate } from '@2990s/shared';
+import { fmtDate, fmtMoneyCenti } from '@2990s/shared';
 import {
   composeCompanyAddress,
   getBrandingCache,
@@ -331,13 +331,7 @@ export const amountInWordsMyr = (centi: number | null | undefined): string => {
   return `RINGGIT MALAYSIA ${intToWords(rm)}${senPart} ONLY`;
 };
 
-export const fmtRm = (centi: number | null, currency = 'MYR'): string => {
-  if (centi == null) return '—';
-  return `${currency} ${(centi / 100).toLocaleString('en-MY', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-};
+export const fmtRm = (centi: number | null, currency = 'MYR'): string => fmtMoneyCenti(centi, currency);
 
 /** Document date → "31/05/2026". Null-safe ("—"). Delegates to the shared
  *  {@link fmtDate} so PDFs and the SPA share ONE date format (no 2nd source). */

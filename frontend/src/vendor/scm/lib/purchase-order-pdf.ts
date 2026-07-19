@@ -36,12 +36,11 @@
 // autotable didDrawPage hook + jsPDF putTotalPages.
 // ----------------------------------------------------------------------------
 
-import { effectiveDelivery } from '@2990s/shared';
+import { buildDefaultSofaCells, effectiveDelivery, findModule, fmtMoneyCenti, SOFA_MODULES, type Cell, type Depth } from '@2990s/shared';
 import {
   orderSofaModuleRowsWithinBuilds,
   sortSoLinesByGroupRank,
 } from '@2990s/shared/so-line-display';
-import { buildDefaultSofaCells, findModule, SOFA_MODULES, type Cell, type Depth } from '@2990s/shared';
 import { drawSofaLayout } from './sofa-layout-pdf';
 import { COMPANY, amountInWordsMyr, drawInfoColumns, ensurePdfCjkFont, fmtDocDate, fmtDocStamp } from './pdf-common';
 import {
@@ -125,8 +124,7 @@ type PoItem = {
   so_doc_no?:     string | null;
 };
 
-const fmtMoney = (centi: number, currency: string): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtMoney = (centi: number, currency: string): string => fmtMoneyCenti(centi, currency);
 
 const fmtAmount = (centi: number): string =>
   (centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

@@ -11,7 +11,7 @@
 
 import { Suspense, lazy, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { lineIdentity } from "@2990s/shared";
+import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import {
   ArrowLeft,
   History,
@@ -54,11 +54,7 @@ import { cn } from "../../lib/utils";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const fmtMoney = (centi: number, currency = "MYR"): string =>
-  `${currency} ${(centi / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+const fmtMoney = (centi: number, currency = "MYR"): string => fmtMoneyCenti(centi, currency);
 
 const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";

@@ -40,6 +40,7 @@ import { isDirectorUser, isSalesStaff } from "../../auth/salesAccess";
 import { classifyLoadError, errMsg } from "../../components/scm-v2/PhotoGallery";
 import { cn } from "../../lib/utils";
 import { ACCESS_RANK, type TeamMember } from "../../types";
+import { fmtCenti } from "@2990s/shared";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -79,10 +80,7 @@ const fmtRm = (sen: number | null | undefined, { compact = false } = {}): string
       })}k`;
     }
   }
-  return `RM ${(sen / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+  return fmtCenti(sen);
 };
 
 const fmtPct = (n: number): string => `${Math.round(n * 100)}%`;

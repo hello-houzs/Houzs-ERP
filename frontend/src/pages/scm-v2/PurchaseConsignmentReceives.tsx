@@ -30,7 +30,7 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import { statusLabel } from '../../vendor/scm/lib/status-pill';
-import { fmtDateOrDash, buildVariantSummary } from '@2990s/shared';
+import { fmtDateOrDash, buildVariantSummary, fmtMoneyCenti } from '@2990s/shared';
 import styles from './Suppliers.module.css';
 import { PageHeader } from '../../components/Layout';
 
@@ -39,8 +39,7 @@ const ICON = { size: 16, strokeWidth: 1.75 } as const;
 // Colours + labels come from the canonical lib/status-pill map via <StatusPill>.
 const STATUS_CHIPS = ['all', 'POSTED', 'CLOSED', 'CANCELLED'] as const;
 
-const fmtMoney = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtMoney = (centi: number, currency = 'MYR'): string => fmtMoneyCenti(centi, currency);
 
 const PCR_LIST_STORAGE_KEY = 'pc-receive-list.layout.v1';
 

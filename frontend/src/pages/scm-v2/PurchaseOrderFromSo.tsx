@@ -25,7 +25,7 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Save, X, CheckSquare, Square, Filter } from 'lucide-react';
 import { Button } from '@2990s/design-system';
-import { fmtDateOrDash } from '@2990s/shared';
+import { fmtDateOrDash, fmtMoneyCenti } from '@2990s/shared';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
 import {
   useOutstandingSoItems,
@@ -42,10 +42,7 @@ import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
-const fmtRm = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  })}`;
+const fmtRm = (centi: number, currency = 'MYR'): string => fmtMoneyCenti(centi, currency);
 
 /* DataGrid localStorage layout key (commander 2026-05-28). */
 const STORAGE_KEY = 'po-from-so.layout.v1';

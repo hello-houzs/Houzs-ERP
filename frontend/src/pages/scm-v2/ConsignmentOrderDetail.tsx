@@ -32,7 +32,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary, fmtDateOrDash, lineIdentity } from '@2990s/shared';
+import { buildVariantSummary, fmtDateOrDash, fmtMoneyCenti, lineIdentity } from '@2990s/shared';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import {
@@ -149,10 +149,7 @@ type ConsignmentItem = {
   line_delivery_date_overridden: boolean;
 };
 
-const fmtRm = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  })}`;
+const fmtRm = (centi: number, currency = 'MYR'): string => fmtMoneyCenti(centi, currency);
 
 const draftFromItem = (it: ConsignmentItem): SoLineDraft => ({
   itemCode:       it.item_code ?? '',

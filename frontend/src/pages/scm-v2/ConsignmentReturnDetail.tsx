@@ -38,7 +38,7 @@ import {
   useDeleteConsignmentReturnItem,
 } from '../../vendor/scm/lib/consignment-return-queries';
 import { SoLineCard, emptySoLine, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
-import { buildVariantSummary, fmtDateOrDash, lineIdentity } from '@2990s/shared';
+import { buildVariantSummary, fmtDateOrDash, fmtMoneyCenti, lineIdentity } from '@2990s/shared';
 import { useAuth } from '../../auth/AuthContext';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
@@ -56,8 +56,7 @@ const ICON = { size: 16, strokeWidth: 1.75 } as const;
 const STATUS_FLOW = ['PENDING', 'RECEIVED', 'INSPECTED', 'REFUNDED', 'CREDIT_NOTED', 'REJECTED', 'CANCELLED'] as const;
 type CrnStatus = typeof STATUS_FLOW[number];
 
-const fmtRm = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtRm = (centi: number, currency = 'MYR'): string => fmtMoneyCenti(centi, currency);
 
 const TOTALS_KPI_GRID_STYLE: CSSProperties = {
   display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-3)',

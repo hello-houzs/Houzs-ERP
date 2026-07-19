@@ -1041,6 +1041,9 @@ function ProjectsListView() {
     live_count: number;
     overdue_tasks: number;
   }>("/api/projects/summary", () => api.get("/api/projects/summary"));
+  // A failed or not-yet-loaded summary read must NOT render "0" — a zero is a
+  // claim the data doesn't support. Mirror Overview: unknown read → an em dash.
+  const summaryUnknown = !!summary.error || !summary.data;
 
   const brands = useQuery<{ data: string[] }>("/api/projects/brands", () => api.get("/api/projects/brands"));
   const eventTypes = useQuery<{ data: EventType[] }>("/api/projects/event-types", () =>
@@ -1259,20 +1262,20 @@ function ProjectsListView() {
       <DashboardGrid cols={3}>
         <StatCard
           label="Live Now"
-          value={(summary.data?.live_count ?? 0).toString()}
+          value={summaryUnknown ? "—" : String(summary.data!.live_count)}
           subtitle="Events currently running"
-          tone={(summary.data?.live_count ?? 0) > 0 ? "success" : "default"}
+          tone={!summaryUnknown && summary.data!.live_count > 0 ? "success" : "default"}
         />
         <StatCard
           label="Upcoming (30d)"
-          value={(summary.data?.upcoming_30d ?? 0).toString()}
+          value={summaryUnknown ? "—" : String(summary.data!.upcoming_30d)}
           subtitle="Starting within the next month"
         />
         <StatCard
           label="Overdue Tasks"
-          value={(summary.data?.overdue_tasks ?? 0).toString()}
+          value={summaryUnknown ? "—" : String(summary.data!.overdue_tasks)}
           subtitle="Checklist items past due"
-          tone={(summary.data?.overdue_tasks ?? 0) > 0 ? "error" : "default"}
+          tone={!summaryUnknown && summary.data!.overdue_tasks > 0 ? "error" : "default"}
         />
       </DashboardGrid>
 

@@ -27,6 +27,7 @@ import { Plus, Pencil, Trash2, History, X, CheckSquare, Square } from 'lucide-re
 import { Button } from '@2990s/design-system';
 import { DateField } from './DateField';
 import {
+  fmtCenti,
   maintValues,
   SOFA_MODULES,
   type SofaPriceTier,
@@ -60,13 +61,7 @@ const TIERS: SofaPriceTier[] = ['PRICE_1', 'PRICE_2', 'PRICE_3'];
 
 const ICON_PROPS = { size: 14, strokeWidth: 1.75 } as const;
 
-const fmtRm = (centi: number | null | undefined): string => {
-  if (centi == null) return '—';
-  return `RM ${(centi / 100).toLocaleString('en-MY', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-};
+const fmtRm = (centi: number | null | undefined): string => fmtCenti(centi);
 
 const fmtDate = (iso: string): string => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;

@@ -30,7 +30,7 @@ import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
 import { useSetBreadcrumbs } from '../../hooks/useBreadcrumbs';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDateOrDash, fmtDateTime, lineIdentity, missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared'; // Commander 2026-05-28
+import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDateOrDash, fmtDateTime, fmtMoneyCenti, lineIdentity, missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared'; // Commander 2026-05-28
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import {
@@ -211,10 +211,7 @@ const SO_STATUS_LABEL: Record<string, string> = {
   CANCELLED:     'Cancelled',
 };
 
-const fmtRm = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  })}`;
+const fmtRm = (centi: number, currency = 'MYR'): string => fmtMoneyCenti(centi, currency);
 
 /* Task #99 (UI perf) — Local debounce hook lifted to ../lib/hooks.ts as
    useDebouncedValue so SoLineCard's product picker (Task #102) can reuse

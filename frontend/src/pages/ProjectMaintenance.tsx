@@ -239,7 +239,7 @@ function OrganizerManager() {
   return (
     <CollapsibleSection
       title="Organizers"
-      count={q.data?.data.length}
+      count={q.data?.data?.length}
       description="Picker values for the project Organizer field. Soft delete — existing project rows still display whatever name they were saved with."
     >
       <div className="mb-3 flex gap-2">
@@ -265,7 +265,7 @@ function OrganizerManager() {
             ))}
           </>
         )}
-        {q.data?.data.length === 0 && (
+        {q.data?.data?.length === 0 && (
           <li className="px-3 py-3 text-[11.5px] text-ink-muted">No organizers yet.</li>
         )}
         {(expanded
@@ -292,7 +292,7 @@ function OrganizerManager() {
         ))}
       </ul>
       <ExpandToggle
-        total={q.data?.data.length ?? 0}
+        total={q.data?.data?.length ?? 0}
         expanded={expanded}
         onToggle={() => setExpanded((v) => !v)}
       />
@@ -384,7 +384,7 @@ function VenueManager() {
   return (
     <CollapsibleSection
       title="Venues"
-      count={q.data?.data.length}
+      count={q.data?.data?.length}
       description="Picker values for the project Venue field. Optionally tag each venue with a state — picking it on a new project will pre-fill the state."
     >
       <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_180px_auto]">
@@ -423,7 +423,7 @@ function VenueManager() {
             ))}
           </>
         )}
-        {q.data?.data.length === 0 && (
+        {q.data?.data?.length === 0 && (
           <li className="px-3 py-3 text-[11.5px] text-ink-muted">No venues yet.</li>
         )}
         {(expanded
@@ -477,7 +477,7 @@ function VenueManager() {
         ))}
       </ul>
       <ExpandToggle
-        total={q.data?.data.length ?? 0}
+        total={q.data?.data?.length ?? 0}
         expanded={expanded}
         onToggle={() => setExpanded((s) => !s)}
       />
@@ -1503,7 +1503,7 @@ function BrandManager() {
     try {
       await api.post("/api/projects/brands", {
         name: trimmed,
-        sort_order: (q.data?.data.length ?? 0) * 10,
+        sort_order: (q.data?.data?.length ?? 0) * 10,
       });
       setName("");
       q.reload();
@@ -1549,7 +1549,7 @@ function BrandManager() {
   return (
     <CollapsibleSection
       title="Brands"
-      count={q.data?.data.length}
+      count={q.data?.data?.length}
       defaultOpen
       description="Shown in the project Brand dropdown. Renames cascade to existing projects so historical data stays in sync."
     >
@@ -1576,7 +1576,7 @@ function BrandManager() {
             ))}
           </>
         )}
-        {q.data?.data.length === 0 && (
+        {q.data?.data?.length === 0 && (
           <li className="px-3 py-3 text-[11.5px] text-ink-muted">
             No brands configured.
           </li>
@@ -1676,7 +1676,7 @@ function BrandManager() {
         })}
       </ul>
       <ExpandToggle
-        total={q.data?.data.length ?? 0}
+        total={q.data?.data?.length ?? 0}
         expanded={expanded}
         onToggle={() => setExpanded((s) => !s)}
       />
@@ -1714,7 +1714,7 @@ function EventTypeManager() {
     try {
       await api.post("/api/projects/event-types", {
         name: trimmed,
-        sort_order: (q.data?.data.length ?? 0) * 10,
+        sort_order: (q.data?.data?.length ?? 0) * 10,
       });
       setName("");
       q.reload();
@@ -1757,7 +1757,7 @@ function EventTypeManager() {
   return (
     <CollapsibleSection
       title="Event Types"
-      count={q.data?.data.length}
+      count={q.data?.data?.length}
       description={'Shown in the "Event Type" dropdown when creating a project. Setting a default checklist template on a type auto-seeds the checklist for every new project of that type.'}
     >
       <div className="mb-3 flex gap-2">
@@ -1783,7 +1783,7 @@ function EventTypeManager() {
             ))}
           </>
         )}
-        {q.data?.data.length === 0 && (
+        {q.data?.data?.length === 0 && (
           <li className="px-3 py-3 text-[11.5px] text-ink-muted">
             No event types yet.
           </li>
@@ -1882,7 +1882,7 @@ function EventTypeManager() {
         })}
       </ul>
       <ExpandToggle
-        total={q.data?.data.length ?? 0}
+        total={q.data?.data?.length ?? 0}
         expanded={expanded}
         onToggle={() => setExpanded((s) => !s)}
       />
@@ -1921,7 +1921,7 @@ function CostRateManager({ enabled = true }: { enabled?: boolean }) {
   return (
     <CollapsibleSection
       title="Cost Rates"
-      count={q.data?.data.length}
+      count={q.data?.data?.length}
       description="Per-brand transport, merchandise, and commission. Saving a row recomputes auto cost lines for every active project on that brand."
     >
       {q.loading && !q.data ? (

@@ -4,7 +4,7 @@
 // Credit expected (synced/green because it's money coming back).
 
 import { useMemo, type ReactNode } from "react";
-import { lineIdentity } from "@2990s/shared";
+import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -81,8 +81,7 @@ type PrItem = {
   warehouse_code?: string | null;
 };
 
-const fmtMoney = (centi: number, currency = "MYR"): string =>
-  `${currency} ${(centi / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtMoney = (centi: number, currency = "MYR"): string => fmtMoneyCenti(centi, currency);
 
 const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";

@@ -48,6 +48,7 @@ import {
 import { authedFetch } from "../../../vendor/scm/lib/authed-fetch";
 import { classifyLoadError, errMsg } from "../../../components/scm-v2/PhotoGallery";
 import { cn } from "../../../lib/utils";
+import { fmtCenti } from "@2990s/shared";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -75,13 +76,7 @@ type StagedEdit = {
   status?: "ACTIVE" | "INACTIVE";
 };
 
-const fmtRm = (sen: number | null | undefined): string =>
-  sen == null
-    ? "—"
-    : `RM ${(sen / 100).toLocaleString("en-MY", {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      })}`;
+const fmtRm = (sen: number | null | undefined): string => fmtCenti(sen);
 
 // ── Hook: sofa models ───────────────────────────────────────────────────────
 

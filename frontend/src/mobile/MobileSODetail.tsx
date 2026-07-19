@@ -7,6 +7,7 @@ import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
 import { fetchScanSlipImageBlobUrl } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
+import { statusLabel } from "../vendor/scm/lib/status-pill";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import { ACCESS_RANK } from "../types";
 import {
@@ -1180,7 +1181,11 @@ const HIST_MONEY_FIELDS = new Set([
 const histVal = (field: string, v: unknown): string => {
   if (v === null || v === undefined || v === "") return "—";
   if ((HIST_MONEY_FIELDS.has(field) || /Centi$/.test(field)) && typeof v === "number") return `RM ${rm(v)}`;
-  if (typeof v === "object") return JSON.stringify(v);
+  // An object field-change (variants / sofa build) must never dump raw JSON at
+  // the user: summarise a list by its count, any other object as "updated".
+  if (typeof v === "object") {
+    return Array.isArray(v) ? `${v.length} item${v.length === 1 ? "" : "s"}` : "updated";
+  }
   return String(v).replace(/_/g, " ");
 };
 /* Timestamp — desktop-standard numeric DD/MM/YYYY + HH:mm. */
@@ -1215,8 +1220,10 @@ const histSentence = (e: SoAuditEntry): string => {
       return "updated details";
     case "UPDATE_STATUS": {
       const s = find("status");
-      const to = (s?.to ?? e.status_snapshot ?? "?") as string;
-      return s?.from ? `changed status ${String(s.from)} → ${to}` : `changed status to ${to}`;
+      const to = statusLabel("so", (s?.to ?? e.status_snapshot ?? "?") as string);
+      return s?.from
+        ? `changed status ${statusLabel("so", String(s.from))} → ${to}`
+        : `changed status to ${to}`;
     }
     case "ADD_PAYMENT": {
       const a = find("amountCenti");

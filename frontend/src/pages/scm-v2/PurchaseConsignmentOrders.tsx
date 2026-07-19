@@ -19,7 +19,7 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { Button } from '@2990s/design-system';
-import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
+import { buildVariantSummary, fmtDateOrDash, fmtMoneyCenti } from '@2990s/shared';
 import {
   usePurchaseConsignmentOrders,
   usePurchaseConsignmentOrderDetail,
@@ -47,8 +47,7 @@ const STATUS_CHIPS: { value: StatusFilter; label: string }[] = [
   { value: 'all', label: 'All' },
 ];
 
-const fmtMoney = (centi: number, currency: Currency): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtMoney = (centi: number, currency: Currency): string => fmtMoneyCenti(centi, currency);
 
 // The backend PC-orders list returns pc_number (the consignment doc number),
 // but the shared PoHeaderRow type carries po_number. Read pc_number first with

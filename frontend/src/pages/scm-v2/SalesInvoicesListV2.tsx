@@ -50,6 +50,7 @@ import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
+import { fmtCenti } from "@2990s/shared";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Subset of the full SiRow (see SalesInvoicesList.tsx for the 40-field shape).

@@ -3,7 +3,7 @@
 // Outstanding-as-hero, but flipped — this is what WE owe to the supplier.
 
 import { lazy, Suspense, useMemo, type ReactNode } from "react";
-import { lineIdentity } from "@2990s/shared";
+import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -102,11 +102,7 @@ const ALLOC_LABEL: Record<string, string> = { QTY: 'By quantity', VALUE: 'By val
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const fmtMoney = (centi: number, currency = "MYR"): string =>
-  `${currency} ${(centi / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+const fmtMoney = (centi: number, currency = "MYR"): string => fmtMoneyCenti(centi, currency);
 
 const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";

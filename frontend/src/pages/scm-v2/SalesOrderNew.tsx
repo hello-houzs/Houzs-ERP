@@ -89,6 +89,7 @@ import {
 import { formatPhone } from '@2990s/shared/phone';
 import { soDateGuardError, soSliplessPaymentError } from '../../vendor/scm/lib/so-form-validate';
 import styles from './SalesOrderNew.module.css';
+import { fmtMoneyCenti } from '@2990s/shared';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -107,10 +108,7 @@ const newLine = (deliveryDate: string | null = null): DraftLine => ({
   rid: `l${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
 });
 
-const fmtRm = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  })}`;
+const fmtRm = (centi: number, currency = 'MYR'): string => fmtMoneyCenti(centi, currency);
 
 /* Coupled-dates rule (spec 3) — given a Delivery date, the Processing date is
    when procurement should start: ~6 weeks (42 days) before delivery, but never
