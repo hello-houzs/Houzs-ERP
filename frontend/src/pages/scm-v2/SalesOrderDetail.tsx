@@ -119,6 +119,7 @@ import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
 import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { generateSalesOrderPdf } from '../../vendor/scm/lib/sales-order-pdf';
+import { newIdempotencyKey } from '../../lib/idempotency';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -596,13 +597,27 @@ export const SalesOrderDetail = () => {
   const [saveError, setSaveError] = useState<string | null>(null);
   const customerCardRef = useRef<CustomerCardHandle | null>(null);
 
+  /* One idempotency key per AMENDMENT INTENT (see lib/idempotency.ts). The
+     intent is this edit session: the operator opened the order to request one
+     amendment. Minted lazily on submit and retired when the edit session ENDS,
+     never when the write succeeds — if the submit times out and the operator
+     presses Submit again, the same key must replay the first response instead
+     of filing a second amendment (the number is minted `count + 1`, so a second
+     one is a real duplicate). A later, genuinely separate amendment is a new
+     edit session and therefore a new key. */
+  const amendKeyRef = useRef<string | null>(null);
+  const endEditSession = () => {
+    amendKeyRef.current = null;
+    setIsEditing(false);
+  };
+
   const enterEdit  = () => { setSaveError(null); setIsEditing(true); };
   const cancelEdit = () => {
     customerCardRef.current?.reset();
     setSaveError(null);
     // The seed/clear effect wipes editingDrafts + addingDraft when isEditing
     // flips to false, discarding any uncommitted line edits.
-    setIsEditing(false);
+    endEditSession();
   };
 
   /* Whole-order Save — persists the order in one shot:
@@ -738,7 +753,7 @@ export const SalesOrderDetail = () => {
       }))
       .then(() => {
         setSavingOrder(false);
-        setIsEditing(false);
+        endEditSession();
       })
       .catch((e) => {
         setSavingOrder(false);
@@ -906,14 +921,16 @@ export const SalesOrderDetail = () => {
         );
       });
       /* 2. The approval half — frozen header fields + line diffs. */
+      amendKeyRef.current ??= newIdempotencyKey();
       await createAmendment.mutateAsync({
         docNo: header.doc_no,
         reason: reason.trim() || undefined,
         lines,
         headerChanges,
+        idempotencyKey: amendKeyRef.current,
       });
       setSavingOrder(false);
-      setIsEditing(false);
+      endEditSession();
       notify({
         title: 'Amendment submitted',
         body: 'It now needs supplier confirmation, then approval, before the order is revised.',

@@ -17,6 +17,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 import { invalidateSoLists } from './sales-order-queries';
 import type { SoAmendmentHeaderChanges } from './so-amendment-header';
 
@@ -178,15 +179,23 @@ export const useCreateAmendment = () => {
        line-only amendment omits it. The server 400s `amendment_empty` when both
        halves are empty, so a no-op submit can no longer create a blank
        amendment in the approval queue. */
-    mutationFn: ({ docNo, ...body }: {
+    /* `idempotencyKey` is OPTIONAL and MUST be destructured out of the body —
+       the rest-spread would otherwise post it as an amendment field. The
+       amendment number is minted as `${docNo}/A${prior.length + 1}` (backend
+       mfg-sales-orders.ts), the count+1 shape doc-no.ts warns about, so two
+       in-flight submits can both read the same `prior.length`. The open-
+       amendment 409 backstops the common case, but it is a check-then-act
+       race, not a constraint — one key per amendment intent closes it. */
+    mutationFn: ({ docNo, idempotencyKey, ...body }: {
       docNo: string;
+      idempotencyKey?: string;
       reason?: string;
       lines: CreateAmendmentLine[];
       headerChanges?: SoAmendmentHeaderChanges;
     }) =>
       authedFetch<{ amendment: AmendmentRow }>(
         `/mfg-sales-orders/${docNo}/amendments`,
-        { method: 'POST', body: JSON.stringify(body) },
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) }),
       ),
     onSuccess: (_, vars) => {
       invalidateAmendmentSideEffects(qc);
