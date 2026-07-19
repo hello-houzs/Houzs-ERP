@@ -1,6 +1,7 @@
 import React from "react";
 import { useLocation } from "react-router-dom";
 import { Skeleton } from "./Skeleton";
+import { reportClientError } from "../lib/errorReporter";
 
 /**
  * Suspense fallback for lazily-loaded route chunks — a brand-tinted page
@@ -139,6 +140,10 @@ export class ChunkReloadBoundary extends React.Component<BoundaryProps, Boundary
       }
       // A reload already failed to fix it — surface it instead of looping.
       console.error("[chunk-recover] stale chunk error persisted:", error?.message ?? error);
+      // Report the PERSISTED case only: routine post-deploy chunk misses
+      // self-heal silently above and would be pure noise, but a recovery that
+      // did not stick means a user is staring at the panel — IT should know.
+      reportClientError(error, "stale-chunk-persisted");
       this.setState({ recovering: false });
       return;
     }
@@ -146,6 +151,11 @@ export class ChunkReloadBoundary extends React.Component<BoundaryProps, Boundary
     // IT can find and fix the underlying page bug instead of it recurring
     // invisibly behind the generic panel.
     console.error("[route-crash]", error?.message ?? error, info?.componentStack ?? "");
+    // Report AND fall through to the fallback render — never swallow, never
+    // change behaviour. React catches render errors before window.onerror can,
+    // so without this call a white-screen class of crash would stay invisible
+    // to the daily digest. reportClientError never throws and never loops.
+    reportClientError(error, "route-crash");
   }
 
   componentDidUpdate(prevProps: BoundaryProps, prevState: BoundaryState): void {

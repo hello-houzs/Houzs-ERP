@@ -42,6 +42,10 @@ export type EmailPurpose =
   // (seeded false in mig 0132), fail-closed — a PO reaches an external supplier
   // only when the owner flips this channel on, and only on a human action.
   | "purchase_order"
+  // Internal IT telemetry: the daily client-error digest (services/
+  // clientErrors.ts). Internal channel — default ON when the toggle row is
+  // missing, like the other digests.
+  | "client_error_digest"
   | "generic";
 
 export interface SendOptions {
@@ -105,6 +109,7 @@ const PURPOSE_TOGGLE_KEYS: Record<EmailPurpose, string> = {
   invoice: "email.invoice",
   document_report: "email.document_report",
   purchase_order: "email.purchase_order",
+  client_error_digest: "email.client_error_digest",
   // No toggle for 'generic' — caller opted in explicitly.
   generic: "email.enabled",
 };
