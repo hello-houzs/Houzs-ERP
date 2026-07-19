@@ -37,7 +37,7 @@
 //      through the report while being correctly blocked on the module page.
 // ----------------------------------------------------------------------------
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
@@ -50,6 +50,13 @@ import {
   aggregateDoLines, aggregateSiLines, computeLineComparison, filterRows, summarize, groupRows,
   type DoLineCost, type SiLineCost, type LineComparison, type CostingDimension,
 } from '../lib/fulfillment-costing';
+import {
+  parseStage, fairReportAccess, fairSoMoney, depositByTender, paymentMethodsUsed,
+  belowDeposit, doCostTotal, siCostTotal, marginPct, resolveDateWindow,
+  summarizeSo, summarizeDo, summarizeInvoice,
+  type FairStage, type FairFilters, type PaymentRow,
+} from '../lib/fair-report';
+import type { AuthUser } from '../../services/auth';
 
 /* Strip cost / margin / deposit from every FLAT report row for a non-finance
    caller. The listing denormalises the SO header onto each line, so one row
@@ -768,3 +775,459 @@ reports.get('/fulfillment-costing', async (c) => {
     },
   });
 });
+
+// ============================================================================
+// GET /reports/fair-report — the exhibition-performance report (owner 2026-07-19).
+//
+// A read-only report with THREE document-stage views selected by `stage`:
+//   stage=so       one row per Sales Order  (booking view)
+//   stage=do       one row per Delivery Order (fulfilment view — SO-cost vs DO-cost)
+//   stage=invoice  one row per Sales Invoice  (billing view — SO→DO→landed cost)
+//
+// Every stage anchors on the FAIR = the exhibition PROJECT hard-linked to each SO
+// via mfg_sales_orders.project_id (#814 / mig 0146). All filters live on the SO
+// header, so DO/Invoice stages resolve the fair by joining their doc back to its
+// SO — which also makes "not-yet-delivered / not-yet-invoiced SOs are absent"
+// true by construction. CONFIRMED orders only.
+//
+// PERMISSION (owner-ruled, enforced PER STAGE — see lib/fair-report.fairReportAccess):
+//   * ordinary salespeople → 403 on every stage
+//   * Sales Director       → stage=so ONLY (403 on do + invoice)
+//   * MANAGEMENT           → all stages. management = isFinanceViewer AND NOT a
+//     Sales Director = {`*` owner/IT, Super Admin, Finance Manager}. It is NOT
+//     canViewScmFinance raw: that cohort INCLUDES the Sales Director, and using
+//     it for do/invoice would hand him the two stages the owner reserved.
+// No SALESPERSON ROW-SCOPE is applied: the two admitted tiers (management + Sales
+// Director) both see ALL sales (canViewAllSales superset), so there is no rep
+// whose own+downline rows this could over-expose. A future widening of the gate
+// would need to add resolveSalesScopeIds here, exactly as the listings above do.
+// ============================================================================
+
+/* Build the AuthUser-shaped caller the gate reads, from the REAL Houzs user the
+   bridge stashed (the scm `user` context is the pinned system staff row with no
+   position). Only position_name + permissions_set are read by the gate. */
+function fairCaller(c: { get(key: 'houzsUser'): Variables['houzsUser'] }): AuthUser | null {
+  const hu = c.get('houzsUser');
+  if (!hu) return null;
+  return { position_name: hu.position_name ?? null, permissions_set: hu.permissions_set } as AuthUser;
+}
+
+/* The SO-header columns every stage needs — fair dims + the money split. */
+const FAIR_SO_COLS = `
+  doc_no, so_date, ref, venue, venue_id, customer_state, salesperson_id, project_id, branding,
+  local_total_centi, balance_centi, deposit_centi, paid_centi,
+  mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, service_centi,
+  mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, service_cost_centi,
+  total_cost_centi
+`;
+
+type FairSoHeader = {
+  doc_no: string;
+  so_date: string | null;
+  ref: string | null;
+  venue: string | null;
+  venue_id: string | null;
+  customer_state: string | null;
+  salesperson_id: string | null;
+  project_id: number | null;
+  branding: string | null;
+  local_total_centi: number | null; balance_centi: number | null; deposit_centi: number | null; paid_centi: number | null;
+  mattress_sofa_centi: number | null; bedframe_centi: number | null; accessories_centi: number | null; others_centi: number | null; service_centi: number | null;
+  mattress_sofa_cost_centi: number | null; bedframe_cost_centi: number | null; accessories_cost_centi: number | null; others_cost_centi: number | null; service_cost_centi: number | null;
+  total_cost_centi: number | null;
+};
+
+/* Read the `stage` + shared filter query params off the request. */
+function readFairFilters(c: { req: { query(k: string): string | undefined } }): FairFilters {
+  const projectRaw = c.req.query('project');
+  const project = projectRaw != null && projectRaw.trim() !== '' && Number.isFinite(Number(projectRaw)) ? Number(projectRaw) : null;
+  return {
+    venue: c.req.query('venue') ?? null,
+    state: c.req.query('state') ?? null,
+    project,
+    branding: c.req.query('branding') ?? null,
+    salesperson: c.req.query('salesperson') ?? null,
+    dateFrom: c.req.query('date_from') ?? null,
+    dateTo: c.req.query('date_to') ?? null,
+    month: c.req.query('month') ?? null,
+  };
+}
+
+/* Fetch the CONFIRMED SOs of a fair matching the filters. The single source of
+   truth for "which orders are in scope" — all three stages start here. */
+async function fetchFairSos(
+  c: any,
+  filters: FairFilters,
+): Promise<{ rows: FairSoHeader[]; error?: string }> {
+  const sb = c.get('supabase');
+  const { from, to } = resolveDateWindow(filters);
+  const { data, error } = await paginateAll((pFrom: number, pTo: number) => {
+    let q = sb.from('mfg_sales_orders').select(FAIR_SO_COLS).eq('status', 'CONFIRMED');
+    if (filters.project != null) q = q.eq('project_id', filters.project);
+    if (filters.venue)       q = q.eq('venue_id', filters.venue);
+    if (filters.state)       q = q.eq('customer_state', filters.state);
+    if (filters.branding)    q = q.eq('branding', filters.branding);
+    if (filters.salesperson) q = q.eq('salesperson_id', filters.salesperson);
+    if (from) q = q.gte('so_date', from);
+    if (to)   q = q.lte('so_date', to);
+    q = scopeToCompany(q, c);
+    q = q.order('so_date', { ascending: false });
+    return q.range(pFrom, pTo);
+  });
+  if (error) return { rows: [], error: error.message };
+  return { rows: (data ?? []) as unknown as FairSoHeader[] };
+}
+
+/* Resolve salesperson uuid → staff.name for a set of ids (batched). */
+async function resolveStaffNames(c: any, ids: string[]): Promise<Map<string, string>> {
+  const sb = c.get('supabase');
+  const out = new Map<string, string>();
+  const uniq = Array.from(new Set(ids.filter(Boolean)));
+  if (uniq.length === 0) return out;
+  const { data } = await chunkIn(uniq, (batch: string[], pFrom: number, pTo: number) =>
+    sb.from('staff').select('id, name').in('id', batch).range(pFrom, pTo));
+  for (const s of (data ?? []) as Array<{ id: string; name: string | null }>) {
+    if (s.id && s.name) out.set(s.id, s.name);
+  }
+  return out;
+}
+
+/* Resolve project_id (int) → { name, start_date, end_date } from the PUBLIC
+   schema (projects lives in public, not scm — read via c.env.DB, the same
+   binding createSalesOrderCore stamps the link from). */
+type ProjectMeta = { name: string | null; start_date: string | null; end_date: string | null };
+async function resolveProjects(c: any, ids: number[]): Promise<Map<number, ProjectMeta>> {
+  const out = new Map<number, ProjectMeta>();
+  const uniq = Array.from(new Set(ids.filter((v) => Number.isFinite(v))));
+  if (uniq.length === 0) return out;
+  try {
+    const placeholders = uniq.map(() => '?').join(',');
+    const res = (await c.env.DB.prepare(
+      `SELECT id, name, start_date, end_date FROM projects WHERE id IN (${placeholders})`,
+    ).bind(...uniq).all()) as { results?: Array<{ id: number; name: string | null; start_date: string | null; end_date: string | null }> };
+    for (const p of res.results ?? []) {
+      out.set(Number(p.id), { name: p.name ?? null, start_date: p.start_date ?? null, end_date: p.end_date ?? null });
+    }
+  } catch {
+    /* non-fatal — an unresolved project simply renders a null name (the SO's
+       own venue text still identifies the fair). Never block the report. */
+  }
+  return out;
+}
+
+/* Fetch the payment ledger for a set of SO doc_nos, grouped by doc_no. */
+async function fetchPaymentsByDoc(c: any, docNos: string[]): Promise<Map<string, PaymentRow[]>> {
+  const sb = c.get('supabase');
+  const byDoc = new Map<string, PaymentRow[]>();
+  const uniq = Array.from(new Set(docNos.filter(Boolean)));
+  if (uniq.length === 0) return byDoc;
+  const { data } = await chunkIn(uniq, (batch: string[], pFrom: number, pTo: number) => scopeToCompany(sb
+    .from('mfg_sales_order_payments')
+    .select('so_doc_no, method, amount_centi, merchant_provider, installment_months, is_deposit')
+    .in('so_doc_no', batch), c)
+    .range(pFrom, pTo));
+  for (const p of (data ?? []) as Array<{ so_doc_no: string; method: string | null; amount_centi: number | null }>) {
+    const arr = byDoc.get(p.so_doc_no) ?? [];
+    arr.push({ method: p.method, amount_centi: p.amount_centi });
+    byDoc.set(p.so_doc_no, arr);
+  }
+  return byDoc;
+}
+
+/* Shared "fair identity" columns emitted on every stage row. */
+function fairDims(
+  h: FairSoHeader,
+  staffNames: Map<string, string>,
+  projects: Map<number, ProjectMeta>,
+): Record<string, unknown> {
+  const proj = h.project_id != null ? projects.get(h.project_id) ?? null : null;
+  return {
+    venue: h.venue,
+    venue_id: h.venue_id,
+    state: h.customer_state,
+    project_id: h.project_id,
+    project: proj?.name ?? null,
+    project_start_date: proj?.start_date ?? null,
+    project_end_date: proj?.end_date ?? null,
+    salesperson_id: h.salesperson_id,
+    salesperson: h.salesperson_id ? staffNames.get(h.salesperson_id) ?? null : null,
+    branding: h.branding,
+  };
+}
+
+type FairCtx = Context<{ Bindings: Env; Variables: Variables }>;
+
+/* Exported so the route test can drive the handler DIRECTLY on a bare Hono app
+   (injecting supabase + houzsUser + env.DB via its own middleware), without the
+   supabaseAuth bridge — which cannot run in the test harness. Registered on the
+   real router with supabaseAuth in front, below. */
+export const fairReportHandler = async (c: FairCtx) => {
+  const stage = parseStage(c.req.query('stage'));
+  if (!stage) return c.json({ error: 'The `stage` parameter is required and must be one of: so, do, invoice.' }, 400);
+
+  const access = fairReportAccess(stage, fairCaller(c));
+  if (!access.allowed) return c.json({ error: access.error }, 403);
+
+  const filters = readFairFilters(c);
+  const { rows: soRows, error: soErr } = await fetchFairSos(c, filters);
+  if (soErr) return c.json({ error: 'load_failed', reason: soErr }, 500);
+
+  const sb = c.get('supabase');
+  const staffNames = await resolveStaffNames(c, soRows.map((r) => r.salesperson_id ?? '').filter(Boolean));
+  const projects = await resolveProjects(c, soRows.map((r) => r.project_id).filter((v): v is number => v != null));
+  const soByDoc = new Map(soRows.map((r) => [r.doc_no, r] as const));
+
+  const filtersEcho = {
+    stage,
+    venue: filters.venue ?? null, state: filters.state ?? null, project: filters.project ?? null,
+    branding: filters.branding ?? null, salesperson: filters.salesperson ?? null,
+    month: filters.month ?? null, date_from: filters.dateFrom ?? null, date_to: filters.dateTo ?? null,
+  };
+
+  // ── stage=so ──────────────────────────────────────────────────────────────
+  if (stage === 'so') {
+    const payByDoc = await fetchPaymentsByDoc(c, soRows.map((r) => r.doc_no));
+    const rows = soRows.map((h) => {
+      const money = fairSoMoney(h);
+      const payments = payByDoc.get(h.doc_no) ?? [];
+      const paidTotal = payments.reduce((s, p) => s + Number(p.amount_centi ?? 0), 0);
+      const tender = depositByTender(payments);
+      const below = belowDeposit({ balanceCenti: h.balance_centi, depositCenti: h.deposit_centi, paidCenti: paidTotal });
+      return {
+        ...fairDims(h, staffNames, projects),
+        so_date: h.so_date,
+        so_no: h.doc_no,
+        order_form: h.ref,
+        amount_centi: money.amount_centi,
+        selling_centi: money.selling_centi,
+        service_rev_centi: money.service_rev_centi,
+        cost_by_category: money.cost_by_category,
+        total_so_cost_centi: money.total_so_cost_centi,
+        margin_pct: money.margin_pct,
+        balance_centi: money.balance_centi,
+        paid_total_centi: paidTotal,
+        deposit_centi: Number(h.deposit_centi ?? 0),
+        payment_methods: paymentMethodsUsed(payments),
+        deposit_by_tender: tender,
+        below_deposit: below,
+      };
+    });
+    const summary = summarizeSo(rows);
+    return c.json({ stage, rows, summary, filters: filtersEcho, meta: { access_tier: access.tier } });
+  }
+
+  const docNos = soRows.map((r) => r.doc_no);
+  if (docNos.length === 0) {
+    const summary = stage === 'do' ? summarizeDo([]) : summarizeInvoice([]);
+    return c.json({ stage, rows: [], summary, filters: filtersEcho, meta: { access_tier: access.tier } });
+  }
+
+  // ── stage=do ──────────────────────────────────────────────────────────────
+  if (stage === 'do') {
+    // DOs whose SO is in the fair (link by so_doc_no text — no FK to embed on).
+    const { data: doData, error: doErr } = await chunkIn(docNos, (batch: string[], pFrom: number, pTo: number) => scopeToCompany(sb
+      .from('delivery_orders')
+      .select('id, do_number, so_doc_no, do_date, delivered_at, status')
+      .in('so_doc_no', batch), c)
+      .range(pFrom, pTo));
+    if (doErr) return c.json({ error: 'load_failed', reason: doErr.message }, 500);
+    const dos = (doData ?? []) as Array<{ id: string; do_number: string; so_doc_no: string | null; do_date: string | null; delivered_at: string | null; status: string | null }>;
+
+    // Their lines (cost), grouped per DO id.
+    const linesByDo = new Map<string, Array<{ qty: number | null; unit_cost_centi: number | null; ship_cost_centi: number | null }>>();
+    const doIds = dos.map((d) => d.id);
+    if (doIds.length > 0) {
+      const { data: liData, error: liErr } = await chunkIn(doIds, (batch: string[], pFrom: number, pTo: number) => scopeToCompany(sb
+        .from('delivery_order_items')
+        .select('delivery_order_id, qty, unit_cost_centi, ship_cost_centi')
+        .in('delivery_order_id', batch), c)
+        .range(pFrom, pTo));
+      if (liErr) return c.json({ error: 'load_failed', reason: liErr.message }, 500);
+      for (const l of (liData ?? []) as Array<{ delivery_order_id: string; qty: number | null; unit_cost_centi: number | null; ship_cost_centi: number | null }>) {
+        const arr = linesByDo.get(l.delivery_order_id) ?? [];
+        arr.push({ qty: l.qty, unit_cost_centi: l.unit_cost_centi, ship_cost_centi: l.ship_cost_centi });
+        linesByDo.set(l.delivery_order_id, arr);
+      }
+    }
+
+    const rows = dos.map((d) => {
+      const h = d.so_doc_no ? soByDoc.get(d.so_doc_no) : undefined;
+      const doCost = doCostTotal(linesByDo.get(d.id) ?? []);
+      const totalSoCost = Number(h?.total_cost_centi ?? 0);
+      const costDelta = doCost.total_do_cost_centi - totalSoCost;
+      return {
+        ...(h ? fairDims(h, staffNames, projects) : {}),
+        delivery_date: d.delivered_at ?? d.do_date,
+        do_no: d.do_number,
+        so_no: d.so_doc_no,
+        status: d.status,
+        qty: doCost.qty,
+        total_so_cost_centi: totalSoCost,
+        total_do_cost_centi: doCost.total_do_cost_centi,
+        do_cost_is_legacy: doCost.is_legacy,
+        cost_delta_centi: costDelta,
+        so_margin_pct: marginPct(Number(h?.local_total_centi ?? 0), totalSoCost),
+        do_margin_pct: marginPct(Number(h?.local_total_centi ?? 0), doCost.total_do_cost_centi),
+      };
+    });
+    const summary = summarizeDo(rows);
+    return c.json({ stage, rows, summary, filters: filtersEcho, meta: { access_tier: access.tier } });
+  }
+
+  // ── stage=invoice ───────────────────────────────────────────────────────────
+  // SIs whose SO is in the fair. so_cost = SO total_cost; do_cost = the linked
+  // DO's cost; landed(SI) cost = Σ SI line cost.
+  const { data: siData, error: siErr } = await chunkIn(docNos, (batch: string[], pFrom: number, pTo: number) => scopeToCompany(sb
+    .from('sales_invoices')
+    .select('id, invoice_number, so_doc_no, delivery_order_id, invoice_date, total_centi, status')
+    .in('so_doc_no', batch), c)
+    .range(pFrom, pTo));
+  if (siErr) return c.json({ error: 'load_failed', reason: siErr.message }, 500);
+  const sis = (siData ?? []) as Array<{ id: string; invoice_number: string; so_doc_no: string | null; delivery_order_id: string | null; invoice_date: string | null; total_centi: number | null; status: string | null }>;
+
+  // SI line costs grouped per SI id.
+  const siLinesById = new Map<string, Array<{ qty: number | null; unit_cost_centi: number | null; line_cost_centi: number | null }>>();
+  const siIds = sis.map((s) => s.id);
+  if (siIds.length > 0) {
+    const { data: liData, error: liErr } = await chunkIn(siIds, (batch: string[], pFrom: number, pTo: number) => scopeToCompany(sb
+      .from('sales_invoice_items')
+      .select('sales_invoice_id, qty, unit_cost_centi, line_cost_centi')
+      .in('sales_invoice_id', batch), c)
+      .range(pFrom, pTo));
+    if (liErr) return c.json({ error: 'load_failed', reason: liErr.message }, 500);
+    for (const l of (liData ?? []) as Array<{ sales_invoice_id: string; qty: number | null; unit_cost_centi: number | null; line_cost_centi: number | null }>) {
+      const arr = siLinesById.get(l.sales_invoice_id) ?? [];
+      arr.push({ qty: l.qty, unit_cost_centi: l.unit_cost_centi, line_cost_centi: l.line_cost_centi });
+      siLinesById.set(l.sales_invoice_id, arr);
+    }
+  }
+
+  // DO cost for each linked delivery_order_id (for the do_cost column of the progression).
+  const linkedDoIds = Array.from(new Set(sis.map((s) => s.delivery_order_id).filter((v): v is string => Boolean(v))));
+  const doCostById = new Map<string, number>();
+  if (linkedDoIds.length > 0) {
+    const { data: liData } = await chunkIn(linkedDoIds, (batch: string[], pFrom: number, pTo: number) => scopeToCompany(sb
+      .from('delivery_order_items')
+      .select('delivery_order_id, qty, unit_cost_centi, ship_cost_centi')
+      .in('delivery_order_id', batch), c)
+      .range(pFrom, pTo));
+    const byDo = new Map<string, Array<{ qty: number | null; unit_cost_centi: number | null; ship_cost_centi: number | null }>>();
+    for (const l of (liData ?? []) as Array<{ delivery_order_id: string; qty: number | null; unit_cost_centi: number | null; ship_cost_centi: number | null }>) {
+      const arr = byDo.get(l.delivery_order_id) ?? [];
+      arr.push({ qty: l.qty, unit_cost_centi: l.unit_cost_centi, ship_cost_centi: l.ship_cost_centi });
+      byDo.set(l.delivery_order_id, arr);
+    }
+    for (const [id, lines] of byDo) doCostById.set(id, doCostTotal(lines).total_do_cost_centi);
+  }
+
+  const rows = sis.map((s) => {
+    const h = s.so_doc_no ? soByDoc.get(s.so_doc_no) : undefined;
+    const invoiced = Number(s.total_centi ?? 0);
+    const soCost = Number(h?.total_cost_centi ?? 0);
+    const doCost = s.delivery_order_id ? doCostById.get(s.delivery_order_id) ?? 0 : 0;
+    const siCost = siCostTotal(siLinesById.get(s.id) ?? []);
+    return {
+      ...(h ? fairDims(h, staffNames, projects) : {}),
+      invoice_date: s.invoice_date,
+      inv_no: s.invoice_number,
+      so_no: s.so_doc_no,
+      do_id: s.delivery_order_id,
+      status: s.status,
+      invoiced_centi: invoiced,
+      so_cost_centi: soCost,
+      do_cost_centi: doCost,
+      si_cost_centi: siCost,
+      margin_pct: marginPct(invoiced, siCost),
+    };
+  });
+  const summary = summarizeInvoice(rows);
+  return c.json({ stage, rows, summary, filters: filtersEcho, meta: { access_tier: access.tier } });
+};
+reports.get('/fair-report', fairReportHandler);
+
+// ----------------------------------------------------------------------------
+// GET /reports/fair-report/:docNo — per-order DETAIL for the quick-view.
+// docNo = the SO doc_no. Gated exactly like stage=so (management OR Sales
+// Director — both are finance-viewers, so the per-line cost + deposit-by-tender
+// this returns are theirs to see). Returns order lines, cost-by-category,
+// deposit-by-tender (+ merchant bank / instalment plan), and the SO→DO→Invoice
+// linkage doc numbers.
+// ----------------------------------------------------------------------------
+export const fairReportDetailHandler = async (c: FairCtx) => {
+  const access = fairReportAccess('so', fairCaller(c));
+  if (!access.allowed) return c.json({ error: access.error }, 403);
+
+  const sb = c.get('supabase');
+  const docNo = c.req.param('docNo');
+
+  const { data: headerData, error: hErr } = await scopeToCompany(sb
+    .from('mfg_sales_orders').select(FAIR_SO_COLS).eq('doc_no', docNo), c).maybeSingle();
+  if (hErr) return c.json({ error: 'load_failed', reason: hErr.message }, 500);
+  if (!headerData) return c.json({ error: 'Sales Order not found.' }, 404);
+  const h = headerData as unknown as FairSoHeader;
+
+  const staffNames = await resolveStaffNames(c, h.salesperson_id ? [h.salesperson_id] : []);
+  const projects = await resolveProjects(c, h.project_id != null ? [h.project_id] : []);
+
+  // Order lines — item, qty, unit sell, amount, unit cost, line cost.
+  const { data: itemData, error: iErr } = await paginateAll((pFrom: number, pTo: number) => scopeToCompany(sb
+    .from('mfg_sales_order_items')
+    .select('item_code, description, qty, unit_price_centi, total_centi, unit_cost_centi, line_cost_centi, cancelled')
+    .eq('doc_no', docNo), c)
+    .range(pFrom, pTo));
+  if (iErr) return c.json({ error: 'load_failed', reason: iErr.message }, 500);
+  const lines = ((itemData ?? []) as Array<Record<string, unknown>>).map((r) => ({
+    item_code: r.item_code, description: r.description, qty: r.qty,
+    unit_price_centi: r.unit_price_centi, amount_centi: r.total_centi,
+    unit_cost_centi: r.unit_cost_centi, line_cost_centi: r.line_cost_centi,
+    cancelled: r.cancelled,
+  }));
+
+  // Deposit-by-tender + merchant bank / plan.
+  const { data: payData, error: pErr } = await paginateAll((pFrom: number, pTo: number) => scopeToCompany(sb
+    .from('mfg_sales_order_payments')
+    .select('method, amount_centi, merchant_provider, installment_months, approval_code, paid_at, is_deposit')
+    .eq('so_doc_no', docNo), c)
+    .range(pFrom, pTo));
+  if (pErr) return c.json({ error: 'load_failed', reason: pErr.message }, 500);
+  const payments = (payData ?? []) as Array<{ method: string | null; amount_centi: number | null; merchant_provider: string | null; installment_months: number | null; approval_code: string | null; paid_at: string | null; is_deposit: boolean | null }>;
+  const paidTotal = payments.reduce((s, p) => s + Number(p.amount_centi ?? 0), 0);
+  const money = fairSoMoney(h);
+
+  // SO → DO → Invoice linkage doc numbers.
+  const { data: doData } = await scopeToCompany(sb
+    .from('delivery_orders').select('do_number').eq('so_doc_no', docNo), c);
+  const { data: siData } = await scopeToCompany(sb
+    .from('sales_invoices').select('invoice_number').eq('so_doc_no', docNo), c);
+
+  return c.json({
+    ...fairDims(h, staffNames, projects),
+    so_no: h.doc_no,
+    order_form: h.ref,
+    so_date: h.so_date,
+    amount_centi: money.amount_centi,
+    selling_centi: money.selling_centi,
+    service_rev_centi: money.service_rev_centi,
+    cost_by_category: money.cost_by_category,
+    total_so_cost_centi: money.total_so_cost_centi,
+    margin_pct: money.margin_pct,
+    balance_centi: money.balance_centi,
+    deposit_centi: Number(h.deposit_centi ?? 0),
+    paid_total_centi: paidTotal,
+    below_deposit: belowDeposit({ balanceCenti: h.balance_centi, depositCenti: h.deposit_centi, paidCenti: paidTotal }),
+    payment_methods: paymentMethodsUsed(payments),
+    deposit_by_tender: depositByTender(payments),
+    payments: payments.map((p) => ({
+      tender: p.method, amount_centi: p.amount_centi, merchant_provider: p.merchant_provider,
+      installment_months: p.installment_months, approval_code: p.approval_code, paid_at: p.paid_at, is_deposit: p.is_deposit,
+    })),
+    lines,
+    linkage: {
+      so_no: h.doc_no,
+      do_nos: ((doData ?? []) as Array<{ do_number: string }>).map((d) => d.do_number),
+      invoice_nos: ((siData ?? []) as Array<{ invoice_number: string }>).map((s) => s.invoice_number),
+    },
+    meta: { access_tier: access.tier },
+  });
+};
+reports.get('/fair-report/:docNo', fairReportDetailHandler);
