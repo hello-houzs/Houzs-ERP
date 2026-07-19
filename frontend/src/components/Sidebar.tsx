@@ -48,7 +48,6 @@ import {
   Map,
   Megaphone,
   History,
-  Scale,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -349,7 +348,7 @@ export const NAV_TABS: NavTab[] = [
   {
     section: "operations",
     to: "/reports/fair-report",
-    label: "Fair Report",
+    label: "Sales Report",
     icon: BarChart3,
     requireFairReport: true,
   },
@@ -587,11 +586,6 @@ export const NAV_TABS: NavTab[] = [
       // SAME area key: it is the money answer to the question Outstanding's
       // DO tab asks with a header-status flag and no money column.
       { to: "/scm/unbilled-deliveries", label: "Not Yet Billed", icon: HandCoins, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
-      // Fulfillment Costing — the three-way cost report (#786 moved cost off
-      // the document views to live only here). requireFinanceViewer keeps it
-      // director/finance-only, matching the backend canViewScmFinance gate and
-      // the FinanceCostingGuard route guard, so a Sales rep never sees it.
-      { to: "/scm/reports/fulfillment-costing", label: "Fulfillment Costing", icon: Scale, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.accounting", "scm.finance.outstanding"], requireFinanceViewer: true },
       // Currencies master (Phase 1-A FX) — owner-maintained currency + rate
       // table for GRN / PI / PV foreign-currency posting. Gated on the flat
       // scm.currency.manage permission (Owner / IT Admin via *).

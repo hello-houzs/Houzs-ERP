@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
-import { canViewFairReport, canViewScmCosting } from "../auth/salesAccess";
+import { canViewFairReport } from "../auth/salesAccess";
 import { capability, type CapabilityKey } from "../auth/capabilities";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { makeNavVisible } from "../components/navFilter";
@@ -47,7 +47,6 @@ const MobileProfile = lazy(() => import("./MobileProfile").then((m) => ({ defaul
 const MobileStockCard = lazy(() => import("./MobileStockCard").then((m) => ({ default: m.MobileStockCard })));
 const MobileStockTransferNew = lazy(() => import("./MobileStockTransferNew").then((m) => ({ default: m.MobileStockTransferNew })));
 const MobileFairReport = lazy(() => import("./MobileFairReport").then((m) => ({ default: m.MobileFairReport })));
-const MobileFulfillmentCosting = lazy(() => import("./MobileFulfillmentCosting").then((m) => ({ default: m.MobileFulfillmentCosting })));
 // SO Maintenance is the SAME desktop page (/scm/sales-orders/maintenance) — the
 // director-only State→Warehouse / Localities / SO-dropdown CRUD surface. Mobile
 // has no route table, so the vendored desktop page is mounted directly inside
@@ -66,7 +65,6 @@ type Screen =
   | { t: "amendments" }
   | { t: "so-maintenance" }
   | { t: "fair-report" }
-  | { t: "fulfillment-costing" }
   | { t: "new-so"; mode: "new" | "edit" | "edit-draft"; docNo?: string; scanPrefill?: MobileScanPrefill }
   | { t: "scan" }
   | { t: "module"; key: string; title: string }
@@ -101,7 +99,6 @@ function destinationScreen(to: string, label: string): DestinationTarget {
   if (path === "/scm/sales-orders") return { t: "orders-tab" };
   if (path === "/scm/sales-orders/maintenance") return { t: "so-maintenance" };
   if (path === "/reports/fair-report") return { t: "fair-report" };
-  if (path === "/scm/reports/fulfillment-costing") return { t: "fulfillment-costing" };
   if (path === "/scm/amendments") return { t: "amendments" };
   if (path === "/assr") return { t: "service" };
   if (path === "/projects") return { t: "pms" };
@@ -249,16 +246,6 @@ export const MOBILE_MENU_GROUPS: { group: string; items: MobileMenuItem[] }[] = 
        its own live nav entry (anyAccess scm.finance.accounting), which is also
        the backend area guard on /api/scm/accounting/*. */
     { to: "/scm/accounting", label: "Chart of Accounts" },
-    /* Fulfillment Costing — the three-way per-line cost report (#800; #786 moved
-       cost off the SO/DO/SI/DR document views, so this is now the only place
-       cost lives). Finance-only: the same live NAV_TABS entry at this path
-       carries the desktop nav gate (Sidebar requireFinanceViewer +
-       anyPerm/anyAccess), so `allowed()` admits exactly the finance cohort and
-       an ordinary salesperson never gets this row (off, not hide). The overlay
-       is independently guarded on canViewScmCosting below — the same question
-       the backend answers with canViewScmFinance. Routes to the MOBILE screen
-       (MobileFulfillmentCosting), NOT the desktop table. */
-    { to: "/scm/reports/fulfillment-costing", label: "Fulfillment Costing" },
   ]},
   { group: "Projects · PMS", items: [
     { to: "/projects", label: "Projects" },
@@ -269,7 +256,7 @@ export const MOBILE_MENU_GROUPS: { group: string; items: MobileMenuItem[] }[] = 
        ordinary salesperson never gets this row (off, not hide); the overlay is
        independently guarded on canViewFairReport below. Routes to the MOBILE
        screen (MobileFairReport), NOT the desktop table. */
-    { to: "/reports/fair-report", label: "Fair Report" },
+    { to: "/reports/fair-report", label: "Sales Report" },
   ]},
   { group: "After-sales", items: [
     { to: "/assr", label: "Service Case" },
@@ -610,15 +597,7 @@ function MobileAppInner() {
     // Guard the screen too (not just the menu row) — a Fair-Report URL must not
     // mount the screen (or fire its queries) for a user outside the cohort.
     // Mirrors the desktop FairReport route guard; OFF, not hide.
-    overlay = !canViewFairReport(user) ? <TabLocked title="Fair Report" /> : <MobileFairReport onBack={back} />;
-  }
-  else if (screen.t === "fulfillment-costing") {
-    // Guard the screen too (not just the menu row) — a Fulfillment Costing URL
-    // must not mount the screen (or fire its finance-only query) for a user
-    // outside the costing cohort. Mirrors the desktop FinanceCostingGuard
-    // (canViewScmCosting), the FE twin of the backend canViewScmFinance gate.
-    // OFF, not hide.
-    overlay = !canViewScmCosting(user) ? <TabLocked title="Fulfillment Costing" /> : <MobileFulfillmentCosting onBack={back} />;
+    overlay = !canViewFairReport(user) ? <TabLocked title="Sales Report" /> : <MobileFairReport onBack={back} />;
   }
   else if (screen.t === "new-so") overlay = <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
   else if (screen.t === "scan") overlay = <MobileScan onBack={back} onDrafted={onScanDrafted} onOpenSo={(docNo) => setScreen({ t: "so-detail", docNo })} />;
