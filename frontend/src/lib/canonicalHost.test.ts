@@ -165,5 +165,18 @@ describe("canonicalRedirectUrl", () => {
         "url.hostname.toLowerCase() !== LEGACY_PROD_HOST",
       );
     });
+
+    it("redirects ONLY document navigations, so /sw.js + assets are never 302'd", () => {
+      // The redirect MUST be gated on a navigation check. Redirecting the
+      // service-worker script fails the SW update (browsers fetch it with
+      // redirect mode "error"), which freezes every installed pages.dev client
+      // on its stale cache-first shell — the exact defect that stopped #855's
+      // redirect from reaching returning PWA users (see BUG-HISTORY 2026-07-19).
+      expect(fnSource).toContain("isDocumentNavigation");
+      expect(fnSource).toContain("Sec-Fetch-Dest");
+      expect(fnSource).toContain(
+        "canonical && isDocumentNavigation(request, url)",
+      );
+    });
   });
 });

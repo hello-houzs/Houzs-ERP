@@ -74,15 +74,38 @@ export function canonicalRedirectUrl(rawUrl: string): string | null {
   return `${CANONICAL_PROD_ORIGIN}${url.pathname}${url.search}${url.hash}`;
 }
 
+// A request is a top-level document navigation — the thing whose address bar we
+// actually want to move — when the browser says so via `Sec-Fetch-Dest:
+// document`, or (for the rare client that omits that header) when it Accepts
+// HTML and the path is not a file. ONLY these are redirected; see the note on
+// the redirect below for why /sw.js and hashed assets must NOT be.
+function isDocumentNavigation(request: Request, url: URL): boolean {
+  const dest = request.headers.get("Sec-Fetch-Dest");
+  if (dest) return dest === "document";
+  const accept = request.headers.get("Accept") || "";
+  const lastSegment = url.pathname.split("/").pop() ?? "";
+  return accept.includes("text/html") && !lastSegment.includes(".");
+}
+
 export const onRequest = async ({ request, env, next }: PagesContext): Promise<Response> => {
   const url = new URL(request.url);
 
-  // Canonical domain first — before the SPA shell is served, so the browser
-  // never renders the app on the legacy host. 302 (TEMPORARY), not 301: a
-  // permanent redirect is cached hard by browsers and painful to undo if this
-  // has to be reverted. Promote to 301 only once proven in the wild.
+  // Canonical domain — but ONLY for top-level document navigations. The service
+  // worker script (/sw.js) and hashed /assets/* must be served normally on the
+  // legacy host, NEVER redirected:
+  //   - A redirected /sw.js FAILS the service-worker update. The browser fetches
+  //     the worker script with redirect mode "error", so a 302 there aborts the
+  //     update and freezes every already-installed pages.dev client on its old,
+  //     cache-first shell FOREVER — it can never fetch a corrected worker. That
+  //     is exactly what defeated the first cut of this redirect (#855): the edge
+  //     302'd everything, /sw.js included, so no fixed worker could reach the
+  //     clients that needed it, and the stale shell kept the app on pages.dev.
+  //   - Redirecting an /assets/<hash>.js cross-origin would hand a stale open
+  //     tab the canonical build's different hash (404 / wrong file).
+  // Navigations still get the 302 (a fresh visitor lands on the canonical host);
+  // the updated worker (public/sw.js) moves clients that already have it.
   const canonical = canonicalRedirectUrl(request.url);
-  if (canonical) {
+  if (canonical && isDocumentNavigation(request, url)) {
     return new Response(null, { status: 302, headers: { Location: canonical } });
   }
 
