@@ -132,7 +132,9 @@ function Palette({ onClose }: { onClose: () => void }) {
     inputRef.current?.focus();
   }, []);
 
-  // Debounced fetch.
+  // Debounced fetch. A fresh AbortController per run cancels the in-flight
+  // request when the term changes or the palette closes, so a slow response for
+  // a stale term can never overwrite a newer one (nor setState after unmount).
   useEffect(() => {
     const term = q.trim();
     if (term.length < 2) {
@@ -143,20 +145,26 @@ function Palette({ onClose }: { onClose: () => void }) {
     }
     setLoading(true);
     setError(null);
+    const ctrl = new AbortController();
     const t = setTimeout(async () => {
       try {
         const res = await api.get<{ hits: SearchHit[] }>(
-          `/api/search?q=${encodeURIComponent(term)}`
+          `/api/search?q=${encodeURIComponent(term)}`,
+          { signal: ctrl.signal }
         );
         setHits(res.hits);
         setSelected(0);
       } catch (e: any) {
+        if (ctrl.signal.aborted) return;
         setError(e?.message || String(e));
       } finally {
-        setLoading(false);
+        if (!ctrl.signal.aborted) setLoading(false);
       }
-    }, 180);
-    return () => clearTimeout(t);
+    }, 250);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
   }, [q]);
 
   // Esc / arrows / enter
