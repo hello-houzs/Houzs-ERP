@@ -60,7 +60,7 @@ import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { useVenues, type AutoVenue } from '../../vendor/scm/lib/venues-queries';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
-  countryForState,
+  countryForState, resolvePostcode, resolveCityState, allCities, allPostcodes,
 } from '../../vendor/scm/lib/localities-queries';
 import {
   useSoDropdownOptions, optionsOrFallback, preferredCustomerTypeValue,
@@ -804,6 +804,33 @@ export const SalesOrderNew = () => {
     () => (state && city) ? postcodesInCity(locRows, state, city) : [],
     [locRows, state, city],
   );
+  /* REVERSE resolve — when no State is picked yet, the City / Postcode selects
+     offer the full cross-state pool so the operator can choose one FIRST and let
+     the State (→ Sales Location) resolve back from it. With a State picked these
+     fall through to the state-scoped lists above, so the forward cascade is
+     unchanged. */
+  const cityChoices     = useMemo(() => (state ? cities : allCities(locRows)),   [state, cities, locRows]);
+  const postcodeChoices = useMemo(() => ((state && city) ? postcodes : allPostcodes(locRows)), [state, city, postcodes, locRows]);
+  /* Set State from a resolved City — raw setState (NOT the State <select>'s
+     handler) so it does NOT clear the City/Postcode the operator just chose; the
+     existing state→warehouse effect below then fills Sales Location. Never
+     clobbers an already-picked State unless the city unambiguously names a
+     different one. */
+  const applyCityReverse = (nextCity: string) => {
+    if (!nextCity) return;
+    const st = resolveCityState(locRows, nextCity);
+    if (st && st !== state) setState(st);
+  };
+  /* Set State + City from a resolved Postcode (Malaysian postcode → one
+     locality). Raw setters keep the just-entered Postcode intact (no effect
+     loop). */
+  const applyPostcodeReverse = (nextPostcode: string) => {
+    if (!nextPostcode) return;
+    const res = resolvePostcode(locRows, nextPostcode);
+    if (!res) return;
+    if (res.state && res.state !== state) setState(res.state);
+    if (res.city && res.city !== city) setCity(res.city);
+  };
 
   /* Scan address reconcile (fromScan only) — once the locality cascade for the
      scanned State has options, snap the scanned City to a REAL my_localities
@@ -1989,11 +2016,11 @@ export const SalesOrderNew = () => {
                 <select
                   className={styles.fieldSelect}
                   value={city}
-                  onChange={(e) => { setCity(e.target.value); setPostcode(''); }}
-                  disabled={!state}
+                  onChange={(e) => { const c = e.target.value; setCity(c); setPostcode(''); applyCityReverse(c); }}
+                  disabled={loc.isLoading}
                 >
-                  <option value="">{state ? 'Pick city' : '— pick state first'}</option>
-                  {sortByText(cities).map((c) => <option key={c} value={c}>{c}</option>)}
+                  <option value="">{loc.isLoading ? 'Loading…' : 'Pick city'}</option>
+                  {sortByText(cityChoices).map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>
@@ -2004,11 +2031,11 @@ export const SalesOrderNew = () => {
                 <select
                   className={styles.fieldSelect}
                   value={postcode}
-                  onChange={(e) => setPostcode(e.target.value)}
-                  disabled={!state || !city}
+                  onChange={(e) => { const p = e.target.value; setPostcode(p); applyPostcodeReverse(p); }}
+                  disabled={loc.isLoading}
                 >
-                  <option value="">{(state && city) ? 'Pick postcode' : '— pick city first'}</option>
-                  {sortByNumeric(postcodes).map((p) => <option key={p} value={p}>{p}</option>)}
+                  <option value="">{loc.isLoading ? 'Loading…' : 'Pick postcode'}</option>
+                  {sortByNumeric(postcodeChoices).map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
                 <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
               </span>

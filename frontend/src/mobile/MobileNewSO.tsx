@@ -31,6 +31,10 @@ import {
   citiesInState,
   postcodesInCity,
   countryForState,
+  resolvePostcode,
+  resolveCityState,
+  allCities,
+  allPostcodes,
 } from "../vendor/scm/lib/localities-queries";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -1023,6 +1027,13 @@ export function MobileNewSO({
     () => (state && city ? postcodesInCity(locRows, state, city) : []),
     [locRows, state, city],
   );
+  /* REVERSE resolve (desktop SalesOrderNew parity) — with NO state picked the
+     City / Postcode dropdowns offer the full cross-state pool so the operator can
+     pick one FIRST and let the State (→ Sales Location memo) resolve back from
+     it. With a state picked these fall through to the state-scoped lists above,
+     so the forward cascade is unchanged. */
+  const cityChoices     = useMemo(() => (state ? cityOpts : allCities(locRows)), [state, cityOpts, locRows]);
+  const postcodeChoices = useMemo(() => ((state && city) ? postcodeOpts : allPostcodes(locRows)), [state, city, postcodeOpts, locRows]);
   const localitiesReady = stateOpts.length > 0; // real dataset present → use dropdowns
   const country = useMemo(
     () => (state ? countryForState(locRows, state) : null) ?? "Malaysia",
@@ -1129,6 +1140,26 @@ export function MobileNewSO({
   const onCityChange = (next: string) => {
     setCity(next);
     setPostcode("");
+    /* REVERSE — resolve State from the chosen City (raw setState, so it does NOT
+       clear the City just picked). Never clobbers an already-picked State unless
+       the city unambiguously names a different one. */
+    if (next) {
+      const st = resolveCityState(locRows, next);
+      if (st && st !== state) setState(st);
+    }
+  };
+  /* REVERSE — resolve State + City from an entered Postcode (Malaysian postcode →
+     one locality). Raw setters keep the just-entered Postcode intact (no effect
+     loop); the salesLocation memo follows the resolved State automatically. */
+  const onPostcodeChange = (next: string) => {
+    setPostcode(next);
+    if (next) {
+      const res = resolvePostcode(locRows, next);
+      if (res) {
+        if (res.state && res.state !== state) setState(res.state);
+        if (res.city && res.city !== city) setCity(res.city);
+      }
+    }
   };
 
   // ---- Totals ---------------------------------------------------------------
@@ -2127,16 +2158,16 @@ export function MobileNewSO({
                     </Field>
                     <div style={{ display: "flex", gap: 11 }}>
                       <Field label={addressRequired ? "City *" : "City"} style={{ flex: 1 }} error={touched && addressRequired && !city.trim()} scanned={scanned("city", city)}>
-                        {localitiesReady && cityOpts.length > 0 ? (
+                        {localitiesReady && cityChoices.length > 0 ? (
                           <select
                             className="fld-i"
                             value={city}
-                            disabled={addressIdentityLocked || !state}
+                            disabled={addressIdentityLocked}
                             onChange={(e) => onCityChange(e.target.value)}
                           >
-                            <option value="">{state ? "Pick city" : "— pick state first"}</option>
-                            {city && !cityOpts.includes(city) && <option value={city}>{city}</option>}
-                            {cityOpts.map((c) => <option key={c} value={c}>{c}</option>)}
+                            <option value="">Pick city</option>
+                            {city && !cityChoices.includes(city) && <option value={city}>{city}</option>}
+                            {cityChoices.map((c) => <option key={c} value={c}>{c}</option>)}
                           </select>
                         ) : (
                           <input
@@ -2149,16 +2180,16 @@ export function MobileNewSO({
                         )}
                       </Field>
                       <Field label={addressRequired ? "Postcode *" : "Postcode"} style={{ flex: 1 }} error={touched && addressRequired && !postcode.trim()} scanned={scanned("postcode", postcode)}>
-                        {localitiesReady && postcodeOpts.length > 0 ? (
+                        {localitiesReady && postcodeChoices.length > 0 ? (
                           <select
                             className="fld-i"
                             value={postcode}
-                            disabled={addressIdentityLocked || !state || !city}
-                            onChange={(e) => setPostcode(e.target.value)}
+                            disabled={addressIdentityLocked}
+                            onChange={(e) => onPostcodeChange(e.target.value)}
                           >
-                            <option value="">{state && city ? "Pick postcode" : "— pick city first"}</option>
-                            {postcode && !postcodeOpts.includes(postcode) && <option value={postcode}>{postcode}</option>}
-                            {postcodeOpts.map((p) => <option key={p} value={p}>{p}</option>)}
+                            <option value="">Pick postcode</option>
+                            {postcode && !postcodeChoices.includes(postcode) && <option value={postcode}>{postcode}</option>}
+                            {postcodeChoices.map((p) => <option key={p} value={p}>{p}</option>)}
                           </select>
                         ) : (
                           <input
@@ -2166,7 +2197,7 @@ export function MobileNewSO({
                             inputMode="numeric"
                             value={postcode}
                             disabled={addressIdentityLocked}
-                            onChange={(e) => setPostcode(e.target.value)}
+                            onChange={(e) => onPostcodeChange(e.target.value)}
                             placeholder="00000"
                           />
                         )}
