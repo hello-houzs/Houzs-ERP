@@ -42,6 +42,7 @@ import { hasHouzsPerm } from '../lib/houzs-perms';
 import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
 import { todayMyt } from '../lib/my-time';
 import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange, assertAuditWritable, auditUnavailableBody } from '../lib/entity-audit';
+import { settlePiPaidCenti } from '../lib/pi-settlement';
 
 export const paymentVouchers = new Hono<{ Bindings: Env; Variables: Variables }>();
 paymentVouchers.use('*', supabaseAuth);
@@ -161,50 +162,11 @@ export function buildAllocations(
   return { rows, total };
 }
 
-/* ── settlePiPaidCenti — increment a PI's paid_centi by a face-value amount and
-   auto-flip its status (migration 0202). Optimistic-concurrency loop (gate the
-   UPDATE on the paid_centi just read). delta may be NEGATIVE (a PV cancel
-   reverses the settlement). A DRAFT/CANCELLED PI is skipped. Best-effort. */
-async function settlePiPaidCenti(sb: any, piId: string, delta: number): Promise<void> {
-  if (!piId || !Number.isFinite(delta) || delta === 0) return;
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const { data: cur } = await sb.from('purchase_invoices')
-      .select('paid_centi, total_centi, status').eq('id', piId).maybeSingle();
-    if (!cur) return;
-    const c0 = cur as { paid_centi: number; total_centi: number; status: string };
-    const st = (c0.status ?? '').toUpperCase();
-    if (st === 'DRAFT' || st === 'CANCELLED') return;
-    const newPaid = Math.max(0, c0.paid_centi + delta);
-    const newStatus = newPaid >= c0.total_centi
-      ? 'PAID'
-      : (newPaid > 0 ? 'PARTIALLY_PAID' : 'POSTED');
-    const { data, error } = await sb.from('purchase_invoices').update({
-      paid_centi: newPaid, status: newStatus, updated_at: new Date().toISOString(),
-    })
-      .eq('id', piId)
-      .eq('paid_centi', c0.paid_centi) // only if nobody else moved it since the read
-      .select('id');
-    /* Still best-effort — a settle hiccup must never un-post an already-posted
-       PV. What changed is that it is no longer SILENT. The caller writes
-       pv_allocations.applied_centi immediately after this returns, so a failure
-       here leaves the ledger asserting money was applied to a PI whose
-       paid_centi never moved, and a later cancel reverses an amount that was
-       never there. Nothing downstream can detect that, so the only way anyone
-       learns of it is this line. Same treatment recomputePaid() in
-       sales-invoices.ts already gives its own read failures. */
-    if (error) {
-      /* eslint-disable-next-line no-console */
-      console.error('[pv-settle-pi] paid_centi update failed — PI left unsettled:', piId, 'delta', delta, error.message);
-      return;
-    }
-    if (data && data.length > 0) return;
-    // 0 rows → a concurrent paid_centi change; loop re-reads + retries.
-  }
-  /* Six optimistic attempts all lost the race. Falling out of the loop used to
-     be indistinguishable from success. */
-  /* eslint-disable-next-line no-console */
-  console.error('[pv-settle-pi] gave up after 6 contended attempts — PI left unsettled:', piId, 'delta', delta);
-}
+/* settlePiPaidCenti moved to lib/pi-settlement, where the clamp that stops two
+   vouchers over-paying one invoice lives next to the SQL function that enforces
+   it. It used to live here as an optimistic loop whose cap (total − paid) was
+   read in the CALLER, one round trip before the write — see the header of
+   scripts/scm-schema/pi-settlement-atomic.sql for how that over-pays. */
 
 /* ────────────────────────────────────────────────────────────────────────
    List / get
@@ -604,29 +566,53 @@ paymentVouchers.post('/:id/post', async (c) => {
      linked PI's paid_centi at FACE VALUE. Runs EXACTLY ONCE (the active-JE
      idempotency guard above early-returns on a re-post). Cap each allocation at
      the PI's remaining outstanding. Best-effort. FREIGHT / OTHER settle nothing. */
+  const overAllocated: string[] = [];
   if (normalizePurpose(pv.purpose) === 'SUPPLIER_PAYMENT') {
     const { data: allocs } = await sb.from('pv_allocations')
       .select('id, pi_id, amount_centi').eq('pv_id', id);
     for (const a of (allocs ?? []) as Array<{ id: string; pi_id: string; amount_centi: number }>) {
       const want = Math.max(0, Number(a.amount_centi ?? 0));
       if (want <= 0) continue;
-      const { data: piRow } = await sb.from('purchase_invoices')
-        .select('total_centi, paid_centi, status').eq('id', a.pi_id).maybeSingle();
-      if (!piRow) continue;
-      const p = piRow as { total_centi: number; paid_centi: number; status: string };
-      const st = (p.status ?? '').toUpperCase();
-      if (st === 'DRAFT' || st === 'CANCELLED') continue; // not a live liability
-      const outstanding = Math.max(0, Number(p.total_centi ?? 0) - Number(p.paid_centi ?? 0));
-      const apply = Math.min(want, outstanding);
-      if (apply > 0) {
-        await settlePiPaidCenti(sb, a.pi_id, apply);
-        // Record EXACTLY what we applied, so a later cancel reverses precisely this.
-        await sb.from('pv_allocations').update({ applied_centi: apply }).eq('id', a.id);
+      /* The full allocation goes to settlePiPaidCenti and the CAP is applied by
+         the database, at write time, against the row as it then stands. This
+         used to read the PI here, compute `outstanding = total - paid`, and cap
+         the allocation itself — a cap that a second voucher settling the same
+         invoice made stale before this one wrote, so both applied their full
+         share and the invoice ended up paid twice over. The DRAFT/CANCELLED
+         skip moved into the same call for the same reason: it was a separate
+         read of a value that could change underneath it. */
+      const settled = await settlePiPaidCenti(sb, a.pi_id, want);
+      /* Record EXACTLY what was applied — not what was asked for. A later
+         cancel reverses this figure, so recording the request after the
+         database clamped it smaller would un-apply money that never moved,
+         swapping an over-payment for an under-payment. */
+      await sb.from('pv_allocations').update({ applied_centi: settled.appliedCenti }).eq('id', a.id);
+
+      /* A clamp is a real event, not an implementation detail: somebody tried
+         to pay a supplier more than the invoice asks for, and the difference
+         did NOT go onto the invoice. Absorbing that silently would replace the
+         over-payment lie with a "your voucher settled in full" lie, so it is
+         logged and handed back to the caller. The voucher itself stays POSTED —
+         the GL entry above is correct and already committed, and the money did
+         leave; what is in question is only how much of it this invoice
+         absorbed. */
+      if (settled.clampedCenti > 0) {
+        /* eslint-disable-next-line no-console */
+        console.error('[pv-settle-pi] allocation exceeded the invoice outstanding — clamped:',
+          pv.pv_number, 'pi', a.pi_id, 'requested', want, 'applied', settled.appliedCenti);
+        overAllocated.push(`${a.pi_id}: asked ${want} sen, applied ${settled.appliedCenti} sen`);
+      }
+      if (!settled.ok) {
+        /* eslint-disable-next-line no-console */
+        console.error('[pv-settle-pi] settlement failed — PI left unsettled:', pv.pv_number, 'pi', a.pi_id, settled.reason);
       }
     }
   }
 
-  return c.json({ ok: true, jeNo: je.je_no, jeId: je.id, totalSen });
+  return c.json({
+    ok: true, jeNo: je.je_no, jeId: je.id, totalSen,
+    ...(overAllocated.length > 0 ? { overAllocated } : {}),
+  });
 });
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -712,8 +698,27 @@ paymentVouchers.post('/:id/cancel', async (c) => {
     for (const a of (allocs ?? []) as Array<{ id: string; pi_id: string; applied_centi: number }>) {
       const applied = Math.max(0, Number(a.applied_centi ?? 0));
       if (applied <= 0) continue;
-      await settlePiPaidCenti(sb, a.pi_id, -applied);
-      await sb.from('pv_allocations').update({ applied_centi: 0 }).eq('id', a.id);
+      const reversed = await settlePiPaidCenti(sb, a.pi_id, -applied);
+      /* Only zero the allocation when the reversal actually landed. Clearing it
+         after a failed settle would erase the one record of how much is still
+         sitting on the PI, and no later run could put it back. */
+      if (reversed.ok) {
+        /* A negative clamp means the floor bit: this allocation claimed more had
+           been applied to the PI than the PI was actually carrying, so part of
+           the reversal had nothing to take off. That is a standing disagreement
+           between the allocation and the invoice — the kind of thing the old
+           silent Math.max(0, ...) is why nobody ever noticed. */
+        if (reversed.clampedCenti < 0) {
+          /* eslint-disable-next-line no-console */
+          console.error('[pv-settle-pi] reversal exceeded what the invoice was carrying:',
+            cancelled.pv_number, 'pi', a.pi_id, 'recorded', applied, 'reversed', -reversed.appliedCenti);
+        }
+        await sb.from('pv_allocations').update({ applied_centi: 0 }).eq('id', a.id);
+      } else {
+        /* eslint-disable-next-line no-console */
+        console.error('[pv-settle-pi] reversal failed — PI still carries this payment:',
+          cancelled.pv_number, 'pi', a.pi_id, 'applied', applied, reversed.reason);
+      }
     }
   }
 
