@@ -262,6 +262,11 @@ soAmendments.get('/:id', async (c) => {
         'supplier_confirmed_by, supplier_confirmation_ref, supplier_confirmation_note, ' +
         'supplier_confirmation_attachment_key, so_approved_by, so_approved_at, ' +
         'po_approved_by, po_approved_at, sent_at, created_at, updated_at, ' +
+      // mig 0149 — how the amendment was CLOSED (rejected by an approver vs
+      // withdrawn by its requester) and WHY, plus the in-place-edit counter.
+      // Without rejection_reason the requester could not see why their request
+      // was refused without someone opening the SO's history drawer for them.
+      'rejected_by, rejected_at, rejection_reason, resolution, edited_at, edit_count, ' +
         // mig 0119 — the HEADER half of the request (Delivery Date / Processing
         // Date / State / Postcode) + its before-snapshot. NULL on a line-only
         // amendment. Without these the approver could not SEE a requested date
@@ -570,7 +575,19 @@ soAmendments.patch('/:id/send', async (c) => {
    SUPPLIER_PENDING / SO_APPROVED / PO_APPROVED). NO document changes: the SO/PO
    are untouched, the amendment simply closes as REJECTED (freeing the one-open
    partial unique index so a fresh amendment can be raised). Gated to
-   scm.amendment.approve_po. */
+   scm.amendment.approve_po.
+
+   Owner 2026-07-19, from the SO-2607-015/A1 screenshot: there was no Reject
+   control anywhere in the UI and nowhere to type a reason. This gate existed but
+   the frontend never called it (useRejectAmendment was defined and imported by
+   nothing), and `reason` was OPTIONAL and written only into the audit NOTE —
+   so_amendments had no column for it, so the requester could not see WHY their
+   request had been refused.
+
+   The reason is now REQUIRED and persisted. A refusal that does not say why is
+   not actionable: the requester's only recourse is to guess and resubmit, which
+   is precisely the competing-documents problem the edit/withdraw work exists to
+   end. */
 soAmendments.patch('/:id/reject', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
 
@@ -582,13 +599,19 @@ soAmendments.patch('/:id/reject', async (c) => {
   }
 
   let body: { reason?: string } = {};
-  try { body = (await c.req.json()) as typeof body; } catch { /* reason is optional */ }
+  try { body = (await c.req.json()) as typeof body; } catch { /* validated below */ }
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!reason) {
+    return c.json({
+      error: 'reason_required',
+      message: 'Give a reason for rejecting this amendment — the person who raised it needs to know what to change.',
+    }, 400);
+  }
 
   const loaded = await loadAmendmentForWrite(sb, id, c);
   if (!loaded.ok) return c.json({ error: 'not_found' }, 404);
   if (loaded.mirrored) {
-    return dispatchMirroredCommand(c, sb, loaded.amendment, 'reject',
-      typeof body.reason === 'string' && body.reason.trim() ? { reason: body.reason.trim() } : {});
+    return dispatchMirroredCommand(c, sb, loaded.amendment, 'reject', { reason });
   }
   const { amendment } = loaded;
 
@@ -603,9 +626,13 @@ soAmendments.patch('/:id/reject', async (c) => {
   if (!to) return c.json({ error: 'bad_transition' }, 409);
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
-    status:     to,
-    updated_at: new Date().toISOString(),
-  }).eq('id', id).select('id, so_doc_no, amendment_no, status').single();
+    status:           to,
+    resolution:       'REJECTED',
+    rejection_reason: reason,
+    rejected_by:      await gateActorStaffId(sb, c.get('houzsUser')?.id, user.id),
+    rejected_at:      new Date().toISOString(),
+    updated_at:       new Date().toISOString(),
+  }).eq('id', id).select('id, so_doc_no, amendment_no, status, resolution, rejection_reason').single();
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
 
   await recordSoAudit(sb, {
@@ -613,9 +640,92 @@ soAmendments.patch('/:id/reject', async (c) => {
     action: 'AMENDMENT_REJECTED',
     actorId: user.id,
     actorName: actorName(user),
-    fieldChanges: [{ field: 'amendment_status', from: amendment.status, to }],
-    note: typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim() : 'Amendment rejected.',
+    fieldChanges: [
+      { field: 'amendment_status', from: amendment.status, to },
+      { field: 'rejection_reason', to: reason },
+    ],
+    note: reason,
   });
 
   return c.json({ amendment: updated });
 });
+
+/* ── PATCH /:id/withdraw ───────────────────────────────────────────────────
+   The REQUESTER pulling their own request back, as distinct from an approver
+   refusing it (Owner 2026-07-19).
+
+   Why this is not a reject: reject is gated to scm.amendment.approve_po, which
+   a salesperson does not hold. Without a withdraw the person who raised a
+   mistaken amendment had no way to close it and no way to correct it, so their
+   only move was to raise ANOTHER one — which is how one Sales Order ended up
+   carrying two or three competing amendment documents with nothing to say which
+   was authoritative.
+
+   Why it is not a new status: it lands on the same terminal REJECTED, which is
+   what releases uq_so_amendment_open so a corrected request can be raised
+   immediately. resolution = 'WITHDRAWN' (mig 0149) is what tells a reader the
+   two apart. REQUESTED only — see the state machine's note. */
+soAmendments.patch('/:id/withdraw', async (c) => {
+  const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+
+  let body: { reason?: string } = {};
+  try { body = (await c.req.json()) as typeof body; } catch { /* reason is optional here */ }
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+
+  const loaded = await loadAmendmentForWrite(sb, id, c);
+  if (!loaded.ok) return c.json({ error: 'not_found' }, 404);
+  if (loaded.mirrored) {
+    return c.json(MIRRORED_SO_READONLY, 409);
+  }
+  const { amendment } = loaded;
+
+  /* Only the person who raised it, or someone who could have rejected it
+     anyway. Checked against the caller's REAL scm.staff uuid — the bridge pins
+     user.id to one shared system row, so comparing that would let ANY caller
+     withdraw ANY amendment. */
+  const callerStaffId = await resolveCallerStaffId(sb, c.get('houzsUser')?.id);
+  const { data: ownerRow } = await sb.from('so_amendments')
+    .select('requested_by').eq('id', id).maybeSingle();
+  const requestedBy = (ownerRow as { requested_by?: string | null } | null)?.requested_by ?? null;
+  const isRequester = callerStaffId != null && requestedBy != null && callerStaffId === requestedBy;
+  if (!isRequester && !hasHouzsPerm(c, 'scm.amendment.approve_po')) {
+    return c.json({
+      error: 'withdraw_forbidden',
+      message: 'Only the person who raised this amendment can withdraw it.',
+    }, 403);
+  }
+
+  const action: AmendAction = 'withdraw';
+  if (!canTransition(amendment.status, action)) {
+    return c.json({
+      error: 'bad_transition',
+      reason: amendment.status === 'REQUESTED'
+        ? `Cannot withdraw an amendment from status ${amendment.status}.`
+        : 'This amendment has already been acted on, so it can no longer be withdrawn. Ask an approver to reject it instead.',
+    }, 409);
+  }
+  const to = nextStatus(amendment.status, action);
+  if (!to) return c.json({ error: 'bad_transition' }, 409);
+
+  const { data: updated, error: updErr } = await sb.from('so_amendments').update({
+    status:           to,
+    resolution:       'WITHDRAWN',
+    rejection_reason: reason || 'Withdrawn by the person who raised it.',
+    rejected_by:      callerStaffId ?? user.id,
+    rejected_at:      new Date().toISOString(),
+    updated_at:       new Date().toISOString(),
+  }).eq('id', id).select('id, so_doc_no, amendment_no, status, resolution, rejection_reason').single();
+  if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
+
+  await recordSoAudit(sb, {
+    docNo: amendment.so_doc_no,
+    action: 'AMENDMENT_WITHDRAWN',
+    actorId: user.id,
+    actorName: c.get('houzsUser')?.name ?? actorName(user),
+    fieldChanges: [{ field: 'amendment_status', from: amendment.status, to }],
+    note: reason || 'Withdrawn by the person who raised it.',
+  });
+
+  return c.json({ amendment: updated });
+});
+
