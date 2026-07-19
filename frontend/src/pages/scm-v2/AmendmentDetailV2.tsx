@@ -29,6 +29,8 @@ import {
   CheckCircle2,
   ExternalLink,
   GitBranch,
+  Undo2,
+  XCircle,
 } from "lucide-react";
 import { fmtDateTime } from "@2990s/shared";
 import { Button } from "../../components/Button";
@@ -47,12 +49,16 @@ import {
 } from "../../vendor/scm/lib/status-pill";
 import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { usePrompt } from "../../vendor/scm/components/PromptDialog";
 import {
   useAmendmentDetail,
   useSupplierConfirm,
   useApproveSo,
+  useRejectAmendment,
+  useWithdrawAmendment,
   type AmendmentLine,
 } from "../../vendor/scm/lib/so-amendment-queries";
+import { humanApiError } from "../../vendor/scm/lib/authed-fetch";
 import { useSalesOrderAuditLog } from "../../vendor/scm/lib/sales-order-queries";
 import {
   buildAmendmentDecisionHistory,
@@ -70,6 +76,9 @@ import {
   visibleAmendmentLines,
 } from "../../vendor/scm/lib/so-amendment-line-diff";
 import { useAuth as useHouzsAuth } from "../../auth/AuthContext";
+/* The 2990 bridge's staff row — the vocabulary so_amendments.requested_by is
+   written in (a scm.staff uuid), so this is what "did I raise this?" compares. */
+import { useAuth as useScmAuth } from "../../vendor/scm/lib/auth";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { cn, formatDate } from "../../lib/utils";
 
@@ -104,6 +113,19 @@ const asStr = (v: unknown): string | null => {
 /* old_snapshot reader — shared with the desktop modal + mobile sheet, so the
    three surfaces can never drift on what "before" means. */
 const oldOf = amendmentOldSnapshot;
+
+/* Every failed gate action on this page reports through here. authedFetch hangs
+   the raw status + body off the thrown error, which humanApiError turns into the
+   house plain sentence; anything else falls back to the error's own message.
+   Owner's standing ruling: a save that fails must SAY so — a user who believes
+   it saved and finds out later that it did not is the unacceptable case. */
+const plainError = (e: unknown): string => {
+  const err = e as { status?: number; body?: string; message?: string };
+  if (typeof err?.status === "number" && typeof err?.body === "string") {
+    return humanApiError(err.status, err.body);
+  }
+  return err?.message ?? "Something went wrong. Please try again.";
+};
 
 // ─── Revision-status stepper (4 stages; SO/PO approved collapse into one) ────
 
@@ -158,10 +180,14 @@ function RevisionHero({
   status,
   amendmentNo,
   soRevision,
+  resolution,
+  rejectionReason,
 }: {
   status: string;
   amendmentNo: string | null;
   soRevision: number | null;
+  resolution: string | null;
+  rejectionReason: string | null;
 }) {
   const { label, tone } = resolveStatusPill("soAmendment", status);
   const reached = stageIndexOf(status);
@@ -185,8 +211,22 @@ function RevisionHero({
       )}
 
       {rejected ? (
-        <div className="mt-4 rounded-md border border-err/40 bg-err/10 px-3 py-2 text-[12px] font-semibold text-err">
-          This amendment was rejected — the Sales Order keeps its prior revision.
+        <div className="mt-4 rounded-md border border-err/40 bg-err/10 px-3 py-2 text-[12px] text-err">
+          <div className="font-semibold">
+            {resolution === "WITHDRAWN"
+              ? "This request was withdrawn by the person who raised it."
+              : "This amendment was rejected — the Sales Order keeps its prior revision."}
+          </div>
+          {/* The reason is the whole point of a refusal: without it the requester
+              can only guess and resubmit, which is what produced competing
+              amendment documents on one order. mig 0149 persists it on the row;
+              before that it survived only in the SO's audit note. */}
+          {rejectionReason && (
+            <div className="mt-1.5 font-normal text-err/90">"{rejectionReason}"</div>
+          )}
+          <div className="mt-1.5 font-normal text-sidebar-ink-muted">
+            This Sales Order is free again — a corrected amendment can be raised on it.
+          </div>
         </div>
       ) : (
         // 4-stage stepper — reached stages fill accent, the current stage rings.
@@ -507,7 +547,9 @@ export function AmendmentDetailV2() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { can } = useHouzsAuth();
+  const { staff: currentStaff } = useScmAuth();
   const askConfirm = useConfirm();
+  const askPrompt = usePrompt();
   const notify = useNotify();
   const { actorNameOf } = useStaffLookup();
 
@@ -582,6 +624,96 @@ export function AmendmentDetailV2() {
 
   const canSupplierConfirm = can("scm.amendment.supplier_confirm");
   const canApproveSo = can("scm.amendment.approve_so");
+  /* Reject rides the same purchasing gate the backend enforces
+     (scm.amendment.approve_po), so the button cannot appear for someone the
+     server will refuse. */
+  const canReject = can("scm.amendment.approve_po");
+
+  /* Withdraw is the REQUESTER's own escape hatch, which reject cannot be: reject
+     is gated to approve_po, which a salesperson does not hold. Without it the
+     person who raised a mistaken amendment could neither correct it nor close
+     it, so their only move was to raise ANOTHER one — which is how one Sales
+     Order ended up carrying two or three competing amendment documents with
+     nothing to say which was authoritative (Owner 2026-07-19).
+
+     Matched on the amendment's requested_by staff uuid against the caller's own.
+     The server re-checks this; the UI check only decides whether to offer it. */
+  const isRequester =
+    asStr(amendment?.requested_by) != null
+    && currentStaff?.id != null
+    && String(amendment?.requested_by) === String(currentStaff.id);
+  const canWithdraw = status === "REQUESTED" && (isRequester || canReject);
+
+  const rejectAmendment = useRejectAmendment();
+  const withdrawAmendment = useWithdrawAmendment();
+
+  const handleReject = async () => {
+    if (!id || !amendment) return;
+    /* The reason is MANDATORY — the server 400s without one. A refusal that does
+       not say why leaves the requester guessing and resubmitting, which is the
+       competing-documents problem this whole change exists to end. */
+    const reason = await askPrompt({
+      title: `Reject amendment ${amendmentNo ?? ""}?`.trim(),
+      body: "The Sales Order keeps its current revision and nothing is changed. "
+        + "Say what is wrong so the person who raised it knows what to fix — they will see this.",
+      placeholder: "e.g. supplier cannot supply PC151-01 in this fabric",
+      multiline: true,
+      confirmLabel: "Reject amendment",
+      validate: (v) =>
+        v.trim().length < 5
+          ? "Give a reason the requester can act on — at least a few words."
+          : null,
+    });
+    if (reason == null) return; // cancelled
+    try {
+      await rejectAmendment.mutateAsync({ id, reason: reason.trim() });
+      notify({
+        title: "Amendment rejected",
+        body: "The person who raised it can see your reason and raise a corrected request.",
+      });
+    } catch (e) {
+      notify({
+        title: "Could not reject this amendment",
+        body: `${plainError(e)} Nothing was changed — please try again.`,
+        tone: "error",
+      });
+    }
+  };
+
+  const handleWithdraw = async () => {
+    if (!id || !amendment) return;
+    if (
+      !(await askConfirm({
+        title: `Withdraw amendment ${amendmentNo ?? ""}?`.trim(),
+        body: "This closes the request without changing the Sales Order. It cannot be reopened — "
+          + "but withdrawing frees the order so you can raise a corrected amendment straight away.",
+        confirmLabel: "Withdraw request",
+        danger: true,
+      }))
+    )
+      return;
+    const reason = await askPrompt({
+      title: "Why are you withdrawing it?",
+      body: "Optional — this is recorded on the Sales Order's history so the next person can follow what happened.",
+      placeholder: "e.g. raised against the wrong line",
+      multiline: true,
+      confirmLabel: "Withdraw request",
+    });
+    if (reason == null) return; // cancelled at the second step
+    try {
+      await withdrawAmendment.mutateAsync({ id, reason: reason.trim() || undefined });
+      notify({
+        title: "Amendment withdrawn",
+        body: "This Sales Order is free again — open it and submit a corrected amendment when you are ready.",
+      });
+    } catch (e) {
+      notify({
+        title: "Could not withdraw this amendment",
+        body: `${plainError(e)} It is still open — please try again.`,
+        tone: "error",
+      });
+    }
+  };
 
   const handleApproveSo = async () => {
     if (!id || !amendment) return;
@@ -602,7 +734,7 @@ export function AmendmentDetailV2() {
         onError: (e) =>
           notify({
             title: "Could not approve the revision",
-            body: e instanceof Error ? e.message : String(e),
+            body: `${plainError(e)} The Sales Order was NOT changed — please try again.`,
             tone: "error",
           }),
       }
@@ -619,6 +751,11 @@ export function AmendmentDetailV2() {
   // once the SO gate has cleared we hand off there rather than duplicating the
   // received-floor handling here.
   const pastSoGate = status === "SO_APPROVED" || status === "PO_APPROVED" || status === "SENT";
+  /* Whether the bound PO has actually been re-derived yet. approve-so rewrites
+     the SALES ORDER only; the PO is rewritten by the separate approve-po gate
+     (reviseBoundPo). The stepper collapses both into one "Approved" stage, so
+     without this the page called a PO "revised" from the moment the SO was. */
+  const poRevised = status === "PO_APPROVED" || status === "SENT";
 
   // isPending covers pending-but-not-fetching (disabled / offline-paused), which
   // isLoading reports as false — letting those states fall through to the error
@@ -696,7 +833,11 @@ export function AmendmentDetailV2() {
             </Button>
             {pastSoGate && boundPo?.id && (
               <Button variant="secondary" icon={<ExternalLink size={14} />} onClick={openBoundPo}>
-                Open revised PO
+                {/* At SO_APPROVED the PO has NOT been revised — approve-so
+                    rewrites the Sales Order and nothing else. Calling it "the
+                    revised PO" here told the approver a job was done that still
+                    needs doing (Owner 2026-07-19, Q5). */}
+                {poRevised ? "Open revised PO" : "Open bound PO"}
               </Button>
             )}
           </div>
@@ -768,6 +909,8 @@ export function AmendmentDetailV2() {
               status={status}
               amendmentNo={amendmentNo}
               soRevision={typeof salesOrder?.revision === "number" ? salesOrder.revision : null}
+              resolution={asStr(amendment.resolution)}
+              rejectionReason={asStr(amendment.rejection_reason)}
             />
 
             <AsideCard title="Requested by">
@@ -831,21 +974,36 @@ export function AmendmentDetailV2() {
                     </Button>
                   )}
                   {pastSoGate && boundPo?.id && (
-                    <Button
-                      variant="secondary"
-                      className="w-full"
-                      icon={<ExternalLink size={14} />}
-                      onClick={openBoundPo}
-                    >
-                      Continue on revised PO
-                    </Button>
+                    <>
+                      {/* Approving the SO revision does NOT touch the purchase
+                          order. reviseBoundPo runs on the SEPARATE approve-po
+                          gate, and if nobody runs it the SO says one thing and
+                          the supplier is still building another — with no
+                          notification to anyone. Say so where the decision is
+                          made. */}
+                      {!poRevised && (
+                        <p className="rounded-md border border-warn/40 bg-warn/10 px-2.5 py-2 text-[12px] text-ink">
+                          The Sales Order is revised. <strong>{boundPo.po_number}</strong> is
+                          NOT — the supplier is still working to the old version until the PO
+                          revision is approved too. Continue on the PO to finish this.
+                        </p>
+                      )}
+                      <Button
+                        variant="secondary"
+                        className="w-full"
+                        icon={<ExternalLink size={14} />}
+                        onClick={openBoundPo}
+                      >
+                        {poRevised ? "Continue on revised PO" : "Revise the bound PO"}
+                      </Button>
+                    </>
                   )}
                   {pastSoGate && !boundPo?.id && (
                     <p className="text-[12px] text-ink-muted">
                       The SO revision is approved. Later gates run on the bound PO once it exists.
                     </p>
                   )}
-                  {status === "REQUESTED" && !canSupplierConfirm && (
+                  {status === "REQUESTED" && !canSupplierConfirm && !canWithdraw && (
                     <p className="text-[12px] text-ink-muted">
                       Awaiting supplier confirmation.
                     </p>
@@ -854,6 +1012,32 @@ export function AmendmentDetailV2() {
                     <p className="text-[12px] text-ink-muted">
                       Supplier confirmed — awaiting SO revision approval.
                     </p>
+                  )}
+                  {/* Reject — available at every pre-approved gate, exactly as the
+                      backend state machine allows. The reason is mandatory. */}
+                  {!pastSoGate && canReject && (
+                    <Button
+                      variant="secondary"
+                      className="w-full"
+                      icon={<XCircle size={14} />}
+                      onClick={() => void handleReject()}
+                      disabled={rejectAmendment.isPending}
+                    >
+                      {rejectAmendment.isPending ? "Rejecting…" : "Reject amendment"}
+                    </Button>
+                  )}
+                  {/* Withdraw — the requester's own way out, so a mistaken request
+                      can be closed instead of buried under a second one. */}
+                  {canWithdraw && (
+                    <Button
+                      variant="ghost"
+                      className="w-full"
+                      icon={<Undo2 size={14} />}
+                      onClick={() => void handleWithdraw()}
+                      disabled={withdrawAmendment.isPending}
+                    >
+                      {withdrawAmendment.isPending ? "Withdrawing…" : "Withdraw this request"}
+                    </Button>
                   )}
                 </div>
               </AsideCard>
