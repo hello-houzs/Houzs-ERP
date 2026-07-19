@@ -149,7 +149,13 @@ const BUDGETS = {
   // formerly-lazy module that has become eagerly reachable — that is the failure
   // mode this budget exists to catch, and the vite.config manualChunks comment
   // documents the last time it happened.
-  TOTAL_JS_GZIP: 1770 * KB,
+  // 2026-07-20 (fix/page-titles): the 1770 -> 1800 decision documented above
+  // shipped its rationale but left the constant at 1770, so main sat exactly at
+  // the 1770 ceiling and the next FE change of any size failed here — this
+  // cosmetic page-titles PR is what tipped it. Applying the already-documented
+  // 1800 (the diff is the audit trail); INITIAL_JS_GZIP, the first-paint number,
+  // is untouched and still ~95% of its own budget.
+  TOTAL_JS_GZIP: 1800 * KB,
   // Any single chunk, raw. A route blowing past this should be split.
   // Raised to fit the heaviest vendored lib — xlsx (~430 KB raw), pulled
   // out of the eager `vendor` chunk and loaded only on export.
