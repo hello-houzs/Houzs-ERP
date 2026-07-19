@@ -237,7 +237,7 @@ export const PaymentVoucherNew = () => {
         goTo: `/scm/payment-vouchers/${res.id}`,
       });
     } catch (err) {
-      setDialog({ title: 'Save failed', body: err instanceof Error ? err.message : String(err) });
+      setDialog({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.' });
     }
   };
 

@@ -582,7 +582,7 @@ export const PurchaseOrderDetail = () => {
       setHeaderDraft(null);
       setEditLines([]);
     } catch (e) {
-      notify({ title: 'Save failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' });
+      notify({ title: 'Save failed', body: `${e instanceof Error ? e.message : 'Something went wrong.'}`, tone: 'error' });
     } finally {
       setSavingDraft(false);
     }
@@ -609,7 +609,7 @@ export const PurchaseOrderDetail = () => {
     };
     import('../../vendor/scm/lib/purchase-order-pdf').then(({ generatePurchaseOrderPdf }) =>
       generatePurchaseOrderPdf(headerForPdf, items, docTitle ? { docTitle } : undefined),
-    ).catch((e) => notify({ title: 'PDF generation failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' }));
+    ).catch((e) => notify({ title: 'PDF generation failed', body: `${e instanceof Error ? e.message : 'Something went wrong.'}`, tone: 'error' }));
   };
   const handlePrint = () => generatePoPdf();
 
@@ -662,7 +662,7 @@ export const PurchaseOrderDetail = () => {
             });
             return;
           }
-          notify({ title: 'Could not approve the PO', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+          notify({ title: 'Could not approve the PO', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' });
         },
         onSuccess: () => notify({ title: 'PO revision approved' }),
       });
@@ -678,7 +678,7 @@ export const PurchaseOrderDetail = () => {
     }).then((ok) => {
       if (!ok) return;
       sendAmendment.mutate({ id: openAmendment.id }, {
-        onError: (e) => notify({ title: 'Could not mark sent', body: e instanceof Error ? e.message : String(e), tone: 'error' }),
+        onError: (e) => notify({ title: 'Could not mark sent', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' }),
         onSuccess: () => notify({ title: 'Amendment marked sent' }),
       });
     });
@@ -758,7 +758,7 @@ export const PurchaseOrderDetail = () => {
                   confirmLabel: 'Confirm PO',
                 }))) return;
                 confirm.mutate(po.id, {
-                  onError: (err) => notify({ title: 'Confirm failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+                  onError: (err) => notify({ title: 'Confirm failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' }),
                 });
               }}
               disabled={confirm.isPending}>
@@ -773,7 +773,7 @@ export const PurchaseOrderDetail = () => {
               onClick={async () => {
                 if (!(await askConfirm({ title: `Cancel PO ${po.po_number}?`, body: 'This sets status to CANCELLED — line items + linked docs stay for audit.', confirmLabel: 'Cancel PO', danger: true }))) return;
                 cancel.mutate(po.id, {
-                  onError: (err) => notify({ title: 'Cancel failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+                  onError: (err) => notify({ title: 'Cancel failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' }),
                 });
               }}
               disabled={cancel.isPending}>
@@ -793,7 +793,7 @@ export const PurchaseOrderDetail = () => {
                   confirmLabel: 'Reopen',
                 })) {
                   reopen.mutate(po.id, {
-                    onError: (err) => notify({ title: 'Reopen failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+                    onError: (err) => notify({ title: 'Reopen failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' }),
                   });
                 }
               }}
@@ -808,7 +808,7 @@ export const PurchaseOrderDetail = () => {
                 if (!(await askConfirm({ title: `Permanently delete PO ${po.po_number}?`, body: 'This removes the header + all line items and cannot be undone.', confirmLabel: 'Delete', danger: true }))) return;
                 deletePo.mutate(po.id, {
                   onSuccess: () => navigate('/scm/purchase-orders'),
-                  onError:   (err) => notify({ title: 'Delete failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+                  onError:   (err) => notify({ title: 'Delete failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' }),
                 });
               }}
               disabled={deletePo.isPending}>
@@ -956,7 +956,7 @@ export const PurchaseOrderDetail = () => {
                 confirmLabel: 'Confirm PO',
               }))) return;
               confirm.mutate(po.id, {
-                onError: (err) => notify({ title: 'Confirm failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+                onError: (err) => notify({ title: 'Confirm failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' }),
               });
             }}
             disabled={confirm.isPending}>
@@ -1384,7 +1384,7 @@ const PoRevisionsTab = ({ poId, currency }: { poId: string; currency: string }) 
         ) : error ? (
           <div className={styles.bannerWarn}>
             <strong>Could not load revisions.</strong>{' '}
-            {error instanceof Error ? error.message : String(error)}
+            {error instanceof Error ? error.message : 'Something went wrong.'}
           </div>
         ) : revisions.length === 0 ? (
           <p className={styles.muted}>

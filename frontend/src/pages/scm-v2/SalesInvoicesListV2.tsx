@@ -945,7 +945,7 @@ export function SalesInvoicesListV2() {
     } catch (e) {
       notify({
         title: "PDF generation failed",
-        body: e instanceof Error ? e.message : String(e),
+        body: e instanceof Error ? e.message : "Something went wrong.",
         tone: "error",
       });
     } finally {
@@ -955,7 +955,18 @@ export function SalesInvoicesListV2() {
   const doMarkPaid = (r: SiRow) =>
     updateStatus.mutate(
       { id: r.id, status: "paid" },
-      { onSuccess: () => setSelected(null) }
+      {
+        onSuccess: () => setSelected(null),
+        /* The sibling Reopen below always had an onError; Mark paid never did,
+           so a rejected write left the row unchanged and silent — and "paid" is
+           the one status nobody re-checks. */
+        onError: (e) =>
+          notify({
+            title: `Couldn't mark ${r.invoice_number} as paid`,
+            body: `${e instanceof Error ? e.message : "Something went wrong."} The invoice is unchanged — please try again.`,
+            tone: "error",
+          }),
+      }
     );
   const goRecordPayment = (r: SiRow) =>
     navigate(`/scm/sales-invoices/${r.id}?tab=payments&record=1`);
@@ -976,7 +987,7 @@ export function SalesInvoicesListV2() {
         onError: (e) =>
           notify({
             title: "Reopen failed",
-            body: e instanceof Error ? e.message : String(e),
+            body: e instanceof Error ? e.message : "Something went wrong.",
             tone: "error",
           }),
       }

@@ -287,7 +287,7 @@ export const DeliveryReturnNew = () => {
         onSuccess: (res: { id: string; returnNumber: string }) => {
           navigate(`/scm/delivery-returns/${res.id}`);
         },
-        onError: (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+        onError: (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
       },
     );
   };

@@ -229,7 +229,8 @@ export const FabricsTable = ({
     {error && !isLoading && (
       <div className={styles.bannerWarn}>
         <strong>Failed to load fabrics.</strong>{' '}
-        {error instanceof Error ? error.message : String(error)}
+        {/* authedFetch already humanised `message`; fallback for a non-Error throw. */}
+        {error instanceof Error ? error.message : 'Something went wrong.'}
       </div>
     )}
 

@@ -30,6 +30,14 @@ import { checkRateLimit, clearRateLimit, clientIp } from "../middleware/rateLimi
  */
 const app = new Hono<{ Bindings: Env }>();
 
+/* A real PBKDF2 record in the stored `salt$hash` shape, derived from a string
+   that is not anyone's password. It exists ONLY so that a login attempt for an
+   address with no account performs the same 100k-iteration derivation as one
+   that does — see the login handler. It is never compared against successfully;
+   nothing authenticates with it. */
+const TIMING_EQUALISER_HASH =
+  "BF3yX+3ocRPnH9KBKydn5A==$5iHFIc7Z3t8/vEm8jA4GuwdjcaL5/yajl4dWitx/PBU=";
+
 const RESET_TTL_SECONDS = 60 * 60; // matches the admin-initiated reset
 const TOTP_CHALLENGE_TTL_SECONDS = 5 * 60; // window to enter the 2FA code
 
@@ -106,15 +114,42 @@ app.post("/login", async (c) => {
     .bind(email)
     .first<{ id: number; password_hash: string; status: string; totp_enabled: number }>();
 
-  if (!user || !user.password_hash) {
-    return c.json({ error: "Invalid credentials" }, 401);
+  /* Two account-existence oracles used to live here, and both are closed below.
+     Telling someone WHICH half of the pair was wrong hands anyone holding a list
+     of email addresses the first step of a credential attack: they learn which
+     addresses are real staff accounts without ever guessing a password.
+
+     ORACLE 1 — TIMING. The unknown-email branch returned before verifyPassword,
+     so a real address cost a 100k-iteration PBKDF2 derivation and an unknown one
+     cost an indexed SELECT. That difference is measurable over the network. We
+     now always derive, against a throwaway hash of the correct shape when there
+     is no user, so both answers cost the same work.
+
+     ORACLE 2 — STATUS CODE. The `status !== 'active'` check ran BEFORE the
+     password was verified, so ONE request carrying a junk password separated a
+     real-but-disabled account (403 "Account is disabled") from an unknown one
+     (401). That also enumerated every pending invite — accounts that have no
+     password yet and are the most attractive targets. The check now runs AFTER
+     verifyPassword, so learning that an account is disabled requires already
+     knowing its password, at which point nothing is being disclosed. A
+     legitimately disabled staff member who types their real password still gets
+     the clear "Account is disabled" answer they need.
+
+     The rate limiter is NOT a mitigation for either: it is keyed email+IP, so an
+     attacker walking a list of addresses gets a fresh budget per address. */
+  const stored = user?.password_hash || TIMING_EQUALISER_HASH;
+  const ok = await verifyPassword(body.password, stored);
+
+  if (!user || !user.password_hash || !ok) {
+    /* ONE message for both halves — owner-approved 2026-07-19. Note it also
+       stops the frontend telling a user who mistyped their EMAIL that their
+       password was wrong, which sent people off resetting a password that was
+       never the problem. */
+    return c.json({ error: "Email or password is incorrect." }, 401);
   }
   if (user.status !== "active") {
     return c.json({ error: "Account is disabled" }, 403);
   }
-
-  const ok = await verifyPassword(body.password, user.password_hash);
-  if (!ok) return c.json({ error: "Invalid credentials" }, 401);
 
   // Clear the counter — the password was correct, so this isn't a brute force.
   await clearRateLimit(c, "login", rlKey);
@@ -205,7 +240,16 @@ app.post("/totp/login", async (c) => {
       /* malformed JSON → treat as no backup codes */
     }
   }
-  if (!ok) return c.json({ error: "Invalid code" }, 401);
+  /* Plain words, not "Invalid code" — and the same sentence for a wrong code
+     and an expired 30-second window, because the user can't tell those apart
+     and the remedy is identical: read the current code again. Backup codes are
+     accepted on this endpoint, so the message names them. */
+  if (!ok) {
+    return c.json(
+      { error: "That code didn't match — try the current code from your authenticator app, or a backup code." },
+      401,
+    );
+  }
 
   // Consume the challenge (single-use) and clear the guess counter.
   await kv.delete(`2fa:${challenge}`).catch(() => {});

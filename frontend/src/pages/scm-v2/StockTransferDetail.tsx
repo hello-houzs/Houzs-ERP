@@ -108,7 +108,7 @@ export const StockTransferDetail = () => {
     if (!proceed) return;
     cancel.mutate(id, {
       onSuccess: () => detail.refetch(),
-      onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+      onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 

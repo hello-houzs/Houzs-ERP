@@ -158,7 +158,7 @@ function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
       const resolved = url ?? (await fetchPaymentSlipUrl(docNo, paymentId)).url;
       window.open(resolved, "_blank", "noopener");
     } catch (e) {
-      void notify({ title: "Couldn't open slip", body: e instanceof Error ? e.message : String(e), tone: "error" });
+      void notify({ title: "Couldn't open slip", body: e instanceof Error ? e.message : "Something went wrong.", tone: "error" });
     } finally {
       setBusy(false);
     }
@@ -389,7 +389,7 @@ export function AddPaymentSheet({
       await onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't record the payment. Please try again.");
-      void notify({ title: isEdit ? "Changes not saved" : "Payment not recorded", body: e instanceof Error ? e.message : String(e), tone: "error" });
+      void notify({ title: isEdit ? "Changes not saved" : "Payment not recorded", body: e instanceof Error ? e.message : "Something went wrong.", tone: "error" });
       setBusy(false);
     }
   };

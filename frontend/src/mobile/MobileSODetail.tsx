@@ -366,7 +366,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
       await approveSo.mutateAsync({ id: openAmendment.id });
       void notifyTop({ title: "SO revision approved" });
     } catch (e) {
-      void notifyTop({ title: "Could not approve the revision", body: e instanceof Error ? e.message : String(e), tone: "error" });
+      void notifyTop({ title: "Could not approve the revision", body: e instanceof Error ? e.message : "Something went wrong.", tone: "error" });
     } finally {
       setBusy(false);
     }

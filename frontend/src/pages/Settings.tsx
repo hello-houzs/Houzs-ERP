@@ -312,7 +312,7 @@ function EmailTab() {
       await api.patch<EmailSettingsResponse>("/api/settings/email", { [key]: value });
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSaving(null);
     }
@@ -330,7 +330,7 @@ function EmailTab() {
       else if (res.status === "skipped") toast.error(`Skipped: ${res.reason}`);
       else toast.error(`Error: ${res.reason}`);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setTesting(false);
     }

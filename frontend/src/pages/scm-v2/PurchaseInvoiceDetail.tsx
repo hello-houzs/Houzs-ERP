@@ -468,7 +468,7 @@ export const PurchaseInvoiceDetail = () => {
       setHeaderDraft(null);
       setEditLines([]);
     } catch (e) {
-      notify({ title: 'Save failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' });
+      notify({ title: 'Save failed', body: `${e instanceof Error ? e.message : 'Something went wrong.'}`, tone: 'error' });
     } finally {
       setSavingDraft(false);
     }
@@ -479,7 +479,7 @@ export const PurchaseInvoiceDetail = () => {
     // purchase-invoice-pdf helper.
     import('../../vendor/scm/lib/purchase-invoice-pdf').then(({ generatePurchaseInvoicePdf }) =>
       generatePurchaseInvoicePdf(pi, items as any),
-    ).catch((e) => notify({ title: 'PDF generation failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' }));
+    ).catch((e) => notify({ title: 'PDF generation failed', body: `${e instanceof Error ? e.message : 'Something went wrong.'}`, tone: 'error' }));
   };
 
   return (
@@ -524,7 +524,7 @@ export const PurchaseInvoiceDetail = () => {
                   danger: true,
                 }))) return;
                 cancel.mutate(pi.id, {
-                  onError: (err) => notify({ title: 'Cancel failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+                  onError: (err) => notify({ title: 'Cancel failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' }),
                 });
               }}
               disabled={cancel.isPending}>
@@ -579,7 +579,7 @@ export const PurchaseInvoiceDetail = () => {
                 confirmLabel: 'Confirm Invoice',
               }))) return;
               confirmPi.mutate(pi.id, {
-                onError: (err) => notify({ title: 'Confirm failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+                onError: (err) => notify({ title: 'Confirm failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' }),
               });
             }}
             disabled={confirmPi.isPending}>

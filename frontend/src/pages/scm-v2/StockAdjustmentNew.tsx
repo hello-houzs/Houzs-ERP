@@ -32,6 +32,8 @@ import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../ve
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
+import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
+import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -72,6 +74,11 @@ const VariantSelect = ({
 export const StockAdjustmentNew = () => {
   const navigate = useNavigate();
   const adjust   = useStockAdjustment();
+  /* Off native browser dialogs onto the house dialog system — this screen
+     writes stock, so its warnings must look like the rest of the ERP rather
+     than like OS chrome the operator has learned to dismiss. */
+  const askConfirm = useConfirm();
+  const notify = useNotify();
 
   // ── Form state ─────────────────────────────────────────────────────
   const [warehouseId, setWarehouseId] = useState<string>('');
@@ -189,27 +196,37 @@ export const StockAdjustmentNew = () => {
     return b ? b.qty : null;
   }, [type, variantKey, batchNo, buckets]);
 
-  const onSave = () => {
+  const onSave = async () => {
     if (!canSave) {
-      window.alert('Fill Warehouse, SKU, Qty, and pick a Reason before saving.');
+      void notify({ title: 'Fill in Warehouse, SKU, Qty and Reason before saving.', tone: 'error' });
       return;
     }
     // INCREASE gate — sofa / bedframe must carry their variant attributes (and
     // sofa a batch number) before the found stock can be saved.
     if (type === 'increase' && hasVariantGroup) {
       const errs = adjustmentIncreaseErrors(itemGroup, variants, batchNo);
-      if (errs.length > 0) { window.alert(errs.join('\n')); return; }
+      if (errs.length > 0) {
+        void notify({ title: "This adjustment can't be saved yet", body: errs.join('\n'), tone: 'error' });
+        return;
+      }
     }
     // DECREASE gate — when there are open lots, the operator must say which one
     // the stock comes out of (so the right variant/batch is reduced).
     if (type === 'decrease' && buckets.length > 0 && !variantKey && !batchNo) {
-      window.alert('Pick which batch/variant to take the stock from.');
+      void notify({
+        title: 'Pick which batch or variant the stock comes out of',
+        body: 'This item has more than one open batch, so we need to know which one to reduce.',
+        tone: 'error',
+      });
       return;
     }
     if (willGoNegative) {
-      const proceed = window.confirm(
-        `This adjustment will push the balance to ${resultingBalance} (below zero). Continue?`,
-      );
+      const proceed = await askConfirm({
+        title: 'This will push the balance below zero',
+        body: `Saving this adjustment leaves the balance at ${resultingBalance}. That usually means stock arrived without a Goods Received Note, or the wrong warehouse is selected.`,
+        confirmLabel: 'Save anyway',
+        danger: true,
+      });
       if (!proceed) return;
     }
     const trimmedBatch = batchNo.trim();
@@ -230,7 +247,15 @@ export const StockAdjustmentNew = () => {
       },
       {
         onSuccess: () => navigate('/scm/stock-adjustments'),
-        onError:   (err) => window.alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`),
+        /* authedFetch already ran the response through humanApiError, so this
+           arrives as a plain sentence. What the operator needs added is that
+           NOTHING moved — otherwise they re-key the adjustment on top of one
+           they think might have half-landed. */
+        onError: (err) => void notify({
+          title: "Couldn't save this stock adjustment",
+          body: `${err instanceof Error ? err.message : 'Something went wrong.'} No stock was moved and your entries are still on this screen — please try again.`,
+          tone: 'error',
+        }),
       },
     );
   };

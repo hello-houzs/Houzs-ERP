@@ -199,7 +199,7 @@ export function Agents() {
       toast.success(ok);
       status.reload();
     } catch (e) {
-      toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Failed: ${e instanceof Error ? e.message : "Something went wrong."}`);
     } finally {
       setBusy(null);
     }
@@ -644,7 +644,7 @@ function ProposalsPanel({ meta }: { meta: FamilyMeta }) {
       toast.success(action === "approve" ? "Approved" : "Rejected");
       q.reload();
     } catch (e) {
-      toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Failed: ${e instanceof Error ? e.message : "Something went wrong."}`);
     } finally {
       setBusy(null);
     }
@@ -719,7 +719,7 @@ function FindingsPanel({ meta }: { meta: FamilyMeta }) {
       toast.success("Dismissed");
       q.reload();
     } catch (e) {
-      toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Failed: ${e instanceof Error ? e.message : "Something went wrong."}`);
     } finally {
       setBusy(null);
     }
@@ -783,7 +783,7 @@ function ConfigPanel({ family }: { family: Family }) {
       toast.success(action === "approve" ? "Applied" : "Rejected");
       q.reload();
     } catch (e) {
-      toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Failed: ${e instanceof Error ? e.message : "Something went wrong."}`);
     } finally {
       setBusy(null);
     }
@@ -847,7 +847,7 @@ function FeedbackPanel({ meta }: { meta: FamilyMeta }) {
       toast.success("Saved to the agent's notebook");
       q.reload();
     } catch (e) {
-      toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Failed: ${e instanceof Error ? e.message : "Something went wrong."}`);
     } finally {
       setBusy(false);
     }
@@ -858,7 +858,7 @@ function FeedbackPanel({ meta }: { meta: FamilyMeta }) {
       await api.post(`/api/agents/feedback/${id}/retire`, {});
       q.reload();
     } catch (e) {
-      toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Failed: ${e instanceof Error ? e.message : "Something went wrong."}`);
     }
   }
 

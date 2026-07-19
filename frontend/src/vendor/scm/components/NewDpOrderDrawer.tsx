@@ -87,7 +87,7 @@ export const NewDpOrderDrawer = ({ onClose }: { onClose: () => void }) => {
 
     create.mutate(body, {
       onSuccess: () => { notify({ title: 'DP Order created', body: 'It is now on the board as Pending Schedule.' }); onClose(); },
-      onError: (err) => notify({ title: 'Create failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+      onError: (err) => notify({ title: 'Create failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 

@@ -63,7 +63,9 @@ export function useUdf(table: string | undefined): UseUdfResult {
       const res = await api.get<UdfPayload>(`/api/udf/${table}`);
       setData(res);
     } catch (e: any) {
-      setError(e?.message || String(e));
+      // e.message is already humanized by the API client; the fallback only
+      // fires on a non-Error throw and must be a sentence, not String(e).
+      setError(e?.message || "We couldn't load the custom fields. Please try again.");
     } finally {
       setLoading(false);
     }

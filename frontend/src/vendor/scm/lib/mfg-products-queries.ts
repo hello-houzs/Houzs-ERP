@@ -476,7 +476,7 @@ export function useUpdateMfgProductPrices() {
       return { ok: true as const, changed: 1 };
     },
     onError: (err) => {
-      serviceNotify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      serviceNotify({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['mfg-products'] });

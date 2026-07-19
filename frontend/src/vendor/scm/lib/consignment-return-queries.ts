@@ -173,7 +173,7 @@ export const useUpdateConsignmentReturnStatus = () => {
       qc.invalidateQueries({ queryKey: ['consignment-return-detail', vars.id] });
     },
     onError: (err) => {
-      serviceNotify({ title: 'Status update failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      serviceNotify({ title: 'Status update failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     },
   });
 };

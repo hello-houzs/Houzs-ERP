@@ -36,7 +36,7 @@ export function InlineEdit({ label, value, type = "text", onSave, placeholder, t
       setTimeout(() => setStatus("idle"), 1500);
     } catch (e: any) {
       setStatus("error");
-      setError(e?.message || "Failed");
+      setError(e?.message || "Something went wrong. Please try again.");
     }
   }
 

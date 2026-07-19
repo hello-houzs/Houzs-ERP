@@ -665,7 +665,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
       onError: (e) => {
         // eslint-disable-next-line no-console
         console.error('[payment] edit failed:', e);
-        notify({ title: 'Failed to save changes', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+        notify({ title: 'Failed to save changes', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' });
       },
     });
   };
@@ -718,7 +718,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
       onError: (e) => {
         // eslint-disable-next-line no-console
         console.error('[payment] add failed:', e);
-        notify({ title: 'Failed to save payment', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+        notify({ title: 'Failed to save payment', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' });
       },
     });
   };

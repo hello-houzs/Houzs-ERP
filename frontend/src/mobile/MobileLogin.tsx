@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
+import { signInErrorMessage } from "../auth/loginErrors";
 import { AmbientSnow } from "../components/AmbientSnow";
 import {
   HOUZS_COMPANY_CODE,
@@ -43,11 +44,10 @@ export function MobileLogin() {
       if (res.kind === "totp") { setChallenge(res.challenge); setBusy(false); }
       // res.kind === "ok": AuthContext sets the user; AuthGate swaps to the app.
     } catch (e) {
-      // Wrong password (401) → the owner's preferred specific wording, not
-      // the generic backend "Invalid credentials". Other errors keep their
-      // already-humanized message.
-      const status = (e as { status?: number } | null)?.status;
-      setErr(status === 401 ? "Password incorrect." : (e instanceof Error ? e.message : "Sign in failed. Check your details."));
+      // Same helper the desktop login uses — the wording is NOT duplicated per
+      // platform. See auth/loginErrors for why it does not name which half was
+      // wrong.
+      setErr(signInErrorMessage(e));
       setBusy(false);
     }
   }
@@ -58,7 +58,10 @@ export function MobileLogin() {
     try {
       await verifyTotpLogin(challenge, code.trim(), remember);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Invalid code.");
+      // e.message carries the server's specific plain sentence (wrong code vs
+      // expired sign-in attempt); the fallback must be a sentence too, not
+      // the machine-flavoured "Invalid code.".
+      setErr(e instanceof Error && e.message ? e.message : "That code didn't work — try the current code or a backup code.");
       setBusy(false);
     }
   }

@@ -113,7 +113,7 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
       q.reload();
       toast.success(`Added ${trimmed}`);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setAdding(false);
     }
@@ -124,7 +124,7 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
       await api.patch(`${apiPath}/${row.id}`, body);
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -143,7 +143,7 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
       toast.success("Hidden");
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 

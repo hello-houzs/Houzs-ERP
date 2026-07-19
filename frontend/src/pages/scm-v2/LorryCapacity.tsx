@@ -224,7 +224,7 @@ export const LorryCapacity = () => {
       {error && !isLoading && (
         <div className="mb-4 rounded-lg border border-err/40 bg-err/10 px-4 py-2.5 text-[12.5px] text-err">
           <strong className="font-semibold">Failed to load lorry capacity.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
         </div>
       )}
 
@@ -279,7 +279,7 @@ export const LorryCapacity = () => {
                 onSetRepair={(days) =>
                   setRepair.mutate(
                     { id: l.lorry_id, from, to, days },
-                    { onError: (e) => notify({ title: "Couldn't save repair days.", body: e instanceof Error ? e.message : String(e), tone: 'error' }) },
+                    { onError: (e) => notify({ title: "Couldn't save repair days.", body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' }) },
                   )}
               />
             ))}

@@ -1190,7 +1190,7 @@ function AnnouncementRow({
       toast.success(a.isActive ? "Announcement hidden" : "Announcement shown");
       onChanged();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 

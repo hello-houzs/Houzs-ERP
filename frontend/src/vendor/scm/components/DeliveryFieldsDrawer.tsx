@@ -104,7 +104,7 @@ export const DeliveryFieldsDrawer = ({
         onClose();
       },
       onError: (err) =>
-        notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+        notify({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 

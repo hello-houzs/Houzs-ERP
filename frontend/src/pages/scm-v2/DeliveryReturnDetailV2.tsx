@@ -567,7 +567,7 @@ export function DeliveryReturnDetailV2() {
       .catch((e) =>
         notify({
           title: "PDF generation failed",
-          body: e instanceof Error ? e.message : String(e),
+          body: e instanceof Error ? e.message : "Something went wrong.",
           tone: "error",
         })
       );

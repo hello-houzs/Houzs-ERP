@@ -604,7 +604,7 @@ export const Mrp = () => {
         });
       },
       onError: (err) => {
-        const raw = err instanceof Error ? err.message : String(err);
+        const raw = err instanceof Error ? err.message : 'Something went wrong.';
         let codes: string[] = [];
         let errCode = '';
         try {
@@ -780,7 +780,7 @@ export const Mrp = () => {
       });
       void q.refetch();
     } catch (e) {
-      setDialog({ kind: 'info', title: 'Backfill failed', body: e instanceof Error ? e.message : String(e) });
+      setDialog({ kind: 'info', title: 'Backfill failed', body: e instanceof Error ? e.message : 'Something went wrong.' });
     } finally {
       setBackfilling(false);
     }

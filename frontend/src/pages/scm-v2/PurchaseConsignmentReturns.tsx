@@ -250,7 +250,7 @@ export const PurchaseConsignmentReturns = () => {
       danger: true,
     }))) return;
     cancelPr.mutate(r.id, {
-      onError: (e) => notify({ title: 'Cancel failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }),
+      onError: (e) => notify({ title: 'Cancel failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 
@@ -276,7 +276,7 @@ export const PurchaseConsignmentReturns = () => {
       {error && !isLoading && (
         <div className={styles.bannerWarn}>
           <strong>Failed to load.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
         </div>
       )}
 

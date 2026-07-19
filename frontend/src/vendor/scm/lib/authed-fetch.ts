@@ -170,7 +170,11 @@ async function confirmShortStock(raw: string): Promise<boolean> {
 
 export async function authedFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = readAuthToken();
-  if (!token) throw new Error('not_authenticated');
+  /* This throw reaches the operator through ~90 `err.message` sinks across the
+     SCM tree, and it fires on every read/write once the token is missing or has
+     expired mid-session — so it was the highest-frequency machine-code leak in
+     the app. It must read like the 401 status message it is. */
+  if (!token) throw new Error('Your session has expired — please sign in again.');
   // Only stamp content-type: application/json for string bodies (JSON
   // payloads). For FormData (multipart upload) the browser sets the
   // boundary-aware content-type itself — overriding it here breaks the
@@ -251,9 +255,14 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
         text.includes('"sofa_no_batch"') && text.includes('"canDropship":true') &&
         mergedBody.dropShip !== true
       ) {
-        // Declined drop-ship — deliberate operator choice. Throw a marker the
-        // page's onError swallows (mirrors the silent short_stock decline).
-        if (!(await confirmDropship(text))) throw new Error('declined_dropship:"sofa_no_batch"');
+        /* Declined drop-ship — deliberate operator choice. This used to throw a
+           marker (`declined_dropship:"sofa_no_batch"`) that no page anywhere in
+           either tree actually handled, so pressing Cancel showed the operator a
+           machine code with a JSON fragment in it. Nothing was saved, and that
+           is what it now says. */
+        if (!(await confirmDropship(text))) {
+          throw new Error('Drop-ship not confirmed, so nothing was saved. Nothing has changed.');
+        }
         mergedBody = { ...mergedBody, dropShip: true };
       } else {
         break; // non-confirmable 409 (no-PO no-batch / partial_set / already-flagged)
@@ -392,6 +401,14 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
     'This journal entry was reversed and cannot be posted. Create a new one.',
 };
 
+/* A machine CODE, not a sentence: snake_case, no spaces. Mirrors the guard in
+   api/client.ts. Without it an UNCURATED code that the backend echoes into both
+   `error` and `message` sails through the hygiene test below (short, no braces,
+   no SQL keywords) and is printed verbatim — which is exactly how an operator
+   came to be shown the literal string `idempotency_in_flight`. A code-shaped
+   string is never user-facing text; fall through to the status map instead. */
+const isErrorCode = (s: string) => /^[a-z][a-z0-9_]*$/.test(s.trim());
+
 export function humanApiError(status: number, body: string): string {
   try {
     // 0. Aggregated save gate (validation_failed) — surface EVERY reason at once
@@ -417,7 +434,7 @@ export function humanApiError(status: number, body: string): string {
     // operator. The `{`-prefix + `error_code` guards catch them; 401s then fall
     // through to the friendly "session has expired" status message below.
     if (
-      r && r.length < 200 && !r.trim().startsWith('{') &&
+      r && r.length < 200 && !r.trim().startsWith('{') && !isErrorCode(r) &&
       !/violates|constraint|null value|column|relation|syntax|PGRST|error_code|\b\d{5}\b/i.test(r)
     ) {
       return r;

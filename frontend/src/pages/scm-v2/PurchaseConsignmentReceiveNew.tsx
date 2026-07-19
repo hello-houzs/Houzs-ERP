@@ -416,7 +416,7 @@ export const PurchaseConsignmentReceiveNew = () => {
         goTo: `/scm/purchase-consignment-receives/${createRes.id}`,
       });
     } catch (err) {
-      setDialog({ title: 'Save failed', body: err instanceof Error ? err.message : String(err) });
+      setDialog({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.' });
     }
   };
 

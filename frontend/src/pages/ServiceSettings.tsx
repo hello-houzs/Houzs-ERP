@@ -148,7 +148,7 @@ function DefaultAssigneeSection() {
       settings.reload();
       toast.success(ids.length ? "Default assignees updated" : "Default assignees cleared");
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSaving(false);
     }

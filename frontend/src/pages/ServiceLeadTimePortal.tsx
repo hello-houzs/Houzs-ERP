@@ -210,7 +210,7 @@ function PriorityCell({
       });
       onSaved();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
       setDraft(original);
     } finally {
       setSaving(false);

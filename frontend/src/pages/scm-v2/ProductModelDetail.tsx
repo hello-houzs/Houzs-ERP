@@ -248,7 +248,7 @@ export const ProductModelDetail = ({
       <div className={BANNER_ERR}>
         {/* authedFetch already ran this through humanApiError, so `message` is a
             plain sentence. String(error) is the non-Error fallback only. */}
-        Failed to load model. {error instanceof Error ? error.message : String(error)}
+        Failed to load model. {error instanceof Error ? error.message : 'Something went wrong.'}
       </div>
     );
   }
@@ -328,7 +328,7 @@ export const ProductModelDetail = ({
       // client-side upload the source page used).
       await uploadPhotoMut.mutateAsync({ id, file });
     } catch (e) {
-      setPhotoError(e instanceof Error ? e.message : String(e));
+      setPhotoError(e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
       setPhotoUploading(false);
       if (photoInputRef.current) photoInputRef.current.value = '';
@@ -341,7 +341,7 @@ export const ProductModelDetail = ({
     try {
       await updateMut.mutateAsync({ id, photoUrl: null });
     } catch (e) {
-      setPhotoError(e instanceof Error ? e.message : String(e));
+      setPhotoError(e instanceof Error ? e.message : 'Something went wrong.');
     }
   };
 
@@ -1024,7 +1024,7 @@ function AddCodesModal({
           onClose();
         },
         onError: (err) => {
-          notify({ title: 'Add failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+          notify({ title: 'Add failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
         },
       },
     );

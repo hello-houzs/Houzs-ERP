@@ -39,7 +39,10 @@ const API_URL =
 
 const token = (): string => {
   const t = readAuthToken();
-  if (!t) throw new Error('not_authenticated');
+  /* Reaches the operator through callers' `err.message` sinks (e.g. Recorded
+     Payments' "Couldn't open slip" notify) — must read like the 401 it is,
+     never the literal marker `not_authenticated`. Same fix as authed-fetch. */
+  if (!t) throw new Error('Your session has expired — please sign in again.');
   return t;
 };
 
@@ -182,7 +185,10 @@ export async function scanPaymentReceipt(file: File): Promise<ScanPaymentReceipt
   }
   const json = (await res.json()) as { data?: { extracted?: ScanPaymentReceipt } };
   const extracted = json.data?.extracted;
-  if (!extracted) throw new Error('scan_payment_no_data');
+  /* PaymentsTable currently swallows this and shows its own notice, but any
+     future caller will print `err.message` — so the message must already be a
+     sentence, not the marker `scan_payment_no_data`. */
+  if (!extracted) throw new Error("We couldn't read any details from that receipt photo. Please fill the payment in manually.");
   return extracted;
 }
 

@@ -60,6 +60,8 @@ import {
 } from "../../vendor/scm/components/SoLineCard";
 import type { MfgProductRow } from "../../vendor/scm/lib/mfg-products-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { cn } from "../../lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -464,6 +466,13 @@ function FromSoPickerModal({
 export function DeliveryOrderNewV2() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
+  /* This page carried seven window.alert/confirm calls, two of which
+     concatenated a raw error message into an OS-chrome box. The house dialog
+     system is the standing rule for anything that reports an error. (Plain
+     confirmation window.confirm's survive on a handful of other screens —
+     clean copy, no error text — left for a dedicated dialog sweep.) */
+  const askConfirm = useConfirm();
+  const notify = useNotify();
 
   useSetBreadcrumbs([
     { label: "Delivery Orders", to: "/scm/delivery-orders" },
@@ -809,8 +818,13 @@ export function DeliveryOrderNewV2() {
     items: validLines().map(toDoItemBody),
   });
 
-  const goCancel = () => {
-    if (window.confirm("Discard this delivery order?")) {
+  const goCancel = async () => {
+    if (await askConfirm({
+      title: "Discard this delivery order?",
+      body: "Nothing has been saved yet. Anything you have entered on this screen will be lost.",
+      confirmLabel: "Discard",
+      danger: true,
+    })) {
       navigate("/scm/delivery-orders");
     }
   };
@@ -818,11 +832,11 @@ export function DeliveryOrderNewV2() {
 
   const doCreate = (draft: boolean) => {
     if (!customerName.trim()) {
-      window.alert("Customer name is required.");
+      void notify({ title: "Customer name is required.", tone: "error" });
       return;
     }
     if (validLines().length === 0) {
-      window.alert("Add at least one line item.");
+      void notify({ title: 'Add at least one line item before saving.', tone: "error" });
       return;
     }
     setAsDraft(draft);
@@ -844,10 +858,16 @@ export function DeliveryOrderNewV2() {
           }
         },
         onError: (err) => {
-          window.alert(
-            "Create failed: " +
-              (err instanceof Error ? err.message : String(err))
-          );
+          /* authedFetch has already run the response through humanApiError, so
+             this arrives as a plain sentence; re-mapping it here would be a
+             second copy of that rule. The reassurance about the entered data is
+             the part the operator actually needs — this create carries an
+             idempotency key, so trying again is safe. */
+          void notify({
+            title: "Couldn't create this delivery order",
+            body: `${err instanceof Error ? err.message : "Something went wrong."} Nothing was saved and your entries are still on this screen — please try again.`,
+            tone: "error",
+          });
           setAsDraft(false);
         },
       }
@@ -858,12 +878,12 @@ export function DeliveryOrderNewV2() {
   const doSaveEdit = async () => {
     if (!editId) return;
     if (!customerName.trim()) {
-      window.alert("Customer name is required.");
+      void notify({ title: "Customer name is required.", tone: "error" });
       return;
     }
     const current = validLines();
     if (current.length === 0) {
-      window.alert("Add at least one line item.");
+      void notify({ title: 'Add at least one line item before saving.', tone: "error" });
       return;
     }
     setSavingEdit(true);
@@ -898,9 +918,16 @@ export function DeliveryOrderNewV2() {
       setFlash("Delivery order updated");
       navigate(`/scm/delivery-orders/${editId}`);
     } catch (err) {
-      window.alert(
-        "Save failed: " + (err instanceof Error ? err.message : String(err))
-      );
+      /* NOT the same message as the create path. This save is a batch of line
+         add/update/delete calls followed by the header PATCH, so a failure part
+         way through means SOME line changes may already have landed. Telling the
+         operator "try again" would be a confident lie about a state we did not
+         verify — they must look before they re-save. */
+      void notify({
+        title: "Couldn't finish saving this delivery order",
+        body: `${err instanceof Error ? err.message : "Something went wrong."} Some of your line changes may already have saved and some may not. Please refresh and check the delivery order before saving again.`,
+        tone: "error",
+      });
     } finally {
       setSavingEdit(false);
     }

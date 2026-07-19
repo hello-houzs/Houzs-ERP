@@ -485,7 +485,7 @@ export const PurchaseInvoiceNew = () => {
         goTo: `/scm/purchase-invoices/${createRes.id}`,
       });
     } catch (err) {
-      setDialog({ title: 'Save failed', body: err instanceof Error ? err.message : String(err) });
+      setDialog({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.' });
     }
   };
 

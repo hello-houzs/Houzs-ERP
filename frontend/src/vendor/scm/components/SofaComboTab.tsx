@@ -809,7 +809,10 @@ function ComposerModal({
       }
       onClose();
     } catch (e) {
-      notify({ title: 'Save failed', body: String(e), tone: 'error' });
+      /* String(e) printed "Error: <msg>" — the only surface in the tree that
+         kept the constructor-name prefix. authedFetch already humanized the
+         message itself. */
+      notify({ title: "Couldn't save this combo", body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' });
     }
   };
 

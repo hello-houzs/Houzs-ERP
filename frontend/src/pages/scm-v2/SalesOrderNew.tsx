@@ -1571,7 +1571,7 @@ export const SalesOrderNew = () => {
           if (problems && problems.length > 0) {
             void notify({ title: saveProblemsTitle(problems.length), body: <SaveProblemsList problems={problems} />, tone: 'error' });
           } else {
-            void notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+            void notify({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
           }
         },
       },

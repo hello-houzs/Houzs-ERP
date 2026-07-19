@@ -283,7 +283,7 @@ export const useUpdateMfgSalesOrderStatus = () => {
          silent of all. Sibling useUpdateSoItemStockStatus already does this. */
       serviceNotify({
         title: 'Status update failed',
-        body: err instanceof Error ? err.message : String(err),
+        body: err instanceof Error ? err.message : 'Something went wrong.',
         tone: 'error',
       });
     },
@@ -396,7 +396,7 @@ export const useUpdateSoItemStockStatus = () => {
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });
     },
     onError: (err) => {
-      serviceNotify({ title: 'Stock status update failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      serviceNotify({ title: 'Stock status update failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     },
   });
 };

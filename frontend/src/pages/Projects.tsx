@@ -4704,7 +4704,7 @@ function ProjectDetailContent({
       detail.reload();
       onUpdated();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -4714,7 +4714,7 @@ function ProjectDetailContent({
       await api.del(`/api/projects/checklist/${item.id}`);
       detail.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -4743,7 +4743,7 @@ function ProjectDetailContent({
                     detail.reload();
                     onUpdated();
                   } catch (e: any) {
-                    toast.error(e?.message || "Failed");
+                    toast.error(e?.message || "Something went wrong. Please try again.");
                   }
                 }}
               >
@@ -4760,7 +4760,7 @@ function ProjectDetailContent({
                     detail.reload();
                     onUpdated();
                   } catch (e: any) {
-                    toast.error(e?.message || "Failed");
+                    toast.error(e?.message || "Something went wrong. Please try again.");
                   }
                 }}
               >
@@ -6328,7 +6328,7 @@ function TasklistSections({
       setAddSectionOpen(false);
       onReload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -6342,7 +6342,7 @@ function TasklistSections({
       setEditingSectionName("");
       onReload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -6362,7 +6362,7 @@ function TasklistSections({
       toast.success("Section removed");
       onReload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -6661,7 +6661,7 @@ function TasklistSections({
                       });
                       onReload();
                     } catch (e: any) {
-                      toast.error(e?.message || "Failed");
+                      toast.error(e?.message || "Something went wrong. Please try again.");
                     }
                   }}
                   onReload={onReload}
@@ -6716,7 +6716,7 @@ function TasklistSections({
                         });
                         onReload();
                       } catch (e: any) {
-                        toast.error(e?.message || "Failed");
+                        toast.error(e?.message || "Something went wrong. Please try again.");
                       }
                     }}
                     onReview={async (action, payload) => {
@@ -6727,7 +6727,7 @@ function TasklistSections({
                         });
                         onReload();
                       } catch (e: any) {
-                        toast.error(e?.message || "Failed");
+                        toast.error(e?.message || "Something went wrong. Please try again.");
                       }
                     }}
                     onAttachmentsChanged={onReload}
@@ -6929,7 +6929,7 @@ function DocRow({
       await api.del(`/api/projects/checklist/attachments/${attId}`);
       onReload();
     } catch (e: any) {
-      toast?.error(e?.message || "Failed");
+      toast?.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -6942,7 +6942,7 @@ function DocRow({
       setRemark("");
       setRemarkOpen(false);
     } catch (e: any) {
-      toast?.error(e?.message || "Failed");
+      toast?.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setPostingRemark(false);
     }
@@ -7410,7 +7410,7 @@ function ChecklistRemark({
       await api.patch(`/api/projects/checklist/${item.id}`, { notes: val });
       onSaved();
     } catch (e: any) {
-      toast?.error(e?.message || "Failed");
+      toast?.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -7545,7 +7545,7 @@ function ChecklistRow({
       toast?.success("Attachment removed");
       onAttachmentsChanged?.();
     } catch (e: any) {
-      toast?.error(e?.message || "Failed");
+      toast?.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -7581,7 +7581,7 @@ function ChecklistRow({
         await api.patch(`/api/projects/checklist/${item.id}`, { pill_value: v });
         onAttachmentsChanged?.();
       } catch (e: any) {
-        toast?.error(e?.message || "Failed");
+        toast?.error(e?.message || "Something went wrong. Please try again.");
       }
     };
     return (
@@ -7987,7 +7987,7 @@ function AddChecklistItem({
       });
       onAdded();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -8200,7 +8200,7 @@ function StockTransferSection({
       }
       onChange();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -8210,7 +8210,7 @@ function StockTransferSection({
       await api.del(`/api/projects/stock-transfers/${t.id}`);
       onChange();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -8221,7 +8221,7 @@ function StockTransferSection({
       window.open(url, "_blank");
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -8399,7 +8399,7 @@ function AddStockTransferForm({
       });
       onSaved();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -9554,7 +9554,7 @@ function DefectsSection({
             await api.del(`/api/projects/defects/${id}`);
             onChange();
           } catch (e: any) {
-            toast.error(e?.message || "Failed");
+            toast.error(e?.message || "Something went wrong. Please try again.");
           }
         }}
         onToggleResolved={async (d) => {
@@ -9562,7 +9562,7 @@ function DefectsSection({
             await api.patch(`/api/projects/defects/${d.id}`, { resolved: d.resolved ? 0 : 1 });
             onChange();
           } catch (e: any) {
-            toast.error(e?.message || "Failed");
+            toast.error(e?.message || "Something went wrong. Please try again.");
           }
         }}
       />
@@ -9576,7 +9576,7 @@ function DefectsSection({
             await api.del(`/api/projects/defects/${id}`);
             onChange();
           } catch (e: any) {
-            toast.error(e?.message || "Failed");
+            toast.error(e?.message || "Something went wrong. Please try again.");
           }
         }}
         onToggleResolved={async (d) => {
@@ -9584,7 +9584,7 @@ function DefectsSection({
             await api.patch(`/api/projects/defects/${d.id}`, { resolved: d.resolved ? 0 : 1 });
             onChange();
           } catch (e: any) {
-            toast.error(e?.message || "Failed");
+            toast.error(e?.message || "Something went wrong. Please try again.");
           }
         }}
       />
@@ -9739,7 +9739,7 @@ function AddDefectForm({
       });
       onSaved();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -9896,7 +9896,7 @@ function ProjectSalesEntriesSection({
       setQuickTotalOpen(false);
       onTotalSaved();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setQtSaving(false);
     }
@@ -9928,7 +9928,7 @@ function ProjectSalesEntriesSection({
       setQlDate(todayInAppTz());
       list.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setQlSaving(false);
     }
@@ -9955,7 +9955,7 @@ function ProjectSalesEntriesSection({
       toast.success(`Submitted — ${e.customer_name}`);
       list.reload();
     } catch (err: any) {
-      toast.error(err?.message || "Failed");
+      toast.error(err?.message || "Something went wrong. Please try again.");
     }
   }
   async function voidEntry(e: SalesEntry) {
@@ -9965,7 +9965,7 @@ function ProjectSalesEntriesSection({
       toast.success("Voided");
       list.reload();
     } catch (err: any) {
-      toast.error(err?.message || "Failed");
+      toast.error(err?.message || "Something went wrong. Please try again.");
     }
   }
   async function deleteEntry(e: SalesEntry) {
@@ -9975,7 +9975,7 @@ function ProjectSalesEntriesSection({
       toast.success("Deleted");
       list.reload();
     } catch (err: any) {
-      toast.error(err?.message || "Failed");
+      toast.error(err?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -10570,7 +10570,7 @@ function FinanceLedgerSection({
       }
       onChange();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSavingCat(null);
     }
@@ -10900,7 +10900,7 @@ function CategoryDetailLines({
       await api.del(`/api/projects/finance/lines/${line.id}`);
       onChange();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
   async function openFile(line: FinanceLine) {
@@ -10910,7 +10910,7 @@ function CategoryDetailLines({
       window.open(url, "_blank");
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
   return (
@@ -11223,7 +11223,7 @@ function LedgerGroup({
       await api.del(`/api/projects/finance/lines/${line.id}`);
       onChange();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -11234,7 +11234,7 @@ function LedgerGroup({
       window.open(url, "_blank");
       setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -11440,7 +11440,7 @@ function AddFinanceLineForm({
       });
       onSaved();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -11594,7 +11594,7 @@ function EditFinanceLineRow({
       await api.patch(`/api/projects/finance/lines/${line.id}`, patch);
       onSaved();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -12045,7 +12045,7 @@ function AttachmentTile({
               await api.post(`/api/projects/attachments/${attachment.id}/archive`, {});
               onArchive();
             } catch (e: any) {
-              toast.error(e?.message || "Failed");
+              toast.error(e?.message || "Something went wrong. Please try again.");
             }
           }}
           className="rounded bg-surface/80 p-1 text-ink-muted hover:bg-err/10 hover:text-err"

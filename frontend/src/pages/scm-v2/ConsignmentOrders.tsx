@@ -810,13 +810,27 @@ export const ConsignmentOrders = () => {
     } catch {
       notify({ title: `Failed to load SO ${row.doc_no}`, tone: 'error' }); return;
     }
-    /* Payments endpoint is best-effort: if it fails the PDF still renders
-       with an empty Payments table rather than blocking Preview/Print. */
+    /* Payments used to be "best-effort" — a failed read left the array empty so
+       the PDF "still renders". But this document LEAVES THE BUILDING: it is what
+       the customer is handed. Printing it with an empty Payments table does not
+       degrade gracefully, it states a FALSE FACT — that the customer has paid
+       nothing and owes the full total. "The read failed" became "nothing was
+       paid". Same class as the SO list PDF fixed on 2026-07-19.
+
+       A failed payments read now stops the print and says so. Not printing is
+       recoverable; handing a customer a wrong statement of what they owe is not. */
     let payments: unknown[] = [];
     try {
       const pj = await authedFetch<{ payments?: unknown[] }>(`/consignment-orders/${row.doc_no}/payments`);
       payments = pj.payments ?? [];
-    } catch { /* leave empty — PDF will show the no-payments state */ }
+    } catch {
+      notify({
+        title: `Cannot print CO ${row.doc_no} — payments could not be loaded`,
+        body: "We couldn't read the payments for this order. Printing now would show the customer an empty Payments table. Please refresh and try again.",
+        tone: 'error',
+      });
+      return;
+    }
     /* Follow-up #83 — action routes the PDF to doc.save() / hidden iframe
        print / blob preview, instead of always downloading and asking the
        user to find the file. Payments arg from #81 is threaded through. */
@@ -839,7 +853,7 @@ export const ConsignmentOrders = () => {
     updateStatus.mutate(
       { docNo: row.doc_no, status: 'CANCELLED' },
       {
-        onError: (e) => notify({ title: 'Failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }),
+        onError: (e) => notify({ title: 'Failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' }),
       },
     );
   };
@@ -949,7 +963,7 @@ export const ConsignmentOrders = () => {
       {error && !isLoading && (
         <div className={styles.bannerWarn}>
           <strong>Failed to load.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
         </div>
       )}
 

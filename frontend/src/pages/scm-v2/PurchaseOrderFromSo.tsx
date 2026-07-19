@@ -455,7 +455,7 @@ export const PurchaseOrderFromSo = () => {
           },
           onError: (e) => setDialog({
             title: 'Add failed',
-            body: e instanceof Error ? e.message : String(e),
+            body: e instanceof Error ? e.message : 'Something went wrong.',
           }),
         },
       );
@@ -601,7 +601,13 @@ export const PurchaseOrderFromSo = () => {
         toolbar={toolbar}
         groupBanner={false}
         isLoading={itemsQ.isLoading}
-        emptyMessage="No outstanding SO lines — every line has been converted (or there are no SOs)."
+        /* A failed read must NEVER render as the sentence below. "We couldn't
+           load the lines" and "there are no lines left to do" are opposite
+           facts, and the operator acts on the second one by walking away from
+           work that is still outstanding. */
+        emptyMessage={itemsQ.isError
+          ? "We couldn't load the outstanding lines, so this list is incomplete. That is not the same as there being none left — please refresh and try again."
+          : "No outstanding SO lines — every line has been converted (or there are no SOs)."}
       />
 
       {dialog && (

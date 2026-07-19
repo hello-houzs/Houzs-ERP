@@ -225,7 +225,9 @@ export function useDeleteLorryServiceRecord(lorryId: string) {
  *  view-then-navigate callers. */
 export async function fetchServiceInvoiceUrl(recordId: string): Promise<{ url: string; contentType: string }> {
   const token = readAuthToken();
-  if (!token) throw new Error('not_authenticated');
+  /* Surfaces through the caller's `err.message` — a sentence, not the marker
+     `not_authenticated` (same fix as authed-fetch / slip). */
+  if (!token) throw new Error('Your session has expired — please sign in again.');
   const companyId = (() => {
     try {
       const raw = localStorage.getItem('houzs.activeCompanyId');

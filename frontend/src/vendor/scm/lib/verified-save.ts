@@ -108,7 +108,9 @@ function valuesEqual(a: unknown, b: unknown): boolean {
 /** Authenticated fetch to the API (same auth as authed-fetch). */
 const authedFetcher: Fetcher = async (path, init) => {
   const token = readAuthToken();
-  if (!token) throw new Error('not_authenticated');
+  /* Lands in the 'network' result's `details` (not user-facing today), but keep
+     it a sentence so any future surfacing of details is already plain. */
+  if (!token) throw new Error('Your session has expired — please sign in again.');
   return fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
@@ -164,7 +166,12 @@ function extractPlainReason(body: string): string | null {
   try {
     const j = JSON.parse(body) as { reason?: unknown; message?: unknown };
     const r = (typeof j.reason === 'string' ? j.reason : typeof j.message === 'string' ? j.message : '') as string;
-    if (r && r.length < 200 && !/violates|constraint|null value|column|relation|syntax|PGRST|\b\d{5}\b/i.test(r)) {
+    /* Third copy of the hygiene gate (api/client.ts + authed-fetch.ts carry the
+       other two, both hardened this branch): a snake_case CODE echoed into
+       `message` is short and passes every keyword test, and would be printed
+       verbatim inside "<Noun> not saved — <code>". Never user-facing text. */
+    const isErrorCode = /^[a-z][a-z0-9_]*$/.test(r.trim());
+    if (r && !isErrorCode && r.length < 200 && !/violates|constraint|null value|column|relation|syntax|PGRST|\b\d{5}\b/i.test(r)) {
       return r;
     }
   } catch { /* not JSON — fall through */ }

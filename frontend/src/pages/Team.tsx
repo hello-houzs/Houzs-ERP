@@ -807,7 +807,7 @@ function MembersTab({
       toast.success(`${u.email} ${next === "active" ? "enabled" : "disabled"}`);
       members.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -827,7 +827,7 @@ function MembersTab({
       toast.success(`${u.email} permanently deleted`);
       reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -838,7 +838,7 @@ function MembersTab({
       toast.success("Invitation revoked");
       reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -4430,7 +4430,7 @@ function DepartmentsTab({
       onCloseCreate();
       setEditing(null);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -4446,7 +4446,7 @@ function DepartmentsTab({
       toast.success(`Deleted ${d.name}`);
       depts.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 

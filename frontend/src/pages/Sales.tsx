@@ -236,7 +236,7 @@ export function Sales() {
       toast.success(`Submitted — ${e.customer_name}`);
       list.reload();
     } catch (err: any) {
-      toast.error(err?.message || "Failed");
+      toast.error(err?.message || "Something went wrong. Please try again.");
     }
   }
   async function voidEntry(e: SalesEntry) {
@@ -246,7 +246,7 @@ export function Sales() {
       toast.success("Voided");
       list.reload();
     } catch (err: any) {
-      toast.error(err?.message || "Failed");
+      toast.error(err?.message || "Something went wrong. Please try again.");
     }
   }
   async function deleteEntry(e: SalesEntry) {
@@ -256,7 +256,7 @@ export function Sales() {
       toast.success("Deleted");
       list.reload();
     } catch (err: any) {
-      toast.error(err?.message || "Failed");
+      toast.error(err?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -988,7 +988,7 @@ export function EntryPanel({
       }
       onSaved();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -1726,7 +1726,7 @@ function FieldConfigPanel({
       setNewType("text");
       toast.success(`Added "${label}"`);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -1743,7 +1743,7 @@ function FieldConfigPanel({
       await udf.deleteField(key);
       toast.success(`Removed "${label}"`);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -1875,7 +1875,7 @@ function ApprovalsView({
       );
       onChanged();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setBusyId(null);
     }

@@ -467,7 +467,7 @@ const SkuMasterTab = () => {
     const results = await Promise.all(ids.map((id) =>
       statusMut.mutateAsync({ id, status })
         .then(() => ({ ok: true as const }))
-        .catch((e) => ({ ok: false as const, err: e instanceof Error ? e.message : String(e) })),
+        .catch((e) => ({ ok: false as const, err: e instanceof Error ? e.message : 'Something went wrong.' })),
     ));
     setStatusing(false);
     setSelectedIds(new Set());
@@ -493,7 +493,7 @@ const SkuMasterTab = () => {
     setDeleting(true);
     const ids = Array.from(selectedIds);
     const results = await Promise.all(ids.map((id) =>
-      deleteMut.mutateAsync(id).then(() => ({ id, ok: true as const })).catch((e) => ({ id, ok: false as const, err: e instanceof Error ? e.message : String(e) })),
+      deleteMut.mutateAsync(id).then(() => ({ id, ok: true as const })).catch((e) => ({ id, ok: false as const, err: e instanceof Error ? e.message : 'Something went wrong.' })),
     ));
     setDeleting(false);
     const failed = results.filter((r): r is { id: string; ok: false; err: string } => !r.ok);
@@ -525,7 +525,7 @@ const SkuMasterTab = () => {
     }
     setDeleting(true);
     const retry = await Promise.all(failed.map((f) =>
-      deleteMut.mutateAsync({ id: f.id, force: true }).then(() => ({ id: f.id, ok: true as const })).catch((e) => ({ id: f.id, ok: false as const, err: e instanceof Error ? e.message : String(e) })),
+      deleteMut.mutateAsync({ id: f.id, force: true }).then(() => ({ id: f.id, ok: true as const })).catch((e) => ({ id: f.id, ok: false as const, err: e instanceof Error ? e.message : 'Something went wrong.' })),
     ));
     setDeleting(false);
     const stillFailed = retry.filter((r) => !r.ok);
@@ -964,7 +964,7 @@ const SkuMasterTab = () => {
       {error && !isLoading && (
         <div className={styles.bannerErr}>
           <strong>Failed to load products.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
           <div style={{ marginTop: 6, fontSize: 'var(--fs-12)', color: '#767b6e' }}>
             If this keeps happening, sign out and back in — your session may
             have expired — or let IT know.
@@ -1961,7 +1961,7 @@ export const MaintenanceTab = ({
           } catch (e) {
             notify({
               title: `Rename ${r.from} → ${r.to} failed`,
-              body: `${e instanceof Error ? e.message : String(e)}\nNothing was partially renamed for this pair; fix and retry.`,
+              body: `${e instanceof Error ? e.message : 'Something went wrong.'}\nNothing was partially renamed for this pair; fix and retry.`,
               tone: 'error',
             });
             return;
@@ -2566,7 +2566,7 @@ const SofaCompartmentsList = ({
                         uploadPhoto.mutate({ code, file }, {
                           onSettled: () => setUploadingCode(null),
                           onError: (err) => {
-                            notify({ title: 'Upload failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' });
+                            notify({ title: 'Upload failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' });
                           },
                         });
                       }}
@@ -5227,7 +5227,7 @@ const ImportSkusDialog = ({ sofaSizes, onClose }: { sofaSizes: string[]; onClose
       // show what will change and require an explicit Confirm before writing.
       setStaged({ rows, tierErrors });
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : String(e));
+      setErrorMsg(e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
       setBusy(false);
     }
@@ -5249,7 +5249,7 @@ const ImportSkusDialog = ({ sofaSizes, onClose }: { sofaSizes: string[]; onClose
         : res);
       setStaged(null);
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : String(e));
+      setErrorMsg(e instanceof Error ? e.message : 'Something went wrong.');
     } finally {
       setBusy(false);
     }

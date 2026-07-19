@@ -207,7 +207,7 @@ export const StockTakeDetail = () => {
       },
       {
         onSuccess: () => { setDirty(false); detail.refetch(); },
-        onError:   (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+        onError:   (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
       },
     );
   };
@@ -238,7 +238,7 @@ export const StockTakeDetail = () => {
           notify({ title: 'Posted', body: `${res.movementsWritten} adjustment movement${res.movementsWritten === 1 ? '' : 's'} written.` });
         }
       },
-      onError: (err) => notify({ title: 'Post failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+      onError: (err) => notify({ title: 'Post failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 
@@ -252,7 +252,7 @@ export const StockTakeDetail = () => {
     }))) return;
     cancel.mutate(id, {
       onSuccess: () => detail.refetch(),
-      onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+      onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 
@@ -284,7 +284,7 @@ export const StockTakeDetail = () => {
           });
         }
       },
-      onError: (err) => notify({ title: 'Undo failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+      onError: (err) => notify({ title: 'Undo failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 
@@ -298,7 +298,7 @@ export const StockTakeDetail = () => {
     }))) return;
     del.mutate(id, {
       onSuccess: () => navigate('/scm/stock-takes'),
-      onError: (err) => notify({ title: 'Delete failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+      onError: (err) => notify({ title: 'Delete failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 

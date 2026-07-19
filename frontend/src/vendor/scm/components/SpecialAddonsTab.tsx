@@ -223,7 +223,7 @@ export const SpecialAddonsManager = ({ categoryFilter }: { categoryFilter?: stri
       if (editing.id) await update.mutateAsync({ id: editing.id, patch: d });
       else await create.mutateAsync(d);
       setEditing(null);
-    } catch (err) { setError(String((err as Error).message ?? err)); }
+    } catch (err) { setError(err instanceof Error ? err.message : 'Something went wrong.'); }
   };
 
   const remove = async (row: SpecialAddonRow) => {
@@ -235,7 +235,7 @@ export const SpecialAddonsManager = ({ categoryFilter }: { categoryFilter?: stri
     }))) return;
     setError(null);
     try { await del.mutateAsync(row.id); if (editing?.id === row.id) setEditing(null); }
-    catch (err) { setError(String((err as Error).message ?? err)); }
+    catch (err) { setError(err instanceof Error ? err.message : 'Something went wrong.'); }
   };
 
   // Plain RM amount matching the other Maintenance panels: positive shows NO
@@ -515,7 +515,9 @@ const OrderAddonsManager = () => {
     try {
       await del.mutateAsync(row.id);
     } catch (e) {
-      const msg = String((e as { message?: string }).message ?? e);
+      /* authedFetch already humanised `message`; the fallback covers a
+         non-Error throw so a raw object never reaches the user. */
+      const msg = e instanceof Error ? e.message : 'Something went wrong.';
       setError(/foreign key|23503|still referenced/i.test(msg)
         ? `"${row.label}" is used on existing orders — can't delete. Use the Off switch to retire it.`
         : msg);
@@ -546,14 +548,14 @@ const OrderAddonsManager = () => {
     if (svc && !SVC_RE.test(svc)) { setError(SVC_FORMAT_MSG); return; }
     try {
       if (svc) await ensureSvcCatalogRow(svc, row.label);
-      update.mutate({ id: row.id, patch: { serviceSku: svc || null } }, { onError: (e) => setError(String((e as Error).message ?? e)) });
-    } catch (e) { setError(String((e as Error).message ?? e)); }
+      update.mutate({ id: row.id, patch: { serviceSku: svc || null } }, { onError: (e) => setError(e instanceof Error ? e.message : 'Something went wrong.') });
+    } catch (e) { setError(e instanceof Error ? e.message : 'Something went wrong.'); }
   };
 
   const commitField = (row: AdminAddonRow, patch: { price?: number; perFloorItem?: number | null; enabled?: boolean }) => {
     setError(null);
     const synced = patch.enabled !== undefined ? { ...patch, showAtHandover: patch.enabled } : patch;
-    update.mutate({ id: row.id, patch: synced }, { onError: (e) => setError(String((e as Error).message ?? e)) });
+    update.mutate({ id: row.id, patch: synced }, { onError: (e) => setError(e instanceof Error ? e.message : 'Something went wrong.') });
   };
 
   const submitNew = async () => {
@@ -585,7 +587,7 @@ const OrderAddonsManager = () => {
       });
       setCreating(false);
       setDraft({ label: '', id: '', description: '', icon: 'package', kind: 'qty', category: '', price: '', perFloorItem: '', unit: '', serviceSku: '', enabled: true });
-    } catch (e) { setError(String((e as Error).message ?? e)); }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Something went wrong.'); }
   };
 
   const inputStyle: React.CSSProperties = { width: '100%', padding: '8px 10px', fontSize: 'var(--fs-14)', border: '1px solid var(--line-strong)', borderRadius: 'var(--radius-md)', background: 'var(--c-cream)' };

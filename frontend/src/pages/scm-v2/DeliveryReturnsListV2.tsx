@@ -928,7 +928,7 @@ export function DeliveryReturnsListV2() {
     } catch (e) {
       notify({
         title: "PDF generation failed",
-        body: e instanceof Error ? e.message : String(e),
+        body: e instanceof Error ? e.message : "Something went wrong.",
         tone: "error",
       });
     } finally {
@@ -938,12 +938,30 @@ export function DeliveryReturnsListV2() {
   const doMarkInspected = (r: DrRow) =>
     updateStatus.mutate(
       { id: r.id, status: "INSPECTED" },
-      { onSuccess: () => setSelected(null) }
+      {
+        onSuccess: () => setSelected(null),
+        onError: (e) =>
+          notify({
+            title: `Couldn't mark ${r.return_number} as inspected`,
+            body: `${e instanceof Error ? e.message : "Something went wrong."} The return is unchanged — please try again.`,
+            tone: "error",
+          }),
+      }
     );
+  /* Refunded is a money statement — a rejected write that says nothing leaves
+     the operator believing the customer has been refunded. */
   const doMarkRefunded = (r: DrRow) =>
     updateStatus.mutate(
       { id: r.id, status: "REFUNDED" },
-      { onSuccess: () => setSelected(null) }
+      {
+        onSuccess: () => setSelected(null),
+        onError: (e) =>
+          notify({
+            title: `Couldn't mark ${r.return_number} as refunded`,
+            body: `${e instanceof Error ? e.message : "Something went wrong."} The return is unchanged — please try again.`,
+            tone: "error",
+          }),
+      }
     );
   // Reopen a cancelled return → RECEIVED (2990 DeliveryReturnsList "Reopen
   // Return" parity; reuses the status PATCH endpoint).
@@ -962,7 +980,7 @@ export function DeliveryReturnsListV2() {
         onError: (e) =>
           notify({
             title: "Reopen failed",
-            body: e instanceof Error ? e.message : String(e),
+            body: e instanceof Error ? e.message : "Something went wrong.",
             tone: "error",
           }),
       }

@@ -80,7 +80,7 @@ export function MobileInbox({
   onOpen?: (item: NotificationItem) => void;
   onBack?: () => void;
 }) {
-  const { feed, totalUnread, unreadByProject, reload } = useNotifications();
+  const { feed, totalUnread, unreadByProject, loadFailed, reload } = useNotifications();
   const [marking, setMarking] = useState(false);
 
   const { today, earlier } = useMemo(() => {
@@ -157,7 +157,16 @@ export function MobileInbox({
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
-        {feed.length === 0 ? (
+        {feed.length === 0 && loadFailed ? (
+          /* An empty feed we FAILED to load is not an empty feed. Telling the
+             user they are all caught up when we never got an answer is the most
+             damaging sentence on this screen — it is the one they read to decide
+             whether anything needs them. */
+          <div className="empty">
+            <div className="empty-t">We couldn't load your notifications.</div>
+            <div className="empty-s">This is not the same as having none. Pull down to try again.</div>
+          </div>
+        ) : feed.length === 0 ? (
           <div className="empty">
             <div className="empty-t">You're all caught up.</div>
             <div className="empty-s">New activity shows up here.</div>

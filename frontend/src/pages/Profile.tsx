@@ -78,7 +78,7 @@ export function Profile() {
       await reload();
       toast.success("Profile picture removed");
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setPicBusy(false);
     }
@@ -92,7 +92,7 @@ export function Profile() {
       await reload();
       toast.success("Display name updated");
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSavingName(false);
     }
@@ -422,7 +422,7 @@ function PasswordSection() {
       setConfirm("");
       toast.success("Password updated — other sessions signed out");
     } catch (e: any) {
-      setError(e?.message || "Failed");
+      setError(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -544,7 +544,7 @@ function TwoFactorSection() {
       setSetup(s);
       setPhase("enrolling");
     } catch (e: any) {
-      setError(e?.message || "Failed to start setup");
+      setError(e?.message || "We couldn't start the two-factor setup. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -565,7 +565,16 @@ function TwoFactorSection() {
       await load();
       toast.success("Two-factor authentication enabled");
     } catch (e: any) {
-      setError(e?.message?.includes("400") ? "That code didn't match — try again." : e?.message || "Failed");
+      /* `includes("400")` was a relic of the old "<status>: <body>" message
+         shape — the humanized message no longer embeds status codes, so the
+         branch was dead. Match on the status FLAG (same fix as the login
+         screens); the server's own sentence ("That code didn't match…") is
+         already the right wording, so prefer it. */
+      setError(
+        e?.status === 400
+          ? e?.message || "That code didn't match — try again."
+          : e?.message || "We couldn't turn on two-factor. Please try again.",
+      );
     } finally {
       setBusy(false);
     }

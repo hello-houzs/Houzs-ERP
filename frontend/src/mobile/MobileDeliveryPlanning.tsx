@@ -1263,7 +1263,7 @@ function StopDetail({
       await convert.mutateAsync();
       await notify({ title: "Delivery order created", body: "You can now start and complete this stop." });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = e instanceof Error ? e.message : "Something went wrong.";
       if (msg === "already_delivered") {
         await notify({ title: "Nothing to deliver", body: "Every line on this order is already delivered." });
       } else {
@@ -1597,7 +1597,7 @@ function StopDetail({
               } catch (e) {
                 await notify({
                   title: "Couldn't save",
-                  body: e instanceof Error ? e.message : String(e),
+                  body: e instanceof Error ? e.message : "Something went wrong.",
                 });
               }
             }}

@@ -222,7 +222,7 @@ export const useCancelGrn = () => {
       qc.invalidateQueries({ queryKey: ['inventory'] });
     },
     onError: (err) => {
-      serviceNotify({ title: 'Cancel GRN failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      serviceNotify({ title: 'Cancel GRN failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     },
   });
 };

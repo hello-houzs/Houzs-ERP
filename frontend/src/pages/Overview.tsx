@@ -85,16 +85,27 @@ export function Overview() {
   }, [inbox.data]);
 
   const c = inbox.data?.counts;
-  const todoTotal = (c?.my_tasks ?? 0) + (c?.blockers ?? 0);
-  const slaRisk = assr.data?.breach_count ?? 0;
-  const review = c?.review_queue ?? 0;
+  /* `?? 0` on every one of these turned "we could not read it" into a confident
+     "zero" on the first screen everyone sees each morning — "0 items need you
+     today", "0 SLA risks". A zero is a claim; absence of an answer is not. Each
+     figure now renders as an em dash when its read failed, so a broken endpoint
+     looks broken instead of looking like a quiet day. */
+  const inboxUnknown = !!inbox.error || !c;
+  const assrUnknown = !!assr.error || !assr.data;
+  const projectsUnknown = !!projects.error || !projects.data;
+  const num = (unknown: boolean, v: number | undefined) =>
+    unknown || typeof v !== "number" ? "\u2014" : String(v);
+
+  const todoTotal = num(inboxUnknown, (c?.my_tasks ?? 0) + (c?.blockers ?? 0));
+  const slaRisk = num(assrUnknown, assr.data?.breach_count);
+  const review = num(inboxUnknown, c?.review_queue);
 
   const kpis: { label: string; value: string; sub: string }[] = [
     { label: "Revenue MTD", value: "—", sub: "No source yet" },
     { label: "Outstanding PO", value: "—", sub: "Pending SCM" },
-    { label: "Open Cases", value: assr.loading ? "…" : String(assr.data?.active_count ?? 0), sub: `${slaRisk} SLA risks` },
+    { label: "Open Cases", value: assr.loading ? "…" : num(assrUnknown, assr.data?.active_count), sub: assrUnknown ? "Couldn't load" : `${slaRisk} SLA risks` },
     { label: "Trips Today", value: "—", sub: "Logistics TBD" },
-    { label: "Active Projects", value: projects.loading ? "…" : String(projects.data?.live_count ?? 0), sub: `${projects.data?.upcoming_30d ?? 0} due this month` },
+    { label: "Active Projects", value: projects.loading ? "…" : num(projectsUnknown, projects.data?.live_count), sub: projectsUnknown ? "Couldn't load" : `${projects.data?.upcoming_30d ?? 0} due this month` },
   ];
 
   return (
@@ -159,12 +170,21 @@ export function Overview() {
         <div className="rounded-xl border border-border bg-surface p-4 shadow-stone sm:p-5">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-[15px] font-bold text-ink">Needs you</h2>
-            <span className="font-mono text-[11px] text-ink-muted">{feed.length} items</span>
+            <span className="font-mono text-[11px] text-ink-muted">{inbox.error ? "\u2014" : `${feed.length} items`}</span>
           </div>
           {inbox.loading && !inbox.data ? (
             <div className="py-8 text-center text-[12px] text-ink-muted">Loading…</div>
+          ) : inbox.error ? (
+            /* Was: "Inbox zero — nothing needs you". On a failed read that told
+               someone their work queue was empty and congratulated them for it.
+               A failure must never be indistinguishable from an empty result,
+               least of all on the screen people check to decide what to do
+               first. (The emoji also broke the repo's no-emoji rule.) */
+            <div className="py-8 text-center text-[12px] text-err">
+              We couldn't load what needs you. This is not the same as having nothing to do — please refresh.
+            </div>
           ) : feed.length === 0 ? (
-            <div className="py-8 text-center text-[12px] text-ink-muted">Inbox zero — nothing needs you 🎉</div>
+            <div className="py-8 text-center text-[12px] text-ink-muted">Inbox zero — nothing needs you.</div>
           ) : (
             <ul className="divide-y divide-border-subtle">
               {feed.map((item) => {

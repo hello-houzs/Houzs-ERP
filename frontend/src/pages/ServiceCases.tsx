@@ -3226,7 +3226,7 @@ function DetailContent({
                     detail.reload();
                     onUpdated();
                   } catch (e: any) {
-                    toast.error(e?.message || "Failed");
+                    toast.error(e?.message || "Something went wrong. Please try again.");
                   }
                 }}
               >
@@ -3243,7 +3243,7 @@ function DetailContent({
                     detail.reload();
                     onUpdated();
                   } catch (e: any) {
-                    toast.error(e?.message || "Failed");
+                    toast.error(e?.message || "Something went wrong. Please try again.");
                   }
                 }}
               >
@@ -3383,7 +3383,7 @@ function DetailContent({
                         toast.success(visible ? "Now visible to customer" : "Hidden from customer");
                         detail.reload();
                       } catch (e: any) {
-                        toast.error(e?.message || "Failed");
+                        toast.error(e?.message || "Something went wrong. Please try again.");
                       }
                     }}
                     onArchive={c.archived_at ? undefined : async () => {
@@ -3393,7 +3393,7 @@ function DetailContent({
                         toast.success("Archived");
                         detail.reload();
                       } catch (e: any) {
-                        toast.error(e?.message || "Failed");
+                        toast.error(e?.message || "Something went wrong. Please try again.");
                       }
                     }}
                   />
@@ -4625,7 +4625,7 @@ function DetailContent({
                                   toast.success("Archived");
                                   detail.reload();
                                 } catch (e: any) {
-                                  toast.error(e?.message || "Failed");
+                                  toast.error(e?.message || "Something went wrong. Please try again.");
                                 }
                               }}
                               className="ml-auto rounded p-0.5 text-ink-muted opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
@@ -5922,7 +5922,7 @@ function MilestoneAttachmentSlot({
                   toast.success("Archived");
                   detail.reload();
                 } catch (err: any) {
-                  toast.error(err?.message || "Failed");
+                  toast.error(err?.message || "Something went wrong. Please try again.");
                 }
               }}
             />
@@ -6033,7 +6033,7 @@ function LogisticsRow({
       detail.reload();
       setEditing(false);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -6155,7 +6155,7 @@ function LogisticsRow({
                   toast.success("Archived");
                   detail.reload();
                 } catch (e: any) {
-                  toast.error(e?.message || "Failed");
+                  toast.error(e?.message || "Something went wrong. Please try again.");
                 }
               }}
               className="rounded p-1 text-ink-muted opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
@@ -6557,7 +6557,7 @@ function CostTrackingPanel({
       toast.success("Cost updated");
       setSuggestion(null);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setApplying(false);
     }
@@ -7024,10 +7024,20 @@ function SurveyLinkButton({ id, toast }: { id: number; toast: ReturnType<typeof 
       const res = await api.post<{ token: string }>(`/api/assr/${id}/survey-token`);
       const url = `${window.location.origin}/survey/${res.token}`;
       setLink(url);
-      await navigator.clipboard?.writeText(url).catch(() => void 0);
-      toast.success("Survey link copied to clipboard");
+      /* The catch used to swallow the clipboard failure and the success toast
+         fired unconditionally — so on Safari, an insecure context, or a denied
+         permission the user was told the link was on their clipboard when it
+         was not, and pasted whatever was there before. The link is shown on
+         screen either way, so the honest fallback is to point at it. */
+      let copied = false;
+      try {
+        await navigator.clipboard?.writeText(url);
+        copied = true;
+      } catch { /* copied stays false */ }
+      if (copied) toast.success("Survey link copied to clipboard");
+      else toast.info("Survey link ready — copy it from the box below. Your browser wouldn't let us copy it for you.");
     } catch (e: any) {
-      toast.error(e?.message || "Failed to generate link");
+      toast.error(e?.message || "We couldn't create the survey link. Please try again.");
     } finally {
       setBusy(false);
     }

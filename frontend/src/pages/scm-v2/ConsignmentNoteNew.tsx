@@ -336,7 +336,7 @@ export const ConsignmentNoteNew = () => {
           }
           navigate(`/scm/consignment-notes/${res.id}`);
         },
-        onError: (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+        onError: (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
       },
     );
   };

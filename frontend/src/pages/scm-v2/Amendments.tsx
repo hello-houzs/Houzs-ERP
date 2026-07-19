@@ -131,7 +131,9 @@ export const Amendments = () => {
         {error && !isLoading && (
           <div className="rounded-lg border border-err/40 bg-err/10 px-4 py-2.5 text-[12.5px] text-err">
             <strong className="font-semibold">Failed to load amendments.</strong>{' '}
-            {error instanceof Error ? error.message : String(error)}
+            {/* authedFetch already ran this through humanApiError, so `message`
+                is a plain sentence; the fallback covers a non-Error throw. */}
+            {error instanceof Error ? error.message : 'Something went wrong.'}
           </div>
         )}
 

@@ -168,7 +168,7 @@ export const useCancelPurchaseConsignmentReceive = () => {
       qc.invalidateQueries({ queryKey: ['pc-receive'] });
     },
     onError: (err) => {
-      serviceNotify({ title: 'Cancel receive failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      serviceNotify({ title: 'Cancel receive failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     },
   });
 };

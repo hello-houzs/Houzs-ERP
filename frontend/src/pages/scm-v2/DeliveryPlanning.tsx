@@ -536,7 +536,7 @@ export const DeliveryPlanning = () => {
         notify({ title: 'Job cancelled', body: 'It is off the board and off its trip.' });
       }
     } catch (e) {
-      notify({ title: 'Cancel failed', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+      notify({ title: 'Cancel failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' });
     }
   };
 
@@ -579,7 +579,7 @@ export const DeliveryPlanning = () => {
         tone: res.failed.length > 0 ? 'error' : 'info',
       });
     } catch (e) {
-      notify({ title: 'Convert failed', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+      notify({ title: 'Convert failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' });
     }
   };
 
@@ -665,7 +665,7 @@ export const DeliveryPlanning = () => {
             await sched.mutateAsync({ type: 'so', id: docNo, ...patch });
             ok += 1;
           } catch (e) {
-            failed.push(`${docNo} (${e instanceof Error ? e.message : String(e)})`);
+            failed.push(`${docNo} (${e instanceof Error ? e.message : 'Something went wrong.'})`);
           }
         }));
       }
@@ -1185,7 +1185,7 @@ export const DeliveryPlanning = () => {
       {error && !isLoading && (
         <div className="rounded-lg border border-err/40 bg-err/10 px-4 py-3 text-[13px] text-err">
           <strong>Failed to load delivery planning.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
         </div>
       )}
 

@@ -370,7 +370,7 @@ export const PurchaseConsignmentOrderNew = () => {
       },
       {
         onSuccess: (res) => navigate(`/scm/purchase-consignment-orders/${res.id}`),
-        onError:   (err) => setDialog({ title: 'Save failed', body: err instanceof Error ? err.message : String(err) }),
+        onError:   (err) => setDialog({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.' }),
       },
     );
   };

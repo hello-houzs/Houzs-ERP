@@ -110,7 +110,7 @@ export const useCancelPurchaseConsignmentReturn = () => {
       qc.invalidateQueries({ queryKey: ['pc-return-detail', id] });
     },
     onError: (err) => {
-      serviceNotify({ title: 'Cancel return failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      serviceNotify({ title: 'Cancel return failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     },
   });
 };

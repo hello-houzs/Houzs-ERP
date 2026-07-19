@@ -344,7 +344,7 @@ function SourceRackCard({
         onError: (e) =>
           notify({
             title: "Could not set source rack",
-            body: e instanceof Error ? e.message : String(e),
+            body: e instanceof Error ? e.message : "Something went wrong.",
             tone: "error",
           }),
       }
@@ -881,7 +881,7 @@ export function DeliveryOrderDetailV2() {
       .catch((e) =>
         notify({
           title: "PDF generation failed",
-          body: e instanceof Error ? e.message : String(e),
+          body: e instanceof Error ? e.message : "Something went wrong.",
           tone: "error",
         })
       );
