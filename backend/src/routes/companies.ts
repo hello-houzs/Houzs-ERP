@@ -10,6 +10,13 @@ import type { Env } from "../types";
 // NO-OP property: pre-activation (companies master absent), companyContext
 // leaves the context vars undefined, so this returns { companies: [] } and the
 // front-end switcher stays hidden. Single-company Houzs is unchanged.
+//
+// DELIBERATELY UNCACHED (perf/hot-config-cache): the response is PER-USER
+// (filtered by the caller's user_companies grants) AND per-request (the
+// active company follows the X-Company-Id header) — so it may never enter a
+// shared cache — and the handler performs NO DB read of its own; its entire
+// latency is the auth + companyContext middleware, which a route-level cache
+// cannot skip. Nothing to win, a grant-leak class to lose.
 
 const app = new Hono<{ Bindings: Env }>();
 

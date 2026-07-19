@@ -23,6 +23,13 @@ import { isSalesDirectorUser } from "../services/pmsAccess";
 import type { AuthUser } from "../services/auth";
 import { activeCompanyId, allowedCompanyIds } from "../scm/lib/companyScope";
 import {
+  CONFIG_CACHE_TTL_SECONDS,
+  bannerCacheKey,
+  bumpConfigVersion,
+  bustBannerForUser,
+  configCacheVersion,
+} from "../services/configCache";
+import {
   translateAnnouncement,
   type AnnouncementTranslations,
 } from "../lib/translate-announcement";
@@ -559,6 +566,29 @@ app.get("/banner", async (c) => {
     return c.json({ success: false, error: "Unauthorized" }, 401);
   }
 
+  // PER-USER KV snapshot (inbox.ts pattern) — this payload is per-user three
+  // times over (own ackedIds, dept/position/user-id targeting, the reader's
+  // company grants), so it must NEVER enter a shared cache; the key's scope
+  // dimension is the USER id. The family version orphans every user's entry
+  // on any broadcast-shaped mutation (create/edit/delete/remind below);
+  // per-user changes (own ack, a private notice) bust just that user's key.
+  // 60s TTL matches the frontend's poll and sessionCache's freshness window
+  // for role/dept edits. Best-effort: any KV trouble serves the live build.
+  const bannerVersion = await configCacheVersion(c.env, "banner");
+  const cacheKey =
+    bannerVersion == null ? null : bannerCacheKey(bannerVersion, user.id);
+  if (cacheKey) {
+    try {
+      const cached = await c.env.SESSION_CACHE?.get(cacheKey);
+      if (cached) {
+        c.header("x-config-cache", "hit");
+        return c.json(JSON.parse(cached));
+      }
+    } catch {
+      /* fall through to the live build */
+    }
+  }
+
   const allowed = allowedCompanyIds(c);
   const res = await c.env.DB
     .prepare(`SELECT * FROM announcements ORDER BY created_at DESC`)
@@ -603,11 +633,22 @@ app.get("/banner", async (c) => {
     ackedIds.push(r.id);
   }
 
-  return c.json({
+  const payload = {
     success: true,
     data: active.map(toPublic),
     ackedIds,
-  });
+  };
+  if (cacheKey) {
+    try {
+      await c.env.SESSION_CACHE?.put(cacheKey, JSON.stringify(payload), {
+        expirationTtl: CONFIG_CACHE_TTL_SECONDS.banner,
+      });
+    } catch {
+      /* non-fatal */
+    }
+  }
+  c.header("x-config-cache", cacheKey ? "miss" : "bypass");
+  return c.json(payload);
 });
 
 // ============================================================
@@ -826,6 +867,10 @@ app.post("/", requirePermissionOrSalesDirector("announcements.write"), async (c)
     .bind(id)
     .first<AnnouncementRow>();
 
+  // A new notice changes every targeted reader's banner — orphan ALL cached
+  // banner snapshots via the family version.
+  await bumpConfigVersion(c.env, "banner");
+
   // TODO: web push fan-out (no infra in Houzs yet). BrowserPushSink already
   // fires native browser Notifications from the polled activity feed; wiring
   // announcements into a similar polled trigger is the natural next step.
@@ -1003,6 +1048,10 @@ app.patch("/:id", requirePermissionOrSalesDirector("announcements.write"), async
     .bind(...binds)
     .run();
 
+  // Any edit (text, targeting, active toggle, expiry) can change who sees
+  // what — orphan all cached banner snapshots.
+  await bumpConfigVersion(c.env, "banner");
+
   const row = await c.env.DB.prepare(
     "SELECT * FROM announcements WHERE id = ?",
   )
@@ -1065,6 +1114,10 @@ app.post("/:id/remind", requirePermissionOrSalesDirector("announcements.write"),
     .bind(new Date().toISOString(), id)
     .run();
 
+  // The re-pop gate compares reminded_at vs each user's ack — every cached
+  // banner is now stale, orphan them all.
+  await bumpConfigVersion(c.env, "banner");
+
   const pendingCount = scope === "all" ? rosterIds.length : unackedCount;
   return c.json({ success: true, pendingCount, scope });
 });
@@ -1092,6 +1145,8 @@ app.delete("/:id", requirePermissionOrSalesDirector("announcements.write"), asyn
   )
     .bind(id)
     .run();
+  // The notice vanishes from every reader's banner — orphan all snapshots.
+  await bumpConfigVersion(c.env, "banner");
   return c.json({ success: true });
 });
 
@@ -1126,6 +1181,9 @@ app.post("/:id/ack", async (c) => {
   )
     .bind(id, user.id, new Date().toISOString(), ...(stampCo ? [annCompanyId] : []))
     .run();
+  // Only THIS user's ackedIds changed — bust their snapshot alone, so the
+  // popup gate sees the ack on the very next banner poll.
+  await bustBannerForUser(c.env, user.id);
   return c.json({ success: true, acked: true });
 });
 

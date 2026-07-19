@@ -8,6 +8,14 @@ import {
   resolveCompanyCode,
   type Branding,
 } from "../services/branding";
+import {
+  CONFIG_CACHE_TTL_SECONDS,
+  configCacheKeyUrl,
+  configCacheMatch,
+  configCachePut,
+  configCacheVersion,
+  toClientResponse,
+} from "../services/configCache";
 import { audit } from "../services/audit";
 
 // ── Branding (company identity) ───────────────────────────────
@@ -43,10 +51,38 @@ app.get("/", async (c) => {
   // on a pre-migration / single-company install where the middleware left it
   // unset. Same per-route pattern below.
   const companyCode = await resolveCompanyCode(c.env, c.get("companyCode"));
+
+  // Shared PER-COMPANY read cache. The company code is resolved FIRST and is
+  // a REQUIRED segment of the synthetic key, so key and payload derive from
+  // the one same value — company A's entry can never answer company B. A
+  // null version (KV unbound / erroring) bypasses caching entirely; the
+  // family version is bumped by setBrandingForCompany on every write.
+  const version = await configCacheVersion(c.env, "branding");
+  const keyUrl =
+    version == null
+      ? null
+      : configCacheKeyUrl(
+          new URL(c.req.url).origin,
+          "branding",
+          `co=${encodeURIComponent(companyCode)}`,
+          version,
+        );
+  if (keyUrl) {
+    const hit = await configCacheMatch(keyUrl);
+    if (hit) return toClientResponse(hit);
+  }
+
   const branding = await getBrandingForCompany(c.env, companyCode);
   // companyCode rides along so the frontend can pick the matching default set
   // (a blank 2990 field must stay blank, never snap to a Houzs literal).
-  return c.json({ branding, companyCode });
+  const body = JSON.stringify({ branding, companyCode });
+  if (keyUrl) {
+    await configCachePut(keyUrl, body, CONFIG_CACHE_TTL_SECONDS.branding);
+  }
+  return c.body(body, 200, {
+    "content-type": "application/json",
+    "x-config-cache": keyUrl ? "miss" : "bypass",
+  });
 });
 
 app.put("/", requirePermission("settings.manage"), async (c) => {
