@@ -34,7 +34,11 @@ import {
   useEditSalesOrderPayment,
   useDeleteSalesOrderPayment,
 } from "../vendor/scm/lib/sales-order-queries";
-import { todayMyt, isCreatedTodayMyt } from "../vendor/scm/lib/dates";
+import { todayMyt, mytDayOf } from "../vendor/scm/lib/dates";
+/* The SHARED payment-window predicate — the same function the server and the
+   desktop PaymentsTable call, so no surface can disagree about whether the
+   same-day window is still open (Owner 2026-07-19). */
+import { paymentRowMutable } from "../vendor/scm/lib/so-field-policy";
 import {
   useSoDropdownOptions,
   optionsOrFallback,
@@ -106,32 +110,80 @@ const withStoredOption = (opts: readonly SoDropdownOption[], value: string): Opt
   return !value || base.some((o) => o.value === value) ? base : [...base, { value, label: value }];
 };
 
-/* Slip link on a persisted payment row — blob-fetches the slip on demand
-   (GET /:docNo/payments/:id/slip-url, Worker-proxied) and opens the object
-   URL in a new tab. */
+/* Slip on a persisted payment row — blob-fetches the slip (GET
+   /:docNo/payments/:id/slip-url, Worker-proxied) and shows it as an actual
+   THUMBNAIL the operator taps to open full-size.
+
+   Owner 2026-07-19: the slip must be legible. This row previously rendered a
+   14px camera GLYPH and nothing else — strictly worse than desktop, which at
+   least had a (too small) 34px crop. You could not tell from the row whether a
+   slip was even readable, or which of two payments it belonged to, without
+   tapping through one at a time.
+
+   The thumbnail is 56px square with object-fit:contain, sized to the mobile
+   row's existing control rhythm (the pencil/trash buttons beside it are 14px
+   glyphs in ~22px hit areas, so 56 reads as a deliberate content tile rather
+   than an oversized icon) and matching the 120px-tall preview the Edit sheet
+   already uses. Non-image slips (PDF) keep the glyph — there is nothing to
+   thumbnail. The fetch stays lazy and per-row, exactly as before. */
 function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
   const [busy, setBusy] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
+  const [isImage, setIsImage] = useState(false);
   const notify = useNotify();
+
+  /* Resolve the slip once per row so the thumbnail can render inline. A failure
+     here is NOT surfaced as a dialog — an unreachable thumbnail on a list row
+     is not something the operator asked for. It falls back to the glyph, and
+     the tap path below still reports a real failure loudly. */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchPaymentSlipUrl(docNo, paymentId);
+        if (cancelled) return;
+        setUrl(res.url);
+        setIsImage((res.contentType ?? "").startsWith("image/"));
+      } catch {
+        if (!cancelled) { setUrl(null); setIsImage(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [docNo, paymentId]);
+
   const open = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const { url } = await fetchPaymentSlipUrl(docNo, paymentId);
-      window.open(url, "_blank", "noopener");
+      const resolved = url ?? (await fetchPaymentSlipUrl(docNo, paymentId)).url;
+      window.open(resolved, "_blank", "noopener");
     } catch (e) {
       void notify({ title: "Couldn't open slip", body: e instanceof Error ? e.message : String(e), tone: "error" });
     } finally {
       setBusy(false);
     }
   };
+
   return (
     <button
       type="button"
       onClick={open}
-      title="Open payment slip"
+      title="Open payment slip full size"
+      aria-label="Open payment slip full size"
       style={{ border: "none", background: "transparent", cursor: "pointer", padding: "0 6px", display: "flex", alignItems: "center", opacity: busy ? 0.5 : 1 }}
     >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></svg>
+      {isImage && url ? (
+        <img
+          src={url}
+          alt="Payment slip"
+          style={{
+            width: 56, height: 56, objectFit: "contain", display: "block",
+            borderRadius: 6, border: "1px solid var(--line2)", background: "#fff",
+          }}
+        />
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></svg>
+      )}
     </button>
   );
 }
@@ -536,6 +588,20 @@ export function RecordedPaymentsList({
   const [error, setError] = useState<string | null>(null);
   const disabled = busy || working;
 
+  /* SAME-DAY WINDOW (owner 2026-07-19) — "删除只有在当天才行". A payment row may
+     be edited or deleted only on the MY calendar day it was KEYED IN
+     (created_at, never the document's payment date — otherwise editing an old
+     payment's date to today would unlock its own deletion).
+
+     Routed through the shared paymentRowMutable() so this screen, the desktop
+     table and the server all read one rule. An unreadable created_at denies the
+     control rather than defaulting it open. */
+  const rowMutable = (p: RecordedPayment): boolean => {
+    const day = mytDayOf(createdAtOf(p));
+    if (day === null) return false;
+    return paymentRowMutable(day, todayMyt(), draftUnlocked).mutable;
+  };
+
   /* Delete a persisted payment — parity with the desktop PaymentsTable trash
      action. In-app confirm (no-naked-edits), then the shared mutation. */
   const deletePayment = async (paymentId: string) => {
@@ -583,7 +649,7 @@ export function RecordedPaymentsList({
                 MYT midnight it locks). A DRAFT's rows are never same-day-locked
                 (draftUnlocked), matching the server, which exempts DRAFT from the
                 same-day PATCH lock. */}
-            {canEdit && (draftUnlocked || isCreatedTodayMyt(createdAtOf(p))) && (
+            {canEdit && rowMutable(p) && (
               <button
                 type="button"
                 onClick={() => setEditPay(p)}
@@ -595,8 +661,13 @@ export function RecordedPaymentsList({
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2f5d4f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
               </button>
             )}
-            {/* Delete payment — parity with desktop PaymentsTable. */}
-            {canEdit && (
+            {/* Delete payment — parity with desktop PaymentsTable, INCLUDING the
+                same-day window (owner 2026-07-19). The trash is genuinely ABSENT
+                once the window closes, not disabled and not CSS-hidden. Before
+                this it was gated on canEdit alone, so a months-old payment could
+                be deleted from the phone while the pencil beside it was already
+                locked — and the server had no gate on delete either. */}
+            {canEdit && rowMutable(p) && (
               <button
                 type="button"
                 onClick={() => void deletePayment(p.id)}

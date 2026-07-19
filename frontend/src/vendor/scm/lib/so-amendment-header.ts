@@ -31,12 +31,29 @@
 // ----------------------------------------------------------------------------
 
 /** The header fields an amendment can request a change to. Payload keys are the
-    camelCase names the API already uses on the SO header PATCH. */
+    camelCase names the API already uses on the SO header PATCH.
+
+    Owner 2026-07-17 — the AUTHORITY for this list is now the shared
+    SO_HEADER_FIELD_POLICY table (so-field-policy.ts), which is the single
+    source of truth for the FREE / CONTROLLED split and is drift-tested against
+    the backend's copy.
+
+    It stays an `as const` literal here rather than a call to
+    soAmendableHeaderKeys() for one reason only: AmendableHeaderKey is a union
+    type the whole amendment surface depends on, and a function returning
+    string[] cannot produce it. So the literal is kept, and
+    so-field-policy.test.ts asserts it equals soAmendableHeaderKeys() exactly —
+    a mismatch fails CI. Do not add a key here without adding the row there.
+
+    `city` joined 2026-07-17: it was the casualty of the old three-list prose
+    mirroring — disabled by the mobile UI and named in its lock copy, but in
+    neither backend set, so it was both un-editable AND un-requestable. */
 export const AMENDABLE_HEADER_KEYS = [
   'internalExpectedDd',
   'customerDeliveryDate',
   'customerState',
   'postcode',
+  'city',
 ] as const;
 
 export type AmendableHeaderKey = (typeof AMENDABLE_HEADER_KEYS)[number];
@@ -51,6 +68,7 @@ export const AMENDABLE_HEADER_LABELS: Record<AmendableHeaderKey, string> = {
   customerDeliveryDate: 'Delivery Date',
   customerState:        'State',
   postcode:             'Postcode',
+  city:                 'City',
 };
 
 /** Loose equality mirroring the backend's `norm()` — null / undefined / '' all

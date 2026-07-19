@@ -34,7 +34,11 @@ import { MoneyInput } from './MoneyInput';
 import { DateField } from './DateField';
 import { useNotify } from './NotifyDialog';
 import { useConfirm } from './ConfirmDialog';
-import { todayMyt } from '../lib/dates';
+import { todayMyt, mytDayOf } from '../lib/dates';
+/* The SHARED payment-window predicate — the same function the server calls, so
+   the button and the endpoint cannot disagree about whether the window is open
+   (Owner 2026-07-19). */
+import { paymentRowMutable } from '../lib/so-field-policy';
 import {
   PAYMENT_METHOD_CODE_TO_VALUE,
   PAYMENT_METHOD_DEFAULT_LABELS,
@@ -373,9 +377,23 @@ const PaymentSlipThumb = ({ docNo, payment, orderSlipUrl, orderSlipType }: {
   const contentType = payment.slip_key ? (perRowQ.data?.contentType ?? 'image/jpeg') : orderSlipType;
   if (!url) return <span className={detailStyles.muted}>—</span>;
   if (contentType.startsWith('image/')) {
+    /* Owner 2026-07-19 — the slip was a 34x34 crop, which is not enough pixels
+       to read an amount or a reference number off a bank slip; the column
+       existed but was decorative. 72px square with object-fit:contain (not
+       cover) so the whole slip is visible rather than a centre crop of it —
+       a cropped slip loses exactly the edges where the reference number sits.
+       Click still opens the full-size image, as it always did. */
     return (
-      <a href={url} target="_blank" rel="noreferrer" title="Open payment slip">
-        <img src={url} alt="Slip" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--line)', display: 'block' }} />
+      <a href={url} target="_blank" rel="noreferrer" title="Open payment slip full size">
+        <img
+          src={url}
+          alt="Slip"
+          style={{
+            width: 72, height: 72, objectFit: 'contain',
+            borderRadius: 4, border: '1px solid var(--line)', display: 'block',
+            background: 'var(--bg-subtle, #fff)',
+          }}
+        />
       </a>
     );
   }
@@ -566,16 +584,28 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
     if (Object.keys(patch).length > 0) patchDraft(uid, patch);
   };
 
-  /* Same-day EDIT (owner 2026-07-13) — a persisted payment created on the
-     current MY calendar day may be corrected; after MYT midnight it locks. The
-     row's created_at (UTC) is bucketed to its MY day (shift +8h, read the date)
-     and compared to todayMyt(), so a receipt logged at 07:30 MYT (23:30 UTC the
-     day before) still reads as "today". */
-  const isCreatedTodayMyt = (createdAt: string | null | undefined): boolean => {
+  /* Same-day EDIT + DELETE window (owner 2026-07-13, extended to DELETE
+     2026-07-19). A persisted payment created on the current MY calendar day may
+     be corrected or removed; after MYT midnight it locks.
+
+     `isCreatedTodayMyt` is imported from vendor/scm/lib/dates rather than
+     re-declared here — this file carried a byte-identical private copy, which
+     is exactly how the delete path came to diverge from the edit path in the
+     first place.
+
+     `rowMutable` routes the decision through the SHARED policy predicate that
+     the server also uses (so-field-policy.paymentRowMutable), so the button and
+     the endpoint cannot disagree about whether the window is open. */
+  const rowMutable = (createdAt: string | null | undefined): boolean => {
+    /* An unreadable created_at is not "today" and not "not today" — we cannot
+       tell. Deny the control and let the server explain, rather than defaulting
+       into a silent allow. */
     if (!createdAt) return false;
     const t = new Date(createdAt).getTime();
     if (Number.isNaN(t)) return false;
-    return new Date(t + 8 * 3600 * 1000).toISOString().slice(0, 10) === todayMyt();
+    const day = mytDayOf(createdAt);
+    if (day === null) return false;
+    return paymentRowMutable(day, todayMyt(), draftUnlocked).mutable;
   };
 
   /* installment_months (int|null) → the maintenance plan LABEL/value to rehydrate
@@ -764,11 +794,19 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
      844 min-width is kept as the narrow/drawer-open safety net: below 844 the
      .gridScroll wrapper scrolls the block horizontally instead of clipping the
      Slip cell. */
+  /* Slip track widened 52 -> 88px alongside the 72px thumbnail (owner
+     2026-07-19, "the slip must be legible"). Track sum moves 844 -> 880:
+       112 + 116 + 116 + 140 + 140 + 88 + 140 + 28 = 880 px.
+     minWidth moves with it. Read the note above before touching these: every
+     track is FIXED on purpose, and reintroducing an `fr` to absorb the extra
+     36px is the exact change that previously ballooned Collected By and punched
+     a gap down the middle of the row. 880 still fits a typical ~960-1000px SCM
+     detail body without a scrollbar; below it .gridScroll scrolls the block. */
   const gridStyle: CSSProperties | undefined = showSlip
     ? {
         gridTemplateColumns:
-          '112px 116px 116px 140px 140px 52px 140px 28px',
-        minWidth: 844,
+          '112px 116px 116px 140px 140px 88px 140px 28px',
+        minWidth: 880,
       }
     : undefined;
 
@@ -919,7 +957,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                           recorded today; after MYT midnight it locks (no pencil).
                           A DRAFT SO (draftUnlocked) is never same-day-locked, so
                           every persisted row keeps its pencil while unconfirmed. */}
-                      {(draftUnlocked || isCreatedTodayMyt(p.created_at)) && (
+                      {rowMutable(p.created_at) && (
                         <button
                           type="button"
                           disabled={editPayment.isPending}
@@ -933,23 +971,34 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                           <Pencil size={14} strokeWidth={1.75} />
                         </button>
                       )}
-                      <button
-                        type="button"
-                        className={paymentsStyles.trashBtn}
-                        disabled={deletePayment.isPending}
-                        onClick={async () => {
-                          if (await askConfirm({
-                            title: `Delete this ${methodDisplay(p)} payment of ${fmtRm(p.amount_centi, currency)}?`,
-                            confirmLabel: 'Delete',
-                            danger: true,
-                          })) {
-                            deletePayment.mutate({ docNo: (props as SavedModeProps).docNo, id: p.id });
-                          }
-                        }}
-                        title="Remove payment"
-                      >
-                        <Trash2 size={14} strokeWidth={1.75} />
-                      </button>
+                      {/* Same-day DELETE (owner 2026-07-19) — "删除只有在当天才行".
+                          The control is genuinely ABSENT once the window closes,
+                          not disabled and not CSS-hidden. The server refuses too
+                          (409 payment_edit_locked); this is the courtesy, that is
+                          the control. Before this, delete had NO time gate at all
+                          while the pencil beside it did — so a months-old payment
+                          on a delivered, invoiced SO could be hard-deleted,
+                          silently flipping the order from PAID back to owing. */}
+                      {rowMutable(p.created_at) && (
+                        <button
+                          type="button"
+                          className={paymentsStyles.trashBtn}
+                          disabled={deletePayment.isPending}
+                          onClick={async () => {
+                            if (await askConfirm({
+                              title: `Delete this ${methodDisplay(p)} payment of ${fmtRm(p.amount_centi, currency)}?`,
+                              body: 'This removes the payment from the order, so the balance owing goes back up. It cannot be undone.',
+                              confirmLabel: 'Delete',
+                              danger: true,
+                            })) {
+                              deletePayment.mutate({ docNo: (props as SavedModeProps).docNo, id: p.id });
+                            }
+                          }}
+                          title="Remove payment (same-day only)"
+                        >
+                          <Trash2 size={14} strokeWidth={1.75} />
+                        </button>
+                      )}
                     </div>
                   )}
                 </span>

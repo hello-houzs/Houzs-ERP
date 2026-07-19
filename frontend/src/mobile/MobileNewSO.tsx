@@ -726,10 +726,17 @@ export function MobileNewSO({
      CHANGED (an unchanged past date must not block the save), and the amendment
      needs a before-value for the frozen-field diff. */
   const [origDelivDate, setOrigDelivDate] = useState<string>("");
-  /* PERSISTED State / Postcode — the other two columns the processing lock
-     freezes. Needed to diff what an amendment is actually requesting. */
+  /* PERSISTED State / Postcode / City — the other columns the processing lock
+     freezes. Needed to diff what an amendment is actually requesting.
+     City joined 2026-07-17: this screen already DISABLED City under the lock
+     and named it in the lock copy, but City was in neither the backend lock set
+     nor the amendment allow-list — so it was simultaneously un-editable here
+     and un-requestable by amendment, a dead end with no way out. It is
+     CONTROLLED now (see so-field-policy: part of the PO delivery destination,
+     same as Postcode) and rides the amendment like the rest. */
   const [origState, setOrigState] = useState<string>("");
   const [origPostcode, setOrigPostcode] = useState<string>("");
+  const [origCity, setOrigCity] = useState<string>("");
   /* PERSISTED SO status — feeds the SHARED procLockActive() so the processing
      lock keeps a DRAFT / CANCELLED SO editable (status guard), matching the
      mobile detail screen + desktop instead of the old status-blind copy. */
@@ -830,6 +837,7 @@ export function MobileNewSO({
         setPostcode(h.postcode ?? "");
         setOrigState(h.customer_state ?? "");
         setOrigPostcode(h.postcode ?? "");
+        setOrigCity(h.city ?? "");
         /* The pristine baseline — the SAME builder save() uses, fed the values
            just seeded above, so an untouched form diffs to {}. salespersonId is
            seeded to "" here exactly as the picker is (this form never seeds it
@@ -1670,12 +1678,14 @@ export function MobileNewSO({
             customerDeliveryDate: delivOut,
             customerState:        state,
             postcode:             postcode.trim(),
+            city:                 city.trim(),
           },
           {
             internalExpectedDd:   origProcDate,
             customerDeliveryDate: origDelivDate,
             customerState:        origState,
             postcode:             origPostcode,
+            city:                 origCity,
           },
         );
         const outgoingPatch = amendmentMode
@@ -1684,6 +1694,7 @@ export function MobileNewSO({
               customerDeliveryDate: origDelivDate,
               customerState:        origState,
               postcode:             origPostcode,
+              city:                 origCity,
             })
           : patch;
 
@@ -2150,7 +2161,7 @@ export function MobileNewSO({
                     ) : null}
                     {amendmentMode && (
                       <div style={{ fontSize: 10, color: "#a16a2e", marginTop: -3 }}>
-                        Changing the State or Postcode submits an amendment request — it applies once approved. Address lines save straight away.
+                        Changing the State, City or Postcode submits an amendment request — it applies once approved. Address lines save straight away.
                       </div>
                     )}
               </div>

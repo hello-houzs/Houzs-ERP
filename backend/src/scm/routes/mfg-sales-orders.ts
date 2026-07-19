@@ -32,6 +32,17 @@ import { buildCompartmentsFromModuleLines } from '../lib/compartments-from-modul
    create so the order lands in Proceed without a manual click. Same gate the
    POS "Move to Proceed" button uses, so the two never drift. */
 import { meetsProceedGate } from '../shared/order-rules';
+/* The SO edit-policy table (Owner 2026-07-17): FREE fields Save writes straight
+   through; CONTROLLED fields Save routes into the amendment. Both the lock Set
+   and the amendment allow-list below are DERIVED from it so the three lists
+   that used to be hand-mirrored can no longer drift apart. */
+import {
+  soProcessingLockColumns,
+  soAmendableHeaderFields,
+  lockedColumnsChanged,
+  paymentRowMutable,
+  PAYMENT_WINDOW_CLOSED_ERROR,
+} from '../shared/so-field-policy';
 /* SO-SKU spec P2 — every charge is a SKU line. Predicates from P1; the
    fee/addon → SERVICE-line decomposition builders are pure + shared. */
 import {
@@ -409,11 +420,21 @@ const SO_IDENTITY_LOCK_COLS = new Set<string>([
 
    Owner 2026-07-05 — postcode ALSO freezes here. Like State, the postcode is
    part of the PO delivery location the supplier ships to, so it must not drift
-   after the SO is locked + PO'd. */
-const SO_PROCESSING_LOCK_COLS = new Set<string>([
-  'internal_expected_dd', 'customer_delivery_date',
-  'customer_state', 'sales_location', 'postcode',
-]);
+   after the SO is locked + PO'd.
+
+   Owner 2026-07-17 — this Set is no longer written by hand. It is DERIVED from
+   the shared SO_HEADER_FIELD_POLICY table (scm/shared/so-field-policy.ts),
+   which is the single source of truth for the FREE / CONTROLLED split and is
+   drift-tested against the frontend's vendored copy. `city` joined the set
+   there: the mobile UI already disabled City and named it in its lock copy, but
+   no backend set contained it, so a posted City change wrote straight through
+   on a locked, PO'd SO — and no amendment could carry it either.
+
+   One correction the policy table records and this comment used to get wrong:
+   State freezes because it RESOLVES the warehouse. Postcode and City freeze
+   because they are printed on the supplier PO as the delivery destination.
+   Postcode resolves nothing — state_warehouse_mappings has no postcode column. */
+const SO_PROCESSING_LOCK_COLS = soProcessingLockColumns();
 
 /* ── Amendable header fields (Owner 2026-07-16) ─────────────────────────────
    Every column SO_PROCESSING_LOCK_COLS freezes above is rejected by the header
@@ -431,13 +452,13 @@ const SO_PROCESSING_LOCK_COLS = new Set<string>([
 
    This allow-list is the trust boundary: an amendment's header_changes jsonb is
    client-authored, so any key not listed here is REJECTED at create rather than
-   written through to the SO on approve. */
-const AMENDABLE_HEADER_FIELDS: Record<string, string> = {
-  internalExpectedDd:   'internal_expected_dd',
-  customerDeliveryDate: 'customer_delivery_date',
-  customerState:        'customer_state',
-  postcode:             'postcode',
-};
+   written through to the SO on approve.
+
+   Owner 2026-07-17 — also DERIVED from SO_HEADER_FIELD_POLICY now, so the lock
+   Set and this allow-list cannot fall out of step: every CONTROLLED row is in
+   both, every DERIVED row is in the lock only. That invariant used to be prose
+   in three files; it is a test now (soFieldPolicy.test.ts). */
+const AMENDABLE_HEADER_FIELDS: Record<string, string> = soAmendableHeaderFields();
 
 /* Loose equality for the lock diff — null / undefined / '' all collapse so a
    UI re-sending an empty field as '' does not read as a change from null. */
@@ -5855,14 +5876,14 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
        the same admin moving the date instead of clearing it — still 409s; to
        reschedule a locked SO, remove the date first (unlocks), then set the new
        pair. */
+    /* The diff itself lives in the shared policy module (lockedColumnsChanged)
+       so it can be tested directly rather than through a copy that drifts from
+       what actually ships. This IS the server-side control: a client that posts
+       a CONTROLLED field here is rejected regardless of what its UI allowed. */
     const beforeRowProc = before as unknown as Record<string, unknown>;
-    const changedSchedule = [...SO_PROCESSING_LOCK_COLS].filter(
-      (col) => col in updates && norm(updates[col]) !== norm(beforeRowProc[col]),
-    ).filter((col) => !(
-      superAdminClearsProc
-      && (col === 'internal_expected_dd' || col === 'customer_delivery_date')
-      && norm(updates[col]) === ''
-    ));
+    const changedSchedule = lockedColumnsChanged(updates, beforeRowProc, {
+      superAdminClearsProcessingDate: superAdminClearsProc,
+    });
     if (changedSchedule.length > 0) {
       return c.json(SO_PROCESSING_LOCKED_RESPONSE, 409);
     }
@@ -9442,19 +9463,32 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
      midnight the day's cash-up is settled and it LOCKS. EXEMPT DRAFT SOs: a
      draft isn't confirmed/settled yet (e.g. an OCR-scanned draft whose payment
      was mis-read), so its payments must stay freely editable — mirrors the
-     frontend's draftUnlocked (2026-07-13), which was never matched here. */
-  if (mytDateOf(before.created_at) !== todayMyt()) {
-    const { data: soRow } = await sb
-      .from('mfg_sales_orders')
-      .select('status')
-      .eq('doc_no', docNo)
-      .maybeSingle();
-    if ((soRow?.status as string | undefined) !== 'DRAFT') {
-      return c.json({
-        error: 'payment_edit_locked',
-        reason: 'This payment can only be edited on the day it was recorded.',
-      }, 409);
-    }
+     frontend's draftUnlocked (2026-07-13), which was never matched here.
+
+     Owner 2026-07-19 confirmed this same window governs DELETE too, which had
+     no time gate at all. Both routes now go through the shared
+     paymentRowMutable() predicate rather than each spelling the rule out, so
+     they cannot drift — and the deferred bank-reconciliation condition will
+     have exactly one place to land. */
+  const { data: soRow } = await sb
+    .from('mfg_sales_orders')
+    .select('status')
+    .eq('doc_no', docNo)
+    .maybeSingle();
+  if (typeof before.created_at !== 'string' || Number.isNaN(new Date(before.created_at).getTime())) {
+    return c.json({
+      error: 'payment_created_at_unreadable',
+      reason: 'This payment is missing the date it was keyed in, so it cannot be edited safely. '
+        + 'Please tell IT which payment this is.',
+    }, 409);
+  }
+  const editWindow = paymentRowMutable(
+    mytDateOf(before.created_at),
+    todayMyt(),
+    (soRow?.status as string | undefined) === 'DRAFT',
+  );
+  if (!editWindow.mutable) {
+    return c.json({ error: PAYMENT_WINDOW_CLOSED_ERROR, reason: editWindow.problem }, 409);
   }
 
   let body: unknown;
@@ -9609,10 +9643,65 @@ mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
   const rowTyped = row as { so_doc_no: string; paid_at: string; method: string; amount_centi: number; approval_code: string | null };
   if (rowTyped.so_doc_no !== docNo) return c.json({ error: 'payment_doc_mismatch' }, 400);
 
+  /* SAME-DAY WINDOW (Owner 2026-07-19) — "删除只有在当天才行。正常情况下，他当天
+     key in 的时候，因为还没有 lock 下来，所以当天都可以任意更改." A payment row may
+     be deleted ONLY on the MY calendar day it was keyed in.
+
+     This route previously had NO time gate at all — strictly weaker than the
+     PATCH on the same row, which has carried this window since 2026-07-13. So a
+     months-old payment on a delivered, invoiced SO could be hard-deleted,
+     silently flipping the order from PAID back to owing. This closes that.
+
+     Keyed off created_at (when the row was KEYED IN), never paid_at (the date
+     on the document): keying off paid_at would let someone unlock an old
+     payment's deletion by first editing its date to today, with the edit and
+     the delete authorising each other.
+
+     MYT, not UTC — mytDateOf/todayMyt shift +8h before reading the date, so the
+     window closes at Malaysian midnight rather than 8h late or 8h early.
+
+     Enforced HERE and not only in the UI: the clients also drop the delete
+     control once the window closes, but that is the courtesy — this is the
+     control. The DRAFT exemption mirrors the PATCH route exactly (a draft has
+     nothing locked; the owner was describing a confirmed order).
+
+     WHERE THE DEFERRED RULE GOES: the owner has parked the bank-reconciliation
+     condition ("如果他已经做完 bank record 并且 knock off 掉了，就不行了") until
+     reconciliation and knock-off exist. When he defines it, it becomes one more
+     argument to paymentRowMutable() — that predicate is the only place any
+     surface asks this question, so it lands everywhere at once. Nothing
+     speculative is built for it here. */
+  const { data: soStatusRow } = await sb
+    .from('mfg_sales_orders')
+    .select('status')
+    .eq('doc_no', docNo)
+    .maybeSingle();
+  const soIsDraft = (soStatusRow?.status as string | undefined) === 'DRAFT';
+  const createdAtRaw = (row as { created_at?: unknown }).created_at;
+  if (typeof createdAtRaw !== 'string' || Number.isNaN(new Date(createdAtRaw).getTime())) {
+    /* An unreadable created_at means we cannot tell whether the window is open.
+       Surface it rather than defaulting — a `?? today` would silently allow the
+       delete, a `?? ''` would silently deny it, and both lie about why. */
+    return c.json({
+      error: 'payment_created_at_unreadable',
+      reason: 'This payment is missing the date it was keyed in, so it cannot be removed safely. '
+        + 'Please tell IT which payment this is.',
+    }, 409);
+  }
+  const windowCheck = paymentRowMutable(mytDateOf(createdAtRaw), todayMyt(), soIsDraft);
+  if (!windowCheck.mutable) {
+    return c.json({
+      error: PAYMENT_WINDOW_CLOSED_ERROR,
+      reason: windowCheck.problem,
+    }, 409);
+  }
+
   const { error } = await sb.from('mfg_sales_order_payments').delete().eq('id', id);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
 
-  /* Post-merge stitch — DELETE_PAYMENT audit row. */
+  /* Post-merge stitch — DELETE_PAYMENT audit row. Carries the typed reason as a
+     field change so it renders in AuditHistoryPanel alongside the amount that
+     vanished, rather than sitting in a note nobody opens. */
   await recordSoAudit(sb, {
     docNo,
     action: 'DELETE_PAYMENT',

@@ -2578,12 +2578,17 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
     customerDeliveryDate: form.customerDeliveryDate,
     customerState:        form.state,
     postcode:             form.postcode,
+    /* City joined the frozen set 2026-07-17 (so-field-policy) — part of the PO
+       delivery destination, same as Postcode. Without it here a City change on
+       an amendment-eligible SO would be silently dropped from the request. */
+    city:                 form.city,
   };
   const lockedHeaderOriginal = {
     internalExpectedDd:   header.internal_expected_dd ?? '',
     customerDeliveryDate: header.customer_delivery_date ?? '',
     customerState:        header.customer_state ?? '',
     postcode:             header.postcode ?? header.address4 ?? '',
+    city:                 header.city ?? '',
   };
 
   const trySave = (
@@ -2965,9 +2970,17 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
             <label className={styles.field}>
               <span className={styles.fieldLabel}>City</span>
               <span className={styles.selectWrap}>
+                {/* City locks with State + Postcode (Owner 2026-07-17). It is
+                    part of the delivery destination printed on the supplier PO,
+                    exactly like Postcode — but desktop did not lock it at all
+                    while mobile disabled it, and NO backend set contained it, so
+                    a City change wrote straight through on a locked, PO'd SO.
+                    It is CONTROLLED now (so-field-policy) and rides the
+                    amendment when the SO is amendment-eligible. */}
                 <select className={styles.fieldSelect} value={form.city}
                   onChange={(e) => setForm((s) => ({ ...s, city: e.target.value, postcode: '' }))}
-                  disabled={inputsDisabled || !form.state}>
+                  disabled={inputsDisabled || stateLocked || !form.state}
+                  title={stateLocked ? 'Processing has passed — City is locked (it is part of the PO delivery location).' : undefined}>
                   <option value="">{form.state ? 'Pick city' : '— pick state first'}</option>
                   {sortByText(cities).map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
