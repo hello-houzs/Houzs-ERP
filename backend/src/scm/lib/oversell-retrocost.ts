@@ -32,6 +32,14 @@
 // SQL itself is untestable here — the model is the executable specification the
 // SQL is written against, and what oversell-retrocost.test.ts exercises. KEEP THE
 // TWO IN LOCKSTEP: any change to fn_reconcile_uncosted_out must change this too.
+//
+// SQL-ONLY (no lockstep counterpart): the 2026-07-20 enum-coercion hotfix —
+// `UPPER(COALESCE(d.status::text, ''))` in fn_reconcile_uncosted_out (0154) and in
+// its already-live sibling fn_reconcile_dropship_batch (0155) — is a Postgres
+// plan-time fix only. doStatus is a plain string in this model, so the CANCELLED
+// guard below (`(m.doStatus ?? '').toUpperCase()`) never reaches Postgres's enum
+// input parser and needs no change. The two stay in lockstep on LOGIC; the ::text
+// cast has no behavioural effect to mirror.
 // ----------------------------------------------------------------------------
 
 /** One prior OUT movement in a single (warehouse, product, variant) + company

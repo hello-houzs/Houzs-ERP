@@ -115,7 +115,7 @@ BEGIN
          SELECT 1 FROM scm.delivery_orders d
           WHERE d.id = m.source_doc_id
             AND COALESCE(d.is_dropship, FALSE) = FALSE
-            AND UPPER(COALESCE(d.status, '')) <> 'CANCELLED'
+            AND UPPER(COALESCE(d.status::text, '')) <> 'CANCELLED'
        )
      ORDER BY m.created_at ASC, m.id ASC
      FOR UPDATE OF m
