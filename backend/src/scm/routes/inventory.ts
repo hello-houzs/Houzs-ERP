@@ -204,7 +204,11 @@ inventory.delete('/warehouses/:id', async (c) => {
 // When showAll=true, returns one row per (warehouse × SKU) including
 // zero-balance rows — the UI uses this for the "all SKUs" view.
 // When showAll=false (default), returns only rows with movements.
-inventory.get('/', async (c) => {
+//
+// Exported for the route test (see patchWarehouseHandler / productPickerCompanyScope
+// for why the handler is lifted out — the supabaseAuth bridge can't run in the
+// harness). The test pins that showAll is company-scoped in BOTH directions.
+export const listInventoryHandler = async (c: any) => {
   const sb = c.get('supabase');
   const warehouseId = c.req.query('warehouseId');
   const search = c.req.query('search');
@@ -229,15 +233,20 @@ inventory.get('/', async (c) => {
     if (warehouseId) q = q.eq('warehouse_id', warehouseId);
     if (s) q = q.or(`product_code.ilike.%${s}%,product_name.ilike.%${s}%`);
     if (showAll && category && category !== 'all') q = q.eq('category', category);
-    // multi-company: inventory_balances carries company_id (grouped per company);
-    // the showAll SKU rollup (v_inventory_all_skus) intentionally aggregates
-    // across companies and has NO company_id column, so scope only the balances.
-    if (!showAll) q = scopeToCompany(q, c);
+    // multi-company: BOTH reads are per-company now. inventory_balances has
+    // carried company_id since mig 0084; the showAll SKU rollup
+    // (v_inventory_all_skus) gained company_id in mig 0154, which also stopped
+    // its product-by-warehouse cross join from pairing the two companies. Scope
+    // EVERY read so showAll can no longer leak the other company's catalogue,
+    // warehouses, on-hand qty, valuation or main supplier. scopeToCompany still
+    // degrades to no predicate when the active company is unresolved
+    // (pre-migration / cold-start), so single-company Houzs is unchanged.
+    q = scopeToCompany(q, c);
     return q.order('product_code').range(from, to);
   });
   if (error) {
     if (/relation .* does not exist/i.test(error.message) || /column .* does not exist/i.test(error.message)) {
-      return c.json({ error: 'migration_pending', reason: 'Run migrations 0050 + 0053 against Supabase.' }, 500);
+      return c.json({ error: 'migration_pending', reason: 'Run the SCM inventory view migrations (including 0154, which adds company_id to v_inventory_all_skus) against Supabase.' }, 500);
     }
     return c.json({ error: 'load_failed', reason: error.message }, 500);
   }
@@ -249,7 +258,9 @@ inventory.get('/', async (c) => {
     .select('id, code, name, is_consignment')
     .or('is_active.eq.true,is_consignment.eq.true');
   return c.json({ balances: data ?? [], warehouses: whs ?? [] });
-});
+};
+
+inventory.get('/', listInventoryHandler);
 
 /* Σ delivered / Σ returned per SO line id (net-of-delivered). Only
    non-cancelled AND non-draft DOs count as delivered (a DRAFT DO hasn't
