@@ -114,6 +114,7 @@ import { VariantsTab } from './products/VariantsTab';
 import { Categories } from './Categories';
 import { useBrandingPool, useProjectBrands } from '../../vendor/scm/lib/product-models-queries';
 import { useQueryClient } from '@tanstack/react-query';
+import { parseMoneyToSen } from '../../lib/money';
 import styles from './Products.module.css';
 
 const ICON_PROPS = { size: 16, strokeWidth: 1.75 } as const;
@@ -3173,6 +3174,7 @@ const MaintenanceList = ({
   const [draftLabel, setDraftLabel] = useState('');
   const [draftDim, setDraftDim] = useState('');
   const [draftPrice, setDraftPrice] = useState('0.00');
+  const notify = useNotify();
 
   /* Commander 2026-05-27: "Maintenance 也要有 Sort 的功能" — drag-and-drop
      row reorder when editMode. Uses native HTML5 drag API (no library).
@@ -3645,7 +3647,15 @@ const MaintenanceList = ({
   const addItem = () => {
     const v = draftValue.trim();
     if (!v) return;
-    const priceSen = Math.round((Number(draftPrice) || 0) * 100);
+    /* `Number(draftPrice) || 0` booked an unreadable surcharge as RM 0.00 and
+       added the option anyway — the operator saw their row appear and had no
+       reason to check the price. Refuse and say so instead. */
+    const price = parseMoneyToSen(draftPrice, 'That surcharge');
+    if (!price.ok) {
+      void notify({ title: price.message, tone: 'error' });
+      return;
+    }
+    const priceSen = price.sen;
     const next = JSON.parse(JSON.stringify(config)) as MaintenanceConfig;
     const arr = (next[listKey] as PricedOption[] | undefined) ?? [];
     // ONE price (owner 2026-06-22) — new rows carry only the single priceSen
@@ -5130,23 +5140,38 @@ const ImportSkusDialog = ({ sofaSizes, onClose }: { sofaSizes: string[]; onClose
         // Money is read in RINGGIT (new export, e.g. 1535.00 → 153500 sen). A
         // legacy `_sen` column is still honoured as a fallback so any file from
         // an earlier export round-trips. Returns null when neither is present.
-        // Excel round-trips add thousands separators / "RM " prefixes — strip
-        // those, then REJECT anything still non-numeric: parseFloat("1,535.00")
-        // silently truncates at the comma → RM 1.00 written with no warning.
         // A bad money cell skips the whole SKU (reported like tier errors)
         // rather than ever writing a corrupted price.
+        /* This used to carry its OWN copy of the accept/reject rule (strip
+           "RM " and commas, then a regex). It was the right rule — it is where
+           the "parseFloat('1,535.00') is RM 1.00" hazard was first written
+           down — but a second copy of a money rule is how the two halves come
+           to disagree, so it now calls the shared parser. The shared parser is
+           strictly stricter: it also catches ambiguous comma grouping and more
+           than two decimal places, both of which this regex let through. */
         let moneyError: string | null = null;
         const senOf = (rm: string | undefined, sen: string | undefined): number | null => {
           if (has(rm)) {
-            const cleaned = (rm as string).trim().replace(/^RM\s*/i, '').replace(/[,\s]/g, '');
-            if (!/^\d+(\.\d+)?$/.test(cleaned)) {
-              moneyError ??= `price "${(rm as string).trim()}" is not a number — use digits only, e.g. 1535.00`;
+            const parsed = parseMoneyToSen(rm, 'That price');
+            if (!parsed.ok) {
+              moneyError ??= `price "${(rm as string).trim()}" could not be read — ${parsed.message}`;
               return null;
             }
-            const n = Number(cleaned);
-            return Number.isFinite(n) ? Math.round(n * 100) : null;
+            return parsed.empty ? null : parsed.sen;
           }
-          if (has(sen)) { const n = Number(sen); return Number.isFinite(n) ? Math.round(n) : null; }
+          /* Legacy `_sen` column — an integer count of sen, not ringgit. An
+             unreadable one used to return null, which this caller reads as
+             "the column wasn't filled in", so a corrupt legacy file imported
+             as a price-less SKU with nothing said. Report it like the ringgit
+             branch does. */
+          if (has(sen)) {
+            const n = Number(String(sen).trim());
+            if (!Number.isFinite(n) || !Number.isInteger(n)) {
+              moneyError ??= `price "${String(sen).trim()}" could not be read — this column is a whole number of sen, for example 153500.`;
+              return null;
+            }
+            return n;
+          }
           return null;
         };
 

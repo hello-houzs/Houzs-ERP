@@ -35,6 +35,7 @@ import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
+import { parseMoneyToSen } from '../../lib/money';
 import styles from './ProductModels.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -840,6 +841,20 @@ export function NewModelDialog({
       return;
     }
 
+    /* Supplier unit prices are checked HERE, before a single model is created,
+       not at the binding loop far below. The binding loop runs after the models
+       and their SKUs already exist, so a refusal down there would leave a
+       half-made batch behind. What it replaced was `parseFloat(x) || 0`, which
+       bound every SKU to the supplier at RM 0.00 — a purchase price of nothing,
+       written silently, that only surfaces when someone raises a PO against it. */
+    for (const [i, r] of rows.entries()) {
+      for (const sup of r.suppliers) {
+        if (!sup.supplierId || !sup.supplierCode.trim()) continue;
+        const price = parseMoneyToSen(sup.unitPrice, `Supplier price on row ${i + 1}`);
+        if (!price.ok) { setBatchError(price.message); return; }
+      }
+    }
+
     // Duplicate-code check inside the batch (server would reject the second
     // one, leaving a confusing half-success — easier to catch here first).
     const codes = rows.map((r) => r.modelCode.trim());
@@ -953,7 +968,12 @@ export function NewModelDialog({
           for (const sup of srcRow.suppliers) {
             if (!sup.supplierId || !sup.supplierCode.trim()) continue;
             const baseCode   = sup.supplierCode.trim();
-            const priceCenti = Math.round((parseFloat(sup.unitPrice) || 0) * 100);
+            /* Already validated in submit()'s preflight, which returns before
+               anything is created — so a refusal here is unreachable. Kept
+               total rather than asserted because this loop is best-effort and
+               must not throw past a batch that already created its models. */
+            const parsedPrice = parseMoneyToSen(sup.unitPrice, 'Supplier price');
+            const priceCenti = parsedPrice.ok ? parsedPrice.sen : 0;
             const lead       = parseInt(sup.leadDays, 10);
             const moqN       = parseInt(sup.moq, 10);
             const bindings: NewBinding[] = r.codes.map((code) => {
