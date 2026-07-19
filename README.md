@@ -197,7 +197,7 @@ The Worker's client (`backend/src/services/autocount.ts`) prefixes every request
 ```toml
 [vars]
 AUTOCOUNT_API_URL = "https://it-houzs.dev/"
-PUBLIC_APP_URL    = "https://houzs-erp.pages.dev"     # used to build email links
+PUBLIC_APP_URL    = "https://erp.houzscentury.com"   # canonical domain; used to build email links
 EMAIL_FROM        = "Houzs ERP <no-reply@mail.it-houzs.dev>"
 
 [[d1_databases]]
