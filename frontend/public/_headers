@@ -25,3 +25,13 @@
 
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# Self-hosted web fonts. The woff2 files are fixed upstream builds and the
+# names never get reused, so a year-long immutable cache is correct — same
+# contract as /assets/*. fonts.css sits under this rule too: any change to
+# the font set must ship as NEW file names (fonts-2.css + repointed link in
+# index.html), never an in-place edit, or returning browsers will keep the
+# old sheet for a year. Exact prefix, no overlap with the rules above, so
+# nothing merges (see the warning at the top of this file).
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable
