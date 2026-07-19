@@ -13,6 +13,7 @@ import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
 import { formatCurrency, formatDate, formatDateTime, cn, todayInAppTz } from "../lib/utils";
+import { parseMoneyToSen, parseQuantity, senToRm, scaledToQuantity } from "../lib/money";
 import { DataTable, type Column } from "../components/DataTable";
 import { EmptyState } from "../components/EmptyState";
 import { Pagination } from "../components/Pagination";
@@ -821,22 +822,27 @@ export function EntryPanel({
     };
   }, [mode, entry]);
 
-  // Live totals derived from items + payments.
+  /* Live totals derived from items + payments. These run through the SAME
+     parser the save does, so the figure on screen and the figure that gets
+     written can never come from two different opinions about what "1,200"
+     means — the disagreement fx-rate.ts was written to end. An unreadable
+     amount contributes nothing here AND blocks the save below, so the total
+     is never a confident number standing on a value nobody could read. */
   const itemsTotal = useMemo(() => {
-    let total = 0;
+    let sen = 0;
     for (const it of items) {
-      const a = parseFloat(it.amount);
-      if (Number.isFinite(a)) total += a;
+      const a = parseMoneyToSen(it.amount);
+      if (a.ok) sen += a.sen;
     }
-    return total;
+    return senToRm(sen);
   }, [items]);
   const paidTotal = useMemo(() => {
-    let total = 0;
+    let sen = 0;
     for (const p of payments) {
-      const a = parseFloat(p.amount);
-      if (Number.isFinite(a)) total += a;
+      const a = parseMoneyToSen(p.amount);
+      if (a.ok) sen += a.sen;
     }
-    return total;
+    return senToRm(sen);
   }, [payments]);
   const balance = Math.max(0, itemsTotal - paidTotal);
 
@@ -853,29 +859,70 @@ export function EntryPanel({
       toast.error("Customer name is required");
       return;
     }
+    /* MONEY GUARD (owner ruling 2026-07-19 "打错价钱肯定是要警告啊"; HOOKKA
+       BUG-2026-06-11-002). Every amount is parsed BEFORE anything is sent, and
+       a value we cannot read stops the save with a sentence naming the field.
+       What this replaced was `parseFloat(x) || 0`, which booked an unreadable
+       price as RM 0.00, and a filter on `parseFloat(amount) > 0`, which made an
+       unreadable PAYMENT vanish from the entry entirely. Both were silent: the
+       entry saved, looked normal, and the money was simply gone. Nothing is
+       coerced here — see lib/money.ts for what is accepted and what is refused. */
+    const problems: string[] = [];
+
+    const parsedItems = items.map((it, idx) => {
+      const line = it.line_no ?? idx + 1;
+      const qty = parseQuantity(it.qty, `Quantity on line ${line}`);
+      const unitPrice = parseMoneyToSen(it.unit_price, `Unit price on line ${line}`);
+      const amount = parseMoneyToSen(it.amount, `Amount on line ${line}`);
+      for (const r of [qty, unitPrice, amount]) if (!r.ok) problems.push(r.message);
+      return { it, line, qty, unitPrice, amount };
+    });
+
+    const parsedPayments = payments.map((p, idx) => {
+      const amount = parseMoneyToSen(p.amount, `Payment amount on row ${idx + 1}`);
+      /* An untouched row that was added and never filled is not a problem — it
+         is just an empty row, and it gets dropped below exactly as before. */
+      const untouched = !p.payment_method && (amount.ok && amount.empty);
+      if (!untouched && !amount.ok) problems.push(amount.message);
+      /* A real amount with no method chosen used to be dropped by the old
+         `p.payment_method && ...` filter, so the payment silently disappeared.
+         Same family of loss, so it is reported the same way. */
+      if (!untouched && amount.ok && amount.sen > 0 && !p.payment_method) {
+        problems.push(`Choose a payment method for the payment on row ${idx + 1}.`);
+      }
+      return { p, amount };
+    });
+
+    if (problems.length > 0) {
+      // De-duplicated so three bad lines with the same mistake read as one
+      // instruction rather than a wall of repeats.
+      toast.error(Array.from(new Set(problems)).join("\n"));
+      return;
+    }
+
     // Total derived from items if any; else 0 (lets users save a draft
     // header before keying lines).
     const amt = items.length > 0 ? itemsTotal : 0;
     setBusy(true);
     try {
-      const itemsPayload = items
-        .filter((it) => it.item_code.trim() || it.item_description.trim() || parseFloat(it.amount) > 0)
-        .map((it, idx) => ({
-          line_no: it.line_no ?? idx + 1,
+      const itemsPayload = parsedItems
+        .filter(({ it, amount }) => it.item_code.trim() || it.item_description.trim() || (amount.ok && amount.sen > 0))
+        .map(({ it, line, qty, unitPrice, amount }) => ({
+          line_no: line,
           item_code: it.item_code.trim() || null,
           item_description: it.item_description.trim() || null,
           remarks: it.remarks.trim() || null,
-          qty: parseFloat(it.qty) || 0,
-          unit_price: parseFloat(it.unit_price) || 0,
-          amount: parseFloat(it.amount) || 0,
+          qty: qty.ok ? scaledToQuantity(qty.sen) : 0,
+          unit_price: unitPrice.ok ? senToRm(unitPrice.sen) : 0,
+          amount: amount.ok ? senToRm(amount.sen) : 0,
           group_tag: it.group_tag.trim() || null,
         }));
-      const paymentsPayload = payments
-        .filter((p) => p.payment_method && parseFloat(p.amount) > 0)
-        .map((p) => ({
+      const paymentsPayload = parsedPayments
+        .filter(({ p, amount }) => p.payment_method && amount.ok && amount.sen > 0)
+        .map(({ p, amount }) => ({
           paid_at: p.paid_at,
           payment_method: p.payment_method,
-          amount: parseFloat(p.amount) || 0,
+          amount: amount.ok ? senToRm(amount.sen) : 0,
           account_sheet: p.account_sheet.trim() || null,
           approval_code: p.approval_code.trim() || null,
           collected_by: p.collected_by.trim() || null,
@@ -967,12 +1014,24 @@ export function EntryPanel({
     setItems((prev) => {
       const next = [...prev];
       const merged = { ...next[idx], ...patch };
-      // Auto-recompute amount when qty / unit_price change unless the
-      // user is typing into the amount field directly.
+      /* Auto-recompute amount when qty / unit_price change unless the user is
+         typing into the amount field directly.
+
+         When either input cannot be read we LEAVE the amount alone instead of
+         writing "0.00" over it. The old `|| 0` did the opposite: a half-typed
+         or pasted price stamped a confident RM 0.00 into the amount box, which
+         then went to the server as the line total. Leaving the previous amount
+         standing keeps the mistake visible and lets submit() name the field
+         that is actually wrong. */
       if ("qty" in patch || "unit_price" in patch) {
-        const q = parseFloat(merged.qty) || 0;
-        const u = parseFloat(merged.unit_price) || 0;
-        merged.amount = String((q * u).toFixed(2));
+        const q = parseQuantity(merged.qty);
+        const u = parseMoneyToSen(merged.unit_price);
+        if (q.ok && u.ok) {
+          // Integer sen throughout: qty is scaled by 1000, price by 100, so the
+          // product is scaled by 100000 and rounds back to sen exactly once.
+          const amountSen = Math.round((q.sen * u.sen) / 1000);
+          merged.amount = senToRm(amountSen).toFixed(2);
+        }
       }
       next[idx] = merged;
       return next;
