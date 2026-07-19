@@ -177,6 +177,11 @@ type Payment = {
 // Existing (prefill) shapes — raw snake_case columns from the detail endpoints.
 type SoHeader = {
   doc_no: string;
+  /* Optimistic-lock token (migration 0153) — loaded here and echoed back on the
+     edit-mode header PATCH so a concurrent editor's Save can't silently overwrite
+     this one (WO-8). Optional: absent on a pre-0153 payload → no version sent →
+     the PATCH stays last-writer-wins. */
+  version?: number;
   debtor_name: string | null;
   status: string | null;
   phone: string | null;
@@ -773,6 +778,12 @@ export function MobileNewSO({
      instead, which is what "did the derivation actually change this column"
      must compare against. */
   const originalHeaderPatchRef = useRef<Record<string, unknown> | null>(null);
+  /* Optimistic-lock token the SO was loaded with (WO-8), pinned at edit-seed and
+     echoed back on the header PATCH. The mobile editor loads the detail into
+     local state ONCE (not via a live query), so this stays the loaded value for
+     the whole edit session — a concurrent editor's Save 409s instead of being
+     silently overwritten. */
+  const loadedVersionRef = useRef<number | undefined>(undefined);
   const [prefillVenueId, setPrefillVenueId] = useState<string | null>(null);
   const [prefillVenueName, setPrefillVenueName] = useState<string>("");
   // SKU picker sheet — the line key it was opened for, or null when closed.
@@ -896,6 +907,8 @@ export function MobileNewSO({
            stomps a saved per-line date on load. */
         setDdateOverrides(new Set(editable.filter((l) => l.ddate).map((l) => l.key)));
         setExistingPays(payResp.payments ?? []);
+        // Pin the version this SO was loaded with (WO-8 optimistic locking).
+        loadedVersionRef.current = detail.salesOrder.version;
         const st = (detail.salesOrder.status ?? "").toUpperCase();
         setSoStatus(st);
         setLineLocked(LOCKED_STATUSES.includes(st) || Boolean(detail.salesOrder.has_children));
@@ -1761,9 +1774,18 @@ export function MobileNewSO({
            wipes every per-line override. Skipping loses no refresh: this branch
            invalidates everything itself once the whole composite save settles. */
         if (hasHeaderChanges(dirtyPatch)) {
+          /* Attach the loaded optimistic-lock token (WO-8). Added here, not into
+             dirtyPatch, so `version` is never mistaken for a header change (it
+             would otherwise make an otherwise-empty PATCH fire). A 409 here throws
+             and the outer catch shows the plain "someone else updated…" sentence
+             authed-fetch maps from so_version_conflict. */
+          const headerBody =
+            loadedVersionRef.current != null
+              ? { ...dirtyPatch, version: loadedVersionRef.current }
+              : dirtyPatch;
           await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}`, {
             method: "PATCH",
-            body: JSON.stringify(dirtyPatch),
+            body: JSON.stringify(headerBody),
           });
         }
 

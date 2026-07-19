@@ -221,6 +221,11 @@ const fmtRm = (centi: number, currency = 'MYR'): string =>
 
 type SoHeader = {
   doc_no: string;
+  /* Optimistic-lock token (migration 0153) — loaded here and echoed back on the
+     header PATCH so a concurrent editor's Save can't silently overwrite this one.
+     Optional: absent on any pre-0153 cached payload, in which case the editor
+     simply sends no version and the PATCH stays last-writer-wins. */
+  version?: number;
   so_date: string;
   status: SoStatus;
   debtor_code: string | null;
@@ -515,6 +520,16 @@ export const SalesOrderDetail = () => {
 
   const header = (detail.data?.salesOrder as SoHeader | undefined) ?? null;
   const items = useMemo(() => (detail.data?.items as SoItem[] | undefined) ?? [], [detail.data]);
+
+  /* Optimistic-lock token, tracked in a ref so the header Save reads the value
+     the row was LOADED with (WO-8). It follows detail.data because a same-page
+     line commit refetches the detail — but a line PATCH never bumps `version`
+     (only a header PATCH does), so it stays the loaded value throughout an edit
+     session, and only advances after THIS user's own header Save. A concurrent
+     OTHER user's Save never moves it (refetchOnWindowFocus is off), which is
+     exactly what lets us detect their change and 409. */
+  const loadedVersionRef = useRef<number | undefined>(undefined);
+  loadedVersionRef.current = header?.version;
   /* current_doc_no isn't on SoHeader — same cast this file has always used for
      it, kept inside a null guard so the shape TS sees is unchanged. */
   const currentDocNo = header
@@ -972,7 +987,15 @@ export const SalesOrderDetail = () => {
       const __verify: Record<string, unknown> = {};
       for (const [k, col] of Object.entries(VERIFY)) if (k in patch) __verify[col] = patch[k];
       updateHeader.mutate(
-        { docNo: stableDocNo, ...patch, ...(Object.keys(__verify).length ? { __verify } : {}) },
+        {
+          docNo: stableDocNo,
+          ...patch,
+          // Optimistic-lock token the row was loaded with — the server 409s if
+          // another editor saved in the meantime (WO-8). Omitted when absent so
+          // a pre-0153 cached payload just stays last-writer-wins.
+          ...(loadedVersionRef.current != null ? { version: loadedVersionRef.current } : {}),
+          ...(Object.keys(__verify).length ? { __verify } : {}),
+        },
         {
           onSuccess: () => cb?.onSuccess?.(),
           // Pass the raw Error too — its `.body` carries the aggregated problems.

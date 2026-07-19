@@ -361,6 +361,14 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
     'This order belongs to 2990 and can only be changed in 2990. Any change made here would be undone automatically.',
   so_create_blocked_2990:
     'New orders for 2990 have to be created in 2990. An order created here would take a number 2990 is about to use, and would be overwritten.',
+  // Optimistic-lock conflict (backend mfg-sales-orders.ts PATCH /:docNo). Two
+  // people had the SAME order open in the editor and the other one saved first;
+  // the server refuses this Save rather than silently overwriting their change.
+  // Curated here so the wording can't drift and never reads as a raw 409 ("that
+  // clashes with something in the system") — the operator needs the ACTION
+  // (reload), not a system-internals sentence.
+  so_version_conflict:
+    'Someone else updated this order while you were editing. Reload to see the latest changes.',
   // The add-on amount is folded into the line's selling price and never prints
   // as its own figure, so the description is the only thing on the customer's
   // document that says what the extra charge was for. Naming the field is the

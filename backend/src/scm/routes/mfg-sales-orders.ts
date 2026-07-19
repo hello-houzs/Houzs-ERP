@@ -246,6 +246,18 @@ const SO_PROCESSING_LOCKED_RESPONSE = {
   reason: 'Processing date has passed — this Sales Order is locked. (Locked orders are what we PO to the supplier.)',
 } as const;
 
+/* Optimistic-lock rejection (WO-8 / GO-LIVE charter item 3). `error` is a CODE
+   the frontend maps to a curated plain sentence (authed-fetch.ts humanApiError),
+   so the wording can never drift; `message` carries the same sentence inline as
+   a fallback for any surface that reads the body raw. Fires only when a
+   version-aware editor (desktop SalesOrderDetail / mobile MobileNewSO) sends the
+   `version` it LOADED and the row has moved on since — a plain last-writer-wins
+   PATCH (no version sent) is unaffected. */
+const SO_VERSION_CONFLICT = {
+  error: 'so_version_conflict',
+  message: 'Someone else updated this order while you were editing. Reload to see the latest changes.',
+} as const;
+
 function soProcessingLocked(
   header: { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null; status?: string | null } | null | undefined,
 ): boolean {
@@ -2253,7 +2265,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
        are in the SAME boat — the payment-totals view's frozen column set
        (see VIEW-TRAP note above) does NOT carry them, so they're appended on
        the base-table detail read only. POST/PATCH persist them. */
-    scopeToCompany(sb.from('mfg_sales_orders').select(`${HEADER}, proceeded_at, amend_date_from_customer, amended_delivery_date, amend_reason, revision, signature_b64, slip_key, slip_state, slip_image_key, receipt_image_key`).eq('doc_no', docNo), c).maybeSingle(),
+    scopeToCompany(sb.from('mfg_sales_orders').select(`${HEADER}, proceeded_at, amend_date_from_customer, amended_delivery_date, amend_reason, revision, signature_b64, slip_key, slip_state, slip_image_key, receipt_image_key, version`).eq('doc_no', docNo), c).maybeSingle(),
     /* line_no = the persisted listing order (0165); NULLS LAST so pre-0165
        docs fall back to created_at + the rule re-derive below. */
     sb.from('mfg_sales_order_items').select(ITEM).eq('doc_no', docNo)
@@ -5841,8 +5853,31 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
 
   // PR-D — snapshot the row before update so we can emit a field-level diff
   // in the audit log. Only fields actually in the patch body are compared.
-  const beforeCols = map.map(([, snake]) => snake).concat(['status', 'processing_date']).join(', ');
+  const beforeCols = map.map(([, snake]) => snake).concat(['status', 'processing_date', 'version']).join(', ');
   const { data: before } = await sb.from('mfg_sales_orders').select(beforeCols).eq('doc_no', docNo).maybeSingle();
+
+  /* Optimistic locking (WO-8 / GO-LIVE charter item 3) — two operators can open
+     the SAME SO in the editor, both change header fields, both Save; without a
+     version token the second Save silently overwrites the first. OPT-IN, exactly
+     like the idempotency middleware: the check + the compare-and-swap below fire
+     ONLY when the client echoes back the `version` it loaded (desktop
+     SalesOrderDetail / mobile MobileNewSO). A version-unaware caller (2990 mirror,
+     Delivery-Planning `/fields`, any internal PATCH) keeps today's last-writer
+     behaviour — it simply doesn't send a version. Either way a real field change
+     BUMPS the token (below), so a version-aware editor that loaded an older value
+     will detect the drift on its next Save. `before` was just read for the audit
+     diff; piggyback on it rather than issuing a second round-trip. */
+  const clientVersion = body.version !== undefined ? Number(body.version) : null;
+  const currentVersion = before
+    ? Number((before as unknown as { version?: number | string }).version ?? 1)
+    : null;
+  if (
+    clientVersion !== null && !Number.isNaN(clientVersion) &&
+    currentVersion !== null && clientVersion !== currentVersion
+  ) {
+    return c.json(SO_VERSION_CONFLICT, 409);
+  }
+  if (currentVersion !== null) updates.version = currentVersion + 1;
 
   /* Remove-Processing-Date gate (Owner 2026-07-09, port of 2990 #717) — clearing
      an already-set Processing Date pulls the SO back out of the Proceed lane (and,
@@ -6081,9 +6116,23 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     }
   }
 
-  const { data, error } = await sb.from('mfg_sales_orders').update(updates).eq('doc_no', docNo).select('doc_no').maybeSingle();
+  /* Compare-and-swap for version-aware callers: gate the write on the version we
+     loaded so a stale editor that slipped past the pre-check (a concurrent Save
+     landing in the millisecond gap since the `before` read) still cannot clobber
+     the newer row — it matches zero rows instead. Version-unaware callers write
+     unconditionally (today's behaviour). */
+  const casVersion = clientVersion !== null && !Number.isNaN(clientVersion) && currentVersion !== null;
+  let updQuery = sb.from('mfg_sales_orders').update(updates).eq('doc_no', docNo);
+  if (casVersion) updQuery = updQuery.eq('version', currentVersion);
+  const { data, error } = await updQuery.select('doc_no').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) {
+    /* Existence was confirmed by the `before` read above. For a CAS write a null
+       row therefore means the version moved under us → conflict, not not-found;
+       for a plain write it is a genuine not-found. */
+    if (casVersion) return c.json(SO_VERSION_CONFLICT, 409);
+    return c.json({ error: 'not_found' }, 404);
+  }
 
   /* Customer identity changed → the minted vouchers follow the order, and the
      cross-category delivery fee re-detects against the new customer. PWP PRODUCT
@@ -6147,6 +6196,9 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
   return c.json({
     ok: true,
     docNo,
+    /* The bumped token, so a version-aware editor can advance its pinned value
+       after a successful Save without waiting for the detail refetch. */
+    ...(currentVersion !== null ? { version: currentVersion + 1 } : {}),
     ...(crossCategoryRedetect ? {
       deliveryRedetected: true,
       crossCategory: crossCategoryRedetect.isFollowup,
