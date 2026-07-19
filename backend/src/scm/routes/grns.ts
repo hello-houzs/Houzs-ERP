@@ -13,7 +13,35 @@ import {
 import { recostFromGrn } from '../lib/recost';
 import { normalizeExchangeRate, toMyrSen, normalizeCurrency, masterRateForCurrency } from '../lib/fx';
 import { allocateLandedCharges, normalizeAllocationMethod } from '../lib/landed-allocation';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  isCrossCompanySource, crossCompanyConversionBlocked } from '../lib/companyScope';
+
+/* CROSS-COMPANY GUARD for the three GRN create paths. Each stamps the ACTIVE
+   company on the new GRN and mints under the ACTIVE company's doc prefix, while
+   loading its source purchase order(s) by primary key with no company
+   predicate. Receiving another company's PO here would post the stock IN — and
+   the resulting cost — into the active company's inventory and books.
+
+   Returns the refusal payload for the first offending PO, or null when every
+   referenced PO belongs to the active company (or the company is unresolved,
+   which degrades to allowed exactly like the rest of the scoping helpers). */
+async function firstCrossCompanyPo(
+  sb: any,
+  c: any,
+  poIds: Array<string | null | undefined>,
+): Promise<{ blocked: ReturnType<typeof crossCompanyConversionBlocked> } | { loadError: string } | null> {
+  const ids = [...new Set(poIds.filter((p): p is string => !!p))];
+  if (ids.length === 0) return null;
+  const { data, error } = await sb.from('purchase_orders')
+    .select('id, po_number, company_id').in('id', ids);
+  if (error) return { loadError: error.message };
+  for (const p of (data ?? []) as Array<{ po_number: string; company_id: number | null }>) {
+    if (isCrossCompanySource(p.company_id, c)) {
+      return { blocked: crossCompanyConversionBlocked(p.po_number, p.company_id, c) };
+    }
+  }
+  return null;
+}
 import { parseLineNumbers, invalidLineNumberBody } from '../shared/line-numbers';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
@@ -1280,6 +1308,12 @@ grns.post('/', async (c) => {
      available do we reject with a plain 400. A manual GRN (no PO lines) must now
      carry an explicit warehouse — the intentional manual-receipt flow still
      works, it just can't land stock nowhere-in-particular. */
+  {
+    const x = await firstCrossCompanyPo(sb, c, [(body.purchaseOrderId as string | undefined) ?? null]);
+    if (x && 'loadError' in x) return c.json({ error: 'load_failed', reason: x.loadError }, 500);
+    if (x) return c.json(x.blocked, 409);
+  }
+
   const headerWarehouseId = await resolveReceiveWarehouse(
     sb,
     (body.warehouseId as string | undefined) ?? null,
@@ -1431,6 +1465,12 @@ grns.post('/from-pos', async (c) => {
      that are still open for receipt. Without this a DRAFT / CANCELLED /
      already-RECEIVED PO could be converted to a GRN and write stock IN. Mirrors
      the 409 `/from-po-items` already enforces per pick. */
+  {
+    const x = await firstCrossCompanyPo(sb, c, poIds);
+    if (x && 'loadError' in x) return c.json({ error: 'load_failed', reason: x.loadError }, 500);
+    if (x) return c.json(x.blocked, 409);
+  }
+
   const notReceivable = poList.find((p) => !isReceivablePoStatus(p.status));
   if (notReceivable) {
     return c.json({ error: 'po_not_receivable', poId: notReceivable.id, status: notReceivable.status }, 409);
@@ -1738,6 +1778,12 @@ grns.post('/from-po-items', async (c) => {
     if (!isReceivablePoStatus(row.po.status)) {
       return c.json({ error: 'po_not_receivable', poItemId: p.poItemId, status: row.po.status }, 409);
     }
+  }
+
+  {
+    const x = await firstCrossCompanyPo(sb, c, itemList.map((r) => r.purchase_order_id));
+    if (x && 'loadError' in x) return c.json({ error: 'load_failed', reason: x.loadError }, 500);
+    if (x) return c.json(x.blocked, 409);
   }
 
   /* One probe for the whole batch, not one per bucket: every bucket below writes
