@@ -106,7 +106,7 @@ export async function reconcileLedger(sb: any, companyId?: number | null): Promi
     paginateAll<DocRow>((from, to) => withCo(sb.from('purchase_consignment_receives').select('id, receive_number, status').neq('status', 'CANCELLED')).range(from, to)),
     // Purchase Consignment Return (stock OUT): posts immediately (no DRAFT);
     // first OUT labelled PC_RETURN on the header id.
-    paginateAll<DocRow>((from, to) => sb.from('purchase_consignment_returns').select('id, return_number, status').neq('status', 'CANCELLED').range(from, to)),
+    paginateAll<DocRow>((from, to) => withCo(sb.from('purchase_consignment_returns').select('id, return_number, status').neq('status', 'CANCELLED')).range(from, to)),
   ]);
 
   // EXCLUDED — Stock Take (stock_takes): a posted take with NO counted variance
