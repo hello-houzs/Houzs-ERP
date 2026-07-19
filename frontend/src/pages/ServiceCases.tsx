@@ -2709,7 +2709,7 @@ function CreatePanel({
         />
         <div className="mt-3">
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-            Issue Category
+            Issue Category *
           </div>
           <select
             value={issueCategory}
@@ -2846,10 +2846,21 @@ function CreatePanel({
       </PanelSection>
 
       <div className="border-t border-border px-5 py-4">
+        {/* Issue Category is REQUIRED (owner ruling 2026-07-19, matches mobile
+            #842): block Create until a category resolves — the disabled gate
+            below mirrors submit()'s resolve logic, so "Other…" also requires
+            the custom label. FE gate; server still accepts a null category. */}
         <Button
           variant="primary"
           onClick={submit}
-          disabled={submitting || !docNo.trim() || !issue.trim() || selectedItems.size === 0}
+          disabled={
+            submitting ||
+            !docNo.trim() ||
+            !issue.trim() ||
+            selectedItems.size === 0 ||
+            !issueCategory ||
+            (issueCategory === OTHER_SENTINEL && !customCategory.trim())
+          }
         >
           {uploadProgress
             ? `Uploading ${uploadProgress.done}/${uploadProgress.total}…`
