@@ -2,7 +2,14 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { getSupabaseService, isSupabaseConfigured } from "../db/supabase";
 import { escapeForOr } from "../scm/lib/postgrest-search";
-import { activeCompanyId, allowedCompaniesSql } from "../scm/lib/companyScope";
+import {
+  activeCompanySql,
+  allowedCompaniesSql,
+  houzsCompanySql,
+  scopeToCompany,
+  type CompanyScopeCtx,
+} from "../scm/lib/companyScope";
+import { isDirectorUser, isSalesUser } from "../services/pmsAccess";
 
 /**
  * Global search across the workspace.
@@ -31,9 +38,11 @@ import { activeCompanyId, allowedCompaniesSql } from "../scm/lib/companyScope";
  * behaviour is therefore never broken by the SCM additions.
  *
  * Auth: gated by the global /api/* auth middleware (mounted in
- * src/index.ts). Permission scoping is intentionally loose — search
- * shows match metadata only (no full record contents), and follow-up
- * navigation hits the relevant module which enforces its own perms.
+ * src/index.ts). COMPANY scoping IS enforced per source (see the scoping block
+ * in the handler) — that is the multi-company isolation boundary. ROW-LEVEL
+ * PERMISSION scoping (PIC / brand / salesperson visibility) is intentionally
+ * loose: search shows match metadata only (no full record contents), and
+ * follow-up navigation hits the relevant module, which enforces its own perms.
  */
 
 const app = new Hono<{ Bindings: Env }>();
@@ -56,6 +65,19 @@ function like(q: string): string {
   return `%${q.replace(/[%_]/g, "")}%`;
 }
 
+// ASSR company pin — MUST stay in sync with routes/assr.ts assrCompanySql().
+// Service Cases are a HOUZS-only module: rank-and-file Sales are PINNED to
+// HOUZS (never see 2990 cases), while office / backend / directors run one
+// cross-company portal and widen to their allowed set. Returns the same
+// three-state fragment as its primitives — "" when the company context is
+// unresolved (legacy single-company), a match-nothing predicate when the
+// caller is resolved but restricted, never fail open.
+function assrCompanySql(c: CompanyScopeCtx): string {
+  const user = c.get("user") as Parameters<typeof isSalesUser>[0];
+  const pinsToHouzs = isSalesUser(user) && !isDirectorUser(user);
+  return pinsToHouzs ? houzsCompanySql(c) : allowedCompaniesSql(c);
+}
+
 app.get("/", async (c) => {
   const raw = (c.req.query("q") || "").trim();
   if (raw.length < 2) {
@@ -66,17 +88,19 @@ app.get("/", async (c) => {
   const env = c.env;
   const hits: Hit[] = [];
 
-  // Multi-company scoping (both fragments are "" when the company context is
-  // unresolved — pre-migration / D1 test mirror — so legacy SQL runs
-  // unchanged):
+  // Multi-company scoping. Each fragment is "" ONLY when the company context is
+  // unresolved (pre-migration / D1 test mirror / cold-start), so legacy
+  // single-company SQL runs unchanged; a RESOLVED-but-restricted caller gets a
+  // match-nothing predicate instead — never fail open, because the DB client is
+  // service-role (RLS bypassed) so these predicates ARE the isolation boundary:
   //   · projects follow the ACTIVE company (per-company module, like the
-  //     Projects page itself);
-  //   · ASSR is a CROSS-COMPANY queue, so its hits widen to the caller's
-  //     ALLOWED companies (same rule as the /api/assr list);
-  //   · users stay global (shared master).
-  const companyId = activeCompanyId(c);
-  const projectCoSql = companyId != null ? " AND company_id = ?2" : "";
-  const assrCoSql = allowedCompaniesSql(c);
+  //     Projects page itself) via activeCompanySql;
+  //   · ASSR is HOUZS-only: rank-and-file Sales are PINNED to HOUZS, office /
+  //     backend / directors widen to their allowed set — the exact rule the
+  //     /api/assr list uses (assrCompanySql, mirrored above);
+  //   · users stay global — matches /api/users, an unscoped shared directory.
+  const projectCoSql = activeCompanySql(c);
+  const assrCoSql = assrCompanySql(c);
 
   // ── Public-schema sources (env.DB) ─────────────────────────
   // Fire all source queries in parallel — they share a Postgres client
@@ -91,7 +115,7 @@ app.get("/", async (c) => {
         ORDER BY start_date DESC NULLS LAST, id DESC
         LIMIT ${PER_SOURCE_LIMIT}`
     )
-      .bind(pat, ...(companyId != null ? [companyId] : []))
+      .bind(pat)
       .all<{
         id: number;
         code: string;
@@ -192,7 +216,7 @@ app.get("/", async (c) => {
  * corrupt the filter.
  */
 async function appendScmHits(
-  c: Parameters<typeof activeCompanyId>[0],
+  c: CompanyScopeCtx,
   env: Env,
   raw: string,
   hits: Hit[],
@@ -208,10 +232,11 @@ async function appendScmHits(
     return;
   }
 
-  // Multi-company: SOs + products are PER-COMPANY modules, so their search
-  // hits follow the active company (no-op predicate when unresolved). Matches
-  // the scopeToCompany behaviour of the SO / product list routes.
-  const companyId = activeCompanyId(c);
+  // Multi-company: SOs + products are PER-COMPANY modules, so their search hits
+  // follow the ACTIVE company via scopeToCompany — the same helper the SO /
+  // product list routes use. Unresolved → no predicate (legacy single-company);
+  // resolved-but-restricted → an empty `in` that matches nothing (never fail
+  // open).
   const soQuery = sb
     .from("mfg_sales_orders")
     .select("doc_no, debtor_name, phone, ref, so_date, branding")
@@ -226,10 +251,10 @@ async function appendScmHits(
     .or(`code.ilike.%${term}%,name.ilike.%${term}%,description.ilike.%${term}%`);
 
   const [soRes, prodRes] = await Promise.allSettled([
-    (companyId != null ? soQuery.eq("company_id", companyId) : soQuery)
+    scopeToCompany(soQuery, c)
       .order("so_date", { ascending: false })
       .limit(PER_SOURCE_LIMIT),
-    (companyId != null ? prodQuery.eq("company_id", companyId) : prodQuery)
+    scopeToCompany(prodQuery, c)
       .order("code", { ascending: true })
       .limit(PER_SOURCE_LIMIT),
   ]);

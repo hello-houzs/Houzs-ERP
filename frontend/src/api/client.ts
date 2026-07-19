@@ -294,7 +294,12 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
     try {
       const res = await fetch(`${baseUrl}${path}`, {
         ...opts,
-        signal: ctrl.signal,
+        // Honour a caller-supplied signal alongside our own GET timeout: the
+        // request aborts if EITHER fires. Without this the caller's signal was
+        // silently dropped (overwritten by ctrl.signal).
+        signal: opts?.signal
+          ? AbortSignal.any([ctrl.signal, opts.signal])
+          : ctrl.signal,
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           "Content-Type": "application/json",
@@ -306,6 +311,12 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       if (ms >= SLOW_FETCH_MS) console.warn(`[perf] slow ${method} ${path} — ${ms}ms`);
       return await handleResponse<T>(res, path, method);
     } catch (e) {
+      // Caller-initiated abort (e.g. a debounced typeahead superseding its own
+      // in-flight request) — propagate immediately. It is a cancellation, not a
+      // transient failure, so it must never be retried or reworded as a network
+      // error. Our own GET timeout leaves opts.signal.aborted false, so it still
+      // falls through to the retry path below.
+      if (opts?.signal?.aborted) throw e;
       // A 503 is the server's "transient — try again" contract; retry it for
       // idempotent GETs (within the GET budget) so a cold-start / connection
       // blip self-heals instead of surfacing as "Failed to load". Every other
@@ -401,7 +412,12 @@ const idemHeader = (o?: MutateOpts) =>
 
 export const api = {
   baseUrl,
-  get: <T>(p: string) => cachedGet<T>(p),
+  // A caller that passes an AbortSignal (e.g. a debounced typeahead that
+  // supersedes its own in-flight request) bypasses the SWR cache and goes
+  // straight to the network, so aborting one caller never disturbs a shared
+  // cached read or in-flight join.
+  get: <T>(p: string, init?: { signal?: AbortSignal }) =>
+    init?.signal ? request<T>(p, init) : cachedGet<T>(p),
   post: <T>(p: string, b?: any, o?: MutateOpts) =>
     mutate<T>(p, {
       method: "POST",

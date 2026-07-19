@@ -112,7 +112,10 @@ export function MobileSearch({
     inputRef.current?.focus();
   }, []);
 
-  // Debounced fetch — same contract as the desktop palette.
+  // Debounced fetch — same contract as the desktop palette. A fresh
+  // AbortController per run cancels the in-flight request when the term changes
+  // or the screen closes, so a slow response for a stale term can never
+  // overwrite a newer one (nor setState after unmount).
   useEffect(() => {
     const term = q.trim();
     if (term.length < 2) {
@@ -123,19 +126,25 @@ export function MobileSearch({
     }
     setLoading(true);
     setError(null);
+    const ctrl = new AbortController();
     const t = setTimeout(async () => {
       try {
         const res = await api.get<{ hits: SearchHit[] }>(
           `/api/search?q=${encodeURIComponent(term)}`,
+          { signal: ctrl.signal },
         );
         setHits(res.hits ?? []);
       } catch (e) {
+        if (ctrl.signal.aborted) return;
         setError(e instanceof Error ? e.message : String(e));
       } finally {
-        setLoading(false);
+        if (!ctrl.signal.aborted) setLoading(false);
       }
-    }, 200);
-    return () => clearTimeout(t);
+    }, 250);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
   }, [q]);
 
   const groups = useMemo(() => {
