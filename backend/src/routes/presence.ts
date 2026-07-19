@@ -4,9 +4,10 @@ import type { Env } from "../types";
 const app = new Hono<{ Bindings: Env }>();
 
 /**
- * "Active in the last N seconds" threshold. Slightly larger than the
- * frontend heartbeat interval (30s) so a user who just missed one
- * beat (e.g. tab switched, request retried) still appears online.
+ * "Active in the last N seconds" threshold. Two full frontend heartbeat
+ * intervals (60s each, see frontend usePresence HEARTBEAT_MS) so a user
+ * who just missed one beat (e.g. tab switched, request retried) still
+ * appears online.
  */
 const ACTIVE_WINDOW_SECONDS = 120;
 
@@ -14,7 +15,7 @@ const ACTIVE_WINDOW_SECONDS = 120;
  * POST /api/presence/heartbeat
  *
  * Bumps the current user's last_seen_at to now. Called by every open
- * browser tab on a 30-second interval (and once on mount). Service
+ * browser tab on a 60-second interval (and once on mount). Service
  * accounts (id=0) are skipped — presence is for real humans only.
  */
 app.post("/heartbeat", async (c) => {
