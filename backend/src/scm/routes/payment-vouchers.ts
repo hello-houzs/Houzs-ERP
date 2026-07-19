@@ -166,7 +166,8 @@ export function buildAllocations(
    vouchers over-paying one invoice lives next to the SQL function that enforces
    it. It used to live here as an optimistic loop whose cap (total − paid) was
    read in the CALLER, one round trip before the write — see the header of
-   scripts/scm-schema/pi-settlement-atomic.sql for how that over-pays. */
+   src/db/migrations-pg/0147_scm_settle_pi_paid_centi.sql for how that
+   over-pays. */
 
 /* ────────────────────────────────────────────────────────────────────────
    List / get

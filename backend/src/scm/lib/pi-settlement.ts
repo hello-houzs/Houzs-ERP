@@ -2,8 +2,8 @@
 // pi-settlement — move a purchase invoice's paid_centi, with the upper bound
 // clamped so two payment vouchers cannot settle the same invoice past its total.
 //
-// THE DEFECT (see scripts/scm-schema/pi-settlement-atomic.sql for the long
-// version). Posting a SUPPLIER_PAYMENT voucher read the PI, computed
+// THE DEFECT (see src/db/migrations-pg/0147_scm_settle_pi_paid_centi.sql for
+// the long version). Posting a SUPPLIER_PAYMENT voucher read the PI, computed
 // `outstanding = total - paid`, capped its allocation at that, and then wrote.
 // Two vouchers settling the SAME invoice concurrently each read the same
 // `outstanding` and each applied their full share against it — a cap that was
