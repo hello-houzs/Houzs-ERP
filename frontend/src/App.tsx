@@ -4,6 +4,7 @@ import { Layout } from "./components/Layout";
 import { useAuth } from "./auth/AuthContext";
 import { canUseAssistant } from "./auth/assistantAccess";
 import { isSalesStaff, isDirectorUser, isSalesDirectorUser, canViewScmCosting, canViewFairReport } from "./auth/salesAccess";
+import { capability, capabilitiesUnresolved } from "./auth/capabilities";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
@@ -274,19 +275,46 @@ function DeliveryReturnsGuard({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * SO Maintenance route guard — DIRECTOR-only (owner 2026-07-15). The bulk
- * import / duplicate / renumber tool is reachable ONLY by a director
- * (Sales Director / Super Admin / Finance Manager / Owner-IT `*` —
- * auth/salesAccess.isDirectorUser). A non-director Sales user (Sales
- * Executive/Coordinator) is Forbidden BEFORE the page mounts, so none of the
- * maintenance data hooks fire (OFF, not hidden). Mirrors the SO-list button
- * gate (MfgSalesOrdersListV2 `canMaintain`) so nav + route can't drift. A
- * director is admitted directly (no inner scm-matrix requirement), matching
- * how the /scm hub uses allowDirector.
+ * SO Maintenance route guard — gated on the BACKEND's answer,
+ * `scm.maintenance.open` (backend services/capabilities.ts, resolved once on
+ * /auth/me). A refused caller is Forbidden BEFORE the page mounts, so none of
+ * the maintenance data hooks fire (OFF, not hidden).
+ *
+ * WAS `isDirectorUser(user)`, a FRONTEND re-derivation, and it was the wrong
+ * cohort. That predicate resolves {`*`, Super Admin, Sales Director, Finance
+ * Manager}. Every write on the page passes houzs-perms.canWriteScmConfig, which
+ * admits {`*`, flat-key holders, Procurement/Purchasing, Operation Manager,
+ * Operation Executive, Logistic Admin, Super Admin}. The two agree on Super
+ * Admin and `*` and disagree about everyone else — so the four positions the
+ * owner ruled on 2026-07-18 must be able to DO master-data writes were bounced
+ * to <Forbidden> at a door the API would have opened. Fixing the page's
+ * read-only banner does not reach this: the banner lives inside a route those
+ * positions never mounted.
+ *
+ * The capability is the union of the write tier and the director read-only tier,
+ * so it is ADDITIVE — no one who could open this page before loses it, and the
+ * owner's 2026-07-15 exclusion of non-director Sales still holds (the sales
+ * cohort satisfies neither term). Pinned in backend/tests/capabilities.test.ts.
+ *
+ * Same capability drives the SO-list toolbar button (MfgSalesOrdersListV2
+ * `canMaintain`) and both mobile sites (MobileApp's menu row + overlay), which
+ * is the point: ONE logic layer, computed once, consumed by desktop and phone.
  */
 function SoMaintenanceGuard({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
-  if (!isDirectorUser(user)) return <Forbidden page="scm.sales.orders" />;
+  // A signed-in user whose capability set never arrived is a BROKEN DEPLOY, not
+  // an unprivileged user. Both deny — failing closed is mandatory — but they
+  // must not say the same thing: "you don't have permission" sends the operator
+  // to an administrator, who will find nothing wrong with their role.
+  if (capabilitiesUnresolved(user)) {
+    return (
+      <Forbidden
+        page="scm.sales.orders"
+        reason="We couldn't load your permissions, so this page stayed shut. This is a system problem, not a change to your access — reload the page, and tell IT if it keeps happening."
+      />
+    );
+  }
+  if (!capability(user, "scm.maintenance.open")) return <Forbidden page="scm.sales.orders" />;
   return <>{children}</>;
 }
 
