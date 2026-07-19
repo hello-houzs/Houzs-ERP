@@ -53,7 +53,9 @@ function desktopPaths(ctx: NavFilterCtx): string[] {
 }
 
 /** The mobile shell's view — a faithful copy of MobileApp's `allowed(to)`:
- *  walk the RAW tree and ask whether ANY node at that path is visible. */
+ *  walk the RAW tree and ask whether ANY node at that path is visible. Fails
+ *  CLOSED on an unmatched path, mirroring the 2026-07-19 flip in MobileApp (every
+ *  path asserted here has a NAV_TABS entry, so this only keeps the copy honest). */
 function phoneAllows(ctx: NavFilterCtx, to: string): boolean {
   const navVisible = makeNavVisible(ctx);
   const flat: NavTab[] = [];
@@ -64,7 +66,7 @@ function phoneAllows(ctx: NavFilterCtx, to: string): boolean {
   NAV_TABS.forEach(walk);
   const path = to.split("?")[0];
   const matches = flat.filter((t) => t.to?.split("?")[0] === path);
-  return matches.length === 0 ? true : matches.some(navVisible);
+  return matches.length === 0 ? false : matches.some(navVisible);
 }
 
 describe("nav — Amendments for a sales rep (owner rule 2026-07-16)", () => {

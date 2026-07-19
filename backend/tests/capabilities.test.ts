@@ -132,6 +132,14 @@ const GATES: Record<CapabilityKey, (u: CapabilityCaller) => boolean> = {
   "fair.do.view": (u) => fairReportAccess("do", asAuthUser(u)).allowed,
   "fair.invoice.view": (u) => fairReportAccess("invoice", asAuthUser(u)).allowed,
 
+  // "open the report at all" = allowed on ANY stage. Stated as the explicit OR of
+  // the three stages (not the code's FAIR_STAGES.some) so this is an independent
+  // re-expression of the rule, not a copy of the implementation.
+  "fair.report.view": (u) =>
+    fairReportAccess("so", asAuthUser(u)).allowed ||
+    fairReportAccess("do", asAuthUser(u)).allowed ||
+    fairReportAccess("invoice", asAuthUser(u)).allowed,
+
   "org.sales.staff": (u) => isSalesUser(asAuthUser(u)),
   "org.director": (u) => isDirectorUser(asAuthUser(u)),
   "org.salesDirector": (u) => isSalesDirectorUser(asAuthUser(u)),

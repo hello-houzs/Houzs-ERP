@@ -187,13 +187,14 @@ const ROUTE_TO_CONFIG: Record<string, string> = {
  *  Inbox / Profile.
  *
  *  `gateVia` — gate this row on ANOTHER path's nav entry. Needed when a mobile
- *  screen outlives its desktop route: `allowed()` fails OPEN for a path with no
- *  NAV_TABS match, so a row pointing at a retired desktop path would go from
- *  gated to visible-to-everyone. Point it at a live entry with the same gate.
+ *  screen outlives its desktop route: `allowed()` now fails CLOSED for a path with
+ *  no NAV_TABS match, so a row pointing at a retired desktop path would go from
+ *  gated to HIDDEN for everyone (its cohort included). Point it at a live entry
+ *  carrying the same gate so the right positions keep the row.
  *
  *  EVERY row must state its gate in ONE of four ways — `mobileMenuGates.test.ts`
- *  fails CI for a row that states none, so "I forgot to gate this" can no longer
- *  ship as a public page:
+ *  fails CI for a row that states none, so a row can neither ship as a public page
+ *  (the old fail-open) nor silently vanish for its cohort (the new fail-closed):
  *    1. a live NAV_TABS entry at `to` (the normal case — the desktop nav's own
  *       anyPerm/anyAccess becomes this row's gate),
  *    2. `gateVia` pointing at a live NAV_TABS entry carrying the same gate (for a
@@ -300,9 +301,9 @@ export const MOBILE_MENU_GROUPS: { group: string; items: MobileMenuItem[] }[] = 
 
        `gateVia` because the desktop /scm/drivers NAV_TABS entry — which used to
        supply this row's permission — is gone with that page, and `allowed()`
-       fails OPEN for a path with no nav match ("matches.length === 0 ? true").
-       Without this the row would silently become visible to every mobile user.
-       /scm/fleet carries the byte-identical gate the /scm/drivers entry had
+       now fails CLOSED for a path with no nav match ("matches.length === 0 ?
+       false"). Without this the row would silently VANISH for the drivers cohort
+       too. /scm/fleet carries the byte-identical gate the /scm/drivers entry had
        (anyPerm ["*","scm.access"] + anyAccess ["scm.transportation.drivers"] +
        hideForSalesRep), so this preserves today's behaviour exactly. */
     { to: "/scm/drivers", label: "Drivers", gateVia: "/scm/fleet" },
@@ -310,9 +311,9 @@ export const MOBILE_MENU_GROUPS: { group: string; items: MobileMenuItem[] }[] = 
        the Drivers row above and for the same reason: mobile's "Fleet" module is
        LORRIES ONLY, so this is the only helper surface on a phone, not a
        duplicate. `gateVia` because /scm/helpers is a mobile-only path with no
-       NAV_TABS entry, and `allowed()` fails OPEN for an unmatched path — without
-       it the row would be visible to every mobile user. /scm/fleet carries the
-       gate the backend applies to /api/scm/helpers/* (scmAreaGuard
+       NAV_TABS entry, and `allowed()` fails CLOSED for an unmatched path — without
+       it the row would vanish for everyone. /scm/fleet carries the gate the
+       backend applies to /api/scm/helpers/* (scmAreaGuard
        "scm.transportation.drivers"), so the two agree. */
     { to: "/scm/helpers", label: "Helpers", gateVia: "/scm/fleet" },
     { to: "/scm/delivery-planning-regions", label: "Regions" },
@@ -331,17 +332,18 @@ export const MOBILE_MENU_GROUPS: { group: string; items: MobileMenuItem[] }[] = 
  *  applied when they lived there; an item hidden from the old menu stays
  *  hidden in Profile. */
 export const PROFILE_ORG_ITEMS: MobileMenuItem[] = [
-  /* DELIBERATELY UNGATED — the one row in the whole mobile shell that relies on
-     `allowed()` failing OPEN, and the reason the default cannot simply be
-     flipped to deny. /activity-inbox is a MOBILE-ONLY path: it is not a route in
-     App.tsx and has no NAV_TABS entry, so there is no desktop gate to borrow.
-     The screen is the project-activity feed (hooks/useNotifications) — the phone's
-     equivalent of the desktop bell, which every signed-in user has — and it is
-     audience-filtered SERVER-side, so there is no page permission to apply here.
-     `alwaysShow` states that intent in the data instead of leaning on the
-     permissive default, and mobileMenuGates.test.ts pins it: this path is in that
-     test's UNGATED_BY_DESIGN list, and the test fails if the list ever names a
-     path that has since acquired a real gate. */
+  /* DELIBERATELY UNGATED — but it does NOT lean on the fail-open default (there is
+     none any more; allowed() fails CLOSED). /activity-inbox is a MOBILE-ONLY path:
+     not a route in App.tsx and no NAV_TABS entry, so there is no desktop gate to
+     borrow. The screen is the project-activity feed (hooks/useNotifications) — the
+     phone's equivalent of the desktop bell, which every signed-in user has — and it
+     is audience-filtered SERVER-side, so there is no page permission to apply here.
+     `alwaysShow` is what keeps it visible: it short-circuits allowed() at the filter
+     call sites, so the flip to fail-closed does NOT remove this row. That intent is
+     stated in the data rather than left to a permissive default, and
+     mobileMenuGates.test.ts pins it: this path is in that test's UNGATED_BY_DESIGN
+     list, and the test fails if the list ever names a path that has since acquired a
+     real gate. */
   { to: "/activity-inbox", label: "Inbox", alwaysShow: true },
   { to: "/mail-center", label: "Mail Center" },
   /* Owner rule 2026-07: Announcements is readable by EVERY active user —
@@ -430,8 +432,18 @@ function MobileAppInner() {
   // Sidebar + MobileTabBar filter with (components/navFilter.makeNavVisible), so
   // the mobile shell can never drift back into a hand-copied subset that omitted
   // pageAccessFull / hidePerm / requireFinanceViewer. `allowed(to)` answers "is
-  // the nav destination at this path visible for the user"; a route that isn't in
-  // NAV_TABS at all still shows (backend-gated, e.g. /activity-inbox).
+  // the nav destination at this path visible for the user".
+  //
+  // FAILS CLOSED: a path with NO NAV_TABS entry resolves to FALSE (hidden), not
+  // true. There is no desktop gate to borrow for such a path, and defaulting to
+  // "shown" made every new ungated menu row a page visible to EVERY position —
+  // the fail-open leak this shell shipped twice (retired /scm/drivers, mobile-only
+  // /scm/helpers). A destination that legitimately has no nav gate states that in
+  // the DATA instead: `capability` (server-decided) or `alwaysShow` (+ its
+  // justification in mobileMenuGates.test.ts UNGATED_BY_DESIGN, e.g. /activity-inbox).
+  // Both are checked BEFORE allowed() at the call sites below, so they still show;
+  // everything else must earn its row through a real gate. mobileMenuGates.test.ts
+  // pins both this default and that every row declares a gate.
   const navVisible = makeNavVisible({ user, can, pageAccess });
   const flatNav: NavTab[] = [];
   const walkNav = (t: NavTab) => { flatNav.push(t); (t.children ?? []).forEach(walkNav); };
@@ -439,7 +451,7 @@ function MobileAppInner() {
   const allowed = (to: string): boolean => {
     const path = to.split("?")[0];
     const matches = flatNav.filter((t) => t.to != null && t.to.split("?")[0] === path);
-    return matches.length === 0 ? true : matches.some(navVisible);
+    return matches.length === 0 ? false : matches.some(navVisible);
   };
 
   // Bottom-tab access — a tab whose destination the user can't reach must NOT
@@ -455,10 +467,12 @@ function MobileAppInner() {
   const firstTab: Tab = canOrders ? "orders" : canService ? "service" : canCalendar ? "calendar" : "profile";
 
   // Build the grouped mobile Menu from MOBILE_MENU_GROUPS (design mirror), keeping
-  // only items whose matching desktop nav tab is visible for this user's position
-  // (via the shared `allowed` above). Items with no nav match still show (backend
-  // gates). Computed HERE, above the state, because the initial screen is resolved
-  // from the URL against exactly this permission-filtered list.
+  // only items this user may reach: a `capability` row asks the server answer, an
+  // `alwaysShow` row bypasses the gate, and every other row must pass the shared
+  // `allowed` above — which now fails CLOSED, so a row with no nav match and no
+  // capability/alwaysShow is hidden, not shown. Computed HERE, above the state,
+  // because the initial screen is resolved from the URL against exactly this
+  // permission-filtered list.
   const menuGroups = MOBILE_MENU_GROUPS
     .map((g) => ({ group: g.group, items: g.items.filter((it) => (it.capability ? capability(user, it.capability) : (it.alwaysShow || allowed(it.gateVia ?? it.to)))) }))
     .filter((g) => g.items.length > 0);
