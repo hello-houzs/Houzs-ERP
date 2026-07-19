@@ -19,6 +19,23 @@
    the .page token-override cascade) is gone.
    ==================================================================== */
 
+/* ── Section-jump anchor target ────────────────────────────────────────
+   The three section headings (#venues / #geo / #dropdowns) that the sub-nav
+   pills jump to. Each used to carry an inline `scrollMarginTop: 96`, a guess
+   that was ~59 px SHORT of the pinned PageHeader's real bottom edge — so every
+   jump parked the heading and the first rows of the list UNDERNEATH the header
+   (the AEON venue rows the owner saw cut in half).
+
+   `--page-header-offset` is published by PageHeader itself (components/
+   Layout.tsx), measured, so this tracks the real height across breakpoints and
+   across a wrapped title. The fallback covers the first paint before the
+   ResizeObserver runs and any host that renders this page without a PageHeader;
+   +12 px is breathing room so the heading does not sit flush against the border.
+   ────────────────────────────────────────────────────────────────────── */
+.anchor {
+  scroll-margin-top: calc(var(--page-header-offset, 156px) + 12px);
+}
+
 /* ── Section shell — white card, hairline border, soft stone shadow ── */
 .tableCard,
 .venuesCard {

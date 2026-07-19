@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ShieldAlert } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -186,6 +186,43 @@ export function PageHeader({
   const hasSecondary = secondary.length > 0;
   const hasActions = !!actions || !!primaryAction || hasSecondary;
 
+  /* Publish where this pinned header ENDS, as `--page-header-offset` on <html>.
+     Anything that scrolls a target into view has to clear it, and until now each
+     page guessed: SO Maintenance hardcoded `scroll-margin-top: 96px` on its three
+     section anchors while the real bottom edge is ~155 px on desktop (48 px
+     sticky top + ~107 px of eyebrow + title + description + padding). So every
+     section-jump pill scrolled its heading to 96 px — 59 px UNDERNEATH the
+     header — and the operator saw the header sitting on top of the first rows of
+     the list, cutting them in half. That is the bug, and a bigger constant would
+     only move the guess: the height changes with the breakpoint, with the title
+     wrapping, and with whether an action rail wrapped to its own row.
+
+     Measured instead. `offsetHeight` is layout height (unaffected by scroll
+     position, unlike getBoundingClientRect().top on a sticky element) and the
+     resolved `top` is read from the cascade, so this stays correct across the
+     top-14/lg:top-12 switch without duplicating those numbers here. */
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const publish = () => {
+      const stickyTop = parseFloat(getComputedStyle(el).top);
+      const offset = (Number.isFinite(stickyTop) ? stickyTop : 0) + el.offsetHeight;
+      document.documentElement.style.setProperty("--page-header-offset", `${offset}px`);
+    };
+    publish();
+    const ro = new ResizeObserver(publish);
+    ro.observe(el);
+    // The sticky `top` is breakpoint-dependent, and a resize that changes only
+    // the breakpoint may not change our own box — observe the viewport too.
+    window.addEventListener("resize", publish);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", publish);
+      document.documentElement.style.removeProperty("--page-header-offset");
+    };
+  }, []);
+
   return (
     <div
       className={
@@ -205,10 +242,21 @@ export function PageHeader({
              does the visual separation from below.
            · bg-bg/95 + backdrop-blur keeps the header legible over any
              content that would otherwise show through. */
+        /* 2026-07-19 (fix/so-maintenance-403) — the sticky offsets were
+           DESKTOP-ONLY correct. Below lg the chrome above us is MobileTopBar
+           (`sticky top-0 z-20 h-14`, 56 px), not TopNavbar (`sticky top-0 z-30
+           h-12`, 48 px). Parking at top-12 on every breakpoint left this header
+           8 px INSIDE the mobile app bar, and z-20 TIED with it — a tie the
+           later-painted element wins, so the pinned page header covered the
+           bottom edge of the app bar on every tablet/narrow-desktop page.
+           `top-14 lg:top-12` parks flush under whichever bar is actually there,
+           and `z-10 lg:z-20` puts us definitively BELOW the app bar (z-20) while
+           still sitting above page content, which carries no z-index. */
         (dense
-          ? "sticky top-12 z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:flex-wrap md:items-end md:justify-between"
-          : "sticky top-12 z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:flex-wrap md:items-end md:justify-between")
+          ? "sticky top-14 lg:top-12 z-10 lg:z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:flex-wrap md:items-end md:justify-between"
+          : "sticky top-14 lg:top-12 z-10 lg:z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:flex-wrap md:items-end md:justify-between")
       }
+      ref={hostRef}
     >
       {/* md:flex-1 + a basis floor so a wide action rail (md:shrink-0) can
           never squeeze the title to a per-character column — the rail wraps

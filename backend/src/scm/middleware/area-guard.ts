@@ -72,6 +72,21 @@ const isWrite = (method: string): boolean =>
  *   pipeline stamps the caller's staff uuid — PR #245); they never mutate an
  *   existing SO. Actual SO create/edit (mfg-sales-orders) keeps 'edit'.
  *
+ * - `openReadPaths` — the SAME escape hatch as `openRead`, but scoped to named
+ *   sub-paths instead of the whole router. Needed where a router mixes one
+ *   harmless REFERENCE read with genuinely sensitive ones: `/inventory/*` serves
+ *   stock levels, FIFO lots, COGS and valuation, so `openRead` on it would be a
+ *   real leak — but `GET /inventory/warehouses` is a bare picklist (id / code /
+ *   name / location / is_active / is_default, no cost, no quantities) that the SO
+ *   and PO forms' Ship-to + Purchase Location dropdowns, and the SO Maintenance
+ *   state→warehouse mapping, cannot render without. Listing that ONE path keeps
+ *   the rest of the Inventory API gated exactly as before.
+ *
+ *   Matched as a suffix of `c.req.path`, because the guard runs under the
+ *   `/api/scm` mount and does not know its own prefix. Entries are absolute
+ *   under that mount (e.g. `/inventory/warehouses`); GET/HEAD only, writes are
+ *   never opened.
+ *
  * - `readInheritsFrom` — a SECOND area key whose `view` grant ALSO satisfies a
  *   GET/HEAD on this area (writes still require `edit` on the NATIVE area).
  *   Used so a salesperson (scm.sales.orders = view) can READ Delivery Orders +
@@ -83,6 +98,7 @@ const isWrite = (method: string): boolean =>
  */
 export interface ScmAreaGuardOpts {
   openRead?: boolean;
+  openReadPaths?: readonly string[];
   writeLevel?: AccessLevel;
   readInheritsFrom?: string;
 }
@@ -141,6 +157,12 @@ export function scmAreaGuard(area: string, opts?: ScmAreaGuardOpts): MiddlewareH
     // Reference reads open to every caller who passed the coarse umbrella —
     // see ScmAreaGuardOpts above. Reads only; writes fall through to the check.
     if (!write && opts?.openRead) {
+      await next();
+      return;
+    }
+
+    // Same hatch, narrowed to named sub-paths — see ScmAreaGuardOpts above.
+    if (!write && opts?.openReadPaths?.some((p) => c.req.path.endsWith(p))) {
       await next();
       return;
     }

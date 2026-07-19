@@ -614,3 +614,48 @@ export function resolvePositionPolicy(input: PositionPolicyInput): PositionPolic
     flags: config ? { ...baseFlags, canWriteConfig: true } : baseFlags,
   };
 }
+
+/** The tolerant caller shape for the SCM master-data write rule — satisfied by
+ *  the Houzs `AuthUser`, by the SCM bridge's `houzsUser`, and by the /auth/me
+ *  serialiser. */
+export interface ScmConfigWriteCaller extends MoneyWriteCaller {
+  department_name?: string | null;
+}
+
+/**
+ * May this caller WRITE SCM master data / config? THE one definition of the
+ * `scm.config.write` question, so the backend gate and the screen cannot
+ * disagree about it.
+ *
+ * WHY IT IS EXTRACTED (fix/so-maintenance-403, 2026-07-19). The rule already had
+ * two halves — the flat permission key OR the position policy's `canWriteConfig`
+ * (scm/lib/houzs-perms.canWriteScmConfig) — but only the BACKEND evaluated both.
+ * SalesOrderMaintenance.tsx asked `can('scm.config.write')`, the flat half alone,
+ * so every CONFIG_WRITE_POSITIONS holder (Procurement/Purchasing, Operation
+ * Manager / Executive, Logistic Admin, Super Admin) whose ROLE lacks the flat key
+ * was shown "Read-only view. Maintenance changes are admin/coordinator-only." on a
+ * page whose writes the API would have accepted. That is the exact FE/BE
+ * one-level drift salesJdAccess.ts's header warns about, and the fix is the same:
+ * decide once, where the rule lives, and let both sides read the answer.
+ *
+ * Surfaced to the frontend as `scm_config_writer` on GET /api/auth/me, beside
+ * project_finance_viewer / product_cost_viewer, which exist for this same reason.
+ *
+ * ORDER MATTERS ONLY FOR COST: the wildcard and the flat key are cheap set reads;
+ * resolvePositionPolicy is last. Fails CLOSED on an unidentifiable caller.
+ */
+export function userCanWriteScmConfig(u: ScmConfigWriteCaller | null | undefined): boolean {
+  if (!u) return false;
+  if (hasWildcard(u)) return true;
+  const perms = u.permissions_set ?? u.permissions;
+  if (perms) {
+    const held = Array.isArray(perms)
+      ? perms.includes("scm.config.write")
+      : (perms as ReadonlySet<string>).has("scm.config.write");
+    if (held) return true;
+  }
+  return resolvePositionPolicy({
+    position_name: u.position_name ?? null,
+    department_name: u.department_name ?? null,
+  }).flags.canWriteConfig;
+}
