@@ -242,7 +242,7 @@ export const FairReport = () => {
     <div className="space-y-4">
       <PageHeader
         eyebrow="Reports"
-        title="Fair Report"
+        title="Sales Report"
         description="Exhibition sales by document stage — Sales Order, Delivery Order, Invoice. Confirmed orders only."
         primaryAction={
           <div className="flex items-center gap-2">
@@ -352,7 +352,7 @@ export const FairReport = () => {
 
       {q.isError && (
         <div className="rounded-lg border border-err/40 bg-err/5 px-3 py-2 text-[13px] text-err">
-          Could not load the Fair Report. Please retry.
+          Could not load the Sales Report. Please retry.
         </div>
       )}
 

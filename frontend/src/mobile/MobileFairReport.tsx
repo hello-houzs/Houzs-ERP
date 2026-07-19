@@ -157,7 +157,7 @@ export function MobileFairReport({ onBack }: { onBack: () => void }) {
               <span className="chev">‹</span> Back
             </button>
             <div className="eyebrow">Reports</div>
-            <div className="scr-title">Fair Report</div>
+            <div className="scr-title">Sales Report</div>
           </div>
           <button onClick={() => setSheetOpen(true)} className="iconbtn" style={{ position: "relative", width: "auto", padding: "0 12px", gap: 6, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: "var(--ink2)" }} aria-label="Filters">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#414539" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5h18M6 12h12M10 19h4" /></svg>
@@ -195,7 +195,7 @@ export function MobileFairReport({ onBack }: { onBack: () => void }) {
         )}
         {q.isError && (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "var(--red-bg)", border: "1px solid #e6cccc", borderRadius: 12, padding: "11px 13px" }}>
-            <span style={{ fontSize: 12, color: "var(--red)", fontWeight: 600 }}>Couldn't load the Fair Report</span>
+            <span style={{ fontSize: 12, color: "var(--red)", fontWeight: 600 }}>Couldn't load the Sales Report</span>
             <button onClick={() => q.refetch()} style={{ border: "none", background: "transparent", color: "var(--red)", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Retry</button>
           </div>
         )}
@@ -341,7 +341,7 @@ function FilterSheet({ filters, opts, onApply, onClose }: {
         <div className="sheet-head">
           <div>
             <div className="eyebrow">Filter</div>
-            <div className="scr-title" style={{ fontSize: 17 }}>Fair Report</div>
+            <div className="scr-title" style={{ fontSize: 17 }}>Sales Report</div>
           </div>
           <button className="sheet-x" onClick={onClose} aria-label="Close">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>

@@ -1,6 +1,15 @@
 // ----------------------------------------------------------------------------
-// fulfillment-costing.ts — the PURE cost-math for the Finance > Fulfillment
-// Costing report (GET /scm/reports/fulfillment-costing).
+// fulfillment-costing.ts — the PURE cost-math originally written for the
+// standalone Finance > Fulfillment Costing report.
+//
+// STATUS 2026-07-19: the Fulfillment Costing module (page + nav + endpoint) was
+// REMOVED as redundant — the Sales Report (fka Fair Report) already carries the
+// three-way SO→DO→Invoice cost comparison. This file is KEPT because
+// `freezeShipCost` (the freeze-at-ship money-path half) is still imported by
+// routes/delivery-orders-mfg.ts, and mig 0143's ship_cost_centi snapshot feeds
+// the Sales Report's DO-stage cost. The report-math exports below
+// (aggregate*/computeLineComparison/filterRows/summarize/groupRows) no longer
+// have a route caller; they remain pinned by tests/fulfillmentCosting.test.ts.
 //
 // WHY A SEPARATE PURE MODULE: the report's whole reason to exist is a THREE-WAY
 // cost comparison per Sales Order line —
