@@ -1025,27 +1025,24 @@ function MemberActions({ row, onDone }: { row: any; onDone: () => void }) {
     }
   };
 
+  // Mirrors Team.tsx sendReset against the SAME endpoint — sending the link is
+  // a no-op on the account, and the link itself is never surfaced to the admin.
   const resetPassword = async () => {
-    if (!(await confirm({ title: "Reset password?", body: `Send a password reset link to ${email}? Their current password keeps working until they finish the reset; active sessions are logged out.`, confirmLabel: "Send reset" }))) return;
+    if (!(await confirm({ title: "Send reset link?", body: `Email a password reset link to ${email}? Nothing changes until they click it — their password and active sessions keep working. The link expires in 1 hour.`, confirmLabel: "Send link" }))) return;
     setBusy("reset");
     try {
       const res = await api.post<{
         ok: boolean;
-        reset_path?: string;
         email_sent?: boolean;
         email_status?: string;
       }>(`/api/users/${id}/reset-password`);
-      const link = res.reset_path ? `${window.location.origin}${res.reset_path}` : "";
-      const copied = await copyLink(link);
       if (res.email_sent) {
-        await notify({ title: "Reset link sent", body: copied ? `Emailed to ${email} — the link is also copied.` : `Emailed to ${email}.` });
-      } else if (copied) {
-        await notify({ title: "Reset link copied", body: `Email not sent (${res.email_status || "check Settings, Email"}) — paste the copied link to the member.` });
+        await notify({ title: "Reset link sent", body: `Emailed to ${email} — expires in 1 hour.` });
       } else {
-        await notify({ title: "Couldn't send", body: `Email not sent (${res.email_status || "check Settings, Email"}).` });
+        await notify({ title: "Couldn't send", body: `Email not sent (${res.email_status || "check Settings, Email"}). Nothing was changed on the account.` });
       }
     } catch (e) {
-      await notify({ title: "Couldn't reset", body: e instanceof Error ? e.message : "Please try again." });
+      await notify({ title: "Couldn't send", body: e instanceof Error ? e.message : "Please try again." });
     } finally {
       setBusy(null);
     }

@@ -9,6 +9,7 @@ import {
 } from "../middleware/auth";
 import { isSalesDirectorUser } from "../services/pmsAccess";
 import { hasPermission } from "../services/permissions";
+import { checkRateLimit } from "../middleware/rateLimit";
 import type { Context } from "hono";
 import {
   sendEmail,
@@ -1737,14 +1738,44 @@ app.post("/:id/impersonate", requirePermission("users.manage"), async (c) => {
 
 /**
  * POST /api/users/:id/reset-password
- * Admin-triggered. Generates a one-hour reset token, optionally emails
- * the user a link. Returns the token so the admin can also copy-paste
- * it (useful when email is down or the user's address is stale).
+ * Admin-triggered "send reset link". Emails the user a one-hour, single-use
+ * link. THE ACCOUNT IS NOT TOUCHED (owner 2026-07-19: "如果他们没有点击，状态
+ * 就保持不变；如果点击了，就可以重置密码"): the password hash, the status and
+ * the user's live sessions are all left exactly as they were. Only redeeming
+ * the link (POST /api/auth/reset/:token) changes anything — and that path
+ * already sets the new hash and revokes every session.
+ *
+ * TWO DELIBERATE REMOVALS from the earlier version of this handler, both of
+ * which made "send a link" a state change:
+ *
+ *   1. It used to DELETE every session for the target the moment the admin
+ *      clicked, so an untouched link still logged the user out of their phone
+ *      mid-job. That is precisely the behaviour the owner ruled out.
+ *   2. It used to RETURN the token (`token`, `reset_path`) and the Team screen
+ *      copied the live link to the admin's clipboard. That made `users.manage`
+ *      a silent account-takeover primitive: any holder could mint a working
+ *      one-hour credential for ANY account — including one more privileged
+ *      than their own — and use it themselves without the target's mailbox
+ *      ever being involved, while the audit row said only that a reset was
+ *      "issued". The link is a credential; it goes to the mailbox, not to the
+ *      person who pressed the button. If email is down, fix the channel (the
+ *      response says which one) — do not route a credential through an admin.
+ *
+ * Rate-limited on the TARGET, because an admin button that sends mail to a
+ * colleague is also a way to spam that colleague.
  */
 app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Invalid ID." }, 400);
   const me = c.get("user");
+
+  // Per-TARGET cap: 3 admin-issued links per 15 min, whoever sends them. Keyed
+  // on the recipient (not the admin) so the bulk action and two admins working
+  // the same list still cannot flood one person's inbox. Fails OPEN when KV is
+  // unbound — same posture as every other limiter here; this bounds nuisance,
+  // it is not the authorization gate (requirePermission above is).
+  const limited = await checkRateLimit(c, "admin-reset", String(id), 3, 900);
+  if (limited) return limited;
 
   const db = getDb(c.env);
   const targetRow = await db
@@ -1786,16 +1817,17 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
     expires_at: expiresAt,
   });
 
-  // Also revoke active sessions so the user has to log in again with
-  // the new password. Bust the cached-user entries BEFORE the delete (reads
-  // the live tokens) so the revoked sessions can't ride the 60s cache.
-  await bustUserSessions(c.env, id);
-  await db.delete(sessions).where(eq(sessions.user_id, id));
+  // NOTE: no session revocation here, by design (see the header). Sending a
+  // link must be a no-op on the account. Redemption revokes the sessions —
+  // routes/auth.ts POST /reset/:token already does bustUserSessions + DELETE
+  // FROM sessions after writing the new hash, which is the correct moment: the
+  // password has actually changed by then.
 
-  // Fire the email. sendEmail() already handles "channel disabled" and
-  // "recipient missing" — we still return the token so copy-paste works,
-  // and surface the delivery status so the UI can stop claiming "sent"
-  // when the channel/key is off.
+  // Fire the email. sendEmail() never throws — it returns a status, and a
+  // disabled channel or missing API key comes back as "skipped". Surface that
+  // status so the UI can say "not sent, check Settings, Email" instead of
+  // claiming success. The token is NOT returned; the mailbox is the only place
+  // it lands.
   const identity = await activeCompanyEmailIdentity(c.env, c.get("companyCode"));
   const link = publicUrl(c.env, `/reset/${token}`, identity.companyCode);
   const name = (target.name || target.email.split("@")[0]).split(" ")[0];
@@ -1815,18 +1847,21 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
     companyCode: identity.companyCode,
   });
 
+  // WHO sent it, TO WHOM, WHEN (audit rows are timestamped), and whether the
+  // mail actually left. `requested_by` on the password_resets row carries the
+  // same admin id, so the trail survives even if the audit log is trimmed.
+  // The token is deliberately absent from both — an audit log that records a
+  // live credential is a credential store.
   await audit(c, {
     action: "user.reset_password",
     entityType: "user",
     entityId: id,
-    summary: `Issued password reset for ${target.email} (#${id})`,
+    summary: `Sent password reset link to ${target.email} (#${id})`,
     meta: { email: target.email, email_status: sendResult.status },
   });
 
   return c.json({
     ok: true,
-    token,
-    reset_path: `/reset/${token}`,
     expires_at: expiresAt,
     email: target.email,
     email_sent: sendResult.status === "sent",
