@@ -59,6 +59,8 @@ import {
 import { useDrivers, type DriverRow } from '../../vendor/scm/lib/drivers-queries';
 import { useLorries, type LorryRow } from '../../vendor/scm/lib/lorries-queries';
 import styles from './DeliveryPlanning.module.css';
+import { useAuth } from '../../auth/AuthContext';
+import { canOperateDeliveryOrders } from '../../auth/salesAccess';
 
 /* HC "Remark 4" delivery sub-status → a small pill class (reuse the cream
    palette; unknown/blank → muted). Default-shown column. */
@@ -498,6 +500,12 @@ export const DeliveryPlanning = () => {
   const navigate = useNavigate();
   const askConfirm = useConfirm();
   const notify = useNotify();
+  const { user, can, pageAccess } = useAuth();
+  /* Creating a DO is the Office department's job (owner 2026-07-17), and the
+     backend now 403s the Sales cohort on every /delivery-orders-mfg write. This
+     board is reachable on scm.transportation.*, so the convert actions carried no
+     DO gate of their own — same ONE helper as every other DO control. */
+  const canConvertToDo = canOperateDeliveryOrders(user, can, pageAccess);
   const [params, setParams] = useSearchParams();
   const activeState = (params.get('state') ?? 'ALL').toUpperCase();
   const activeRegion = (params.get('region') ?? 'ALL').toUpperCase();
@@ -1268,10 +1276,12 @@ export const DeliveryPlanning = () => {
 
           <span className={styles.bulkSpacer} />
 
-          <Button variant="secondary" disabled={convertSos.isPending} onClick={() => void convertSelected()}>
-            <Truck size={14} strokeWidth={1.75} />
-            <span>{convertSos.isPending ? 'Converting…' : `Convert ${sel.size} to DO`}</span>
-          </Button>
+          {canConvertToDo && (
+            <Button variant="secondary" disabled={convertSos.isPending} onClick={() => void convertSelected()}>
+              <Truck size={14} strokeWidth={1.75} />
+              <span>{convertSos.isPending ? 'Converting…' : `Convert ${sel.size} to DO`}</span>
+            </Button>
+          )}
           <Button variant="ghost" onClick={() => setSel(new Set())} title="Clear selection">x</Button>
         </div>
       )}
@@ -1318,7 +1328,9 @@ export const DeliveryPlanning = () => {
             ]
           : [
               { label: 'Edit HC fields…', onClick: () => setEditing(row) },
-              { label: 'Convert to DO', onClick: () => convertOne(row) },
+              ...(canConvertToDo
+                ? [{ label: 'Convert to DO', onClick: () => convertOne(row) }]
+                : []),
               { divider: true },
               { label: 'Open Sales Order', onClick: () => openRow(row) },
             ])}

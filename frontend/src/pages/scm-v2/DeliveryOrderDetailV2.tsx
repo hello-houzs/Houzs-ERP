@@ -67,6 +67,7 @@ import {
 import { cn } from "../../lib/utils";
 import { lineIdentity } from "@2990s/shared";
 import { useAuth } from "../../auth/AuthContext";
+import { canOperateDeliveryOrders } from "../../auth/salesAccess";
 
 // ─── Header + item shapes (subset — full 40-field row lives in the list V2) ─
 
@@ -759,12 +760,14 @@ export function DeliveryOrderDetailV2() {
   const { nameOf: salespersonNameOf } = useStaffLookup();
   const notify = useNotify();
   const showCustomerPo = useCustomerPoNotice();
-  const { pageAccess } = useAuth();
+  const { user, can, pageAccess } = useAuth();
   // Mutation gate — a salesperson opens this DO read-only via the sales inherit
   // hatch (allowSales; backend readInheritsFrom scm.sales.orders) and cannot
   // edit/cancel/convert it. Hide those controls (owner off-not-hide rule); Print
-  // PDF stays so the rep can still send the document. `*` resolves to "full".
-  const canWriteDo = ["edit", "full"].includes(pageAccess("scm.sales.delivery"));
+  // PDF stays so the rep can still send the document.
+  // ONE gate, shared with the lists, the SO drawer and mobile — this was a
+  // hand-copied `["edit","full"].includes(...)`, and the copies disagreed.
+  const canWriteDo = canOperateDeliveryOrders(user, can, pageAccess);
 
   const deliveryOrder =
     (detail.data as { deliveryOrder?: DoHeader } | undefined)?.deliveryOrder ??

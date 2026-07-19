@@ -142,6 +142,76 @@ export function quickActionAccess(
 }
 
 /**
+ * DELIVERY-ORDER / SALES-INVOICE OPERATE gate — "may this user CREATE or CHANGE
+ * a DO / SI", and the SINGLE source for it across desktop and mobile.
+ *
+ * THE RULE (owner 2026-07-17): "后面的人是来操作 DO 和 SI 的。销售人员不可能去
+ * 操作 DO 和 SI，所以他们通常只是来看而已" — the Office department operates
+ * Delivery Orders and Sales Invoices; Sales OWNS the Sales Order and only LOOKS
+ * at these. And 2026-07-18 on the Director: "DO SI 只能看 salesdirector". So the
+ * whole Sales cohort, Director included, is view + Print PDF here.
+ *
+ * WHY IT IS A HELPER AND NOT A `pageAccess(...)` CALL AT EACH SITE. It was four
+ * hand-copies, and they disagreed — which is how the bug the owner reported got
+ * in. `DeliveryOrderDetailV2`, `MfgDeliveryOrdersListV2` and `SalesInvoicesListV2`
+ * each inlined `["edit","full"].includes(pageAccess(...))`; the SO quick-view
+ * drawer's "Deliver" button checked NOTHING (status only) and navigated a
+ * salesperson to a route that then rendered <Forbidden>; and the entire mobile
+ * convert surface (MobileConvertWizard, the module-list "+", the planning
+ * board's Create DO) imported no auth at all. Owner: "電話電腦的權限應該一樣的"
+ * — one rule, both platforms, so this is the only place that decides.
+ *
+ * IT MIRRORS THE BACKEND EXACTLY, which is the property that matters — a button
+ * this shows must not 403. `scm/middleware/area-guard` requires `edit` on the
+ * area for POST/PATCH/PUT/DELETE, and `salesJdAccess.salesJdWriteDenial` denies
+ * those writes to the Sales cohort whether or not they are L2-configured. Both
+ * terms are reproduced below, in that order:
+ *   1. `*` (Owner / IT) always passes — never narrowed, on either side.
+ *   2. Sales cohort → false. This is the RULE half. It is not redundant with the
+ *      page_access read: the backend writes SALES_JD's `view` into page_access at
+ *      login, so term 3 usually agrees on its own — but a stale /auth/me payload
+ *      would otherwise re-offer the button the server now refuses.
+ *   3. otherwise → the matrix, compared through ACCESS_RANK (the same rank the
+ *      backend's meetsLevel uses), so Office keeps exactly what its position
+ *      grants and nothing else moves.
+ *
+ * READS ARE NOT GATED BY THIS. Sales keeps view + Print PDF on both documents
+ * (the backend's `readInheritsFrom: "scm.sales.orders"` hatch lets a rep read the
+ * DOs and SIs raised off their own SOs). Callers must make the control ABSENT,
+ * not disabled — "off, not hide".
+ */
+function canOperateScmSalesDoc(
+  user: AuthUser | null | undefined,
+  can: (perm: string) => boolean,
+  pageAccess: (page: string) => AccessLevel,
+  area: "scm.sales.delivery" | "scm.sales.invoices",
+): boolean {
+  if (can("*")) return true;
+  if (isSalesStaff(user)) return false;
+  return ACCESS_RANK[pageAccess(area)] >= ACCESS_RANK.edit;
+}
+
+/** May this user create or change a DELIVERY ORDER (incl. converting an SO into
+ *  one)? See {@link canOperateScmSalesDoc}. */
+export function canOperateDeliveryOrders(
+  user: AuthUser | null | undefined,
+  can: (perm: string) => boolean,
+  pageAccess: (page: string) => AccessLevel,
+): boolean {
+  return canOperateScmSalesDoc(user, can, pageAccess, "scm.sales.delivery");
+}
+
+/** May this user create or change a SALES INVOICE (incl. converting a DO into
+ *  one)? See {@link canOperateScmSalesDoc}. */
+export function canOperateSalesInvoices(
+  user: AuthUser | null | undefined,
+  can: (perm: string) => boolean,
+  pageAccess: (page: string) => AccessLevel,
+): boolean {
+  return canOperateScmSalesDoc(user, can, pageAccess, "scm.sales.invoices");
+}
+
+/**
  * SCM COSTING gate — "may this user see cost/margin on a SUPPLY-CHAIN surface".
  *
  * Owner 2026-07-17: "margin 給2990開啊 houzs的也是啊 是看什麽position 的" — the

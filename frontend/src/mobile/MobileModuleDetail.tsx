@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { visibleFields } from "../auth/salesAccess";
+import { visibleFields, canOperateDeliveryOrders, canOperateSalesInvoices } from "../auth/salesAccess";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
@@ -440,9 +440,29 @@ function paymentKind(moduleKey: string, header: any): PayKind | null {
   return null;
 }
 
+/**
+ * May this user OPERATE the document behind `moduleKey` (advance its status,
+ * cancel it), as opposed to merely reading + printing it?
+ *
+ * Owner 2026-07-17: Office operates DO and SI, Sales only looks — and on parity,
+ * "電話電腦的權限應該一樣的". Mobile's status footer was status-only, so a
+ * salesperson who could open a Delivery Order was offered Dispatch / In Transit /
+ * Signed / Cancel; the backend now 403s all four. Resolving through the SAME
+ * helpers the desktop uses is what keeps the two platforms one decision rather
+ * than two implementations. Every other module is unaffected (returns true).
+ */
+function useMayOperateDoc(moduleKey: string): boolean {
+  const { user, can, pageAccess } = useAuth();
+  if (moduleKey === "delivery-orders-mfg") return canOperateDeliveryOrders(user, can, pageAccess);
+  if (moduleKey === "sales-invoices") return canOperateSalesInvoices(user, can, pageAccess);
+  return true;
+}
+
 /** Build the valid status actions for a doc from its CURRENT status. Empty when
- *  the doc is terminal (or the module has no status route). */
-function statusActionsFor(moduleKey: string, id: string, header: any): DocAction[] {
+ *  the doc is terminal, the module has no status route, or the caller may only
+ *  view it (`mayOperate` false → the footer renders nothing at all). */
+function statusActionsFor(moduleKey: string, id: string, header: any, mayOperate: boolean): DocAction[] {
+  if (!mayOperate) return [];
   const st = s(header?.status).toUpperCase();
   const enc = encodeURIComponent(id);
   const out: DocAction[] = [];
@@ -715,7 +735,8 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
   const [payOpen, setPayOpen] = useState(false);
   const [runningKey, setRunningKey] = useState<string | null>(null);
 
-  const statusActions = useMemo(() => statusActionsFor(moduleKey, id, header), [moduleKey, id, header]);
+  const mayOperate = useMayOperateDoc(moduleKey);
+  const statusActions = useMemo(() => statusActionsFor(moduleKey, id, header, mayOperate), [moduleKey, id, header, mayOperate]);
   const payKind = paymentKind(moduleKey, header);
 
   const refresh = () => {
@@ -830,7 +851,8 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
 
   // Whether a sticky footer will render — used to reserve scroll padding so it
   // never covers the last line item. A POD button (delivery orders) also counts.
-  const hasStatusActions = !!id && (statusActionsFor(moduleKey, id, header).length > 0 || paymentKind(moduleKey, header) !== null);
+  const mayOperate = useMayOperateDoc(moduleKey);
+  const hasStatusActions = !!id && (statusActionsFor(moduleKey, id, header, mayOperate).length > 0 || paymentKind(moduleKey, header) !== null);
   const hasFooter = hasStatusActions || !!onPOD;
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ["mobile-module-detail", map.path, id] }); };
 
@@ -1145,7 +1167,8 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
   const qc = useQueryClient();
   const actionRow = row ?? {};
   const actionId = s(row?.id);
-  const hasFooter = !!actionId && (statusActionsFor(moduleKey, actionId, actionRow).length > 0 || paymentKind(moduleKey, actionRow) !== null);
+  const mayOperate = useMayOperateDoc(moduleKey);
+  const hasFooter = !!actionId && (statusActionsFor(moduleKey, actionId, actionRow, mayOperate).length > 0 || paymentKind(moduleKey, actionRow) !== null);
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ["mobile-module"] }); };
 
   return (

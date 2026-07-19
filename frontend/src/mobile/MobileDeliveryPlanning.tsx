@@ -9,6 +9,8 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { HC_SUBSTATUS_VALUES } from "../vendor/scm/lib/delivery-planning-queries";
 import { fmtCenti } from "../lib/scm";
 import { formatDate } from "../lib/utils";
+import { useAuth } from "../auth/AuthContext";
+import { canOperateDeliveryOrders } from "../auth/salesAccess";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -1112,6 +1114,12 @@ function StopDetail({
   const qc = useQueryClient();
   const notify = useNotify();
   const confirm = useConfirm();
+  /* Cutting a DO is the Office department's job (owner 2026-07-17), and the
+     backend now 403s the Sales cohort on /delivery-orders-mfg/from-sos. Drivers
+     and Office are unaffected — they are not the Sales cohort. Same ONE helper
+     the desktop board and every other DO control resolve through. */
+  const { user, can, pageAccess } = useAuth();
+  const canConvertToDo = canOperateDeliveryOrders(user, can, pageAccess);
   /* One key for the one DO this stop can cut (lib/idempotency.ts). NOT on
      fix/so-idempotency's list — it names the DO hook, and this surface reaches
      /delivery-orders-mfg/from-sos through a bare authedFetch instead — but it is
@@ -1266,6 +1274,15 @@ function StopDetail({
 
   const requireDo = async (): Promise<boolean> => {
     if (doId) return true;
+    // Start/Arrive auto-cut the DO when there isn't one. A caller who may not
+    // create a DO must be TOLD, not walked into a 403 they can't read.
+    if (!canConvertToDo) {
+      await notify({
+        title: "No delivery order yet",
+        body: "This stop has no delivery order, and creating one is handled by the Office team. Ask Office to raise the DO, then start this stop.",
+      });
+      return false;
+    }
     await onConvert();
     return false;
   };
@@ -1521,7 +1538,7 @@ function StopDetail({
 
         {/* No DO yet → offer to cut one on the spot (desktop board's Convert-to-DO,
             identical endpoint) so the driver isn't dead-ended. */}
-        {!doId && (
+        {!doId && canConvertToDo && (
           <button
             onClick={onConvert}
             disabled={convert.isPending}

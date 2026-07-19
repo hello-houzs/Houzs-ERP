@@ -26,9 +26,11 @@ import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr, phoneSearchOrParts } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap,
+import { scopeToCompany, scopeToAllowedCompanies, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap,
   isCrossCompanySource, crossCompanyConversionBlocked,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
+import type { getSupabaseService } from '../../db/supabase';
+import { SO_CONVERT_HEADER, soHeaderToDoSource, missingSourceFields } from '../lib/so-to-do-fields';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { freezeShipCost } from '../lib/fulfillment-costing';
@@ -2373,39 +2375,75 @@ deliveryOrdersMfg.get('/deliverable-so-lines', async (c) => {
   return c.json({ lines });
 });
 
-/* SO customer/delivery header for the reviewable New-DO form's PREFILL.
-   ── Why a dedicated, company-UNSCOPED read (matching POST /from-sos) ──
-   The desktop New-DO form (DeliveryOrderNewV2) converts a Sales Order into a
-   reviewable DO draft. It used to prefill the customer header from the full SO
-   detail endpoint /mfg-sales-orders/:docNo, which is company- AND sales-scoped
-   (scopeToCompany + salesDocOutOfScope). A 2990-mirrored SO carries company_id=2
-   and is routinely converted while browsing as Houzs (active company 1) — the
-   line-level picker feeding this form reads the UNSCOPED /deliverable-so-lines,
-   so it shows those cross-company lines, but the scoped SO detail then 404s for
-   the same doc → the form's customer name/phone/email/address/salesperson all
-   came back blank while the (stash-carried) line items filled in. The
-   server-side conversion POST /from-sos already reads this SAME header UNSCOPED
-   by doc_no (see SO_HEADER there) precisely because DO conversion is a designed
-   cross-company action; this read mirrors it so the reviewable form matches the
-   server. Customer/delivery fields only — no cost/margin — so nothing finance
-   leaks that /from-sos doesn't already surface on the resulting DO. */
-deliveryOrdersMfg.get('/so-convert-header/:docNo', async (c) => {
-  const sb = c.get('supabase');
-  const docNo = c.req.param('docNo');
-  const SO_CONVERT_HEADER =
-    'doc_no, debtor_code, debtor_name, agent, salesperson_id, ' +
-    'address1, address2, address3, address4, city, customer_state, postcode, phone, ' +
-    'email, customer_type, building_type, venue, venue_id, ref, po_doc_no, customer_so_no, ' +
-    'sales_location, customer_delivery_date, ' +
-    'emergency_contact_name, emergency_contact_phone, emergency_contact_relationship';
+/* ── SO → DO conversion source ────────────────────────────────────────────────
+   THE FIELDS THAT CARRY ACROSS, from the ONE place that already knows them.
+
+   WHY THIS ENDPOINT EXISTS. There are two SO→DO converters, and until now only
+   one of them could read a MIRRORED SO:
+     · POST /from-sos (below) loads the SO header with NO company predicate, on
+       purpose — its own comment says "a 2990 SO may be converted while browsing
+       as Houzs", because the Delivery Planning board is a shared cross-company
+       queue.
+     · The Create-DO FORM (DeliveryOrderNewV2) prefilled itself from
+       GET /mfg-sales-orders/:docNo, which IS wrapped in scopeToCompany. For a
+       2990- mirrored SO (company_id = 2, stamped by so-mirror.ts) read while the
+       active company is HOUZS, that answers 404 — so the form rendered EMPTY
+       while its "Converted from <doc>" badge and the document-flow strip, which
+       are derived from the ?fromSo= query STRING and never touch the fetch, kept
+       showing the linkage. Fields blank, linkage perfect. That is the bug.
+   Pointing the form at this route makes the preview and the commit read the SAME
+   columns through the SAME loader, so they cannot drift again.
+
+   SCOPING IS DELIBERATELY the converter's, not the SO detail page's: a caller who
+   is already allowed to CONVERT this SO must be able to SEE what conversion will
+   copy. Narrower than "no predicate" — scopeToAllowedCompanies limits it to the
+   companies this caller is actually granted (companyScope.ts's three-state
+   sentinel: unresolved → no predicate, so single-company Houzs is unchanged).
+   Read gating is the area guard's (scm.sales.delivery, readInheritsFrom
+   scm.sales.orders), exactly as for every other read on this router.
+
+   IMPORTANT (route ordering): STATIC path, so it MUST be registered BEFORE the
+   `/:id` param route below — same reason as /deliverable-so-lines above. */
+/** Load a source SO header for conversion. Shared by the form preview
+ *  (GET /so-source/:docNo) and the commit (POST /from-sos) so the two can never
+ *  copy different column sets. No company predicate — see the header above; the
+ *  commit path has always read it this way and the preview now matches. */
+async function loadSoHeaderForConversion(
+  sb: ReturnType<typeof getSupabaseService>,
+  docNo: string,
+): Promise<{ head: Record<string, unknown> | null; error: string | null }> {
   const { data, error } = await sb
     .from('mfg_sales_orders')
     .select(SO_CONVERT_HEADER)
     .eq('doc_no', docNo)
     .maybeSingle();
+  if (error) return { head: null, error: error.message };
+  return { head: (data as unknown as Record<string, unknown>) ?? null, error: null };
+}
+
+deliveryOrdersMfg.get('/so-source/:docNo', async (c) => {
+  const sb = c.get('supabase');
+  const docNo = c.req.param('docNo');
+  if (!docNo) return c.json({ error: 'doc_no_required' }, 400);
+
+  const { data: row, error } = await scopeToAllowedCompanies(
+    sb.from('mfg_sales_orders').select(SO_CONVERT_HEADER).eq('doc_no', docNo),
+    c,
+  ).maybeSingle();
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  if (!data) return c.json({ error: 'not_found' }, 404);
-  return c.json({ header: data });
+  if (!row) {
+    /* An honest 404 with the doc number in it. The form MUST be able to say
+       "we could not read <doc>" instead of presenting a blank document that
+       looks fresh — a blank form invites someone to retype the customer's
+       address by hand and get it wrong. */
+    return c.json({ error: 'so_not_found', docNo }, 404);
+  }
+  /* Same mapping the commit applies (lib/so-to-do-fields), so what the form
+     previews is what POST /from-sos would have stored. `missing` names the
+     fields the SOURCE genuinely lacks, so "we could not read the SO" and "the SO
+     has no email" are never the same blank screen again. */
+  const source = soHeaderToDoSource(row as unknown as Record<string, unknown>);
+  return c.json({ source, missing: missingSourceFields(source) });
 });
 
 // ── Detail ──────────────────────────────────────────────────────────────
@@ -3062,20 +3100,13 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
 
   // Pull the FIRST SO's header for the DO header snapshot (address / salesperson
   // / branding / venue / contact). Lines carry their own debtor snapshot.
-  const SO_HEADER =
-    'doc_no, company_id, debtor_code, debtor_name, agent, salesperson_id, ' +
-    'address1, address2, address3, address4, city, customer_state, postcode, phone, ' +
-    'email, customer_type, building_type, branding, venue, venue_id, ref, sales_location, ' +
-    'customer_country, customer_delivery_date, ' +
-    'emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, currency';
-  const { data: soHeaderRow, error: hLoadErr } = await sb
-    .from('mfg_sales_orders')
-    .select(SO_HEADER)
-    .eq('doc_no', firstSoDocNo)
-    .maybeSingle();
-  if (hLoadErr) return c.json({ error: 'load_failed', reason: hLoadErr.message }, 500);
-  if (!soHeaderRow) return c.json({ error: 'not_found' }, 404);
-  const head = soHeaderRow as unknown as Record<string, unknown>;
+  // Column list + load are SHARED with GET /so-source/:docNo (see the header on
+  // loadSoHeaderForConversion) so the form's preview and this commit can never
+  // disagree about which SO fields carry across.
+  const loaded = await loadSoHeaderForConversion(sb, firstSoDocNo);
+  if (loaded.error) return c.json({ error: 'load_failed', reason: loaded.error }, 500);
+  if (!loaded.head) return c.json({ error: 'not_found' }, 404);
+  const head = loaded.head;
 
   const doAddress2 = (head.address2 as string | null)
     ?? ([head.address3, head.address4].filter(Boolean).join(', ') || null);
