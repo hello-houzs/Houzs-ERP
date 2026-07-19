@@ -30,9 +30,21 @@ export interface StaffRow {
   phone: string | null;
 }
 
+/* Namespace the roster cache by the ACTIVE COMPANY (mirrors
+   mfg-products-queries' activeCompanyKey). The /api/scm tree is
+   company-switchable via the 'houzs.activeCompanyId' header, so a bare
+   ['staff'] key could bleed one company's cache into another the day /staff
+   starts scoping — and it keeps this key consistent with every other SCM list.
+   Harmless today (a company switch full-reloads the app, clearing the cache).
+   No `??`: a missing/blank id resolves to an explicit 'default' namespace. */
+function activeStaffCompanyKey(): string {
+  const raw = localStorage.getItem('houzs.activeCompanyId');
+  return raw && raw.trim() ? raw : 'default';
+}
+
 export const useStaff = () =>
   useQuery({
-    queryKey: ['staff'],
+    queryKey: ['staff', activeStaffCompanyKey()],
     queryFn: async (): Promise<StaffRow[]> => {
       const res = await authedFetch<{ staff: StaffRow[] }>('/staff');
       return res.staff ?? [];

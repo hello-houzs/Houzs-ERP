@@ -1035,7 +1035,13 @@ mfgSalesOrders.get('/', async (c) => {
      are all view-native (paid_total_centi/balance_centi_live are the view's
      computed cols; proceeded_at was added to the base table BEFORE the view
      was last recreated by the 2990-views script, so it IS present). */
-  const LIST_COLS = `${HEADER}, proceeded_at, paid_total_centi, balance_centi_live`;
+  /* customer_po_image_b64 is a base64 PO-slip image that ONLY the SO detail
+     page renders (SalesOrderDetail.tsx) — it is never a list-grid column.
+     Streaming it per row (up to 500 rows) bloated the SO-list payload for every
+     POS-origin SO that carries one. Strip it from the LIST projection only; the
+     detail select (~L2241) still reads full HEADER, so nothing the detail shows
+     changes. Dropping a column from a SELECT is always VIEW-TRAP safe. */
+  const LIST_COLS = `${HEADER.replace(/,\s*customer_po_image_b64/, '')}, proceeded_at, paid_total_centi, balance_centi_live`;
 
   /* Opt-in server-side pagination + search + sort + status-counts.
      WHY: keep this endpoint flat as the SO table grows — the legacy path streams
@@ -1109,10 +1115,6 @@ mfgSalesOrders.get('/', async (c) => {
     const from = c.req.query('from'); if (from) q = q.gte('so_date', from);
     const to = c.req.query('to'); if (to) q = q.lte('so_date', to);
     q = q.range(page * pageSize, page * pageSize + pageSize - 1);
-    const res = await q;
-    data = res.data;
-    error = res.error;
-    total = res.count ?? (res.data?.length ?? 0);
 
     /* Status counts over the SAME scope + company filters but WITHOUT the status
        filter, search, or pagination. Cheap `head`-only counts against the base
@@ -1122,18 +1124,6 @@ mfgSalesOrders.get('/', async (c) => {
       if (scopeIds) cq = cq.in('salesperson_id', scopeIds);
       cq = scopeToCompany(cq, c);
       return cq;
-    };
-    const [allC, draftC, confirmedC, cancelledC] = await Promise.all([
-      countBase(),
-      countBase().eq('status', 'DRAFT'),
-      countBase().eq('status', 'CONFIRMED'),
-      countBase().eq('status', 'CANCELLED'),
-    ]);
-    statusCounts = {
-      all: allC.count ?? 0,
-      draft: draftC.count ?? 0,
-      confirmed: confirmedC.count ?? 0,
-      cancelled: cancelledC.count ?? 0,
     };
 
     /* Full-set money KPIs — sum local_total_centi / balance_centi_live /
@@ -1154,7 +1144,7 @@ mfgSalesOrders.get('/', async (c) => {
        this select stays VIEW-TRAP safe (see backend/docs/scm-view-trap-coe.md);
        `balance_centi` is kept in the select only as the absent-view fallback,
        mirroring delivery-planning's. */
-    const moneyRes = await paginateAll<{ local_total_centi: number | null; balance_centi: number | null; balance_centi_live: number | null; paid_total_centi: number | null }>((mfrom, mto) => {
+    const moneyProm = paginateAll<{ local_total_centi: number | null; balance_centi: number | null; balance_centi_live: number | null; paid_total_centi: number | null }>((mfrom, mto) => {
       let moneyQ = sb
         .from('mfg_sales_orders_with_payment_totals')
         .select('local_total_centi, balance_centi, balance_centi_live, paid_total_centi');
@@ -1169,6 +1159,30 @@ mfgSalesOrders.get('/', async (c) => {
       if (to) moneyQ = moneyQ.lte('so_date', to);
       return moneyQ.range(mfrom, mto);
     });
+
+    /* One concurrent wave. The page rows, the four status counts and the
+       full-set money KPIs are mutually independent — each keys off scopeIds +
+       the same filter params, none reads the page result — yet they were paying
+       three sequential DB round-trips. Fire them together; only the per-doc
+       enrichment below actually needs the page rows, so it still follows. */
+    const [res, allC, draftC, confirmedC, cancelledC, moneyRes] = await Promise.all([
+      q,
+      countBase(),
+      countBase().eq('status', 'DRAFT'),
+      countBase().eq('status', 'CONFIRMED'),
+      countBase().eq('status', 'CANCELLED'),
+      moneyProm,
+    ]);
+    data = res.data;
+    error = res.error;
+    total = res.count ?? (res.data?.length ?? 0);
+    statusCounts = {
+      all: allC.count ?? 0,
+      draft: draftC.count ?? 0,
+      confirmed: confirmedC.count ?? 0,
+      cancelled: cancelledC.count ?? 0,
+    };
+
     if (moneyRes.error) return c.json({ error: 'load_failed', reason: moneyRes.error.message }, 500);
     let revenueCenti = 0, outstandingCenti = 0, paidCenti = 0;
     for (const m of (moneyRes.data ?? [])) {
