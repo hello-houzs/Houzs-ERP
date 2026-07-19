@@ -27,19 +27,28 @@ const MAX_PAGES = 50;
 
 type PageResult<T> = { data: T[] | null; error: { message: string; code?: string } | null };
 
+/* `truncated` is true only when the MAX_PAGES ceiling was reached with a full
+   final page — i.e. there was more and we stopped. It exists so the ceiling
+   cannot repeat, one level up, the exact silent-truncation bug this helper was
+   written to fix: a caller that must have the complete set (a CSV export, a
+   PDF lookup map) can now tell the difference between "that is all of them"
+   and "that is the first 50,000". Optional in the return type so the ~40
+   existing `const { data, error } = await paginateAll(...)` call sites keep
+   compiling untouched. */
 export async function paginateAll<T = Record<string, unknown>>(
   makeQuery: (from: number, to: number) => PromiseLike<PageResult<T>>,
-): Promise<PageResult<T>> {
+): Promise<PageResult<T> & { truncated: boolean }> {
   const all: T[] = [];
   for (let page = 0; page < MAX_PAGES; page++) {
     const from = page * PAGE;
     const { data, error } = await makeQuery(from, from + PAGE - 1);
-    if (error) return { data: null, error };
+    if (error) return { data: null, error, truncated: false };
     const rows = data ?? [];
     all.push(...rows);
-    if (rows.length < PAGE) break; // short page → last page
+    if (rows.length < PAGE) return { data: all, error: null, truncated: false };
   }
-  return { data: all, error: null };
+  // Fell out of the loop on MAX_PAGES with every page full — there is more.
+  return { data: all, error: null, truncated: true };
 }
 
 // chunkIn — split a code list into ≤size batches so a `.in(col, codes)` filter

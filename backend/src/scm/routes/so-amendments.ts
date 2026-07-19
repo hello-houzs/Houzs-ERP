@@ -25,6 +25,7 @@ import { applySoAmendment, reviseBoundPo, ReceivedFloorError } from '../lib/so-r
 import { hasHouzsPerm, canViewAllSales, canWriteScmConfig } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit } from '../lib/so-audit';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { scopeToCompany, isMirroredDocNo, MIRRORED_SO_READONLY, activeCompanyId } from '../lib/companyScope';
 import {
   enqueueAmendmentCommand,
@@ -192,30 +193,77 @@ async function dispatchMirroredCommand(
    bound SO falls in the caller's own+downline sales scope — the SAME
    self+downline tiering the SO list/detail uses. View-all callers (directors /
    office / `*`) are unrestricted (resolveSalesScopeIds → null). */
+const AMENDMENT_LIST_COLS =
+  'id, so_doc_no, amendment_no, status, reason, requested_by, created_at, updated_at';
+
 soAmendments.get('/', async (c) => {
   const sb = c.get('supabase');
-  // scopeToCompany: isolate the list to the active company (mig 0080 company_id);
-  // no-op pre-activation so single-company Houzs is unchanged.
-  const { data, error } = await scopeToCompany(sb.from('so_amendments')
-    .select('id, so_doc_no, amendment_no, status, reason, requested_by, created_at, updated_at'), c)
-    .order('created_at', { ascending: false })
-    .limit(500);
-  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-
-  let rows = (data ?? []) as Array<{ so_doc_no?: string | null }>;
   const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c));
-  if (scopeIds && rows.length > 0) {
-    // Resolve which of the listed amendments' SOs the caller may see — a single
-    // bounded query over the ≤500 doc_nos on the page (salesperson_id ∈ scope).
-    const docNos = [...new Set(rows.map((r) => r.so_doc_no).filter((x): x is string => !!x))];
-    const { data: soRows } = await scopeToCompany(sb.from('mfg_sales_orders')
-      .select('doc_no')
-      .in('doc_no', docNos)
-      .in('salesperson_id', scopeIds), c);
-    const allowed = new Set(((soRows ?? []) as Array<{ doc_no: string }>).map((r) => r.doc_no));
-    rows = rows.filter((r) => r.so_doc_no != null && allowed.has(r.so_doc_no));
+
+  /* ORDER OF OPERATIONS — this is the whole point of the rewrite.
+     Until 2026-07 this read the newest 500 amendments company-wide and THEN
+     dropped the ones outside the caller's sales scope. Both halves were wrong:
+
+     • The scope filter ran AFTER the cap, so a salesperson saw only whichever
+       of their amendments happened to fall in the newest 500 raised by ANYONE.
+       Once 500 amendments existed company-wide since a rep's last one, that rep
+       opened the page and saw an empty queue — not an error, not a truncation
+       notice, just "no amendments". Their pending requests were invisible.
+     • `.limit(500)` truncated silently for view-all callers too. It is also not
+       what the frontend believes it is getting: both consumers (the desktop
+       Amendments DataGrid and MobileAmendments) filter by status, count rows,
+       search and EXPORT client-side over whatever array arrives, so a short
+       array becomes a confidently wrong count and a short export.
+
+     The filter now runs INSIDE the query, so the caller's own amendments are
+     what gets read, and the read is complete rather than capped. */
+  let rows: Array<Record<string, unknown>>;
+  let truncated = false;
+
+  if (scopeIds) {
+    /* Scoped caller (rep / team lead): resolve their own+downline SO doc_nos
+       first, then read the amendments bound to those SOs. chunkIn keeps the IN
+       list under PostgREST's length limit and pages each chunk, so neither the
+       rep's SO count nor their amendment count can silently cut the list. */
+    const { data: soRows, error: soErr, truncated: soTrunc } = await paginateAll<{ doc_no: string }>(
+      (from, to) => scopeToCompany(sb.from('mfg_sales_orders').select('doc_no'), c)
+        .in('salesperson_id', scopeIds)
+        .range(from, to),
+    );
+    if (soErr) return c.json({ error: 'load_failed', reason: soErr.message }, 500);
+    const docNos = [...new Set((soRows ?? []).map((r) => r.doc_no).filter(Boolean))];
+    if (docNos.length === 0) return c.json({ amendments: [], truncated: false });
+
+    const { data: amdRows, error: amdErr } = await chunkIn<Record<string, unknown>>(
+      docNos,
+      (batch, from, to) => scopeToCompany(sb.from('so_amendments').select(AMENDMENT_LIST_COLS), c)
+        .in('so_doc_no', batch)
+        .order('created_at', { ascending: false })
+        .range(from, to),
+    );
+    if (amdErr) return c.json({ error: 'load_failed', reason: amdErr.message }, 500);
+    /* chunkIn merges per-batch results, so the global ordering is lost — re-sort
+       newest-first to match the view-all branch and what the UI expects. */
+    rows = amdRows.sort((a, b) =>
+      String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+    truncated = soTrunc;
+  } else {
+    // View-all caller (director / office / `*`): the whole company's queue.
+    const res = await paginateAll<Record<string, unknown>>(
+      (from, to) => scopeToCompany(sb.from('so_amendments').select(AMENDMENT_LIST_COLS), c)
+        .order('created_at', { ascending: false })
+        .range(from, to),
+    );
+    if (res.error) return c.json({ error: 'load_failed', reason: res.error.message }, 500);
+    rows = res.data ?? [];
+    truncated = res.truncated;
   }
-  return c.json({ amendments: rows });
+
+  /* `truncated` is the honest replacement for the silent `.limit(500)`: it is
+     false in every realistic case and true only past paginateAll's 50k ceiling,
+     at which point the UI can say so rather than showing a short list as if it
+     were the whole queue. */
+  return c.json({ amendments: rows, truncated });
 });
 
 /* ── GET /command-diag — the owner's dry-run for the write-back channel ─────

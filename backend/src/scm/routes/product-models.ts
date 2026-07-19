@@ -26,6 +26,7 @@ import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import { findModelUsage } from '../lib/sku-usage';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { activeCompanyId, stampCompany, scopeToCompany } from '../lib/companyScope';
 import { canWriteScmConfig, canViewScmProductCost } from '../lib/houzs-perms';
 import { PRODUCT_FINANCE_KEYS } from '../lib/finance-keys';
@@ -156,11 +157,23 @@ productModels.get('/', async (c) => {
   const supabase = c.get('supabase');
   const category = c.req.query('category');
 
-  let q = scopeToCompany(supabase.from('product_models').select(COLS), c).order('category').order('model_code');
-  if (category && (CATEGORIES as readonly string[]).includes(category)) {
-    q = q.eq('category', category);
-  }
-  const { data, error } = await q;
+  /* Complete set, not a page. Every consumer resolves BY LOOKUP into this
+     array rather than paging it: ModularAssignSupplierDialog does
+     `models.find(m => m.id === modelId)`, SupplierDetail's model picker filters
+     client-side (its own comment asserts "< a few hundred Models"), and
+     useBrandingPool derives the Branding datalist from the distinct values.
+     A short list makes a model unselectable with no error shown.
+     PostgREST caps at 1000 rows silently regardless of `.limit()`, so the plain
+     `await q` was a truncation waiting on catalogue growth — the same bug
+     mfg-products.ts already carries the paginateAll fix for. */
+  const { data, error } = await paginateAll((from, to) => {
+    let q = scopeToCompany(supabase.from('product_models').select(COLS), c)
+      .order('category').order('model_code');
+    if (category && (CATEGORIES as readonly string[]).includes(category)) {
+      q = q.eq('category', category);
+    }
+    return q.range(from, to);
+  });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   const rows = (data ?? []) as Array<Record<string, unknown> & { id: string }>;
 
@@ -173,12 +186,24 @@ productModels.get('/', async (c) => {
   // a single id column is cheaper than a per-model count roundtrip.
   const counts = new Map<string, number>();
   if (rows.length > 0) {
-    let cq = supabase.from('mfg_products').select('model_id').not('model_id', 'is', null);
-    // Scope to the models we're returning so a category filter doesn't pull
-    // the whole table (and so the count query stays bounded).
-    cq = cq.in('model_id', rows.map((m) => m.id));
-    const { data: skuRows } = await cq;
-    for (const r of (skuRows ?? []) as Array<{ model_id: string | null }>) {
+    /* chunkIn, not a bare `.in(...)`: this tallies ONE row per SKU, and the SKU
+       master is already 1141 rows — comfortably past PostgREST's 1000-row
+       response cap, so a plain read returned a short list and every model past
+       the cut showed "0 SKUs", which is the precise orphan-model signal this
+       count exists to give. chunkIn also keeps the IN list under the length
+       limit now that `rows` is no longer capped at 1000 itself. */
+    const { data: skuRows, error: countErr } = await chunkIn(
+      rows.map((m) => m.id),
+      (batch, from, to) => supabase.from('mfg_products')
+        .select('model_id')
+        .not('model_id', 'is', null)
+        .in('model_id', batch)
+        .range(from, to),
+    );
+    /* A failed count must not read as "every model is empty" — that is the
+       "0 SKUs" orphan warning fired at every row at once. Surface it. */
+    if (countErr) return c.json({ error: 'load_failed', reason: countErr.message }, 500);
+    for (const r of skuRows as Array<{ model_id: string | null }>) {
       if (r.model_id) counts.set(r.model_id, (counts.get(r.model_id) ?? 0) + 1);
     }
   }

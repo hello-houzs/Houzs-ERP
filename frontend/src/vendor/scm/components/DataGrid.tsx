@@ -43,6 +43,42 @@ import styles from './DataGrid.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
 
+/* One open inline-expansion row. Split out purely so its height can be
+   OBSERVED rather than assumed: the caller renders arbitrary markup in there
+   (a nested table, a photo strip, an async-loading panel), and the virtualizer
+   needs the real height to reserve the right scroll space. A ResizeObserver
+   rather than a one-shot measure, because expansion content commonly grows
+   after mount when its own query resolves. */
+function ExpansionRow({
+  expansionKey,
+  colSpan,
+  onMeasure,
+  children,
+}: {
+  expansionKey: string;
+  colSpan: number;
+  onMeasure: (key: string, height: number) => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLTableRowElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    onMeasure(expansionKey, el.offsetHeight);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => onMeasure(expansionKey, el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [expansionKey, onMeasure]);
+  return (
+    <tr ref={ref} className={styles.tr} style={{ background: 'var(--c-cream)' }}>
+      <td colSpan={colSpan} style={{ padding: 0, borderTop: '1px solid var(--line)' }}>
+        {children}
+      </td>
+    </tr>
+  );
+}
+
 export type DataGridColumn<T> = {
   key: string;
   label: string;
@@ -995,19 +1031,26 @@ function DataGridInner<T>({
   const totalCols = visibleColumns.length;
   const groupedCount = layout.groupBy.length;
 
-  /* Windowed rendering for large FLAT lists only. Skipped when grouped, when
-     the list is small, or while ≥1 row is actually expanded — an open expansion
-     panel is variable-height and the virtualizer sizes every row uniformly, so
-     its spacers would mis-reserve the scroll height.
-     The gate keys off `expandedRows`, NOT off the `expandable` prop: a grid that
-     merely OFFERS a chevron still renders uniform rows while collapsed, which is
-     how it sits nearly all the time (Inventory Balances = ~1100 SKUs). Keying off
-     the prop dropped every such grid to a full unwindowed render permanently. */
+  /* Windowed rendering for large FLAT lists only. Skipped when grouped and when
+     the list is small.
+     The gate keys off neither `expandedRows` nor the `expandable` prop: a grid
+     that merely OFFERS a chevron renders uniform rows while collapsed, which is
+     how it sits nearly all the time (Inventory Balances = ~1100 SKUs), and an
+     OPEN expansion is now just a taller row (see expansionHeights below).
+     Until 2026-07 an open expansion switched windowing off wholesale — one
+     chevron click on Inventory Balances put ~1100 SKUs into the DOM. The
+     virtualizer sized every row uniformly, so a variable-height panel made the
+     spacers mis-reserve the scroll height; the shim now takes a per-index size,
+     which removes the reason for the gate. */
   const scrollRef = useRef<HTMLDivElement>(null);
   const tbodyRef = useRef<HTMLTableSectionElement>(null);
   const VIRTUAL_THRESHOLD = 25;
   const ROW_HEIGHT_ESTIMATE = 30;
-  const canVirtualize = !isLoading && !embedded && groupedCount === 0 && expandedRows.size === 0 && renderList.length > VIRTUAL_THRESHOLD;
+  /* Height reserved for an expansion panel that has not been measured yet —
+     one frame at most, since the panel is measured in a layout effect on the
+     same commit that opens it. */
+  const EXPANSION_HEIGHT_ESTIMATE = 220;
+  const canVirtualize = !isLoading && !embedded && groupedCount === 0 && renderList.length > VIRTUAL_THRESHOLD;
   /* Row height is measured off a real row rather than assumed (same reason as
      components/DataTable: assumed heights let the spacers drift). Here it also
      carries the expand/collapse flip: an exact height makes the windowed and the
@@ -1022,11 +1065,56 @@ function DataGridInner<T>({
     const h = tbodyRef.current?.querySelector<HTMLElement>('tr[data-vrow]')?.offsetHeight ?? 0;
     if (h > 0) { rowHeightMeasured.current = true; setRowHeight(h); }
   });
+
+  /* Measured height of each OPEN expansion panel, keyed by expansion id. An
+     expansion renders arbitrary caller markup (a nested table, a photo strip),
+     so its height cannot be assumed the way a data row's can. Keyed by
+     expansion id rather than index so it survives sorting and filtering.
+     Only open panels are tracked — the map is emptied as rows collapse, so it
+     stays the size of the handful of panels actually open. */
+  const [expansionHeights, setExpansionHeights] = useState<Record<string, number>>({});
+  const recordExpansionHeight = useCallback((key: string, h: number) => {
+    setExpansionHeights((prev) => {
+      // Sub-pixel churn would re-render forever; only commit real changes.
+      if (prev[key] != null && Math.abs(prev[key]! - h) < 1) return prev;
+      return { ...prev, [key]: h };
+    });
+  }, []);
+  // Drop measurements for panels that have closed so the map cannot grow.
+  useEffect(() => {
+    setExpansionHeights((prev) => {
+      const keys = Object.keys(prev);
+      if (keys.every((k) => expandedRows.has(k))) return prev;
+      const next: Record<string, number> = {};
+      for (const k of keys) if (expandedRows.has(k)) next[k] = prev[k]!;
+      return next;
+    });
+  }, [expandedRows]);
+
+  /* Per-index size: a plain row is rowHeight; an expanded row is rowHeight plus
+     its panel. Group banners never reach here (canVirtualize requires
+     groupedCount === 0) but are handled for safety. */
+  const sizeAt = useCallback((index: number) => {
+    const item = renderList[index];
+    if (!item || item.kind === 'group') return rowHeight;
+    const key = expandable ? expansionId(item.row) : null;
+    if (key == null || !expandedRows.has(key)) return rowHeight;
+    return rowHeight + (expansionHeights[key] ?? EXPANSION_HEIGHT_ESTIMATE);
+  }, [renderList, rowHeight, expandable, expansionId, expandedRows, expansionHeights]);
+
+  /* The shim rebuilds its prefix-sum offset table only when this changes —
+     `sizeAt` is a fresh closure every render and cannot be the trigger. */
+  const sizeVersion = useMemo(
+    () => `${rowHeight}|${[...expandedRows].sort().map((k) => `${k}:${Math.round(expansionHeights[k] ?? -1)}`).join(',')}`,
+    [rowHeight, expandedRows, expansionHeights],
+  );
+
   const rowVirtualizer = useVirtualizer({
     count: canVirtualize ? renderList.length : 0,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => rowHeight,
+    estimateSize: sizeAt,
     overscan: 14,
+    sizeVersion,
   });
   const virtualItems = canVirtualize ? rowVirtualizer.getVirtualItems() : [];
   const padTop = virtualItems.length ? virtualItems[0]!.start : 0;
@@ -1133,12 +1221,14 @@ function DataGridInner<T>({
             );
           })}
         </tr>
-        {isExpanded && expandable && (
-          <tr className={styles.tr} style={{ background: 'var(--c-cream)' }}>
-            <td colSpan={visibleColumns.length} style={{ padding: 0, borderTop: '1px solid var(--line)' }}>
-              {expandable.renderExpansion(row)}
-            </td>
-          </tr>
+        {isExpanded && expandable && expandKey && (
+          <ExpansionRow
+            expansionKey={expandKey}
+            colSpan={visibleColumns.length}
+            onMeasure={recordExpansionHeight}
+          >
+            {expandable.renderExpansion(row)}
+          </ExpansionRow>
         )}
       </Fragment>
     );

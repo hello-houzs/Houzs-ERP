@@ -24,6 +24,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
+import { paginateAll } from '../lib/paginate-all';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
@@ -252,36 +253,53 @@ fabricTracking.delete('/:id', async (c) => {
   return c.body(null, 204);
 });
 
+/* Callers of this endpoint need the COMPLETE set, not a page: the Fabric
+   Converter's CSV export deliberately re-reads it unfiltered and the file it
+   writes can be re-imported, and supplier-doc-data.ts builds the
+   fabric_code -> supplier_code / description lookup maps that every purchasing
+   and sales PDF prints from. A missing row there is a blank field on a document
+   handed to a supplier or a customer, with no error anywhere.
+
+   PostgREST caps a response at 1000 rows whether or not a `.limit()` is set and
+   reports no truncation, so the plain `await q` this used to be was already
+   silently short at 1001 fabrics. `paginateAll` pages with `.range()` until a
+   short page arrives — the same fix mfg-products.ts carries for the 1141-row
+   SKU master, which is how that cap was found. */
 fabricTracking.get('/', async (c) => {
   const category = c.req.query('category');
   const search = c.req.query('search');
   const supabase = c.get('supabase');
 
-  let q = scopeToCompany(
-    supabase
-      .from('fabric_trackings')
-      .select(
-        'id, fabric_code, fabric_description, fabric_category, price_tier, ' +
-          'sofa_price_tier, bedframe_price_tier, price_centi, soh_centi, ' +
-          'po_outstanding_centi, last_month_usage_centi, one_week_usage_centi, ' +
-          'two_weeks_usage_centi, one_month_usage_centi, shortage_centi, ' +
-          'reorder_point_centi, supplier, supplier_code, lead_time_days, series, is_active',
-      ),
-    c,
-  )
-    .order('fabric_code', { ascending: true });
+  const { data, error, truncated } = await paginateAll((from, to) => {
+    let q = scopeToCompany(
+      supabase
+        .from('fabric_trackings')
+        .select(
+          'id, fabric_code, fabric_description, fabric_category, price_tier, ' +
+            'sofa_price_tier, bedframe_price_tier, price_centi, soh_centi, ' +
+            'po_outstanding_centi, last_month_usage_centi, one_week_usage_centi, ' +
+            'two_weeks_usage_centi, one_month_usage_centi, shortage_centi, ' +
+            'reorder_point_centi, supplier, supplier_code, lead_time_days, series, is_active',
+        ),
+      c,
+    )
+      .order('fabric_code', { ascending: true });
 
-  if (category && VALID_CATEGORIES.has(category)) {
-    q = q.eq('fabric_category', category);
-  }
-  if (search) {
-    const s = escapeForOr(search);
-    if (s) q = q.or(`fabric_code.ilike.%${s}%,fabric_description.ilike.%${s}%`);
-  }
+    if (category && VALID_CATEGORIES.has(category)) {
+      q = q.eq('fabric_category', category);
+    }
+    if (search) {
+      const s = escapeForOr(search);
+      if (s) q = q.or(`fabric_code.ilike.%${s}%,fabric_description.ilike.%${s}%`);
+    }
+    return q.range(from, to);
+  });
 
-  const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ fabrics: data ?? [] });
+  /* `truncated` only fires past paginateAll's 50k-page ceiling. Reported rather
+     than swallowed so a caller that must have the whole set (the CSV export,
+     the PDF lookup maps) can say so instead of quietly writing a short file. */
+  return c.json({ fabrics: data ?? [], truncated });
 });
 
 /* Migration 0167 — ACTIVE toggle from the Fabric Converter table (owner spec
