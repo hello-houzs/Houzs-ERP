@@ -6,6 +6,7 @@ import {
   computeShowroomCommission,
   lineKpiCenti,
   soEarnsCommission,
+  firingFlags,
   unitKpiCenti,
   unitKpiExcludedCenti,
   type CommissionConfig,
@@ -164,6 +165,7 @@ describe('item-KPI as a goods exclusion (unitKpiCenti / unitKpiExcludedCenti)', 
   const sofa: KpiUnit = {
     itemCodes: ['ANNSA-3S'],
     qty: 1,
+    category: 'SOFA',
     fabricId: 'fab-D',
     specialCodes: [],
     lineTotalCenti: 312_500, // RM 3,125 (base + fabric Δ)
@@ -184,6 +186,7 @@ describe('item-KPI as a goods exclusion (unitKpiCenti / unitKpiExcludedCenti)', 
     const splitSofa: KpiUnit = {
       itemCodes: ['ANNSA-1A(LHF)', 'ANNSA-CNR', 'ANNSA-1B(RHF)'],
       qty: 1,
+      category: 'SOFA',
       fabricId: 'fab-D',
       specialCodes: [],
       lineTotalCenti: 800_000, // RM 8,000 build total
@@ -203,7 +206,7 @@ describe('item-KPI as a goods exclusion (unitKpiCenti / unitKpiExcludedCenti)', 
   it('product flag excludes the WHOLE unit total (the product is the KPI item)', () => {
     const flags: ItemKpiFlag[] = [{ flagType: 'product', ref: 'MAT-001', bonusCenti: 8_000 }];
     const mattress: KpiUnit = {
-      itemCodes: ['MAT-001'], qty: 1, fabricId: null, specialCodes: [],
+      itemCodes: ['MAT-001'], qty: 1, category: null, fabricId: null, specialCodes: [],
       lineTotalCenti: 150_000, fabricAddonUnitCenti: 0, specialSurchargeUnitCenti: 0,
     };
     expect(unitKpiCenti(mattress, flags)).toBe(8_000);
@@ -213,7 +216,7 @@ describe('item-KPI as a goods exclusion (unitKpiCenti / unitKpiExcludedCenti)', 
   it('special flag excludes the special-order surcharge (qty × per-item)', () => {
     const flags: ItemKpiFlag[] = [{ flagType: 'special', ref: 'no_side_panel', bonusCenti: 2_000 }];
     const unit: KpiUnit = {
-      itemCodes: ['SOF-9'], qty: 2, fabricId: null, specialCodes: ['no_side_panel'],
+      itemCodes: ['SOF-9'], qty: 2, category: null, fabricId: null, specialCodes: ['no_side_panel'],
       lineTotalCenti: 400_000, fabricAddonUnitCenti: 0, specialSurchargeUnitCenti: 30_000,
     };
     expect(unitKpiCenti(unit, flags)).toBe(4_000); // 2 × RM 20
@@ -222,7 +225,7 @@ describe('item-KPI as a goods exclusion (unitKpiCenti / unitKpiExcludedCenti)', 
 
   it('exclusion is capped at the unit total (never drives goods negative)', () => {
     const tiny: KpiUnit = {
-      itemCodes: ['BF-1'], qty: 1, fabricId: 'fab-D', specialCodes: [],
+      itemCodes: ['BF-1'], qty: 1, category: null, fabricId: 'fab-D', specialCodes: [],
       lineTotalCenti: 9_000, fabricAddonUnitCenti: 12_500, specialSurchargeUnitCenti: 0,
     };
     expect(unitKpiExcludedCenti(tiny, fabricFlag)).toBe(9_000); // capped, not 12,500
@@ -230,11 +233,117 @@ describe('item-KPI as a goods exclusion (unitKpiCenti / unitKpiExcludedCenti)', 
 
   it('no exclusion and no bonus when no flag fires', () => {
     const plain: KpiUnit = {
-      itemCodes: ['ANNSA-3S'], qty: 1, fabricId: 'fab-OTHER', specialCodes: [],
+      itemCodes: ['ANNSA-3S'], qty: 1, category: null, fabricId: 'fab-OTHER', specialCodes: [],
       lineTotalCenti: 300_000, fabricAddonUnitCenti: 12_500, specialSurchargeUnitCenti: 0,
     };
     expect(unitKpiCenti(plain, fabricFlag)).toBe(0);
     expect(unitKpiExcludedCenti(plain, fabricFlag)).toBe(0); // non-flagged fabric Δ stays goods
+  });
+});
+
+// ── category rules + the product-beats-category precedence ───────────────────
+// Owner 2026-07-18: a product rule may name ONE product OR a whole category, and
+// commission is read "by item" — one item pays once. These tests pin the ONE
+// place those two statements could contradict each other: an item that is both
+// named individually AND covered by its category.
+describe('category item-KPI rules', () => {
+  const catFlag: ItemKpiFlag[] = [{ flagType: 'category', ref: 'SOFA', bonusCenti: 3_000 }];
+
+  const sofaUnit: KpiUnit = {
+    itemCodes: ['ANNSA-3S'], qty: 1, category: 'SOFA', fabricId: null, specialCodes: [],
+    lineTotalCenti: 300_000, fabricAddonUnitCenti: 0, specialSurchargeUnitCenti: 0,
+  };
+
+  it('fires on every item in the category, and excludes the whole unit', () => {
+    expect(unitKpiCenti(sofaUnit, catFlag)).toBe(3_000);
+    // A category rule targets the ITEM, so like a product rule it replaces the
+    // percentage commission on the whole unit rather than trimming an add-on.
+    expect(unitKpiExcludedCenti(sofaUnit, catFlag)).toBe(300_000);
+  });
+
+  it('does not fire on an item in a different category', () => {
+    const mattress = { ...sofaUnit, itemCodes: ['MAT-001'], category: 'MATTRESS' };
+    expect(unitKpiCenti(mattress, catFlag)).toBe(0);
+    expect(unitKpiExcludedCenti(mattress, catFlag)).toBe(0);
+  });
+
+  it('does not fire when the category could not be resolved (null is unpaid, not guessed)', () => {
+    const unknown = { ...sofaUnit, category: null };
+    expect(unitKpiCenti(unknown, catFlag)).toBe(0);
+    expect(unitKpiExcludedCenti(unknown, catFlag)).toBe(0);
+  });
+
+  it('qty multiplies the category bonus', () => {
+    expect(unitKpiCenti({ ...sofaUnit, qty: 4 }, catFlag)).toBe(12_000);
+  });
+
+  // THE MONEY CASE: both rules cover this one sofa.
+  it('a product rule BEATS a category rule on the same item — paid ONCE, at the product rate', () => {
+    const both: ItemKpiFlag[] = [
+      { flagType: 'category', ref: 'SOFA', bonusCenti: 3_000 },
+      { flagType: 'product', ref: 'ANNSA-3S', bonusCenti: 8_000 },
+    ];
+    // NOT 11,000 (both) and NOT 3,000 (category) — the specific rule wins.
+    expect(unitKpiCenti(sofaUnit, both)).toBe(8_000);
+    // And the unit is excluded from goods exactly ONCE, not twice.
+    expect(unitKpiExcludedCenti(sofaUnit, both)).toBe(300_000);
+    expect(firingFlags(sofaUnit, both).map((f) => f.flagType)).toEqual(['product']);
+  });
+
+  it('the category rule still pays for a sibling the product rule does not name', () => {
+    const both: ItemKpiFlag[] = [
+      { flagType: 'category', ref: 'SOFA', bonusCenti: 3_000 },
+      { flagType: 'product', ref: 'ANNSA-3S', bonusCenti: 8_000 },
+    ];
+    const otherSofa = { ...sofaUnit, itemCodes: ['BALI-2S'] };
+    expect(unitKpiCenti(otherSofa, both)).toBe(3_000);
+  });
+
+  it('a product rule on a DIFFERENT item does not suppress this item\'s category rule', () => {
+    const both: ItemKpiFlag[] = [
+      { flagType: 'category', ref: 'SOFA', bonusCenti: 3_000 },
+      { flagType: 'product', ref: 'SOMETHING-ELSE', bonusCenti: 8_000 },
+    ];
+    expect(unitKpiCenti(sofaUnit, both)).toBe(3_000);
+  });
+
+  // Suppression is product-vs-category ONLY: fabric and special target a
+  // different dimension of the purchase and keep stacking as they always did.
+  it('a category rule still stacks with a fabric rule (different dimensions)', () => {
+    const mixed: ItemKpiFlag[] = [
+      { flagType: 'category', ref: 'SOFA', bonusCenti: 3_000 },
+      { flagType: 'fabric', ref: 'fab-D', bonusCenti: 5_000 },
+    ];
+    const u = { ...sofaUnit, fabricId: 'fab-D', fabricAddonUnitCenti: 12_500 };
+    expect(unitKpiCenti(u, mixed)).toBe(8_000);
+    // Whole unit already excluded by the category rule; the fabric Δ is inside
+    // it, so the exclusion is the unit total and is still capped there.
+    expect(unitKpiExcludedCenti(u, mixed)).toBe(300_000);
+  });
+
+  it('a split build resolves its category once and pays once', () => {
+    const splitSofa: KpiUnit = {
+      itemCodes: ['ANNSA-1A(LHF)', 'ANNSA-CNR', 'ANNSA-1B(RHF)'],
+      qty: 1, category: 'SOFA', fabricId: null, specialCodes: [],
+      lineTotalCenti: 800_000, fabricAddonUnitCenti: 0, specialSurchargeUnitCenti: 0,
+    };
+    expect(unitKpiCenti(splitSofa, catFlag)).toBe(3_000); // not 3× the modules
+    expect(unitKpiExcludedCenti(splitSofa, catFlag)).toBe(800_000);
+  });
+
+  // Multi-select in HR Settings creates N DISCRETE one-item rules (owner
+  // 2026-07-18: "fabric 只能选一个 item"), never one rule holding a list. Each
+  // saved rule targets exactly one thing, and a unit has exactly one fabric
+  // series — so selecting three fabrics can never pay one item three times.
+  it('N fabric rules from one multi-select: an item matches at most one of them', () => {
+    const threeFabrics: ItemKpiFlag[] = [
+      { flagType: 'fabric', ref: 'BF', bonusCenti: 5_000 },
+      { flagType: 'fabric', ref: 'CG', bonusCenti: 6_000 },
+      { flagType: 'fabric', ref: 'DK', bonusCenti: 7_000 },
+    ];
+    const u = { ...sofaUnit, fabricId: 'CG', fabricAddonUnitCenti: 12_500 };
+    expect(firingFlags(u, threeFabrics)).toHaveLength(1);
+    expect(unitKpiCenti(u, threeFabrics)).toBe(6_000); // only CG, once
   });
 });
 

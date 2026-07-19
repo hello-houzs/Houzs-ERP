@@ -1,0 +1,41 @@
+-- 0147: item-KPI rules can target a whole product CATEGORY.
+--
+-- WHY
+--   Owner 2026-07-18: a bonus rule of type `product` must be able to name either
+--   ONE product or an entire category. `scm.hr_item_kpi` already stores the
+--   target as a polymorphic (flag_type, ref) pair, so the category case needs no
+--   new table and no new column — only a fourth member on the flag_type enum.
+--
+--   ref for the new member is an UPPERCASE `mfg_product_category` value ('SOFA',
+--   'BEDFRAME', 'ACCESSORY', 'MATTRESS', 'SERVICE'), matched against
+--   mfg_products.category via mfg_sales_order_items.item_code (kpi-units.ts).
+--   That is the same enum mfg-products.ts validates writes against; the HR
+--   picker is fed from the exported MFG_PRODUCT_CATEGORIES list so the two
+--   cannot drift. Deliberately NOT scm.categories.id — that is the lowercase POS
+--   catalogue slug ('sofa'), a DIFFERENT taxonomy from the one the SO line
+--   actually resolves to, and mixing them is a documented prod bug already
+--   (scm/routes/categories.ts:359 has to .toUpperCase() to bridge them).
+--
+-- PAYOUT IMPACT: NONE ON ITS OWN
+--   This adds a value nothing yet uses. No existing hr_item_kpi row changes
+--   flag_type, so every commission figure is byte-identical until someone
+--   deliberately creates a category rule in HR Settings. Where a category rule
+--   and a per-SKU product rule cover the SAME item, the PRODUCT rule wins and
+--   the category rule pays nothing — the precedence lives in
+--   scm/shared/hr-commission.ts (categorySuppressed) with the rest of the money
+--   arithmetic, not here, and is covered by tests.
+--
+-- SAFE TO REPLAY
+--   ADD VALUE IF NOT EXISTS is a no-op when the member is already there. PG
+--   permits ADD VALUE inside a transaction as long as the new value is not USED
+--   in the same transaction — this file only declares it, so it is safe under
+--   pg-migrate's transactional apply.
+--
+--   The enum may legitimately not exist at all: scm was applied out-of-band and
+--   0123 documents both worlds. Guarded so a schema without it is skipped rather
+--   than raising — a raise in migrations-pg blocks EVERY subsequent deploy.
+-- ----------------------------------------------------------------------------
+
+SET search_path = scm, public;
+
+DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='scm' AND t.typname='hr_item_kpi_type') THEN ALTER TYPE scm.hr_item_kpi_type ADD VALUE IF NOT EXISTS 'category'; END IF; END $$;

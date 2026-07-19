@@ -220,3 +220,103 @@ describe("nav — office and director are untouched by the rep leaf", () => {
     expect(desktopPaths(ctx)).not.toContain("/scm/amendments");
   });
 });
+
+/**
+ * Finance + HR lifted OUT of Supply Chain (owner 2026-07-18: "finance and HR is
+ * not under supply chain").
+ *
+ * A lift like this is exactly where nav refactors leak access: as an SCM child a
+ * group was gated on parent AND self (filterTab drops a hidden group's subtree
+ * unmapped), so moving it to the root SILENTLY REMOVES the parent's half of the
+ * condition. These tests pin that nothing widened.
+ */
+describe("nav — Finance / HR are top-level, not under Supply Chain", () => {
+  const admin = () => rep({ permissions: ["*"], position_name: "IT Admin", department_name: "IT Department" });
+
+  const topLevelLabels = (ctx: NavFilterCtx): string[] => {
+    const filterTab = makeNavFilter(ctx);
+    return NAV_TABS.map(filterTab)
+      .filter((t): t is NavTab => t !== null)
+      .map((t) => t.label);
+  };
+
+  it("both are ROOT entries for a user who can see everything", () => {
+    const labels = topLevelLabels(ctxFor(admin()));
+    expect(labels).toContain("Finance");
+    expect(labels).toContain("HR");
+  });
+
+  it("neither is a child of Supply Chain any more", () => {
+    const scm = NAV_TABS.find((t) => t.groupId === "scm");
+    const childLabels = (scm?.children ?? []).map((c) => c.label);
+    expect(childLabels).not.toContain("Finance");
+    expect(childLabels).not.toContain("HR");
+  });
+
+  it("every Finance and HR URL still resolves — a reorganisation, not a route change", () => {
+    const paths = desktopPaths(ctxFor(admin()));
+    for (const p of [
+      "/scm/accounting", "/scm/payment-vouchers", "/scm/outstanding",
+      "/scm/unbilled-deliveries", "/scm/currencies",
+      "/scm/hr/commission", "/scm/hr/settings",
+    ]) expect(paths).toContain(p);
+  });
+
+  /* NO WIDENING — Finance. Its own gate can only pass when the OLD parent's gate
+     would also have passed: the anyPerm lists are identical, and page-access is
+     hierarchical (a parent at "none" denies every child), so a granted
+     scm.finance.* implies scm.finance and scm — both listed in Supply Chain's
+     anyAccess. A user with NO SCM grant at all must still see nothing. */
+  it("Finance stays absent for a user with no SCM access at all", () => {
+    const ctx = ctxFor(rep({ position_name: "Storekeeper", department_name: "Operation Department" }));
+    expect(topLevelLabels(ctx)).not.toContain("Finance");
+    expect(desktopPaths(ctx)).not.toContain("/scm/accounting");
+  });
+
+  it("a Finance-only grant shows Finance and still no other SCM area", () => {
+    const ctx = ctxFor(
+      rep({ position_name: "Account Executive", department_name: "Management" }),
+      { scm: "view", "scm.finance": "view", "scm.finance.accounting": "view" },
+    );
+    const paths = desktopPaths(ctx);
+    expect(paths).toContain("/scm/accounting");
+    expect(paths).not.toContain("/scm/purchase-orders");
+    expect(paths).not.toContain("/scm/inventory");
+  });
+
+  /* HR is gated on its FLAT keys alone — deliberately no scm.access. That now
+     matches the routes, which carry anyPerm ["*","scm.hr.read","scm.hr.manage"]
+     and no ScmGuard (App.tsx). Holding neither key must still show nothing. */
+  it("HR stays absent without an HR permission, even with full SCM access", () => {
+    const ctx = ctxFor(
+      rep({ position_name: "Purchaser", department_name: "Operation Department" }),
+      { scm: "full", "scm.procurement": "full", "scm.procurement.po": "full" },
+    );
+    expect(topLevelLabels(ctx)).not.toContain("HR");
+    expect(desktopPaths(ctx)).not.toContain("/scm/hr/commission");
+  });
+
+  it("scm.hr.read alone shows Commission but NOT the HR Settings editor", () => {
+    const ctx = ctxFor(
+      rep({ permissions: ["scm.hr.read"], position_name: "HR Executive", department_name: "Management" }),
+    );
+    const paths = desktopPaths(ctx);
+    expect(paths).toContain("/scm/hr/commission");
+    expect(paths).not.toContain("/scm/hr/settings");
+  });
+
+  it("a non-director sales rep sees neither group (hideForSalesRep survives the lift)", () => {
+    const ctx = ctxFor(rep({ permissions: ["scm.hr.read"] }), { "scm.sales.orders": "edit" });
+    const labels = topLevelLabels(ctx);
+    expect(labels).not.toContain("Finance");
+    expect(labels).not.toContain("HR");
+  });
+
+  it("desktop and phone agree on both groups' leaves", () => {
+    const ctx = ctxFor(admin());
+    for (const p of ["/scm/accounting", "/scm/hr/commission", "/scm/hr/settings"]) {
+      expect(desktopPaths(ctx)).toContain(p);
+      expect(phoneAllows(ctx, p)).toBe(true);
+    }
+  });
+});

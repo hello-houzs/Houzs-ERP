@@ -549,58 +549,95 @@ export const NAV_TABS: NavTab[] = [
           { to: "/scm/stock-takes", label: "Stock Take", icon: ClipboardCheck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.stock_take"], hideForSalesRep: true },
         ],
       },
-      {
-        hideForSalesRep: true,
-        label: "Finance",
-        icon: BookOpen,
-        groupId: "scm-finance",
-        to: "/scm/finance",
-        anyPerm: ["*", "scm.access"],
-        anyAccess: ["scm.finance", "scm.finance.accounting", "scm.finance.outstanding"],
-        children: [
-          { to: "/scm/accounting", label: "Accounting", icon: BookOpen, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.accounting"] },
-          { to: "/scm/payment-vouchers", label: "Payment Vouchers", icon: Wallet, anyPerm: ["*", "scm.access", "scm.payment_voucher.create", "scm.payment_voucher.write", "scm.payment_voucher.post", "scm.payment_voucher.cancel"], anyAccess: ["scm.finance.accounting"] },
-          { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
-          // Delivered-but-not-billed, aged. Sits next to Outstanding and on the
-          // SAME area key: it is the money answer to the question Outstanding's
-          // DO tab asks with a header-status flag and no money column.
-          { to: "/scm/unbilled-deliveries", label: "Not Yet Billed", icon: HandCoins, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
-          // Fulfillment Costing — the three-way cost report (#786 moved cost off
-          // the document views to live only here). requireFinanceViewer keeps it
-          // director/finance-only, matching the backend canViewScmFinance gate and
-          // the FinanceCostingGuard route guard, so a Sales rep never sees it.
-          { to: "/scm/reports/fulfillment-costing", label: "Fulfillment Costing", icon: Scale, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.accounting", "scm.finance.outstanding"], requireFinanceViewer: true },
-          // Currencies master (Phase 1-A FX) — owner-maintained currency + rate
-          // table for GRN / PI / PV foreign-currency posting. Gated on the flat
-          // scm.currency.manage permission (Owner / IT Admin via *).
-          { to: "/scm/currencies", label: "Currencies", icon: DollarSign, anyPerm: ["*", "scm.currency.manage"] },
-        ],
-      },
-      {
-        hideForSalesRep: true,
-        label: "HR",
-        icon: Users,
-        groupId: "scm-hr",
-        // No /scm/hr hub page exists, so the group header lands on the report.
-        to: "/scm/hr/commission",
-        // FLAT keys only, deliberately no `scm.access` and no `anyAccess`: HR has
-        // no L2 page-access area, and /commission returns every colleague's pay.
-        // Riding the SCM umbrella here is exactly the mistake scm/index.ts warns
-        // about ("READ-ONLY IS NOT THE SAME AS SAFE").
-        //
-        // These are the two ENTRY keys. HR has four in total — scm.hr.close and
-        // scm.hr.reopen gate the payout approval actions and are checked on the
-        // Commission page itself (per-button), not here: they grant an action
-        // inside the module, never admittance to it. Neither is usable without
-        // scm.hr.read anyway, since the API refuses to show the period first.
-        anyPerm: ["*", "scm.hr.read", "scm.hr.manage"],
-        children: [
-          { to: "/scm/hr/commission", label: "Commission", icon: DollarSign, anyPerm: ["*", "scm.hr.read", "scm.hr.manage"] },
-          // Settings is an EDITOR — read-only holders are not shown a page whose
-          // every control the API would reject (2990 bounces them to the report).
-          { to: "/scm/hr/settings", label: "HR Settings", icon: SlidersHorizontal, anyPerm: ["*", "scm.hr.manage"] },
-        ],
-      },
+    ],
+  },
+
+  // ── Finance — LIFTED OUT of Supply Chain (owner 2026-07-18: "finance and HR
+  // is not under supply chain"). Nothing about the gate changed: the group keeps
+  // the SAME anyPerm / anyAccess / hideForSalesRep it carried as an SCM child,
+  // and every child keeps its own key and its URL. Only its position in the tree
+  // moved, so no route and no bookmark changes.
+  //
+  // WHY THIS DOES NOT WIDEN ACCESS (the thing a lift like this silently breaks):
+  // a hidden parent drops its whole subtree UNMAPPED (navFilter.filterTab), so
+  // as a child this group was gated on parent AND self. Removing the parent's
+  // half is only safe because the parent's condition was IMPLIED by this one:
+  //   · anyPerm was IDENTICAL on both (["*", "scm.access"]).
+  //   · page-access is hierarchical (services/pageAccess.ts: a parent at "none"
+  //     denies every child), so scm.finance.accounting / .outstanding can only be
+  //     non-none when scm.finance AND scm — BOTH listed in the old parent's
+  //     anyAccess — are non-none too.
+  // So every user who passes this group's own gate already passed Supply Chain's.
+  // Nobody gains a row. Do not add an anyAccess key here that is not a descendant
+  // of `scm`, or that reasoning stops holding.
+  {
+    section: "operations",
+    hideForSalesRep: true,
+    label: "Finance",
+    icon: BookOpen,
+    groupId: "scm-finance",
+    to: "/scm/finance",
+    anyPerm: ["*", "scm.access"],
+    anyAccess: ["scm.finance", "scm.finance.accounting", "scm.finance.outstanding"],
+    children: [
+      { to: "/scm/accounting", label: "Accounting", icon: BookOpen, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.accounting"] },
+      { to: "/scm/payment-vouchers", label: "Payment Vouchers", icon: Wallet, anyPerm: ["*", "scm.access", "scm.payment_voucher.create", "scm.payment_voucher.write", "scm.payment_voucher.post", "scm.payment_voucher.cancel"], anyAccess: ["scm.finance.accounting"] },
+      { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
+      // Delivered-but-not-billed, aged. Sits next to Outstanding and on the
+      // SAME area key: it is the money answer to the question Outstanding's
+      // DO tab asks with a header-status flag and no money column.
+      { to: "/scm/unbilled-deliveries", label: "Not Yet Billed", icon: HandCoins, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
+      // Fulfillment Costing — the three-way cost report (#786 moved cost off
+      // the document views to live only here). requireFinanceViewer keeps it
+      // director/finance-only, matching the backend canViewScmFinance gate and
+      // the FinanceCostingGuard route guard, so a Sales rep never sees it.
+      { to: "/scm/reports/fulfillment-costing", label: "Fulfillment Costing", icon: Scale, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.accounting", "scm.finance.outstanding"], requireFinanceViewer: true },
+      // Currencies master (Phase 1-A FX) — owner-maintained currency + rate
+      // table for GRN / PI / PV foreign-currency posting. Gated on the flat
+      // scm.currency.manage permission (Owner / IT Admin via *).
+      { to: "/scm/currencies", label: "Currencies", icon: DollarSign, anyPerm: ["*", "scm.currency.manage"] },
+    ],
+  },
+
+  // ── HR — LIFTED OUT of Supply Chain (owner 2026-07-18: "finance and HR is not
+  // under supply chain"). Gate, children and URLs are unchanged; only the tree
+  // position moved.
+  //
+  // THIS LIFT DOES CHANGE WHO SEES THE ROW, and that is the point — read before
+  // "restoring" the old behaviour. As an SCM child this group was gated on
+  // parent AND self, so the parent's ["*", "scm.access"] / SCM-area condition was
+  // silently ANDed onto HR's own flat keys. That contradicted BOTH the comment
+  // below and the routes: /scm/hr/commission and /scm/hr/settings are guarded on
+  // anyPerm ["*","scm.hr.read","scm.hr.manage"] ALONE (App.tsx — no ScmGuard, no
+  // scm.access), and the backend gates on the same flat keys. So a holder of
+  // scm.hr.read WITHOUT scm.access could already open the page by typing the URL;
+  // the nav just refused to show them the door. Lifting HR makes the nav agree
+  // with the route instead of hiding a reachable page. Nobody gains ACCESS —
+  // only a row for a page they were already permitted to open.
+  {
+    section: "operations",
+    hideForSalesRep: true,
+    label: "HR",
+    icon: Users,
+    groupId: "scm-hr",
+    // No /scm/hr hub page exists, so the group header lands on the report.
+    to: "/scm/hr/commission",
+    // FLAT keys only, deliberately no `scm.access` and no `anyAccess`: HR has
+    // no L2 page-access area, and /commission returns every colleague's pay.
+    // Riding the SCM umbrella here is exactly the mistake scm/index.ts warns
+    // about ("READ-ONLY IS NOT THE SAME AS SAFE").
+    //
+    // These are the two ENTRY keys. HR has four in total — scm.hr.close and
+    // scm.hr.reopen gate the payout approval actions and are checked on the
+    // Commission page itself (per-button), not here: they grant an action
+    // inside the module, never admittance to it. Neither is usable without
+    // scm.hr.read anyway, since the API refuses to show the period first.
+    anyPerm: ["*", "scm.hr.read", "scm.hr.manage"],
+    children: [
+      { to: "/scm/hr/commission", label: "Commission", icon: DollarSign, anyPerm: ["*", "scm.hr.read", "scm.hr.manage"] },
+      // Settings is an EDITOR — read-only holders are not shown a page whose
+      // every control the API would reject (2990 bounces them to the report).
+      { to: "/scm/hr/settings", label: "HR Settings", icon: SlidersHorizontal, anyPerm: ["*", "scm.hr.manage"] },
     ],
   },
 

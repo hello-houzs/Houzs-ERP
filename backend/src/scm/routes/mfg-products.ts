@@ -185,7 +185,12 @@ mfgProducts.get('/', async (c) => {
 // ── POST / ─────────────────────────────────────────────────────────────
 // Create a new mfg_product. id is text PK — we generate a short uuid-ish
 // id since the existing import uses Excel-style ids like 'mfg-xxxxxxx'.
-const VALID_CATEGORIES = new Set(['SOFA', 'BEDFRAME', 'ACCESSORY', 'MATTRESS', 'SERVICE']);
+/* The `mfg_product_category` PG enum, in declaration order. This is the ONE
+   in-repo statement of that taxonomy — the HR item-KPI category picker imports
+   it rather than re-listing the values, so a rule can never offer a category the
+   column cannot hold. Keep in step with the enum if it ever gains a member. */
+export const MFG_PRODUCT_CATEGORIES = ['SOFA', 'BEDFRAME', 'ACCESSORY', 'MATTRESS', 'SERVICE'] as const;
+const VALID_CATEGORIES = new Set<string>(MFG_PRODUCT_CATEGORIES);
 mfgProducts.post('/', async (c) => {
   const gate = await requireRole(c);
   if (!gate.ok) return gate.res;

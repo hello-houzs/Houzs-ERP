@@ -17,7 +17,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 
 export type HrTier = 'sales' | 'manager';
-export type HrFlagType = 'product' | 'fabric' | 'special';
+/** What one bonus rule targets. `category` covers EVERY item in a product
+ *  category with a single rule; the other three each name one thing. Where both
+ *  a category rule and a per-product rule cover the same item, the PRODUCT rule
+ *  wins and the category rule pays nothing (backend: hr-commission.ts). */
+export type HrFlagType = 'product' | 'category' | 'fabric' | 'special';
 export type HrOverrideMode = 'showroom' | 'chain';
 
 export type HrConfig = {
@@ -57,6 +61,9 @@ export type HrPickers = {
   staff: Array<{ id: string; name: string; staffCode: string; role: string }>;
   showrooms: Array<{ id: string; name: string }>;
   products: HrPickerRef[];
+  /** The mfg_product_category enum values (SOFA / BEDFRAME / ...). */
+  categories: HrPickerRef[];
+  /** Fabric SERIES (fabric_library.id, e.g. 'BF') — never individual colours. */
   fabrics: HrPickerRef[];
   specials: HrPickerRef[];
 };

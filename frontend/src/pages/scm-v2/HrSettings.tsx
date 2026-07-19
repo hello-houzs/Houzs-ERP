@@ -199,7 +199,13 @@ export const HrSettings = () => {
   const [newShowroom, setNewShowroom] = useState('');
 
   const [flagType, setFlagType] = useState<HrFlagType>('product');
-  const [flagRef, setFlagRef] = useState('');
+  /* MULTI-SELECT, and it means N SEPARATE RULES — not one rule holding a list
+     (owner 2026-07-18: "fabric 只能选一个 item", commission is read by item).
+     Picking three fabrics creates three independently editable rows, each paying
+     its own bonus for its own item. The confirm below says so before it happens,
+     because "add 3 rules" and "add 1 rule covering 3 things" pay differently and
+     the owner must not have to guess which one he just got. */
+  const [flagRefs, setFlagRefs] = useState<string[]>([]);
   const [flagBonus, setFlagBonus] = useState('');
 
   const [newLevel, setNewLevel] = useState('');
@@ -272,8 +278,25 @@ export const HrSettings = () => {
 
   const refList: HrPickerRef[] =
     flagType === 'product' ? pickers.data?.products ?? []
-      : flagType === 'fabric' ? pickers.data?.fabrics ?? []
-        : pickers.data?.specials ?? [];
+      : flagType === 'category' ? pickers.data?.categories ?? []
+        : flagType === 'fabric' ? pickers.data?.fabrics ?? []
+          : pickers.data?.specials ?? [];
+
+  /* BONUS VALIDATION — explicit, not a clamp. Math.max(0, NaN) is NaN and
+     Number('') is 0, so neither "empty" nor "abc" may be allowed to reach the
+     API as a number: a bonus that silently becomes 0 or NaN is a wrong payslip,
+     not a cosmetic bug. Returns the reason so the UI can SAY it rather than
+     disabling a button for no visible cause. */
+  const bonusError = ((): string | null => {
+    if (flagBonus.trim() === '') return 'Enter the bonus amount in ringgit.';
+    const n = Number(flagBonus);
+    if (!Number.isFinite(n)) return 'The bonus must be a number, in ringgit.';
+    if (n <= 0) return 'The bonus must be more than RM 0.';
+    // Sen is the smallest unit that can be paid; 1.234 would silently round.
+    if (Math.round(n * 100) !== n * 100) return 'The bonus cannot be smaller than one sen.';
+    return null;
+  })();
+  const canAddItemKpi = flagRefs.length > 0 && bonusError === null && !createItemKpi.isPending;
 
   const addProfile = async () => {
     if (!newStaff || !newShowroom) return;
@@ -287,21 +310,59 @@ export const HrSettings = () => {
   };
 
   const addItemKpi = async () => {
-    const bonus = Number(flagBonus);
-    if (!flagRef || !Number.isFinite(bonus) || bonus <= 0) return;
-    const label = refList.find((r) => r.ref === flagRef)?.label ?? flagRef;
-    try {
-      await createItemKpi.mutateAsync({
-        flagType,
-        ref: flagRef,
-        label,
-        bonusCenti: Math.round(bonus * 100),
+    if (!canAddItemKpi || bonusError !== null) return;
+    const bonusCenti = Math.round(Number(flagBonus) * 100);
+    const chosen = flagRefs.map((ref) => ({
+      ref,
+      // The label is what the owner reads back on the row. A ref with no picker
+      // entry means the list moved under us, so keep the raw ref rather than
+      // inventing a friendly name for something we could not resolve.
+      label: refList.find((r) => r.ref === ref)?.label ?? ref,
+    }));
+
+    /* Say the shape of what is about to happen BEFORE it happens. Three
+       selections = three rules, each paying the bonus on its own item. */
+    if (chosen.length > 1) {
+      const ok = await askConfirm({
+        title: `Add ${chosen.length} separate ${flagType} rules?`,
+        body:
+          `Each of these gets its OWN rule paying ${fmtCenti(bonusCenti)} per unit, and each can be ` +
+          `edited or removed on its own afterwards:\n\n` +
+          chosen.map((c) => `  • ${c.label}`).join('\n') +
+          `\n\nThis is not one rule covering all ${chosen.length}. An item is paid by whichever single ` +
+          `rule matches it, once.`,
+        confirmLabel: `Add ${chosen.length} rules`,
       });
-      setFlagRef('');
-      setFlagBonus('');
-    } catch (e) {
-      await notify({ title: 'Could not add item KPI', body: (e as Error)?.message, tone: 'error' });
+      if (!ok) return;
     }
+
+    /* Created one at a time so a mid-way failure can name EXACTLY which rules
+       exist and which do not. Reporting "could not save" after two of three
+       landed would leave the owner to guess, and re-running would duplicate the
+       two that worked. */
+    const added: string[] = [];
+    for (const c of chosen) {
+      try {
+        await createItemKpi.mutateAsync({ flagType, ref: c.ref, label: c.label, bonusCenti });
+        added.push(c.label);
+      } catch (e) {
+        const failed = chosen.slice(chosen.indexOf(c)).map((x) => x.label);
+        await notify({
+          title: added.length === 0 ? 'Could not add the bonus rule' : 'Only some rules were added',
+          body:
+            (added.length > 0 ? `Added: ${added.join(', ')}.\nNot added: ${failed.join(', ')}.\n\n` : '') +
+            // authed-fetch already ran the response through humanApiError and
+            // threw an Error carrying that plain sentence — do not re-wrap it.
+            `${(e as Error)?.message ?? 'The system did not say why.'}\n\nPlease add the missing ones again — the rules listed as added are already saved, so do not re-add those.`,
+          tone: 'error',
+        });
+        // Keep the failures selected so the retry is one click, not a re-pick.
+        setFlagRefs(failed.map((label) => chosen.find((x) => x.label === label)!.ref));
+        return;
+      }
+    }
+    setFlagRefs([]);
+    setFlagBonus('');
   };
 
   const addLevel = async () => {
@@ -490,6 +551,17 @@ export const HrSettings = () => {
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
+            {/* A salesperson CANNOT be added without a showroom (it is NOT NULL
+                on the profile), so an empty list is a dead end. Say which one it
+                is: "none set up yet" and "we could not ask" need different
+                actions from the owner, and neither is "the page is broken". */}
+            {showrooms.length === 0 && !pickers.isLoading && (
+              <span className="text-[11px] text-ink-secondary">
+                {pickers.isError
+                  ? 'The showroom list could not be loaded, so nobody can be added yet.'
+                  : 'No showrooms have been set up yet. One is required before a salesperson can be added.'}
+              </span>
+            )}
           </label>
           <Button
             variant="primary"
@@ -657,49 +729,97 @@ export const HrSettings = () => {
           </table>
         </div>
 
-        <div className="flex flex-wrap items-end gap-3 rounded-md border border-border bg-surface px-3 py-3">
-          <label className="flex min-w-[140px] flex-col gap-1">
-            <Label>Type</Label>
-            <select
-              className={INPUT_CLASS}
-              value={flagType}
-              onChange={(e) => {
-                setFlagType(e.target.value as HrFlagType);
-                setFlagRef('');
-              }}
-            >
-              <option value="product">product</option>
-              <option value="fabric">fabric</option>
-              <option value="special">special</option>
-            </select>
-          </label>
-          <label className="flex min-w-[260px] flex-col gap-1">
-            <Label>Item</Label>
-            <select className={INPUT_CLASS} value={flagRef} onChange={(e) => setFlagRef(e.target.value)}>
-              <option value="">Select…</option>
-              {refList.map((r) => (
-                <option key={r.ref} value={r.ref}>{r.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="flex min-w-[160px] flex-col gap-1">
-            <Label>Bonus RM / unit</Label>
-            <input
-              className={INPUT_CLASS}
-              type="number"
-              min={0}
-              value={flagBonus}
-              onChange={(e) => setFlagBonus(e.target.value)}
-            />
-          </label>
-          <Button
-            variant="primary"
-            icon={<Plus {...ICON} />}
-            disabled={!flagRef || !(Number(flagBonus) > 0) || createItemKpi.isPending}
-            onClick={addItemKpi}
-          >
-            Add
-          </Button>
+        <div className="space-y-2 rounded-md border border-border bg-surface px-3 py-3">
+          <div className="flex flex-wrap items-start gap-3">
+            <label className="flex min-w-[140px] flex-col gap-1">
+              <Label>Type</Label>
+              <select
+                className={INPUT_CLASS}
+                value={flagType}
+                onChange={(e) => {
+                  setFlagType(e.target.value as HrFlagType);
+                  setFlagRefs([]);
+                }}
+              >
+                <option value="product">product — one specific product</option>
+                <option value="category">category — every product in a category</option>
+                <option value="fabric">fabric — a fabric series</option>
+                <option value="special">special — a special-order option</option>
+              </select>
+            </label>
+            <label className="flex min-w-[300px] flex-col gap-1">
+              <Label>{flagType === 'category' ? 'Categories' : 'Items'}</Label>
+              {/* A real multi-select list, not a combo box: the owner is choosing
+                  how many rules to create, so how many are highlighted has to be
+                  visible at a glance. */}
+              <select
+                multiple
+                size={Math.min(8, Math.max(4, refList.length))}
+                className={`${INPUT_CLASS} h-auto py-1`}
+                value={flagRefs}
+                onChange={(e) =>
+                  setFlagRefs(Array.from(e.target.selectedOptions, (o) => o.value))
+                }
+              >
+                {refList.map((r) => (
+                  <option key={r.ref} value={r.ref} className="px-1 py-0.5">{r.label}</option>
+                ))}
+              </select>
+              <span className="text-[11px] text-ink-secondary">
+                {refList.length === 0
+                  ? pickers.isLoading
+                    ? 'Loading…'
+                    : pickers.isError
+                      ? 'This list could not be loaded.'
+                      : 'Nothing to choose from yet.'
+                  : flagRefs.length === 0
+                    ? 'Select one or more. Hold Ctrl (or Cmd) to pick several.'
+                    : flagRefs.length === 1
+                      ? 'Adds 1 rule.'
+                      : `Adds ${flagRefs.length} separate rules — one per ${flagType === 'category' ? 'category' : 'item'}, each paying the bonus below.`}
+              </span>
+            </label>
+            <label className="flex min-w-[160px] flex-col gap-1">
+              <Label>Bonus RM / unit</Label>
+              <input
+                className={INPUT_CLASS}
+                type="number"
+                min={0}
+                step="0.01"
+                value={flagBonus}
+                onChange={(e) => setFlagBonus(e.target.value)}
+              />
+              {/* The reason is SHOWN, never just used to grey the button out:
+                  a disabled Add with no explanation reads as a broken page. */}
+              {flagBonus.trim() !== '' && bonusError && (
+                <span className="text-[11px] text-err">{bonusError}</span>
+              )}
+            </label>
+            <div className="flex flex-col gap-1">
+              <Label>&nbsp;</Label>
+              <Button
+                variant="primary"
+                icon={<Plus {...ICON} />}
+                disabled={!canAddItemKpi}
+                onClick={addItemKpi}
+              >
+                {createItemKpi.isPending
+                  ? 'Adding…'
+                  : flagRefs.length > 1
+                    ? `Add ${flagRefs.length} rules`
+                    : 'Add'}
+              </Button>
+            </div>
+          </div>
+
+          {/* The precedence rule, stated where the rule is created rather than
+              left for someone to discover from a payslip. */}
+          {flagType === 'category' && (
+            <p className="text-[12px] text-ink-secondary">
+              A category rule pays on every product in that category. If a product also has its own
+              rule, that product's own rule is the one that pays — the two are never added together.
+            </p>
+          )}
         </div>
       </section>
 
