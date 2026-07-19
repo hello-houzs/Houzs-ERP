@@ -14,7 +14,8 @@ import { recostFromGrn } from '../lib/recost';
 import { normalizeExchangeRate, toMyrSen, normalizeCurrency, masterRateForCurrency } from '../lib/fx';
 import { allocateLandedCharges, normalizeAllocationMethod } from '../lib/landed-allocation';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
-  isCrossCompanySource, crossCompanyConversionBlocked } from '../lib/companyScope';
+  isCrossCompanySource, crossCompanyConversionBlocked,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 
 /* CROSS-COMPANY GUARD for the three GRN create paths. Each stamps the ACTIVE
    company on the new GRN and mints under the ACTIVE company's doc prefix, while
@@ -329,10 +330,14 @@ async function reallocateGrnCharges(sb: any, grnId: string): Promise<void> {
    Pulled out of the PATCH /:id/post handler so both single-doc post and
    the multi-PO `/from-po-items` route can reuse the same logic.
    Best-effort inventory write (matches existing /post behaviour). */
-async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise<{ ok: true; movementErrors?: string[] } | { ok: false; reason: string; status?: number }> {
-  const { data: grnHeader } = await sb.from('grns')
+/* companyId is REQUIRED, not optional, and it is not defaulted. This function is
+   the single chokepoint that writes inventory IN and rolls PO received_qty, so
+   an omitted scope here would let one company's confirm commit stock against
+   another's GRN. Callers get it from requireActiveCompanyId and refuse first. */
+async function postGrnAndRollup(sb: any, grnId: string, userId: string, companyId: number): Promise<{ ok: true; movementErrors?: string[] } | { ok: false; reason: string; status?: number }> {
+  const { data: grnHeader } = await scopeToCompanyId(sb.from('grns')
     .select('grn_number, warehouse_id, company_id, exchange_rate, allocation_method')
-    .eq('id', grnId).maybeSingle();
+    .eq('id', grnId), companyId).maybeSingle();
   const { data: items } = await sb.from('grn_items')
     .select('id, purchase_order_item_id, qty_accepted, material_code, material_name, unit_price_centi, line_total_centi, item_group, variants')
     .eq('grn_id', grnId);
@@ -342,11 +347,11 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
   // while the row is still DRAFT) MUST flip the row to POSTED before recounting —
   // otherwise this GRN's own just-confirmed lines wouldn't count. Idempotent on
   // the legacy already-POSTED path (no status change there).
-  const { data, error } = await sb.from('grns').update({
+  const { data, error } = await scopeToCompanyId(sb.from('grns').update({
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-  }).eq('id', grnId).neq('status', 'CLOSED').select('id, status, posted_at').single();
+  }).eq('id', grnId), companyId).neq('status', 'CLOSED').select('id, status, posted_at').maybeSingle();
   if (error) return { ok: false, reason: error.message, status: 500 };
   if (!data) return { ok: false, reason: 'cannot_post', status: 409 };
 
@@ -1363,10 +1368,13 @@ grns.post('/', async (c) => {
     status: asDraft ? 'DRAFT' : 'POSTED',
     posted_at: asDraft ? null : new Date().toISOString(),
     created_by: user.id,
-    }).select(HEADER).single(),
+    }).select(`${HEADER}, company_id`).single(),
   );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
-  const h = header as unknown as { id: string; grn_number: string };
+  /* company_id read back off the row we just inserted, NOT re-derived from the
+     request: it scopes the post chokepoint below to this GRN's own company
+     without adding a refusal to a create path that has none today. */
+  const h = header as unknown as { id: string; grn_number: string; company_id: number };
 
   const rows = items.map((it) => {
     const qtyReceived = Number(it.qtyReceived ?? 0);
@@ -1426,7 +1434,7 @@ grns.post('/', async (c) => {
      single chokepoint that writes inventory IN + rolls up the PO received_qty.
      Skip it for a draft; the confirm transition (PATCH /:id/post) runs it. */
   let postRes: Awaited<ReturnType<typeof postGrnAndRollup>> | undefined;
-  if (!asDraft) postRes = await postGrnAndRollup(sb, h.id, user.id);
+  if (!asDraft) postRes = await postGrnAndRollup(sb, h.id, user.id, h.company_id);
   // Migration 0101 — populate header money rollups from the inserted lines.
   // (Money only — no stock — so it's safe to run for a draft too.)
   await recomputeGrnTotals(sb, h.id);
@@ -1558,10 +1566,10 @@ grns.post('/from-pos', async (c) => {
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     created_by: user.id,
-    }).select('id, grn_number').single(),
+    }).select('id, grn_number, company_id').single(),
   );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
-  const h = header as unknown as { id: string; grn_number: string };
+  const h = header as unknown as { id: string; grn_number: string; company_id: number };
 
   const rows = itemList.map((it) => {
     const qtyReceived = it.qty - (it.received_qty ?? 0);
@@ -1622,7 +1630,7 @@ grns.post('/from-pos', async (c) => {
   }
 
   /* PR-DRAFT-removal — auto-rollup + inventory IN after items insert. */
-  const postRes = await postGrnAndRollup(sb, h.id, user.id);
+  const postRes = await postGrnAndRollup(sb, h.id, user.id, h.company_id);
   // Migration 0101 — populate header money rollups from the inserted lines.
   await recomputeGrnTotals(sb, h.id);
 
@@ -1637,7 +1645,7 @@ grns.post('/from-pos', async (c) => {
   return c.json({ id: h.id, grnNumber: h.grn_number, poCount: poList.length, lineCount: itemList.length, movementErrors: movementErrors?.length ? movementErrors : undefined }, 201);
 });
 
-grns.patch('/:id/post', async (c) => {
+export const postGrnHandler = async (c: any) => {
   /* Confirm transition (DRAFT → POSTED) — this is where the GRN commits.
      postGrnAndRollup is the single chokepoint: it writes inventory IN +
      rolls up the PO received_qty + flips PO status. A GRN created with
@@ -1649,9 +1657,15 @@ grns.patch('/:id/post', async (c) => {
      was non-draft the row is POSTED → no-op; when it was a draft this is the
      real confirm. */
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
-  const { data: cur } = await sb.from('grns')
-    .select('id, status, posted_at, grn_number, warehouse_id, total_centi').eq('id', id).maybeSingle();
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  /* Company-scoped BEFORE the status read, because everything past this point —
+     the over-receipt check, the stock IN, the PO rollup — acts on whatever this
+     load returned. Unscoped, a confirm from one company committed inventory
+     against another company's GRN. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: cur } = await scopeToCompanyId(sb.from('grns')
+    .select('id, status, posted_at, grn_number, warehouse_id, total_centi').eq('id', id), co.companyId).maybeSingle();
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const row = cur as {
     id: string; status: string; posted_at: string | null;
     grn_number: string; warehouse_id: string | null; total_centi: number | null;
@@ -1682,11 +1696,11 @@ grns.patch('/:id/post', async (c) => {
   const pf = await assertAuditWritable(sb, { entityType: 'GRN', entityId: id, action: 'POST', companyId: activeCompanyId(c) });
   if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
-  const res = await postGrnAndRollup(sb, id, user.id);
+  const res = await postGrnAndRollup(sb, id, user.id, co.companyId);
   if (!res.ok) return c.json({ error: 'post_failed', reason: res.reason }, 500);
   // Header money rollup (no stock) — keep it in sync on confirm.
   await recomputeGrnTotals(sb, id);
-  const { data } = await sb.from('grns').select('id, status, posted_at, total_centi').eq('id', id).single();
+  const { data } = await scopeToCompanyId(sb.from('grns').select('id, status, posted_at, total_centi').eq('id', id), co.companyId).single();
 
   /* The moment received goods become on-hand stock and PO received_qty moves.
      Recorded AFTER recomputeGrnTotals so totalCenti is the rolled-up figure, in
@@ -1712,7 +1726,8 @@ grns.patch('/:id/post', async (c) => {
   });
 
   return c.json({ grn: data, movementErrors: res.movementErrors?.length ? res.movementErrors : undefined });
-});
+};
+grns.patch('/:id/post', postGrnHandler);
 
 /* ── POST /from-po-items ────────────────────────────────────────────────
    Multi-select GRN creator. Body: { picks: [{ poItemId, qty }], notes?,
@@ -1852,13 +1867,13 @@ grns.post('/from-po-items', async (c) => {
        `if (hErr) continue` and SILENTLY DROPPED the bucket (its inventory-IN
        lost, caller still got 201). Retry on 23505: re-derive the next free
        suffix from a fresh live count + bump. */
-    let h: { id: string; grn_number: string } | null = null;
+    let h: { id: string; grn_number: string; company_id: number } | null = null;
     for (let attempt = 0; attempt < 8 && !h; attempt += 1) {
       const grnNumber = `${cp}GRN-${yymm}-${String(counter).padStart(3, '0')}`;
       const { data: header, error: hErr } = await sb.from('grns')
         .insert({ grn_number: grnNumber, ...grnPayload })
-        .select('id, grn_number').single();
-      if (!hErr && header) { h = header as unknown as { id: string; grn_number: string }; break; }
+        .select('id, grn_number, company_id').single();
+      if (!hErr && header) { h = header as unknown as { id: string; grn_number: string; company_id: number }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
       const liveNext = await mintMonthlyDocNo(sb, 'grns', 'grn_number', `${cp}GRN-${yymm}`);
       counter = parseInt(liveNext.slice(`${cp}GRN-${yymm}-`.length), 10);
@@ -1924,7 +1939,7 @@ grns.post('/from-po-items', async (c) => {
       continue;
     }
     // Immediately post — rolls up received_qty, flips PO status, writes inventory.
-    const postRes = await postGrnAndRollup(sb, h.id, user.id);
+    const postRes = await postGrnAndRollup(sb, h.id, user.id, h.company_id);
     // Migration 0101 — populate header money rollups from the inserted lines.
     await recomputeGrnTotals(sb, h.id);
     if (!postRes.ok) {

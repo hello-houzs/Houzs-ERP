@@ -15,7 +15,8 @@ import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from 
 import { parseLineNumbers, invalidLineNumberBody } from '../shared/line-numbers';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { escapeForOr } from '../lib/postgrest-search';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 import { PI_LINE_AUDIT_FIELDS, PI_LINE_AUDIT_SELECT } from '../lib/entity-audit-fields';
@@ -883,11 +884,18 @@ purchaseInvoices.post('/', async (c) => {
    postPiAccounting is itself idempotent (keyed on an active PI JE) and
    recomputeGrnInvoiced is a from-scratch recount, so a stray double-call can't
    double-bill. */
-purchaseInvoices.patch('/:id/post', async (c) => {
+export const postPurchaseInvoiceHandler = async (c: any) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
-  const { data: cur } = await sb.from('purchase_invoices')
-    .select('id, status, invoice_number, company_id, supplier_id, total_centi, currency').eq('id', id).maybeSingle();
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  /* The load is scoped, not just the flip below, because the load ALONE reaches
+     a write: the non-DRAFT branch calls postPiAccounting (Dr Inventory / Cr
+     Payables) and returns without ever touching the UPDATE. Scoping only the
+     flip would have left that ensure-post path posting to another company's
+     ledger. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: cur } = await scopeToCompanyId(sb.from('purchase_invoices')
+    .select('id, status, invoice_number, company_id, supplier_id, total_centi, currency').eq('id', id), co.companyId).maybeSingle();
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const curRow = cur as {
     id: string; status: string; invoice_number: string;
     company_id?: number | null; supplier_id?: string | null; total_centi?: number | null; currency?: string | null;
@@ -915,13 +923,15 @@ purchaseInvoices.patch('/:id/post', async (c) => {
      when the row is still DRAFT, so two concurrent confirms race and exactly ONE
      flips it (the other gets no row → idempotent echo). This guarantees the
      GRN-consume + GL post + recost below run exactly once. */
-  const { data, error } = await sb.from('purchase_invoices').update({
+  const { data, error } = await scopeToCompanyId(sb.from('purchase_invoices').update({
     status: 'POSTED', posted_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-  }).eq('id', id).eq('status', 'DRAFT').select('id, status').maybeSingle();
+  }).eq('id', id), co.companyId).eq('status', 'DRAFT').select('id, status').maybeSingle();
   if (error) return c.json({ error: 'post_failed', reason: error.message }, 500);
   if (!data) {
     // Lost the race — a concurrent confirm already flipped it. Echo the live row.
-    const { data: now } = await sb.from('purchase_invoices').select('id, status').eq('id', id).maybeSingle();
+    const { data: now } = await scopeToCompanyId(
+      sb.from('purchase_invoices').select('id, status').eq('id', id), co.companyId,
+    ).maybeSingle();
     return c.json({ purchaseInvoice: now ?? cur });
   }
 
@@ -978,7 +988,8 @@ purchaseInvoices.patch('/:id/post', async (c) => {
   // Costing B — the now-confirmed PI is the authoritative cost: re-cost lots/DO/SI.
   await recostForPi(sb, id);
   return c.json({ purchaseInvoice: data });
-});
+};
+purchaseInvoices.patch('/:id/post', postPurchaseInvoiceHandler);
 
 // Record a payment against the PI. Adds to paid_centi and auto-transitions
 // status: paid_centi == total → PAID, paid_centi > 0 && < total → PARTIALLY_PAID.

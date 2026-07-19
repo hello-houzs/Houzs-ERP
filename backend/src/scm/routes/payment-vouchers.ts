@@ -37,7 +37,8 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { mintMonthlyDocNo, insertWithDocNoRetry, nextJeNo, jePrefixForCompany } from '../lib/doc-no';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
 import { todayMyt } from '../lib/my-time';
@@ -620,14 +621,22 @@ paymentVouchers.post('/:id/post', async (c) => {
    POST /:id/cancel — reverse the JE (if posted), flip → CANCELLED.
    ──────────────────────────────────────────────────────────────────────── */
 
-paymentVouchers.post('/:id/cancel', async (c) => {
+export const cancelPaymentVoucherHandler = async (c: any) => {
   if (!hasHouzsPerm(c, 'scm.payment_voucher.cancel')) {
     return c.json({ error: 'Forbidden: missing scm.payment_voucher.cancel' }, 403);
   }
   const sb = c.get('supabase'); const id = c.req.param('id');
 
-  const { data: cur } = await sb.from('payment_vouchers').select('id, status, pv_number, purpose').eq('id', id).maybeSingle();
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  /* Scoped before the load: everything downstream keys off what this returns —
+     the GL reversal (by pv_number) and the PV→PI settlement unwind (by pv_id) —
+     so an unscoped load let one company cancel another's voucher AND reverse
+     its ledger entry. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: cur } = await scopeToCompanyId(
+    sb.from('payment_vouchers').select('id, status, pv_number, purpose').eq('id', id), co.companyId,
+  ).maybeSingle();
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const head = cur as { id: string; status: string; pv_number: string; purpose: string | null };
   // Idempotent — already cancelled, echo back.
   if (head.status === 'CANCELLED') return c.json({ paymentVoucher: { id, status: 'CANCELLED' } });
@@ -641,12 +650,14 @@ paymentVouchers.post('/:id/cancel', async (c) => {
   /* ATOMIC ACTIVE→CANCELLED — the conditional UPDATE excludes CANCELLED, so two
      concurrent cancels race and only ONE flips it (the other gets no row back →
      idempotent no-op). Guarantees the reversal below runs at most once. */
-  const { data, error } = await sb.from('payment_vouchers').update({
+  const { data, error } = await scopeToCompanyId(sb.from('payment_vouchers').update({
     status: 'CANCELLED', updated_at: new Date().toISOString(),
-  }).eq('id', id).neq('status', 'CANCELLED').select('id, status, pv_number').maybeSingle();
+  }).eq('id', id), co.companyId).neq('status', 'CANCELLED').select('id, status, pv_number').maybeSingle();
   if (error) return c.json({ error: 'cancel_failed', reason: error.message }, 500);
   if (!data) {
-    const { data: now } = await sb.from('payment_vouchers').select('id, status').eq('id', id).maybeSingle();
+    const { data: now } = await scopeToCompanyId(
+      sb.from('payment_vouchers').select('id, status').eq('id', id), co.companyId,
+    ).maybeSingle();
     if ((now as { status: string } | null)?.status === 'CANCELLED') return c.json({ paymentVoucher: now });
     return c.json({ error: 'cannot_cancel' }, 409);
   }
@@ -724,7 +735,8 @@ paymentVouchers.post('/:id/cancel', async (c) => {
   }
 
   return c.json({ paymentVoucher: { id: cancelled.id, status: cancelled.status } });
-});
+};
+paymentVouchers.post('/:id/cancel', cancelPaymentVoucherHandler);
 
 /* ── reversePvAccounting — contra the active PV JE (mirror reversePiAccounting).
    Loads the original lines + swaps Dr/Cr so the reversal nets the original to

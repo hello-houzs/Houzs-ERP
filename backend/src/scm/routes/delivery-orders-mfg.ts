@@ -27,7 +27,8 @@ import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr, phoneSearchOrParts } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap,
-  isCrossCompanySource, crossCompanyConversionBlocked } from '../lib/companyScope';
+  isCrossCompanySource, crossCompanyConversionBlocked,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { freezeShipCost } from '../lib/fulfillment-costing';
@@ -4116,7 +4117,7 @@ deliveryOrdersMfg.delete('/:id/payments/:paymentId', async (c) => {
 });
 
 // ── Status transition + inventory deduction / reversal ────────────────────
-deliveryOrdersMfg.patch('/:id/status', async (c) => {
+export const patchDeliveryOrderStatusHandler = async (c: any) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
   let body: { status?: string; signatureData?: string; podKey?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
@@ -4131,9 +4132,18 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
     }, 400);
   }
 
-  // Read current status so the CANCELLED reversal is idempotent.
-  const { data: cur } = await sb.from('delivery_orders').select('status').eq('id', id).maybeSingle();
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  /* Scoped load. Every guard this handler already had — the status whitelist,
+     CANCELLED-is-final, the shipped→pre-ship block, doHasDownstream — is a
+     STATE guard; none of them was a tenancy guard. Downstream of the flip sit
+     the inventory deduct/reverse, the SO delivered-qty resync, a customer-facing
+     DO email and the rack return, so the flip is the right place to stop a
+     cross-company caller. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: cur } = await scopeToCompanyId(
+    sb.from('delivery_orders').select('status').eq('id', id), co.companyId,
+  ).maybeSingle();
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const prevStatus = (cur as { status: string }).status;
   // Already cancelled → echo back without re-reversing (would double-credit).
   if (body.status === 'CANCELLED' && prevStatus === 'CANCELLED') {
@@ -4198,9 +4208,9 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
      UPDATEs, so exactly one wins the row and fires the single reversal. */
   let data: { id: string; status: string } | null;
   if (body.status === 'CANCELLED') {
-    const { data: updated, error } = await sb.from('delivery_orders')
+    const { data: updated, error } = await scopeToCompanyId(sb.from('delivery_orders')
       .update({ status: body.status, ...ts })
-      .eq('id', id).neq('status', 'CANCELLED')
+      .eq('id', id), co.companyId).neq('status', 'CANCELLED')
       .select('id, status').maybeSingle();
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
     if (!updated) {
@@ -4210,8 +4220,8 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
     }
     data = updated as { id: string; status: string };
   } else {
-    const { data: updated, error } = await sb.from('delivery_orders')
-      .update({ status: body.status, ...ts }).eq('id', id).select('id, status').single();
+    const { data: updated, error } = await scopeToCompanyId(sb.from('delivery_orders')
+      .update({ status: body.status, ...ts }).eq('id', id), co.companyId).select('id, status').single();
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
     data = updated as { id: string; status: string };
   }
@@ -4275,7 +4285,7 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
     /* REC P4 — put the physical rack stock back (mirror of the dispatch
        stock-out). Best-effort + idempotent; never blocks the cancel. */
     try {
-      const { data: doRow } = await sb.from('delivery_orders').select('do_number, company_id').eq('id', id).maybeSingle();
+      const { data: doRow } = await scopeToCompanyId(sb.from('delivery_orders').select('do_number, company_id').eq('id', id), co.companyId).maybeSingle();
       const doNo = (doRow as { do_number?: string } | null)?.do_number ?? null;
       if (doNo) await returnDoRacksOnCancel(sb, id, doNo, user.id, (doRow as { company_id?: number | null } | null)?.company_id ?? null);
     } catch (e) { /* eslint-disable-next-line no-console */ console.error('[do-rack] cancel reversal failed:', e); }
@@ -4299,4 +4309,5 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
     movementErrors: movementErrors.length ? movementErrors : undefined,
     emailNotice: emailNotice ?? undefined,
   });
-});
+};
+deliveryOrdersMfg.patch('/:id/status', patchDeliveryOrderStatusHandler);

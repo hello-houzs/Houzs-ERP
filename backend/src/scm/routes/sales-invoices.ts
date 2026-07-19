@@ -39,7 +39,8 @@ import { normalizePhone, buildVariantSummary, isServiceLine, fmtRM } from '../sh
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
-  isCrossCompanySource, crossCompanyConversionBlocked } from '../lib/companyScope';
+  isCrossCompanySource, crossCompanyConversionBlocked,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { postSiRevenue, reverseSiRevenue, resyncSiRevenue } from '../lib/post-si-revenue';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
@@ -1892,7 +1893,7 @@ salesInvoices.delete('/:id/payments/:paymentId', async (c) => {
 });
 
 // ── Status transition (Cancel / Reopen) ────────────────────────────────────
-salesInvoices.patch('/:id/status', async (c) => {
+export const patchSalesInvoiceStatusHandler = async (c: any) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   let body: { status?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
@@ -1916,10 +1917,15 @@ salesInvoices.patch('/:id/status', async (c) => {
   if (status === 'SENT') ts.sent_at = now;
   if (status === 'PAID') ts.paid_at = now;
 
-  const { data: curRow, error: curErr } = await sb.from('sales_invoices')
-    .select('status, invoice_number, company_id').eq('id', id).maybeSingle();
+  /* Scoped load, matching PATCH /:id in this same file — the header edit was
+     given this boundary and the status flip was not, though the flip is the one
+     that reverses revenue, mints customer credits and re-posts GL. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: curRow, error: curErr } = await scopeToCompanyId(sb.from('sales_invoices')
+    .select('status, invoice_number, company_id').eq('id', id), co.companyId).maybeSingle();
   if (curErr) return c.json({ error: 'load_failed', reason: curErr.message }, 500);
-  if (!curRow) return c.json({ error: 'not_found' }, 404);
+  if (!curRow) return c.json(NOT_THIS_COMPANY, 404);
   const prevStatus = ((curRow as { status: string }).status ?? '').toUpperCase();
   /* Identity for the audit rows below, read here so every exit path has it
      without a second round-trip. */
@@ -1957,9 +1963,9 @@ salesInvoices.patch('/:id/status', async (c) => {
         from: prevStatus, to: status,
       }, 409);
     }
-    const { data: confirmed, error: cErr } = await sb.from('sales_invoices')
+    const { data: confirmed, error: cErr } = await scopeToCompanyId(sb.from('sales_invoices')
       .update({ status: 'SENT', sent_at: now, confirmed_at: now, updated_at: now })
-      .eq('id', id).eq('status', 'DRAFT')
+      .eq('id', id), co.companyId).eq('status', 'DRAFT')
       .select('id, status, invoice_number, debtor_code, debtor_name, total_centi, paid_centi')
       .maybeSingle();
     if (cErr) return c.json({ error: 'update_failed', reason: cErr.message }, 500);
@@ -2047,9 +2053,9 @@ salesInvoices.patch('/:id/status', async (c) => {
 
   let data: { id: string; status: string; invoice_number: string; paid_centi: number | null; debtor_code: string | null; debtor_name: string | null } | null;
   if (status === 'CANCELLED') {
-    const { data: updated, error } = await sb.from('sales_invoices')
+    const { data: updated, error } = await scopeToCompanyId(sb.from('sales_invoices')
       .update({ status, ...ts })
-      .eq('id', id).neq('status', 'CANCELLED')
+      .eq('id', id), co.companyId).neq('status', 'CANCELLED')
       .select('id, status, invoice_number, paid_centi, debtor_code, debtor_name')
       .maybeSingle();
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
@@ -2058,9 +2064,9 @@ salesInvoices.patch('/:id/status', async (c) => {
     }
     data = updated as typeof data;
   } else {
-    const { data: updated, error } = await sb.from('sales_invoices')
+    const { data: updated, error } = await scopeToCompanyId(sb.from('sales_invoices')
       .update({ status, ...ts })
-      .eq('id', id)
+      .eq('id', id), co.companyId)
       .select('id, status, invoice_number, paid_centi, debtor_code, debtor_name')
       .single();
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
@@ -2172,7 +2178,8 @@ salesInvoices.patch('/:id/status', async (c) => {
   }
 
   return c.json({ salesInvoice: data });
-});
+};
+salesInvoices.patch('/:id/status', patchSalesInvoiceStatusHandler);
 
 // Legacy quick-payment endpoint (kept for the Outstanding page + any callers
 // that POST a single amount). Records into the payments ledger + rolls status.

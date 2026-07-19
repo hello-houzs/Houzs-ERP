@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import type { Env } from "../types";
 import { requirePageAccess, requirePageAccessOrSalesView } from "../middleware/auth";
 import { getDb } from "../db/client";
@@ -23,6 +24,11 @@ import {
 // stamping both no-op in that case so single-company Houzs is unchanged.
 import { activeCompanyId } from "../scm/lib/companyScope";
 
+/* The context the extracted handlers below receive. They are exported so the
+   route tests can drive them directly; the shape is exactly what app.get/post
+   would have passed to an inline handler — including the PATH literal, which is
+   what keeps c.req.param("reqId") a plain string rather than string | undefined. */
+type HandlerCtx<P extends string> = Context<{ Bindings: Env }, P>;
 const app = new Hono<{ Bindings: Env }>();
 
 const PAYMENT_TYPES = new Set(["cash", "card_cc", "card_db", "epp", "cheque", "online"]);
@@ -469,17 +475,27 @@ app.get("/entries/change-requests", requirePageAccess("sales"), async (c) => {
   return c.json({ requests: rows.results ?? [] });
 });
 
-app.post("/entries/change-requests/:reqId/approve", requirePageAccess("sales", "full"), async (c) => {
+export const approveChangeRequestHandler = async (c: HandlerCtx<"/entries/change-requests/:reqId/approve">) => {
   const reqId = parseInt(c.req.param("reqId"), 10);
   if (!reqId) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const companyId = activeCompanyId(c);
   const note = await c.req.json<{ note?: string }>().then((b) => b?.note ?? null).catch(() => null);
 
+  /* Both loads carry the SAME company predicate that PATCH /entries/:id already
+     applies, because they feed the SAME applyEntryPatch UPDATE. That UPDATE is
+     blind by id and is safe only because its caller proved the row is in scope
+     first — which the PATCH did and this approve did not. The fix is to match
+     the scoped caller, NOT to add a second predicate inside applyEntryPatch:
+     the PATCH would then filter twice, and the two could drift apart.
+     The `!= null` degrade is deliberately copied verbatim from the PATCH — a
+     single-company deployment with an unresolved company must keep approving
+     its own change requests, and diverging here would refuse them. */
   const cr = await c.env.DB.prepare(
-    `SELECT id, entry_id, payload, status, requested_by FROM sales_entry_change_requests WHERE id = ?`,
+    `SELECT id, entry_id, payload, status, requested_by FROM sales_entry_change_requests
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`,
   )
-    .bind(reqId)
+    .bind(reqId, ...(companyId != null ? [companyId] : []))
     .first<{ id: number; entry_id: number; payload: string; status: string; requested_by: number | null }>();
   if (!cr) return c.json({ error: "Not found" }, 404);
   if (cr.status !== "pending") {
@@ -487,9 +503,10 @@ app.post("/entries/change-requests/:reqId/approve", requirePageAccess("sales", "
   }
 
   const entry = await c.env.DB.prepare(
-    `SELECT id, project_id FROM sales_entries WHERE id = ?`,
+    `SELECT id, project_id FROM sales_entries
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`,
   )
-    .bind(cr.entry_id)
+    .bind(cr.entry_id, ...(companyId != null ? [companyId] : []))
     .first<{ id: number; project_id: number | null }>();
   if (!entry) return c.json({ error: "The entry no longer exists" }, 404);
 
@@ -508,25 +525,30 @@ app.post("/entries/change-requests/:reqId/approve", requirePageAccess("sales", "
   await c.env.DB.prepare(
     `UPDATE sales_entry_change_requests
         SET status = 'approved', decided_by = ?, decided_at = datetime('now'), decide_note = ?
-      WHERE id = ?`,
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`,
   )
-    .bind(user?.id ?? null, note, reqId)
+    .bind(user?.id ?? null, note, reqId, ...(companyId != null ? [companyId] : []))
     .run();
   await logSalesActivity(c.env, entry.id, user?.id, "change_approved", note, companyId);
   return c.json({ ok: true });
-});
+};
+app.post("/entries/change-requests/:reqId/approve", requirePageAccess("sales", "full"), approveChangeRequestHandler);
 
-app.post("/entries/change-requests/:reqId/reject", requirePageAccess("sales", "full"), async (c) => {
+export const rejectChangeRequestHandler = async (c: HandlerCtx<"/entries/change-requests/:reqId/reject">) => {
   const reqId = parseInt(c.req.param("reqId"), 10);
   if (!reqId) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const companyId = activeCompanyId(c);
   const note = await c.req.json<{ note?: string }>().then((b) => b?.note ?? null).catch(() => null);
 
+  /* Same predicate as the approve twin above. Rejecting is still a cross-company
+     WRITE — it terminates the other company's queued edit — so it gets the same
+     boundary even though it never touches sales_entries. */
   const cr = await c.env.DB.prepare(
-    `SELECT id, entry_id, status FROM sales_entry_change_requests WHERE id = ?`,
+    `SELECT id, entry_id, status FROM sales_entry_change_requests
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`,
   )
-    .bind(reqId)
+    .bind(reqId, ...(companyId != null ? [companyId] : []))
     .first<{ id: number; entry_id: number; status: string }>();
   if (!cr) return c.json({ error: "Not found" }, 404);
   if (cr.status !== "pending") {
@@ -535,13 +557,14 @@ app.post("/entries/change-requests/:reqId/reject", requirePageAccess("sales", "f
   await c.env.DB.prepare(
     `UPDATE sales_entry_change_requests
         SET status = 'rejected', decided_by = ?, decided_at = datetime('now'), decide_note = ?
-      WHERE id = ?`,
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`,
   )
-    .bind(user?.id ?? null, note, reqId)
+    .bind(user?.id ?? null, note, reqId, ...(companyId != null ? [companyId] : []))
     .run();
   await logSalesActivity(c.env, cr.entry_id, user?.id, "change_rejected", note, companyId);
   return c.json({ ok: true });
-});
+};
+app.post("/entries/change-requests/:reqId/reject", requirePageAccess("sales", "full"), rejectChangeRequestHandler);
 
 // ── Detail ───────────────────────────────────────────────────
 app.get("/entries/:id", requirePageAccess("sales"), async (c) => {

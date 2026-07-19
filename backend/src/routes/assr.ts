@@ -42,6 +42,11 @@ import { isSalesUser, isDirectorUser } from "../services/pmsAccess";
 import type { AuthUser } from "../services/auth";
 import type { Context, MiddlewareHandler } from "hono";
 
+/* The context the extracted handlers below receive. They are exported so the
+   route tests can drive them directly; the shape is exactly what app.get/post
+   would have passed to an inline handler — including the PATH literal, which is
+   what keeps c.req.param("id") a plain string rather than string | undefined. */
+type HandlerCtx = Context<{ Bindings: Env }, "/:id/cost-suggestion">;
 const app = new Hono<{ Bindings: Env }>();
 
 // ── Sales access to Service Cases (owner rule 8, 2026-07) ─────
@@ -485,12 +490,12 @@ app.delete("/lookups/:kind/:id", requirePermission("service_cases.manage"), asyn
 // customer_amount and po_amount in one click. The user can still edit
 // after — this is a suggestion, not a write.
 
-app.get("/:id/cost-suggestion", requireServiceCaseAccess(), async (c) => {
+export const assrCostSuggestionHandler = async (c: HandlerCtx) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
 
   const caseRow = await c.env.DB.prepare(
-    `SELECT doc_no, po_no, item_code FROM assr_cases WHERE id = ?`
+    `SELECT doc_no, po_no, item_code FROM assr_cases WHERE id = ?${assrCompanySql(c)}`
   )
     .bind(id)
     .first<{ doc_no: string | null; po_no: string | null; item_code: string | null }>();
@@ -565,7 +570,8 @@ app.get("/:id/cost-suggestion", requireServiceCaseAccess(), async (c) => {
     po_amount: poAmount,
     sources: { so: soSource, po: poSource },
   });
-});
+};
+app.get("/:id/cost-suggestion", requireServiceCaseAccess(), assrCostSuggestionHandler);
 
 // ── Summary ───────────────────────────────────────────────────
 
@@ -1461,7 +1467,7 @@ app.get("/:id/customer-history", requireServiceCaseAccess(), async (c) => {
   // Column is `phone`, not `customer_phone` — pre-v3.1 naming kept for
   // SQL compatibility. Same applies to the WHERE below.
   const cur = await c.env.DB.prepare(
-    `SELECT customer_name, phone FROM assr_cases WHERE id = ?`
+    `SELECT customer_name, phone FROM assr_cases WHERE id = ?${assrCompanySql(c)}`
   )
     .bind(id)
     .first<{ customer_name: string | null; phone: string | null }>();
@@ -2688,7 +2694,7 @@ app.get("/:id/timeline.csv", requireServiceCaseAccess(), async (c) => {
   if (!(await caseInCallerScope(c, id))) return c.json({ error: "Not found" }, 404);
 
   const row = await c.env.DB.prepare(
-    `SELECT assr_no FROM assr_cases WHERE id = ?`
+    `SELECT assr_no FROM assr_cases WHERE id = ?${assrCompanySql(c)}`
   )
     .bind(id)
     .first<{ assr_no: string }>();
