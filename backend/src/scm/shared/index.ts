@@ -28,3 +28,4 @@ export * from './special-delivery-match'; // 2026-06-21 — model-agnostic deliv
 export * from './fabric-tier-override-resolve'; // 2026-06-21 — effective fabric-tier delta = MAX(model, matching compartments)
 export * from './so-amendment'; // 2026-07-11 — SO amendment/revision state machine + guards (port of 2990 0703)
 export * from './so-save-problems'; // 2026-07-18 — aggregate ALL Processing-Date/save gate failures into one problem list
+export * from './so-field-policy'; // 2026-07-19 — SO field edit policy: FREE (Save writes) vs CONTROLLED (Save raises an amendment)
