@@ -4,6 +4,7 @@ import { fmtAmt } from "../lib/scm";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
+import { usePrompt } from "../vendor/scm/components/PromptDialog";
 import { fetchScanSlipImageBlobUrl } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
@@ -12,6 +13,7 @@ import {
   useMfgSalesOrderDetail,
   useSalesOrderPayments,
   useUpdateMfgSalesOrderStatus,
+  useDeleteMfgSalesOrder,
   useSalesOrderAuditLog,
   type SoAuditEntry,
   type SoAuditFieldChange,
@@ -39,8 +41,17 @@ import {
   useAmendmentDetail,
   useSupplierConfirm,
   useApproveSo,
+  useRejectAmendment,
+  useWithdrawAmendment,
   type AmendmentLine,
 } from "../vendor/scm/lib/so-amendment-queries";
+/* The 2990 bridge's staff row — the vocabulary so_amendments.requested_by is
+   written in (a scm.staff uuid). Desktop AmendmentDetailV2 compares it to decide
+   "did I raise this?"; mirrored here so the mobile withdraw gate matches exactly
+   (the Houzs bridge has no staff id, so isRequester is inert on BOTH surfaces —
+   the effective gate is canReject — but the logic is kept identical so a future
+   bridge fix lands on both at once). */
+import { useAuth as useScmAuth } from "../vendor/scm/lib/auth";
 import {
   buildAmendmentDecisionHistory,
   isRejectDecision,
@@ -198,16 +209,21 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const qc = useQueryClient();
   const confirm = useConfirm();
   const notifyTop = useNotify();
+  const askPrompt = usePrompt();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   /* SO-amendment (Phase 1-C) — the pending-amendment banner's actions. The
      diff sheet opens with the amendment id; the supplier-confirm sheet toggles
-     inline. approve-SO is a direct mutation gated by permission + status. All
-     three reuse the vendored so-amendment-queries hooks (no re-implemented API). */
+     inline. approve-SO / reject / withdraw are direct mutations gated by
+     permission + status. All reuse the vendored so-amendment-queries hooks (no
+     re-implemented API). */
   const [viewingAmendmentId, setViewingAmendmentId] = useState<string | null>(null);
   const [supplierConfirmOpen, setSupplierConfirmOpen] = useState(false);
   const approveSo = useApproveSo();
+  const rejectAmendment = useRejectAmendment();
+  const withdrawAmendment = useWithdrawAmendment();
   const updateStatus = useUpdateMfgSalesOrderStatus();
+  const deleteDraft = useDeleteMfgSalesOrder();
 
   /* Reads route through the SHARED vendored hooks (vendor/scm/lib/
      sales-order-queries) so mobile lives in the SAME query-key namespace as the
@@ -283,6 +299,31 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
     }
   };
 
+  /* Discard draft (owner 2026-07-20) — hard-deletes a junk DRAFT (esp. a bad
+     scan/OCR draft) instead of burning a doc number on confirm→cancel. Behind the
+     house confirm dialog (no naked destructive action); the backend refuses
+     anything but a DRAFT. On success the SO no longer exists, so we leave the
+     detail (onBack) rather than showing a screen for a deleted order. */
+  const handleDiscardDraft = async () => {
+    if (busy || !h) return;
+    if (!(await confirm({
+      title: `Discard draft ${docNo}?`,
+      body: "This permanently deletes this draft order and everything on it. It can't be undone. (Confirmed orders are cancelled, not discarded.)",
+      confirmLabel: "Discard draft",
+      danger: true,
+    }))) return;
+    setActionError(null);
+    setBusy(true);
+    try {
+      await deleteDraft.mutateAsync({ docNo });
+      void notifyTop({ title: "Draft discarded" });
+      onBack();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Couldn't discard the draft. Please try again.");
+      setBusy(false);
+    }
+  };
+
   const ph = h ? phase(h.status) : "submitted";
   /* Balance — null means UNKNOWN, not zero. deriveBalance prefers the
      server-stamped `balance_centi`, then `paid_centi_total`, and only falls
@@ -349,6 +390,103 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
     ACCESS_RANK[houzsAuth.pageAccess("scm.sales.orders")] >= ACCESS_RANK.edit;
   const canSupplierConfirm = houzsAuth.can("scm.amendment.supplier_confirm");
   const canApproveSo = houzsAuth.can("scm.amendment.approve_so");
+
+  /* Reject / Withdraw (desktop AmendmentDetailV2 parity) — the two escape hatches
+     the pending banner was missing. Without them the person who raised a mistaken
+     amendment could neither reject nor pull it back, so their only move was to
+     raise ANOTHER one — the competing-documents problem (Owner 2026-07-19).
+       • Reject rides the purchasing gate the backend enforces
+         (scm.amendment.approve_po), available at every pre-approved gate
+         (REQUESTED / SUPPLIER_PENDING) — desktop `!pastSoGate && canReject`.
+       • Withdraw is the REQUESTER's own way out, REQUESTED only, offered to the
+         requester OR anyone who could reject — desktop `status === "REQUESTED"
+         && (isRequester || canReject)`.
+     The server re-checks both; these gates only decide whether to show the
+     control. `requested_by` (a scm.staff uuid) comes off the shared amendment
+     detail (useAmendmentDetail — same query key the diff sheet warms). The
+     scm-auth bridge has no staff id on Houzs, so isRequester is inert here
+     exactly as on desktop (the effective gate is canReject), but the shape is
+     kept identical so a future bridge fix lands on both surfaces at once. */
+  const { staff: scmStaff } = useScmAuth();
+  const openAmendmentDetail = useAmendmentDetail(hasOpenAmendment && openAmendment ? openAmendment.id : null);
+  const amendmentStatus = (openAmendment?.status ?? "").toUpperCase();
+  const amendmentRequestedBy =
+    (openAmendmentDetail.data?.amendment as { requested_by?: string | null } | undefined)?.requested_by ?? null;
+  const isAmendmentRequester =
+    amendmentRequestedBy != null && scmStaff?.id != null && String(amendmentRequestedBy) === String(scmStaff.id);
+  const canRejectAmendment = houzsAuth.can("scm.amendment.approve_po");
+  const canOfferReject =
+    (amendmentStatus === "REQUESTED" || amendmentStatus === "SUPPLIER_PENDING") && canRejectAmendment;
+  const canOfferWithdraw =
+    amendmentStatus === "REQUESTED" && (isAmendmentRequester || canRejectAmendment);
+
+  /* Reject (an APPROVER refusing) — reason MANDATORY (server 400s without one; a
+     refusal that doesn't say why leaves the requester guessing and resubmitting).
+     Same ≥5-char prompt as desktop handleReject. */
+  const handleReject = async () => {
+    if (!openAmendment) return;
+    const reason = await askPrompt({
+      title: `Reject amendment ${openAmendment.amendment_no || ""}?`.trim(),
+      body: "The Sales Order keeps its current revision and nothing is changed. "
+        + "Say what is wrong so the person who raised it knows what to fix — they will see this.",
+      placeholder: "e.g. supplier cannot supply PC151-01 in this fabric",
+      multiline: true,
+      confirmLabel: "Reject amendment",
+      validate: (v) =>
+        v.trim().length < 5
+          ? "Give a reason the requester can act on — at least a few words."
+          : null,
+    });
+    if (reason == null) return; // cancelled
+    try {
+      await rejectAmendment.mutateAsync({ id: openAmendment.id, reason: reason.trim() });
+      void notifyTop({
+        title: "Amendment rejected",
+        body: "The person who raised it can see your reason and raise a corrected request.",
+      });
+    } catch (e) {
+      void notifyTop({
+        title: "Could not reject this amendment",
+        body: `${e instanceof Error ? e.message : String(e)} Nothing was changed — please try again.`,
+        tone: "error",
+      });
+    }
+  };
+
+  /* Withdraw (the REQUESTER pulling their own request back) — REQUESTED only;
+     the server refuses once anyone has acted on it. Confirm first, then an
+     OPTIONAL reason, mirroring desktop handleWithdraw's two steps. */
+  const handleWithdraw = async () => {
+    if (!openAmendment) return;
+    if (!(await confirm({
+      title: `Withdraw amendment ${openAmendment.amendment_no || ""}?`.trim(),
+      body: "This closes the request without changing the Sales Order. It cannot be reopened — "
+        + "but withdrawing frees the order so you can raise a corrected amendment straight away.",
+      confirmLabel: "Withdraw request",
+      danger: true,
+    }))) return;
+    const reason = await askPrompt({
+      title: "Why are you withdrawing it?",
+      body: "Optional — this is recorded on the Sales Order's history so the next person can follow what happened.",
+      placeholder: "e.g. raised against the wrong line",
+      multiline: true,
+      confirmLabel: "Withdraw request",
+    });
+    if (reason == null) return; // cancelled at the second step
+    try {
+      await withdrawAmendment.mutateAsync({ id: openAmendment.id, reason: reason.trim() || undefined });
+      void notifyTop({
+        title: "Amendment withdrawn",
+        body: "This Sales Order is free again — open it and submit a corrected amendment when you are ready.",
+      });
+    } catch (e) {
+      void notifyTop({
+        title: "Could not withdraw this amendment",
+        body: `${e instanceof Error ? e.message : String(e)} It is still open — please try again.`,
+        tone: "error",
+      });
+    }
+  };
 
   /* Approve-SO gate (SUPPLIER_PENDING → SO_APPROVED). Confirms, then re-derives
      the SO server-side; the vendored useApproveSo mutation already invalidates
@@ -548,6 +686,31 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                     style={{ border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f", fontFamily: "inherit", fontSize: 12, fontWeight: 700, borderRadius: 9, padding: "9px 11px", cursor: "pointer", opacity: busy ? 0.5 : 1 }}
                   >
                     {busy ? "Working…" : "Approve SO revision"}
+                  </button>
+                )}
+                {/* Reject — an approver refusing (reason mandatory). Available at
+                    every pre-approved gate, exactly as desktop AmendmentDetailV2. */}
+                {canOfferReject && (
+                  <button
+                    type="button"
+                    onClick={() => void handleReject()}
+                    disabled={rejectAmendment.isPending}
+                    className="money"
+                    style={{ border: "1px solid #e0bcbc", background: "#f8eaea", color: "#b23a3a", fontFamily: "inherit", fontSize: 12, fontWeight: 700, borderRadius: 9, padding: "9px 11px", cursor: "pointer", opacity: rejectAmendment.isPending ? 0.5 : 1 }}
+                  >
+                    {rejectAmendment.isPending ? "Rejecting…" : "Reject amendment"}
+                  </button>
+                )}
+                {/* Withdraw — the requester's own way out, so a mistaken request
+                    can be closed instead of buried under a second one. */}
+                {canOfferWithdraw && (
+                  <button
+                    type="button"
+                    onClick={() => void handleWithdraw()}
+                    disabled={withdrawAmendment.isPending}
+                    style={{ border: "1px solid var(--line2)", background: "#fff", color: "var(--mut)", fontFamily: "inherit", fontSize: 12, fontWeight: 700, borderRadius: 9, padding: "9px 11px", cursor: "pointer", opacity: withdrawAmendment.isPending ? 0.5 : 1 }}
+                  >
+                    {withdrawAmendment.isPending ? "Withdrawing…" : "Withdraw this request"}
                   </button>
                 )}
               </div>
@@ -787,9 +950,24 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               Adding a payment through Edit (MobileNewSO's PAYMENTS card) also
               still works when the SO is unlocked. */}
           {ph === "draft" && canWriteSo && (
-            <div style={{ display: "flex", gap: 9 }}>
-              <button className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onEdit?.(docNo)}>Edit Draft</button>
-              <button className="btn" style={{ flex: 1.3, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => setStatus("CONFIRMED")}>{busy ? "Working…" : "Create Sales Order"}</button>
+            <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+              <div style={{ display: "flex", gap: 9 }}>
+                <button className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onEdit?.(docNo)}>Edit Draft</button>
+                <button className="btn" style={{ flex: 1.3, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => setStatus("CONFIRMED")}>{busy ? "Working…" : "Create Sales Order"}</button>
+              </div>
+              {/* Discard draft — the escape hatch for a junk draft (esp. a bad
+                  scan/OCR draft). Secondary red-outline so it never competes with
+                  Create; behind the house confirm dialog. Backend refuses anything
+                  but a DRAFT. */}
+              <button
+                type="button"
+                className="btn-ghost"
+                style={{ opacity: busy ? 0.55 : 1, color: "#b23a3a", borderColor: "#e0bcbc" }}
+                disabled={busy}
+                onClick={() => void handleDiscardDraft()}
+              >
+                Discard draft
+              </button>
             </div>
           )}
           {ph === "submitted" && (

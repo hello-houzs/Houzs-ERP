@@ -21,10 +21,10 @@ import {
   type CSSProperties,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, FileText, Pencil, Plus, X, Printer, Save,
-  DollarSign, Lock, History, ChevronDown, Ban, Share2, Check,
+  DollarSign, Lock, History, ChevronDown, Ban, Share2, Check, Trash2,
 } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
@@ -37,6 +37,7 @@ import {
   useMfgSalesOrderDetail,
   useUpdateMfgSalesOrderHeader,
   useUpdateMfgSalesOrderStatus,
+  useDeleteMfgSalesOrder,
   useAddMfgSalesOrderItem,
   useUpdateMfgSalesOrderItem,
   useDeleteMfgSalesOrderItem,
@@ -459,9 +460,11 @@ const amendmentLineSig = (d: SoLineDraft): string => JSON.stringify({
 
 export const SalesOrderDetail = () => {
   const { docNo } = useParams<{ docNo: string }>();
+  const navigate = useNavigate();
   const detail = useMfgSalesOrderDetail(docNo ?? null);
   const updateHeader = useUpdateMfgSalesOrderHeader();
   const updateStatus = useUpdateMfgSalesOrderStatus();
+  const deleteDraft = useDeleteMfgSalesOrder();
   const askConfirm = useConfirm();
   const askPrompt = usePrompt();
   const notify = useNotify();
@@ -1370,6 +1373,29 @@ export const SalesOrderDetail = () => {
     }))) return;
     updateStatus.mutate({ docNo: header.doc_no, status: 'CANCELLED' });
   };
+  /* Discard draft (owner 2026-07-20) — hard-delete a junk DRAFT (esp. a bad
+     scan/OCR draft) instead of burning a doc number on confirm→cancel. Behind the
+     house confirm dialog (no naked destructive action); the backend refuses
+     anything but a DRAFT. On success the SO is gone, so we leave the page for the
+     SO list rather than render a detail for a deleted order. */
+  const handleDiscardDraft = async () => {
+    if (!(await askConfirm({
+      title: `Discard draft ${header.doc_no}?`,
+      body: 'This permanently deletes this draft order and everything on it. It cannot be undone. (Confirmed orders are cancelled, not discarded.)',
+      confirmLabel: 'Discard draft', danger: true,
+    }))) return;
+    try {
+      await deleteDraft.mutateAsync({ docNo: header.doc_no });
+      notify({ title: 'Draft discarded' });
+      navigate('/scm/sales-orders');
+    } catch (e) {
+      notify({
+        title: 'Could not discard this draft',
+        body: `${e instanceof Error ? e.message : String(e)} Nothing was changed — please try again.`,
+        tone: 'error',
+      });
+    }
+  };
   const handlePrint = () => {
     /* Followup #81 — Wait for the payments query before generating; legacy
        header columns (paid_centi, payment_method, …) are deprecated. If
@@ -1607,18 +1633,31 @@ export const SalesOrderDetail = () => {
               Review and Confirm to make it a live order (it stays out of MRP / PO / DO until then).
             </span>
           </span>
-          <Button variant="primary"
-            onClick={async () => {
-              if (!(await askConfirm({
-                title: `Confirm ${header.doc_no}?`,
-                body: 'This turns the draft into a live, confirmed sales order — it will appear in MRP / PO / DO flows and KPIs.',
-                confirmLabel: 'Confirm Order',
-              }))) return;
-              updateStatus.mutate({ docNo: header.doc_no, status: 'CONFIRMED' });
-            }}
-            disabled={updateStatus.isPending}>
-            <span>{updateStatus.isPending ? 'Confirming…' : 'Confirm Order'}</span>
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            {/* Discard draft — the escape hatch for a junk draft (esp. a bad
+                scan/OCR draft). Secondary + red so it never competes with
+                Confirm; behind the house confirm dialog. Backend refuses anything
+                but a DRAFT. */}
+            <Button variant="ghost"
+              onClick={handleDiscardDraft}
+              disabled={deleteDraft.isPending || updateStatus.isPending}
+              style={{ color: 'var(--c-festive-b, #B8331F)' }}>
+              <Trash2 {...ICON} />
+              <span>{deleteDraft.isPending ? 'Discarding…' : 'Discard draft'}</span>
+            </Button>
+            <Button variant="primary"
+              onClick={async () => {
+                if (!(await askConfirm({
+                  title: `Confirm ${header.doc_no}?`,
+                  body: 'This turns the draft into a live, confirmed sales order — it will appear in MRP / PO / DO flows and KPIs.',
+                  confirmLabel: 'Confirm Order',
+                }))) return;
+                updateStatus.mutate({ docNo: header.doc_no, status: 'CONFIRMED' });
+              }}
+              disabled={updateStatus.isPending || deleteDraft.isPending}>
+              <span>{updateStatus.isPending ? 'Confirming…' : 'Confirm Order'}</span>
+            </Button>
+          </div>
         </div>
       )}
 

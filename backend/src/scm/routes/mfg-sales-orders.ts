@@ -73,6 +73,7 @@ import {
   scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   isMirroredDocNo, mintsIntoMirroredNamespace,
   MIRRORED_SO_READONLY, MIRRORED_SO_CREATE_BLOCKED,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY,
 } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr, phoneSearchOrParts } from '../lib/postgrest-search';
@@ -5245,6 +5246,96 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
   }
 
   return c.json({ salesOrder: data });
+});
+
+// ── DELETE /mfg-sales-orders/:docNo — discard a DRAFT ───────────────────────
+// Owner 2026-07-20 — a DRAFT (especially a junk scan / OCR draft) had NO way out
+// but confirm→cancel, which burns a doc number and leaves a dead CANCELLED row
+// (DRAFT was never in CANCELLABLE_STATUSES and no DELETE route existed). This
+// hard-deletes a DRAFT — and ONLY a DRAFT.
+//
+//   • DRAFT ONLY. A CONFIRMED+ order is CANCELLED (a reversible, audited status
+//     change that also books any deposit credit), never hard-deleted — 409 on a
+//     non-draft, 404 on a missing / other-company doc.
+//   • Company-scoped as a STRICT write: requireActiveCompanyId REFUSES when the
+//     active company is unknown (no default, no `??` — an unresolved company must
+//     never degrade to "all companies" on a delete). The load + the delete are
+//     both scoped to that company, so a cross-company doc reads as 404 (leaking
+//     that someone else's doc exists is itself a leak).
+//   • Children go by ON DELETE CASCADE — mfg_sales_order_items / _payments /
+//     mfg_so_status_changes / mfg_so_audit_log / mfg_so_price_overrides all carry
+//     it (scripts/scm-schema/2990s-full-schema.sql); a DRAFT has no DO/SI, which
+//     are SET NULL anyway. The DELETE statement is itself guarded on
+//     status = 'DRAFT', so a confirm that races in between the read and the write
+//     matches 0 rows and touches nothing.
+//   • Permission = SO edit: the router mounts behind scmAreaGuard('scm.sales.orders')
+//     with the default 'edit' write level, so DELETE already requires edit.
+mfgSalesOrders.delete('/:docNo', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo');
+
+  // STRICT company scope for a destructive write — refuse when unresolved.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
+  // Self-scoped selling roles may only touch their OWN SO (mirror the line /
+  // status / payment mutations). Not-theirs reads as not-found.
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
+
+  // Load the SO in THIS company only. Missing OR another company's → same 404.
+  const { data: soRow } = await scopeToCompanyId(
+    sb.from('mfg_sales_orders')
+      .select('doc_no, status, slip_image_key, receipt_image_key'),
+    co.companyId,
+  ).eq('doc_no', docNo).maybeSingle();
+  if (!soRow) return c.json(NOT_THIS_COMPANY, 404);
+
+  const status = String((soRow as { status?: string | null }).status ?? '').toUpperCase();
+  if (status !== 'DRAFT') {
+    return c.json({
+      error: 'so_not_draft',
+      reason: 'Only a draft can be discarded. A confirmed order must be cancelled, not deleted.',
+    }, 409);
+  }
+
+  // Grab the R2 keys BEFORE the rows vanish (the DB rows cascade away): the
+  // draft's scan slip + receipt and any per-line photos all live in the
+  // SO_ITEM_PHOTOS bucket (scan-slips/<id> keys + item photo_urls).
+  const slipImageKey = (soRow as { slip_image_key?: string | null }).slip_image_key ?? null;
+  const receiptImageKey = (soRow as { receipt_image_key?: string | null }).receipt_image_key ?? null;
+  const { data: itemRows } = await sb.from('mfg_sales_order_items').select('photo_urls').eq('doc_no', docNo);
+
+  // Atomic, race-safe delete: doc_no + company + still-DRAFT. If a confirm landed
+  // between the check above and here, this matches 0 rows → 409, nothing touched.
+  const del = await scopeToCompanyId(
+    sb.from('mfg_sales_orders').delete().eq('status', 'DRAFT'),
+    co.companyId,
+  ).eq('doc_no', docNo).select('doc_no').maybeSingle();
+  if (del.error) return c.json({ error: 'delete_failed', reason: del.error.message }, 500);
+  if (!del.data) {
+    return c.json({
+      error: 'so_not_draft',
+      reason: 'This order is no longer a draft — refresh to see its current status.',
+    }, 409);
+  }
+
+  // Best-effort R2 orphan sweep — never fails the delete (a few KB of orphaned
+  // blob is cheaper to leave than to roll a committed delete back over). Mirrors
+  // the delete-item handler: main object + its `.thumb` sibling.
+  if (c.env.SO_ITEM_PHOTOS) {
+    const photoKeys = (itemRows ?? []).flatMap(
+      (r) => ((r as { photo_urls?: string[] | null }).photo_urls ?? []),
+    );
+    const keys = [...photoKeys, slipImageKey, receiptImageKey].filter(
+      (k): k is string => typeof k === 'string' && k.length > 0,
+    );
+    for (const key of keys) {
+      try { await c.env.SO_ITEM_PHOTOS.delete(key); }
+      catch (e) { /* eslint-disable-next-line no-console */ console.warn('[so-discard] R2 sweep failed for', key, e); }
+      await deleteThumbFor(c.env.SO_ITEM_PHOTOS, key);
+    }
+  }
+
+  return c.json({ ok: true, docNo });
 });
 
 // ── GET /mfg-sales-orders/:docNo/audit-log ──────────────────────────
