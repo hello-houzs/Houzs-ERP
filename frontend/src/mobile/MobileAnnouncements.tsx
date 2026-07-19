@@ -5,6 +5,12 @@ import { MobileVirtualList } from "./MobileVirtualList";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesDirectorUser } from "../auth/salesAccess";
 import { formatDate } from "../lib/utils";
+import {
+  type AnnouncementTranslations,
+  localizeAnnouncement,
+  useMobileLang,
+  useT,
+} from "./mobileI18n";
 import "./mobile.css";
 
 // ---------------------------------------------------------------------------
@@ -52,6 +58,14 @@ type Announcement = {
   targetCompanyIds?: number[];
   category: string;
   source?: string | null;
+  // Machine translations produced ONCE on POST by the backend
+  // (lib/translate-announcement.ts) into en/ms/zh/bn, stored as a JSON blob on
+  // the row. NULL/absent for notices posted before translation existed, for
+  // rows whose translate call failed, and — deliberately — for `bn` on every
+  // row written while the 4th language was still Burmese. Every consumer must
+  // go through localizeAnnouncement(), which falls back to the ORIGINAL posted
+  // text in all of those cases.
+  translations?: AnnouncementTranslations;
 };
 
 // Multi-company: the company-target selector + row chip only appear when
@@ -366,6 +380,9 @@ const BUCKETS: Array<{ value: Bucket; label: string }> = [
 
 export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
   const { can, user } = useAuth();
+  // Reader's chosen portal language — drives which stored translation each
+  // notice renders. localizeAnnouncement() falls back to the original text.
+  const lang = useMobileLang();
   // A Sales Director may compose (owner rule 2026-07-15) even without the
   // announcements.* permission — code-keyed off the org chart, mirroring the
   // backend requirePermissionOrSalesDirector admittance. `salesDirOnly` =
@@ -530,7 +547,7 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: unread ? 800 : 700, color: "#11140f", lineHeight: 1.25 }}>{a.title}</span>
+                      <span className="ann-row-title" style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: unread ? 800 : 700, color: "#11140f", lineHeight: 1.25 }}>{localizeAnnouncement(a, lang).title}</span>
                       {unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "#16695f" }} />}
                     </span>
                     <span style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5, flexWrap: "wrap" }}>
@@ -582,6 +599,18 @@ function Detail({
   const [acking, setAcking] = useState(false);
   const isAcked = acked || localAck;
 
+  const lang = useMobileLang();
+  const t = useT();
+  const loc = localizeAnnouncement(ann, lang);
+  // Reader-driven escape hatch back to the author's own words. Reset whenever
+  // the language changes so switching language never leaves you stuck looking
+  // at the original with a "Show translation" button you didn't ask for.
+  const [showOriginal, setShowOriginal] = useState(false);
+  useEffect(() => { setShowOriginal(false); }, [lang, ann.id]);
+  const shown = showOriginal
+    ? { title: ann.title, body: ann.body }
+    : { title: loc.title, body: loc.body };
+
   const ack = async () => {
     if (isAcked || acking) return;
     setAcking(true);
@@ -615,9 +644,40 @@ function Detail({
           <CompanyChip ann={ann} companies={companies} />
           <span style={{ fontSize: 11, color: "#9aa093", alignSelf: "center" }}>{dm(ann.createdAt)}</span>
         </div>
-        <div id="ann-d-title" style={{ fontSize: 21, fontWeight: 800, color: "#11140f", lineHeight: 1.25 }}>{ann.title}</div>
+        <div id="ann-d-title" style={{ fontSize: 21, fontWeight: 800, color: "#11140f", lineHeight: 1.25 }}>{shown.title}</div>
         <div id="ann-d-by" style={{ fontSize: 11.5, color: "#767b6e", marginTop: 6 }}>Posted by {byLine(ann)}</div>
-        <div id="ann-d-body" style={{ fontSize: 13.5, lineHeight: 1.7, color: "#414539", marginTop: 14, whiteSpace: "pre-wrap" }}>{ann.body}</div>
+
+        {/* ---- Translation disclosure -------------------------------------
+            A machine translation of a WORKPLACE notice must never masquerade
+            as the author's own words: a mistranslated safety or pay notice is
+            worse than an untranslated one. So whenever the text above is
+            machine-produced we say so, and give a one-tap toggle back to the
+            original the author actually wrote.
+            When the reader chose a language this notice has no translation
+            for, we say THAT too rather than silently serving English and
+            leaving them to wonder whether they missed something. */}
+        {loc.isTranslated && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: "#767b6e", background: "#f4f6f3", border: "1px solid #e3e6e0", borderRadius: 999, padding: "4px 9px", lineHeight: 1.5 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#767b6e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m5 8 6 6" /><path d="m4 14 6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" /><path d="m22 22-5-10-5 10" /><path d="M14 18h6" /></svg>
+              {t("ann.autoTranslated")}
+            </span>
+            <button
+              type="button"
+              className="tinybtn"
+              onClick={() => setShowOriginal((v) => !v)}
+            >
+              {showOriginal ? t("ann.showTranslated") : t("ann.showOriginal")}
+            </button>
+          </div>
+        )}
+        {!loc.isTranslated && lang !== "en" && (
+          <div style={{ fontSize: 10.5, color: "#9aa093", marginTop: 10, lineHeight: 1.6 }}>
+            {t("ann.noTranslation")}
+          </div>
+        )}
+
+        <div id="ann-d-body" style={{ fontSize: 13.5, lineHeight: 1.7, color: "#414539", marginTop: 14, whiteSpace: "pre-wrap" }}>{shown.body}</div>
         <div id="ann-d-atts" style={{ marginTop: 16 }}>
           <Attachments ann={ann} />
         </div>

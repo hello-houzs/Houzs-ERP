@@ -17,6 +17,14 @@ import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { fmtCenti } from "../lib/scm";
+import {
+  LANG_LABELS,
+  LANG_SUBLABELS,
+  MOBILE_LANGS,
+  setMobileLang,
+  useMobileLang,
+  useT,
+} from "./mobileI18n";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -163,6 +171,8 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
   const [screen, setScreen] = useState<Screen>("home");
   const { user } = useAuth();
   const confirm = useConfirm();
+  // Drives the "Language" row's right-hand value; re-renders on change.
+  const activeLang = useMobileLang();
 
   // The full team roster — used both for the richer Personal-details fields
   // (phone / department / position) and for My Team. Gated by users.read on
@@ -325,7 +335,11 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
         <div className="card" style={{ overflow: "hidden" }}>
           <Item icon="users" label="Personal details" onClick={() => setScreen("personal")} first />
           <Item icon="mega" label="Notifications" right={notifOn ? "On" : "Off"} onClick={() => setScreen("notif")} />
-          <Item icon="list" label="Language" right="English" onClick={() => setScreen("language")} />
+          {/* Row label stays English (this screen is not translated yet — a
+              half-translated screen reads as broken). The VALUE is the chosen
+              language in its own script, which is the bit a Bengali reader
+              needs to recognise. */}
+          <Item icon="list" label="Language" right={LANG_LABELS[activeLang]} onClick={() => setScreen("language")} />
           {showTeam && <Item icon="users" label="My Team" onClick={() => setScreen("team")} />}
         </div>
 
@@ -610,37 +624,65 @@ function NotificationsScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-// ── Language (informational — English-only ERP) ──
+// ── Language ──
+// Live four-language picker (English / Bahasa Malaysia / 中文 / বাংলা), owner
+// ruling 2026-07-17. Replaces the previous "Coming soon" stub. MOBILE ONLY —
+// there is intentionally no desktop equivalent.
+//
+// Each row is labelled in its OWN script so a reader who cannot read English
+// can still find their language. Selecting writes localStorage via
+// setMobileLang(), which notifies every useMobileLang() subscriber, so the
+// checkmark and the Announcements feed re-render immediately — no reload.
 function LanguageScreen({ onBack }: { onBack: () => void }) {
-  const options: { code: string; label: string; enabled: boolean }[] = [
-    { code: "en", label: "English", enabled: true },
-    { code: "ms", label: "Bahasa Malaysia", enabled: false },
-    { code: "zh", label: "Chinese", enabled: false },
-  ];
+  const lang = useMobileLang();
+  const t = useT();
   return (
-    <SubScreen title="Language" onBack={onBack}>
+    <SubScreen title={t("lang.title")} onBack={onBack}>
       <div style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 14, overflow: "hidden" }}>
-        {options.map((o, i) => (
-          <div
-            key={o.code}
-            style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 14px", borderTop: i === 0 ? "none" : "1px solid #e3e6e0", opacity: o.enabled ? 1 : 0.55 }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>{o.label}</div>
-              {!o.enabled && <div style={{ fontSize: 11, color: "var(--muted)" }}>Coming soon</div>}
-            </div>
-            {o.enabled ? (
-              <span style={{ width: 22, height: 22, borderRadius: "50%", background: "var(--teal)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-              </span>
-            ) : (
-              <span style={{ width: 22, height: 22, borderRadius: "50%", border: "2px solid var(--line)" }} />
-            )}
-          </div>
-        ))}
+        {MOBILE_LANGS.map((code, i) => {
+          const selected = code === lang;
+          return (
+            <button
+              key={code}
+              type="button"
+              onClick={() => setMobileLang(code)}
+              aria-pressed={selected}
+              // lang on the row itself so the browser picks the right font for
+              // this label even while the app is still in another language.
+              lang={code}
+              style={{
+                display: "flex", alignItems: "center", gap: 12, width: "100%",
+                padding: "14px 14px", background: "none", border: "none",
+                borderTop: i === 0 ? "none" : "1px solid #e3e6e0",
+                fontFamily: "inherit", textAlign: "left", cursor: "pointer",
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {/* line-height 1.5 (not the usual 1.25) so বাংলা's matra and
+                    descenders are not clipped in its own row. */}
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)", lineHeight: 1.5 }}>
+                  {LANG_LABELS[code]}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.4 }} lang="en">
+                  {LANG_SUBLABELS[code]}
+                </div>
+              </div>
+              {selected ? (
+                <span style={{ width: 22, height: 22, borderRadius: "50%", background: "var(--teal)", display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                </span>
+              ) : (
+                <span style={{ width: 22, height: 22, borderRadius: "50%", border: "2px solid var(--line)", flex: "none" }} />
+              )}
+            </button>
+          );
+        })}
       </div>
-      <div style={{ fontSize: 11, color: "#9aa093", marginTop: 11, textAlign: "center", lineHeight: 1.5 }}>
-        UI copy stays English to match the live ERP. Dates and numbers follow the Malaysia format.
+      <div style={{ fontSize: 11, color: "#9aa093", marginTop: 11, textAlign: "center", lineHeight: 1.6 }}>
+        {t("lang.hint")}
+      </div>
+      <div style={{ fontSize: 11, color: "#9aa093", marginTop: 6, textAlign: "center", lineHeight: 1.6 }}>
+        {t("lang.dateNote")}
       </div>
     </SubScreen>
   );

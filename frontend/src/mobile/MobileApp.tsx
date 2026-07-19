@@ -10,6 +10,7 @@ import { PromptProvider } from "../vendor/scm/components/PromptDialog";
 import { ChoiceProvider } from "../vendor/scm/components/ChoiceDialog";
 import { registerDialogService } from "../vendor/scm/lib/dialog-service";
 import { invalidateSoShared } from "./sharedInvalidate";
+import { useApplyHtmlLang } from "./mobileI18n";
 import { IosInstallGuide } from "../components/IosInstallGuide";
 import { AndroidInstallGuide } from "../components/AndroidInstallGuide";
 // Heavy mobile screens are lazy-loaded so the initial mobile chunk stays small
@@ -386,6 +387,11 @@ function MobileScreenFallback() {
 }
 
 export function MobileApp() {
+  // Stamp <html lang> from the reader's chosen mobile language. This is what
+  // activates the `:root[lang="bn"]` Bengali font-stack + line-height rules in
+  // mobile.css, and it gives screen readers the right voice. Mounted at the
+  // shell root so it applies to every mobile screen, including pre-auth.
+  useApplyHtmlLang();
   return (
     <NotifyProvider>
       <ConfirmProvider>
