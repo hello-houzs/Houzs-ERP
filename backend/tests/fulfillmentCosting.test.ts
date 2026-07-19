@@ -8,6 +8,9 @@ import {
   summarize,
   groupRows,
   dimensionKeyLabel,
+  normaliseCategoryKey,
+  categoryLabel,
+  escapeLikeLiteral,
   type LineComparison,
   type LineDims,
 } from "../src/scm/lib/fulfillment-costing";
@@ -216,9 +219,10 @@ describe("groupRows — (d) all four dimensions", () => {
     expect(byKey["ITM-2"]).toBe(1);
   });
 
-  test("by category", () => {
+  test("by category — key is the CASE-FOLDED value, label is canonical", () => {
     const g = groupRows(sampleRows(), "category");
-    expect(new Set(g.map((x) => x.key))).toEqual(new Set(["MATTRESS", "SOFA"]));
+    expect(new Set(g.map((x) => x.key))).toEqual(new Set(["mattress", "sofa"]));
+    expect(new Set(g.map((x) => x.label))).toEqual(new Set(["Mattress", "Sofa"]));
   });
 
   test("by menu", () => {
@@ -231,6 +235,58 @@ describe("groupRows — (d) all four dimensions", () => {
     const byKey = Object.fromEntries(g.map((x) => [x.key, x.lines]));
     expect(byKey["Johor"]).toBe(2);
     expect(byKey["Selangor"]).toBe(1);
+  });
+
+  /* The owner-reported prod defect: `bedframe` and `BEDFRAME` rendered as two
+     groups, each with its own partial line count and variance, and nothing on
+     screen said so. `item_group` is unconstrained text written by two writers
+     that disagree about case, so the fold happens at read time. */
+  test("case-variant categories collapse into ONE group with the FULL total", () => {
+    const mk = (id: string, category: string, order: number) =>
+      computeLineComparison({
+        dims: dims({ so_item_id: id, category }),
+        order: { unitCenti: order, lineCenti: order },
+        doAgg: aggregateDoLines([]),
+        siAgg: aggregateSiLines([{ qty: 1, unit_cost_centi: order + 100, line_cost_centi: order + 100 }]),
+      });
+    const g = groupRows(
+      [mk("a", "bedframe", 1000), mk("b", "BEDFRAME", 2000), mk("c", "Bedframe", 3000)],
+      "category",
+    );
+    expect(g).toHaveLength(1);
+    expect(g[0].key).toBe("bedframe");
+    expect(g[0].label).toBe("Bedframe");
+    // The whole point: the count and the money are the SUM of all three
+    // spellings, not whichever spelling happened to be stored first.
+    expect(g[0].lines).toBe(3);
+    expect(g[0].order_cost_centi).toBe(6000);
+    expect(g[0].variance_centi).toBe(300);
+  });
+
+  test("surrounding whitespace does not fork a category either", () => {
+    expect(normaliseCategoryKey("  SOFA  ")).toBe("sofa");
+    expect(normaliseCategoryKey("Bed  frame")).toBe("bed frame");
+  });
+
+  test("`others` is labelled as the fallback it is, not as a product family", () => {
+    // It has NO counterpart in the mfg_product_category enum — it is synthesised
+    // when the product lookup misses, and is also the SO line editor's default.
+    expect(categoryLabel("others")).toBe("Others (uncategorised)");
+    expect(categoryLabel("OTHERS")).toBe("Others (uncategorised)");
+  });
+
+  test("an unrecognised category is shown verbatim, never hidden or blanked", () => {
+    expect(categoryLabel("Curtains")).toBe("Curtains");
+    expect(categoryLabel(null)).toBe("Unspecified");
+    expect(categoryLabel("   ")).toBe("Unspecified");
+  });
+
+  test("escapeLikeLiteral makes the drill-down filter an equality, not a pattern", () => {
+    // A merged bucket's drill-down uses ilike; without escaping, a category
+    // containing % would match unrelated rows and the detail would contradict
+    // the total it was opened from.
+    expect(escapeLikeLiteral("50%_off")).toBe("50\\%\\_off");
+    expect(escapeLikeLiteral("bedframe")).toBe("bedframe");
   });
 
   test("a missing dimension value groups under Unspecified, not dropped", () => {
