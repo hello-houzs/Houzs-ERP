@@ -32,6 +32,7 @@ import { supabaseAuth } from "../middleware/auth";
 import type { Env, Variables } from "../env";
 import { paginateAll } from "../lib/paginate-all";
 import { scopeToCompany } from "../lib/companyScope";
+import { reduceAgingSnapshot, type AgingMvRow } from "../lib/ar-aging";
 
 export const outstanding = new Hono<{ Bindings: Env; Variables: Variables }>();
 outstanding.use("*", supabaseAuth);
@@ -129,6 +130,42 @@ outstanding.get("/summary", async (c) => {
   const sb = c.get("supabase");
   const from = c.req.query("from");
   const to = c.req.query("to");
+  const wantSnapshot = c.req.query("snapshot") === "1";
+
+  /* SNAPSHOT FAST PATH (?snapshot=1) — serve the pre-aggregated scm.mv_ar_aging
+     (migration 0151) instead of the seven live SUM/count scans. The live query
+     stays the DEFAULT: the Outstanding page is a same-day operational dashboard
+     and always sends a user-chosen date range (Outstanding.tsx), which this
+     all-time snapshot does not carry — so the snapshot is opt-in for callers who
+     want the cheap all-time rollup and accept a nightly figure.
+
+     Only honoured with NO date range: the MV is all-time, so a date-bounded
+     request MUST fall through to the live path (which filters each module by its
+     own date column). A missing MV / freshness row — migration 0151 not yet
+     applied on this DB — also falls through, so the endpoint degrades to exactly
+     the behaviour it has today. */
+  if (wantSnapshot && !from && !to) {
+    const meta = await sb
+      .from("mv_ar_aging_meta")
+      .select("refreshed_at")
+      .limit(1)
+      .maybeSingle();
+    if (!meta.error) {
+      let mvQ = sb
+        .from("mv_ar_aging")
+        .select("module, cnt, total_centi, total_outstanding_centi");
+      mvQ = scopeToCompany(mvQ, c); // same REQUIRED-half predicate as the live path
+      const { data, error } = await mvQ;
+      if (!error) {
+        return c.json({
+          summary: reduceAgingSnapshot((data ?? []) as AgingMvRow[]),
+          snapshot: true,
+          refreshed_at: (meta.data?.refreshed_at as string | null) ?? null,
+        });
+      }
+    }
+    // fall through to the live computation below
+  }
 
   const summary: Record<
     string,
@@ -198,7 +235,10 @@ outstanding.get("/summary", async (c) => {
       };
     }
   }
-  return c.json({ summary });
+  // Live path: numbers are computed on this request, so `refreshed_at` is null
+  // (no snapshot) and `snapshot` is false — Finance can tell a live figure from
+  // a nightly one by these two fields.
+  return c.json({ summary, snapshot: false, refreshed_at: null });
 });
 
 export default outstanding;
