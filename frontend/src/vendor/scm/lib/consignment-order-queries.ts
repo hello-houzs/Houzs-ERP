@@ -27,6 +27,7 @@ import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
 import { retryUnlessClientError } from '../../../lib/retryPolicy';
+import { prepareImageForUpload } from '../../../lib/imagePipeline';
 
 /* ── List ────────────────────────────────────────────────────────────── */
 export const useConsignmentOrders = (status?: string) => useQuery({
@@ -185,6 +186,9 @@ export const useDeleteConsignmentOrderItem = () => {
 export type UploadConsignmentItemPhotoResult = {
   photoKey: string;
   photoUrl: string;
+  /** WO-7 — signed URL for the `.thumb` sibling; absent from pre-thumb
+   *  backends. Grids try it first and fall back to photoUrl on 404. */
+  thumbUrl?: string;
   expiresAt?: string;
 };
 
@@ -198,8 +202,13 @@ export const useUploadConsignmentItemPhoto = () => {
     mutationFn: async ({ docNo, itemId, file }: {
       docNo: string; itemId: string; file: File;
     }): Promise<UploadConsignmentItemPhotoResult> => {
+      /* WO-7 — downscale/re-encode + thumbnail in one decode pass; falls
+         back to the original file (thumb: null) when compression is
+         unavailable. */
+      const prepared = await prepareImageForUpload(file);
       const fd = new FormData();
-      fd.append('file', file);
+      fd.append('file', prepared.file);
+      if (prepared.thumb) fd.append('thumb', prepared.thumb);
       return authedFetch<UploadConsignmentItemPhotoResult>(
         `/consignment-orders/${docNo}/items/${itemId}/photos`,
         { method: 'POST', body: fd },
@@ -212,7 +221,12 @@ export const useUploadConsignmentItemPhoto = () => {
   });
 };
 
-export type SignedConsignmentPhotoUrlResponse = { signedUrl: string; expiresAt: string };
+export type SignedConsignmentPhotoUrlResponse = {
+  signedUrl: string;
+  /** WO-7 — signed `.thumb` sibling URL (absent from pre-thumb backends). */
+  thumbUrl?: string;
+  expiresAt: string;
+};
 
 export async function fetchConsignmentItemPhotoSignedUrl(
   docNo: string,

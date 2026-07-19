@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { uploadAnnouncementAttachment } from "../lib/announcementAttachmentUpload";
+import { loadThumbFirst } from "../lib/imagePipeline";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesDirectorUser } from "../auth/salesAccess";
@@ -186,7 +188,7 @@ function CompanyChip({ ann, companies }: { ann: Announcement; companies: Company
 // A photo/video thumb streamed from R2. <img src> can't carry the bearer, so we
 // fetch it as a blob URL (api.fetchBlobUrl) and revoke on unmount. Falls back to
 // the design's .ph placeholder if there's no image / the fetch fails.
-function MediaThumb({ ann, att, style }: { ann: Announcement; att: Attachment; style: React.CSSProperties }) {
+function MediaThumb({ ann, att, style, preferThumb = false }: { ann: Announcement; att: Attachment; style: React.CSSProperties; preferThumb?: boolean }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -194,8 +196,10 @@ function MediaThumb({ ann, att, style }: { ann: Announcement; att: Attachment; s
     let live = true;
     let made: string | null = null;
     const path = `/api/announcements/${encodeURIComponent(ann.id)}/attachments/${att.r2Key}`;
-    api
-      .fetchBlobUrl(path)
+    // WO-7 — multi-photo grid tiles load the light `.thumb` sibling first
+    // (fallback: the original, which is all pre-thumb notices have). Single
+    // full-width photos and video posters keep the original for sharpness.
+    loadThumbFirst((p) => api.fetchBlobUrl(p), path, preferThumb)
       .then((u) => {
         if (!live) {
           URL.revokeObjectURL(u);
@@ -211,7 +215,7 @@ function MediaThumb({ ann, att, style }: { ann: Announcement; att: Attachment; s
       live = false;
       if (made) URL.revokeObjectURL(made);
     };
-  }, [ann.id, att.r2Key]);
+  }, [ann.id, att.r2Key, preferThumb]);
 
   if (url && !failed) {
     return <img src={url} alt="" style={{ ...style, objectFit: "cover", display: "block" }} />;
@@ -258,7 +262,7 @@ function Attachments({ ann }: { ann: Announcement }) {
       {photos.length > 0 && (
         <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols},1fr)`, gap: 7, marginBottom: 8 }}>
           {photos.map((p) => (
-            <MediaThumb key={p.r2Key} ann={ann} att={p} style={{ width: "100%", aspectRatio: photoAspect, borderRadius: 9 }} />
+            <MediaThumb key={p.r2Key} ann={ann} att={p} preferThumb={cols > 1} style={{ width: "100%", aspectRatio: photoAspect, borderRadius: 9 }} />
           ))}
         </div>
       )}
@@ -798,17 +802,13 @@ function Compose({
     try {
       // Two-step upload manifest: PUT each file to the 'compose' scope, collect
       // {r2Key, mime} entries. A failed upload is skipped rather than blocking.
+      // WO-7: shared pipeline — compresses images + uploads their thumbs.
       const uploaded: Attachment[] = [];
       for (const f of files) {
-        const ext = (f.name.split(".").pop() || "bin").toLowerCase();
         try {
-          const manifest = await api.putBinary<{ r2Key: string; mime: string; size?: number }>(
-            `/api/announcements/compose/attachments/upload?ext=${encodeURIComponent(ext)}`,
-            f,
-            f.type || "application/octet-stream",
-          );
+          const manifest = await uploadAnnouncementAttachment(f);
           if (manifest?.r2Key) {
-            uploaded.push({ r2Key: manifest.r2Key, name: f.name, mime: manifest.mime, size: manifest.size });
+            uploaded.push({ r2Key: manifest.r2Key, name: manifest.name, mime: manifest.mime, size: manifest.size });
           }
         } catch {
           /* skip this file; publish the rest. */

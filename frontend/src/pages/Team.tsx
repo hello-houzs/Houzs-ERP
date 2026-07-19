@@ -19,6 +19,7 @@ import { EmptyState } from "../components/EmptyState";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { api, tokenStore } from "../api/client";
+import { prepareImageForUpload } from "../lib/imagePipeline";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesDirectorUser } from "../auth/salesAccess";
 import { relativeTime, cn } from "../lib/utils";
@@ -2621,17 +2622,21 @@ function EditMemberPanel({
     (sr) => sr.id === showroomId,
   );
 
-  async function uploadPic(file: File) {
-    if (!file.type.startsWith("image/")) {
+  async function uploadPic(rawFile: File) {
+    if (!rawFile.type.startsWith("image/")) {
       toast.error("Pick an image file");
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error("Image must be under 5 MB");
       return;
     }
     setPicBusy(true);
     try {
+      // WO-7 — avatars render small; compress before upload (also absorbs
+      // what used to be a hard "under 5 MB" rejection for phone shots).
+      const { file } = await prepareImageForUpload(rawFile, { maxDimension: 1000, wantThumb: false });
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error("Image must be under 5 MB");
+        setPicBusy(false);
+        return;
+      }
       await api.putBinary(
         `/api/users/${user.id}/profile-pic?name=${encodeURIComponent(file.name)}`,
         file,

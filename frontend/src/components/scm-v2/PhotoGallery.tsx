@@ -45,6 +45,7 @@ import {
 import { Button } from "../Button";
 import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { cn } from "../../lib/utils";
+import { prepareImageForUpload } from "../../lib/imagePipeline";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,9 @@ export type PhotoRow = {
   id: string;
   key: string;
   url: string;
+  /** WO-7 — proxy URL of the `.thumb` sibling; null for photos uploaded
+   *  before thumbnails shipped. Grid renders it first, full url on error. */
+  thumbUrl?: string | null;
   is_primary: boolean;
   order: number;
 };
@@ -174,13 +178,29 @@ export function PhotoGallery({
 
   // Upload pipeline
   const startUpload = async (file: File, rid: string) => {
-    const fd = new FormData();
-    fd.append("file", file);
     setPending((prev) =>
       prev.map((p) =>
         p.rid === rid ? { ...p, state: { phase: "uploading", progress: 0 } } : p,
       ),
     );
+    // WO-7 — downscale/re-encode + generate the thumbnail client-side.
+    // Falls back to the original file (no thumb part) when unavailable.
+    const prepared = await prepareImageForUpload(file);
+    if (prepared.file.size > MAX_BYTES) {
+      // Compression could not bring it under the server's 5 MB gate —
+      // fail here with a clear message instead of burning the upload.
+      setPending((prev) =>
+        prev.map((p) =>
+          p.rid === rid
+            ? { ...p, state: { phase: "error", message: "Still over 5 MB after compression - use a smaller image" } }
+            : p,
+        ),
+      );
+      return;
+    }
+    const fd = new FormData();
+    fd.append("file", prepared.file);
+    if (prepared.thumb) fd.append("thumb", prepared.thumb);
     try {
       await authedFetch<{ photo: PhotoRow }>(
         `/product-models/${modelId}/photos`,
@@ -210,13 +230,16 @@ export function PhotoGallery({
         });
         continue;
       }
-      if (f.size > MAX_BYTES) {
+      // WO-7 — startUpload compresses before sending, so a raw phone photo
+      // over the server's 5 MB gate is fine now. Keep only a decode-sanity
+      // ceiling; the post-compression size is enforced in startUpload.
+      if (f.size > 25 * 1024 * 1024) {
         accepted.push({
           rid: newRid(),
           file: f,
           state: {
             phase: "error",
-            message: `Too large (${(f.size / (1024 * 1024)).toFixed(1)} MB, max 5 MB)`,
+            message: `Too large (${(f.size / (1024 * 1024)).toFixed(1)} MB, max 25 MB)`,
           },
         });
         continue;
@@ -541,13 +564,21 @@ function PhotoTile({
   onMoveUp: () => void;
   onMoveDown: () => void;
 }) {
+  /* WO-7 — render the light `.thumb` sibling in the grid and fall back to
+     the full image when it errors (photos uploaded before thumbnails
+     shipped have no thumb object; the proxy 404s and onError fires). */
+  const [useFull, setUseFull] = useState(!photo.thumbUrl);
+  const src = !useFull && photo.thumbUrl ? photo.thumbUrl : photo.url;
   return (
     <div className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-surface-2 shadow-stone">
       <img
-        src={photo.url}
+        src={src}
         alt=""
         className="h-full w-full object-cover"
         loading="lazy"
+        onError={() => {
+          if (!useFull) setUseFull(true);
+        }}
       />
       {photo.is_primary && (
         <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold uppercase tracking-brand text-white">

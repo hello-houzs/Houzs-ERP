@@ -7,6 +7,7 @@ import { Avatar } from "../components/Avatar";
 import { useAuth } from "../auth/AuthContext";
 import { useToast } from "../hooks/useToast";
 import { api } from "../api/client";
+import { prepareImageForUpload } from "../lib/imagePipeline";
 import { formatDate, relativeTime, cn } from "../lib/utils";
 import {
   isBrowserPushEnabled,
@@ -39,17 +40,21 @@ export function Profile() {
     setName(user?.name || "");
   }, [user?.name]);
 
-  async function uploadPic(file: File) {
-    if (!file.type.startsWith("image/")) {
+  async function uploadPic(rawFile: File) {
+    if (!rawFile.type.startsWith("image/")) {
       toast.error("Pick an image file");
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error("Image must be under 5 MB");
       return;
     }
     setPicBusy(true);
     try {
+      // WO-7 — avatars render small; 1000px is generous. Compression also
+      // absorbs what used to be a hard "under 5 MB" rejection for phone shots.
+      const { file } = await prepareImageForUpload(rawFile, { maxDimension: 1000, wantThumb: false });
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error("Image must be under 5 MB");
+        setPicBusy(false);
+        return;
+      }
       await api.putBinary(
         `/api/users/me/profile-pic?name=${encodeURIComponent(file.name)}`,
         file,

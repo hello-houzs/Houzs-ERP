@@ -33,6 +33,7 @@ import {
 import { useMaintenanceConfig, useUpdateMfgProductStatus, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { useFabricLibrary } from '../../vendor/scm/lib/queries';
 import { useAuth } from '../../auth/AuthContext';
+import { prepareImageForUpload } from '../../lib/imagePipeline';
 import { canViewProductCost } from '../../auth/salesAccess';
 import { resolveSizeInfo } from '../../vendor/scm/lib/size-info';
 import styles from './ProductModelDetail.module.css';
@@ -303,19 +304,25 @@ export const ProductModelDetail = ({
    *  public URL. Bucket policies (migration 0066) grant authenticated INSERT
    *  on `model-photos`; the bucket is `public: true` so the getPublicUrl
    *  result is a directly-loadable <img src=…>. */
-  const onPhotoFile = async (file: File) => {
+  const onPhotoFile = async (rawFile: File) => {
     if (!id) return;
     setPhotoError(null);
-    if (!file.type.startsWith('image/')) {
+    if (!rawFile.type.startsWith('image/')) {
       setPhotoError('Pick an image file (JPG / PNG / WebP).');
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      setPhotoError('Max 5 MB.');
       return;
     }
     setPhotoUploading(true);
     try {
+      /* WO-7 — the backend caps this endpoint at 2 MB, so raw phone photos
+         used to bounce. Compress to the same 1600px budget the ProductModels
+         list cell already uses; a still-oversized result gets the clear
+         client-side error instead of a server 400. */
+      const { file } = await prepareImageForUpload(rawFile, { maxDimension: 1600, wantThumb: false });
+      if (file.size > 2 * 1024 * 1024) {
+        setPhotoError('Still over 2 MB after compression - use a smaller image.');
+        setPhotoUploading(false);
+        return;
+      }
       // HOUZS VENDOR — multipart POST to the Worker, which uploads to R2 and
       // patches product_models.photo_url itself (replaces the supabase.storage
       // client-side upload the source page used).

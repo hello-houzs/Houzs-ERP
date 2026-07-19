@@ -19,6 +19,7 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermissionOrSalesDirector } from "../middleware/auth";
 import { hasPermission } from "../services/permissions";
+import { baseKeyOf, isThumbKey, THUMB_MAX_BYTES, thumbKeyFor } from "../services/photoThumbs";
 import { isSalesDirectorUser } from "../services/pmsAccess";
 import type { AuthUser } from "../services/auth";
 import { activeCompanyId, allowedCompanyIds } from "../scm/lib/companyScope";
@@ -1229,6 +1230,36 @@ app.put(
 );
 
 // ============================================================
+// PUT /:id/attachments/upload-thumb?key=... — WO-7 optional client-generated
+// thumbnail for an image attachment uploaded via the route above, stored at
+// `<r2Key>.thumb`. Same permission gate as the main upload; the prefix guard
+// mirrors the download route's. Old clients never call this. Best-effort by
+// contract — a failed/skipped thumb must not fail the attachment itself.
+// ============================================================
+app.put(
+  "/:id/attachments/upload-thumb",
+  requirePermissionOrSalesDirector("announcements.write"),
+  async (c) => {
+    const key = c.req.query("key") || "";
+    if (!key.startsWith("announcements/") || isThumbKey(key)) {
+      return c.json({ error: "forbidden key" }, 403);
+    }
+    const contentType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
+    if (!contentType.startsWith("image/")) {
+      return c.json({ error: "Thumbnails must be images" }, 400);
+    }
+    const body = await c.req.arrayBuffer();
+    if (body.byteLength === 0 || body.byteLength > THUMB_MAX_BYTES) {
+      return c.json({ error: "Thumbnail too large (max 1MB)" }, 400);
+    }
+    await c.env.POD_BUCKET.put(thumbKeyFor(key), body, {
+      httpMetadata: { contentType },
+    });
+    return c.json({ r2Key: thumbKeyFor(key) });
+  },
+);
+
+// ============================================================
 // GET /:id/attachments/:key{.+} — stream the attachment. Gated by the SAME
 // audience-targeting check as the list/banner (userCanSee), NOT by the
 // announcements.read matrix permission: a broadcast to ALL_USERS (or to this
@@ -1267,9 +1298,13 @@ app.get("/:id/attachments/:key{.+}", async (c) => {
   }
 
   // The key must be one of THIS announcement's attachments — prevents using a
-  // visible announcement's id to stream an unrelated object.
+  // visible announcement's id to stream an unrelated object. WO-7: a `.thumb`
+  // sibling is authorised against its BASE key (thumbs never appear in the
+  // manifest); a missing thumb object 404s below and the frontend falls back
+  // to the original attachment.
+  const requestedBase = isThumbKey(key) ? baseKeyOf(key) : key;
   const belongs = normalizeAttachments(ann.attachments ?? null).some(
-    (a) => a.r2Key === key,
+    (a) => a.r2Key === requestedBase,
   );
   if (!belongs) return c.json({ error: "Not found" }, 404);
 

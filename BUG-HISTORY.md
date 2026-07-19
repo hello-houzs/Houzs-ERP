@@ -1,5 +1,12 @@
 ## 2026-07-19
 
+### (minor) ProductModelDetail's hero-photo upload allowed 5 MB client-side while the backend caps the endpoint at 2 MB — every 2-5 MB phone photo was a guaranteed server 400
+- **Found during WO-7 (image pipeline).** Two surfaces upload the SAME single hero photo to `POST /api/scm/product-models/:id/photo` (server gate: `PHOTO_MAX_BYTES = 2 MB`, `backend/src/scm/routes/product-models.ts:995`). The **ProductModels list cell** compresses first (`shrinkImageForUpload`, 1600px/q0.85, targets the 2 MB cap) — fine. The **ProductModelDetail page** (`onPhotoFile`) did no compression and pre-checked `file.size > 5 * 1024 * 1024` — so any phone photo between 2 and 5 MB passed the client gate and died on the server's `file_too_large` 400.
+- **Root cause (traced, not guessed):** the detail page's guard was copied from the 5 MB gallery budget, not this endpoint's 2 MB budget; the two callers of one endpoint had drifted to different client behaviours.
+- **Fix:** ProductModelDetail now routes through the shared WO-7 pipeline (`frontend/src/lib/imagePipeline.ts`, 1600px to match the list cell) before upload, and the residual client gate checks the REAL 2 MB server budget with a plain-language message ("Still over 2 MB after compression - use a smaller image").
+- **The class, for next time:** when two surfaces feed one upload endpoint, the client-side size gate belongs next to the shared upload call, not re-typed per page — per-page constants drift.
+- **Ref:** `perf/image-pipeline` (WO-7), 2026-07-19. Frontend only, no migration. NOT merged.
+
 ### 🟡 The DESKTOP New Service Case form let you create a case with NO issue category — the mobile fix (#842) had left the desktop half of the same rule unenforced
 - **Follow-up to #842.** The mobile New Service Case sheet was fixed to require Issue Category, and that PR's own note flagged the desktop gap: the DESKTOP Create-Case button gate (`ServiceCases.tsx:2852`) blocked on SO / description / at-least-one-item but **omitted** `issueCategory`, and the desktop "Issue Category" label carried no `*`. So on desktop a case could still ship with a null category even though the owner ruled it mandatory (2026-07-19).
 - **Confirmed in code.** The gate was `disabled={submitting || !docNo.trim() || !issue.trim() || selectedItems.size === 0}` (`ServiceCases.tsx:2852`). The form's `submit()` resolves the category as: `OTHER_SENTINEL` → `customCategory.trim() || null`, else `issueCategory || null` (`:2432`), then writes `issue_category: resolvedCategory` (`:2446`). Nothing forced that to be non-null.

@@ -74,6 +74,8 @@ import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesStaff } from "../auth/salesAccess";
 import { api, buildQuery } from "../api/client";
+import { uploadAssrAttachment } from "../lib/assrAttachmentUpload";
+import { loadThumbFirst } from "../lib/imagePipeline";
 import { formatCurrency, formatDate, formatDateTime, cn } from "../lib/utils";
 import { ServiceMetrics } from "./ServiceMetrics";
 import { ServiceSettingsView } from "./ServiceSettings";
@@ -2456,19 +2458,14 @@ function CreatePanel({
       });
 
       // Upload any staged defect photos/videos as "complaint" attachments.
+      // WO-7: uploadAssrAttachment compresses photos + uploads their thumbs.
       if (files.length > 0) {
         setUploadProgress({ done: 0, total: files.length });
         let failed = 0;
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
           try {
-            const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
-            const buf = await file.arrayBuffer();
-            await api.putBinary(
-              `/api/assr/${res.id}/attachments?category=complaint&ext=${ext}&name=${encodeURIComponent(file.name)}`,
-              buf,
-              file.type
-            );
+            await uploadAssrAttachment(res.id, file, "complaint");
           } catch (err) {
             failed++;
             console.warn(`Upload failed for ${file.name}`, err);
@@ -3065,13 +3062,8 @@ function DetailContent({
     if (!file) return;
     setUploading(true);
     try {
-      const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
-      const buf = await file.arrayBuffer();
-      await api.putBinary(
-        `/api/assr/${id}/attachments?category=${category}&ext=${ext}&name=${encodeURIComponent(file.name)}`,
-        buf,
-        file.type
-      );
+      // WO-7: shared pipeline — compresses photos + uploads their thumbs.
+      await uploadAssrAttachment(id, file, category);
       detail.reload();
       toast.success("File uploaded");
     } catch (err: any) {
@@ -5894,13 +5886,8 @@ function MilestoneAttachmentSlot({
     if (!file) return;
     setUploading(true);
     try {
-      const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
-      const buf = await file.arrayBuffer();
-      await api.putBinary(
-        `/api/assr/${caseId}/attachments?category=${category}&ext=${ext}&name=${encodeURIComponent(file.name)}`,
-        buf,
-        file.type
-      );
+      // WO-7: shared pipeline — compresses photos + uploads their thumbs.
+      await uploadAssrAttachment(caseId, file, category);
       detail.reload();
       toast.success(`${label} uploaded`);
     } catch (err: any) {
@@ -7612,9 +7599,16 @@ function AttachmentThumb({ att, onClick, onVisibilityChange, onArchive }: {
   useEffect(() => {
     if (!isImage) return;
     let revoked = false;
-    api.fetchBlobUrl(`/api/assr/attachments/${att.r2_key}`).then((u) => {
-      if (!revoked) setUrl(u);
-    });
+    // WO-7 — try the light `.thumb` sibling first; photos uploaded before
+    // thumbnails shipped have none (404) and fall back to the original.
+    // The lightbox click-through still loads the full-size original.
+    loadThumbFirst((p) => api.fetchBlobUrl(p), `/api/assr/attachments/${att.r2_key}`)
+      .then((u) => {
+        if (!revoked) setUrl(u);
+      })
+      .catch((err) => {
+        console.warn("[assr-thumb] attachment load failed:", err);
+      });
     return () => { revoked = true; if (url) URL.revokeObjectURL(url); };
   }, [att.r2_key]);
 

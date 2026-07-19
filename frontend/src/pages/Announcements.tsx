@@ -29,6 +29,7 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
+import { uploadAnnouncementAttachment } from "../lib/announcementAttachmentUpload";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesDirectorUser } from "../auth/salesAccess";
 import { cn, relativeTime } from "../lib/utils";
@@ -520,17 +521,13 @@ function Composer({
       setUploadErr(null);
       const next: Attachment[] = [];
       for (const f of Array.from(files)) {
-        const ext = (f.name.split(".").pop() || "").toLowerCase();
         try {
-          const res = await api.putBinary<{
-            r2Key: string;
-            mime: string;
-            size: number;
-          }>(`/api/announcements/compose/attachments/upload?ext=${ext}`, f, f.type);
+          // WO-7: shared pipeline — compresses images + uploads their thumbs.
+          const res = await uploadAnnouncementAttachment(f);
           next.push({
             r2Key: res.r2Key,
-            name: f.name,
-            mime: f.type || res.mime,
+            name: res.name,
+            mime: res.mime,
             size: res.size,
           });
         } catch (e: any) {
