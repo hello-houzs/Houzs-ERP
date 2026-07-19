@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Play, FileText, File as FileIcon, Download } from "lucide-react";
 import { api } from "../api/client";
+import { loadThumbFirst } from "../lib/imagePipeline";
 import { MediaLightbox, type MediaItem } from "./MediaLightbox";
 import { cn } from "../lib/utils";
 
@@ -63,11 +64,17 @@ function Thumb({
   att,
   className,
   onClick,
+  preferThumb = false,
 }: {
   annId: string;
   att: AnnAttachment;
   className?: string;
   onClick?: () => void;
+  /** WO-7 — multi-photo grid tiles load the light `.thumb` sibling first
+   *  (fallback: the original, which is all pre-thumb notices have). The
+   *  single full-width photo layout keeps the original for sharpness, and
+   *  the lightbox click-through always loads the full image. */
+  preferThumb?: boolean;
 }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -75,10 +82,8 @@ function Thumb({
   useEffect(() => {
     let live = true;
     let made: string | null = null;
-    api
-      .fetchBlobUrl(
-        `/api/announcements/${encodeURIComponent(annId)}/attachments/${att.r2Key}`,
-      )
+    const base = `/api/announcements/${encodeURIComponent(annId)}/attachments/${att.r2Key}`;
+    loadThumbFirst((p) => api.fetchBlobUrl(p), base, preferThumb)
       .then((u) => {
         if (!live) {
           URL.revokeObjectURL(u);
@@ -94,7 +99,7 @@ function Thumb({
       live = false;
       if (made) URL.revokeObjectURL(made);
     };
-  }, [annId, att.r2Key]);
+  }, [annId, att.r2Key, preferThumb]);
 
   return (
     <button
@@ -168,6 +173,7 @@ export function AnnouncementMedia({
               key={p.r2Key}
               annId={annId}
               att={p}
+              preferThumb={cols > 1}
               className={cols === 1 ? "aspect-video" : "aspect-square"}
               onClick={() => setLightboxIdx(i)}
             />

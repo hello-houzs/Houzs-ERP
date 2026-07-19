@@ -19,6 +19,7 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Package, Printer, Trash2, Upload } from "lucide-react";
 import { portalApi } from "../portalApi";
+import { prepareImageForUpload } from "../../lib/imagePipeline";
 import { PortalFrame } from "../components/PortalFrame";
 import { StatusPill } from "../components/StatusPill";
 import { Button } from "../../components/Button";
@@ -263,19 +264,23 @@ export function PortalSupplierCasePage() {
   // maps to the existing assr_attachments CHECK constraint:
   //   evidence   → "Service Issue" slot
   //   completion → "Operation QC Checked" slot
-  async function uploadPhoto(f: File, category: "evidence" | "completion") {
-    const ext = (f.name.split(".").pop() || "").toLowerCase();
-    if (!ALLOWED_EXT.includes(ext)) {
-      setErr(`Unsupported file type: .${ext}`);
-      return;
-    }
-    if (f.size > MAX_SIZE) {
-      setErr("File exceeds 10 MB");
+  async function uploadPhoto(raw: File, category: "evidence" | "completion") {
+    if (!ALLOWED_EXT.includes((raw.name.split(".").pop() || "").toLowerCase())) {
+      setErr(`Unsupported file type: .${(raw.name.split(".").pop() || "").toLowerCase()}`);
       return;
     }
     setUploadingSlot(category);
     setErr(null);
     try {
+      // WO-7 — suppliers shoot these on phones; compress before the 10 MB
+      // gate. The prepared name carries the re-encoded ext (webp allowed).
+      const { file: f } = await prepareImageForUpload(raw, { wantThumb: false });
+      if (f.size > MAX_SIZE) {
+        setErr("File exceeds 10 MB");
+        setUploadingSlot(null);
+        return;
+      }
+      const ext = (f.name.split(".").pop() || "").toLowerCase();
       const buf = await f.arrayBuffer();
       await portalApi.putBinary(
         `/api/supplier-portal/attachments?ext=${ext}&category=${category}&name=${encodeURIComponent(f.name)}`,

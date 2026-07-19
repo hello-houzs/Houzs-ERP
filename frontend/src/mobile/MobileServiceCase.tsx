@@ -3,6 +3,8 @@ import { formatDate, formatDateTime } from "../lib/utils";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { uploadAssrAttachment } from "../lib/assrAttachmentUpload";
+import { loadThumbFirst } from "../lib/imagePipeline";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesStaff } from "../auth/salesAccess";
 import { MobileVirtualList } from "./MobileVirtualList";
@@ -1838,19 +1840,14 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
       });
       const id = Number(get(res ?? {}, "id"));
       // Upload staged defect photos/videos as "complaint" attachments.
+      // WO-7: uploadAssrAttachment compresses photos + uploads their thumbs.
       if (id && files.length) {
         setUploadProgress({ done: 0, total: files.length });
         let failed = 0;
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
           try {
-            const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-            const buf = await file.arrayBuffer();
-            await api.putBinary(
-              `/api/assr/${id}/attachments?category=complaint&ext=${ext}&name=${encodeURIComponent(file.name)}`,
-              buf,
-              file.type || "application/octet-stream",
-            );
+            await uploadAssrAttachment(id, file, "complaint");
           } catch {
             failed++;
           }
@@ -2622,13 +2619,8 @@ function PhotoGrid({
     for (let i = 0; i < accepted.length; i++) {
       const file = accepted[i];
       try {
-        const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-        const buf = await file.arrayBuffer();
-        await api.putBinary(
-          `/api/assr/${caseId}/attachments?category=${encodeURIComponent(category)}&ext=${ext}&name=${encodeURIComponent(file.name)}`,
-          buf,
-          file.type || "application/octet-stream",
-        );
+        // WO-7: shared pipeline — compresses photos + uploads their thumbs.
+        await uploadAssrAttachment(caseId, file, category);
       } catch {
         failed++;
       }
@@ -2857,16 +2849,26 @@ function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
   const contentType = String(get(att, "contentType", "content_type") ?? "");
   const isVideo = contentType.startsWith("video");
   const isPdf = contentType.includes("pdf");
-  const [url, setUrl] = useState<string | null>(null);
   const [viewing, setViewing] = useState(false);
 
-  const { data } = useQuery({
+  /* WO-7 — the GRID tile loads the light `.thumb` sibling; attachments
+     uploaded before thumbnails shipped have none (404) and fall back to
+     the original in the same fetch. The fullscreen viewer loads the
+     full-size original only when opened (and shows the thumb meanwhile). */
+  const thumbQ = useQuery({
+    queryKey: ["mobile-assr-att-thumb", key],
+    enabled: !!key && !isPdf && !isVideo,
+    staleTime: 5 * 60_000,
+    queryFn: () => loadThumbFirst((p) => api.fetchBlobUrl(p), `/api/assr/attachments/${key}`),
+  });
+  const fullQ = useQuery({
     queryKey: ["mobile-assr-att", key],
-    enabled: !!key && !isPdf && (!isVideo || viewing),
+    enabled: !!key && !isPdf && viewing,
     staleTime: 5 * 60_000,
     queryFn: () => api.fetchBlobUrl(`/api/assr/attachments/${key}`),
   });
-  if (data && data !== url) setUrl(data);
+  const url = thumbQ.data !== undefined ? thumbQ.data : null;
+  const viewerUrl = fullQ.data !== undefined ? fullQ.data : (isVideo ? null : url);
 
   return (
     <div
@@ -2896,7 +2898,7 @@ function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
       </button>
       {viewing && !isPdf && (
         <AttachViewer
-          url={url}
+          url={viewerUrl}
           isVideo={isVideo}
           name={String(get(att, "fileName", "file_name") ?? "")}
           onClose={() => setViewing(false)}

@@ -30,6 +30,7 @@ import { activeCompanyId, stampCompany, scopeToCompany } from '../lib/companySco
 import { canWriteScmConfig, canViewScmProductCost } from '../lib/houzs-perms';
 import { PRODUCT_FINANCE_KEYS } from '../lib/finance-keys';
 import { todayMyt } from '../lib/my-time';
+import { baseKeyOf, deleteThumbFor, putOptionalThumb } from '../../services/photoThumbs';
 import type { Env, Variables } from '../env';
 
 export const productModels = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -94,6 +95,10 @@ productModels.get('/:id/photo-gallery/:key', async (c) => {
     return c.json({ error: 'gallery_key_invalid' }, 400);
   }
 
+  // WO-7 thumbnails live at `<r2_key>.thumb`. Authorize a thumb request
+  // against its BASE key's gallery row — the thumb is never in r2_key itself.
+  const baseKey = baseKeyOf(key);
+
   const sb = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -102,7 +107,7 @@ productModels.get('/:id/photo-gallery/:key', async (c) => {
     .from('product_model_photos')
     .select('id')
     .eq('model_id', id)
-    .eq('r2_key', key)
+    .eq('r2_key', baseKey)
     .maybeSingle();
   if (!data) return c.json({ error: 'photo_not_in_model' }, 404);
 
@@ -1161,6 +1166,11 @@ function photoToWire(modelId: string, p: PhotoCols) {
     id: p.id,
     key: p.r2_key,
     url: `/api/scm/product-models/${modelId}/photo-gallery/${encodeURIComponent(p.r2_key)}`,
+    // WO-7: present only for photos uploaded with a client-generated thumb.
+    // Old rows have thumb_key NULL and the frontend renders the full url.
+    thumbUrl: p.thumb_key
+      ? `/api/scm/product-models/${modelId}/photo-gallery/${encodeURIComponent(p.thumb_key)}`
+      : null,
     is_primary: p.is_primary,
     order: p.sort_order,
   };
@@ -1238,6 +1248,10 @@ productModels.post('/:id/photos', async (c) => {
     httpMetadata: { contentType: file.type },
   });
 
+  // WO-7: optional client-generated thumbnail rides the same multipart body.
+  // Best-effort — old clients send no `thumb` part and nothing changes.
+  const thumbKey = await putOptionalThumb(c.env.SO_ITEM_PHOTOS, body.thumb, r2Key);
+
   // First photo for a model auto-marks itself primary. After that, primary
   // stays sticky until the operator changes it.
   const { count } = await supabase
@@ -1262,6 +1276,7 @@ productModels.post('/:id/photos', async (c) => {
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     model_id: id,
     r2_key: r2Key,
+    thumb_key: thumbKey,
     sort_order: nextOrder,
     is_primary: isFirst,
     mime_type: file.type,
@@ -1273,8 +1288,9 @@ productModels.post('/:id/photos', async (c) => {
     .select('id, r2_key, thumb_key, sort_order, is_primary, mime_type, size_bytes')
     .single();
   if (error) {
-    // Roll back the R2 object so a failed DB insert doesn't leak storage.
+    // Roll back the R2 objects so a failed DB insert doesn't leak storage.
     await c.env.SO_ITEM_PHOTOS.delete(r2Key).catch(() => {});
+    await deleteThumbFor(c.env.SO_ITEM_PHOTOS, r2Key);
     return c.json({ error: 'db_insert_failed', reason: error.message }, 500);
   }
   return c.json({ photo: photoToWire(id, data as PhotoCols) });
@@ -1309,6 +1325,7 @@ productModels.delete('/:id/photos/:photoId', async (c) => {
   // row (delete intent was the operator's). Log via Workers tail if needed.
   if (c.env.SO_ITEM_PHOTOS) {
     await c.env.SO_ITEM_PHOTOS.delete(target.r2_key).catch(() => {});
+    await deleteThumbFor(c.env.SO_ITEM_PHOTOS, target.r2_key);
   }
 
   // If the deleted row was the primary, promote the lowest-order remaining

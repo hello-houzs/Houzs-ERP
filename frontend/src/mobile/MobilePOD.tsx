@@ -10,7 +10,7 @@ import {
   useMfgDeliveryOrdersPaged,
 } from "../vendor/scm/lib/delivery-order-queries";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
-import { uploadSlipFull, ALLOWED_SLIP_MIMES, MAX_SLIP_SIZE_BYTES } from "../vendor/scm/lib/slip";
+import { uploadSlipFull, ALLOWED_SLIP_MIMES } from "../vendor/scm/lib/slip";
 import { todayMyt } from "../vendor/scm/lib/dates";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import "./mobile.css";
@@ -420,17 +420,15 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                   onChange={(e) => {
                     const f = e.target.files?.[0] ?? null;
                     if (!f) return;
-                    // Guard against the R2 pipeline's contract (jpeg/png/webp,
-                    // 5 MiB) up front so the operator learns before Confirm, not
-                    // mid-upload.
+                    // Guard against the R2 pipeline's contract (jpeg/png/webp)
+                    // up front so the operator learns before Confirm, not
+                    // mid-upload. No size guard here any more: uploadSlipFull
+                    // compresses photos (WO-7), so a raw 8 MB camera capture
+                    // is EXPECTED input now — it leaves the phone at well
+                    // under the 5 MiB slip ceiling.
                     if (!ALLOWED_SLIP_MIMES.includes(f.type as (typeof ALLOWED_SLIP_MIMES)[number])) {
                       setPhotoFile(null);
                       setPhotoError("Please use a JPEG, PNG or WebP photo.");
-                      return;
-                    }
-                    if (f.size > MAX_SLIP_SIZE_BYTES) {
-                      setPhotoFile(null);
-                      setPhotoError("That photo is too large (max 5 MB).");
                       return;
                     }
                     setPhotoError(null);

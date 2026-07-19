@@ -57,7 +57,11 @@ export function SlipUploadField({
     if (!(ALLOWED_SLIP_MIMES as readonly string[]).includes(f.type)) {
       setErrorMsg('Only JPG / PNG / WebP / PDF supported.'); setPhase('error'); return;
     }
-    if (f.size > MAX_SLIP_SIZE_BYTES) {
+    /* WO-7 — the 5 MB pre-check now applies to PDFs only. Images are
+       compressed inside uploadSlipFull, so a raw 8 MB phone photo is valid
+       input; if one somehow still exceeds the ceiling after compression the
+       pipeline throws its own plain-language error. */
+    if (!IMAGE_SLIP_MIMES.has(f.type) && f.size > MAX_SLIP_SIZE_BYTES) {
       setErrorMsg('File too large (max 5 MB).'); setPhase('error'); return;
     }
     setFileName(f.name); setErrorMsg(null);

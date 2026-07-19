@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { Upload, Send, Package, Star, X, ChevronLeft, ChevronRight, Trash2, Clock, MessageSquare, ShieldCheck, Check, Play } from "lucide-react";
 import { createPortal } from "react-dom";
 import { portalApi } from "../portalApi";
+import { prepareImageForUpload } from "../../lib/imagePipeline";
 import { PortalFrame } from "../components/PortalFrame";
 import { useDialog } from "../../hooks/useDialog";
 import { formatDate, formatDateTime } from "../../lib/utils";
@@ -131,15 +132,22 @@ export function PortalCaseDetailPage() {
   }
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (!f) return;
+    const raw = e.target.files?.[0];
+    if (!raw) return;
     e.target.value = "";
-    const ext = (f.name.split(".").pop() || "").toLowerCase();
-    if (!ALLOWED_EXT.includes(ext)) { setErr(`Unsupported file type: .${ext}`); return; }
-    if (f.size > MAX_SIZE) { setErr("File exceeds 10 MB"); return; }
+    if (!ALLOWED_EXT.includes((raw.name.split(".").pop() || "").toLowerCase())) {
+      setErr(`Unsupported file type: .${(raw.name.split(".").pop() || "").toLowerCase()}`);
+      return;
+    }
     setUploading(true);
     setErr(null);
     try {
+      // WO-7 — customers upload straight from their phone camera roll, so
+      // compress photos before the 10 MB gate. The prepared file's name
+      // carries the re-encoded extension (webp is in ALLOWED_EXT).
+      const { file: f } = await prepareImageForUpload(raw, { wantThumb: false });
+      if (f.size > MAX_SIZE) { setErr("File exceeds 10 MB"); setUploading(false); return; }
+      const ext = (f.name.split(".").pop() || "").toLowerCase();
       const buf = await f.arrayBuffer();
       await portalApi.putBinary(
         `/api/portal/case/attachments?ext=${ext}&name=${encodeURIComponent(f.name)}`,

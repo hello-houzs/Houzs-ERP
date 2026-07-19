@@ -28,6 +28,10 @@ import { humanApiError } from './authed-fetch';
 // See authed-fetch.ts's import note: the token may be in sessionStorage, so the
 // read must come from the shared accessor, never an inlined localStorage hit.
 import { readAuthToken } from '../../../lib/authToken';
+// WO-7 image pipeline — same app-lib import boundary as authToken above.
+// NOTE: this is the UPLOAD pipeline (q0.8/2000px), NOT vendor/shared/
+// image-compress.ts — that one is OCR-tuned and feeds Claude vision.
+import { isCompressibleImage, prepareImageForUpload } from '../../../lib/imagePipeline';
 
 const API_URL =
   ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_URL
@@ -259,14 +263,30 @@ export interface UploadSlipResult {
 }
 
 export async function uploadSlipFull(opts: UploadSlipOptions): Promise<UploadSlipResult> {
+  /* WO-7 — compress photos BEFORE the init leg so the session's declared
+     size/hash match the bytes actually posted. Phone photos (3-8 MB JPEG)
+     come out around 300-800 KB; PDFs and non-images pass through untouched.
+     prepareImageForUpload falls back to the original file on any failure,
+     so this can loosen callers' size guards but never tighten them. */
+  let file = opts.file;
+  if (isCompressibleImage(file)) {
+    const prepared = await prepareImageForUpload(file, { wantThumb: false });
+    file = prepared.file;
+    if (file.size > MAX_SLIP_SIZE_BYTES) {
+      throw new Error(
+        'This photo is still over 5 MB after compression - please retake it at a lower resolution.',
+      );
+    }
+  }
+
   opts.onProgress?.('init');
-  const init = await initSlipUpload(opts.file);
+  const init = await initSlipUpload(file);
 
   opts.onProgress?.('put');
   let putErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await uploadSlipBytes(init.uploadSessionId, opts.file);
+      await uploadSlipBytes(init.uploadSessionId, file);
       putErr = undefined;
       break;
     } catch (err) {

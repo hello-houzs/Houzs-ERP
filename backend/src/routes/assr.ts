@@ -28,6 +28,7 @@ import { resolveCompanyCode, getBrandingForCompany } from "../services/branding"
 import { AutoCountClient, routeRegion, isAutoCountSyncDisabled } from "../services/autocount";
 import { upsertSalesOrder } from "../services/pull";
 import { requirePermission } from "../middleware/auth";
+import { baseKeyOf, isThumbKey, THUMB_MAX_BYTES, thumbKeyFor } from "../services/photoThumbs";
 import {
   houzsCompanyId,
   houzsCompanyIds,
@@ -2836,6 +2837,37 @@ app.put("/:id/attachments", requirePermission("service_cases.write"), async (c) 
   return c.json({ id: attachId, key }, 201);
 });
 
+// WO-7 — optional client-generated thumbnail for a photo attachment, stored
+// at `<r2_key>.thumb`. The frontend uploads it right after the main PUT above;
+// old clients never call this and nothing changes for them. Best-effort by
+// design: a failed thumb never invalidates the already-saved attachment.
+app.put("/:id/attachments/thumb", requirePermission("service_cases.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+
+  const key = c.req.query("key") || "";
+  // The key must be a real attachment of THIS case — never trust the caller's
+  // key shape (mirrors the download route's ownership rule).
+  const att = await c.env.DB.prepare(
+    `SELECT assr_id FROM assr_attachments WHERE r2_key = ?`,
+  )
+    .bind(key)
+    .first<{ assr_id: number | null }>();
+  if (Number(att?.assr_id ?? NaN) !== id) return c.json({ error: "Not found" }, 404);
+
+  const contentType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  if (!contentType.startsWith("image/")) {
+    return c.json({ error: "Thumbnails must be images" }, 400);
+  }
+  const body = await c.req.arrayBuffer();
+  if (body.byteLength === 0 || body.byteLength > THUMB_MAX_BYTES) {
+    return c.json({ error: "Thumbnail too large (max 1MB)" }, 400);
+  }
+
+  await c.env.POD_BUCKET.put(thumbKeyFor(key), body, { httpMetadata: { contentType } });
+  return c.json({ ok: true, key: thumbKeyFor(key) }, 201);
+});
+
 app.get("/attachments/:key{.+}", requireServiceCaseAccess(), async (c) => {
   const key = c.req.param("key");
   // Resolve the attachment's OWNING case from its r2_key (canonical — never
@@ -2844,10 +2876,13 @@ app.get("/attachments/:key{.+}", requireServiceCaseAccess(), async (c) => {
   // cases within their reporting chain. Unknown key or out-of-scope case → 404,
   // indistinguishable from a nonexistent object. Directors / service_cases.manage
   // stay unrestricted (caseInCallerScope short-circuits).
+  // WO-7: a `<r2_key>.thumb` request is authorised against its BASE key's row
+  // (thumbs have no assr_attachments row); missing thumb objects 404 below and
+  // the frontend falls back to the original.
   const att = await c.env.DB.prepare(
     `SELECT assr_id FROM assr_attachments WHERE r2_key = ?`,
   )
-    .bind(key)
+    .bind(isThumbKey(key) ? baseKeyOf(key) : key)
     .first<{ assr_id: number | null }>();
   const caseId = Number(att?.assr_id ?? NaN);
   if (!Number.isFinite(caseId)) return c.json({ error: "Not found" }, 404);

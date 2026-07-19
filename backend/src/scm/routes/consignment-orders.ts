@@ -30,6 +30,7 @@ import { warehouseLabel } from '../lib/warehouse-label';
 import { todayMyt } from '../lib/my-time';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 import { signSoItemPhotoUrl, soItemPhotoBindings } from '../lib/r2';
+import { baseKeyOf, deleteThumbFor, putOptionalThumb, thumbKeyFor } from '../../services/photoThumbs';
 import {
   loadMaintenanceConfig,
   loadSpecialAddons,
@@ -1859,6 +1860,8 @@ consignmentOrders.delete('/:docNo/items/:itemId', async (c) => {
         // eslint-disable-next-line no-console
         console.warn('[co-item-photo] orphan cleanup failed for', key, e);
       }
+      // WO-7: sweep the thumb sibling alongside its main object.
+      await deleteThumbFor(c.env.SO_ITEM_PHOTOS, key);
     }
   }
 
@@ -1953,6 +1956,14 @@ consignmentOrders.post('/:docNo/items/:itemId/photos', async (c) => {
     return c.json({ error: 'r2_put_failed', reason: e instanceof Error ? e.message : String(e) }, 500);
   }
 
+  // WO-7: optional client-generated thumbnail in the same multipart body,
+  // stored at `<photoKey>.thumb`. Best-effort; absent for old clients.
+  await putOptionalThumb(c.env.SO_ITEM_PHOTOS, form.thumb, photoKey, {
+    docNo,
+    itemId,
+    uploadedBy: user.id,
+  });
+
   const nextKeys = [...(i.photo_urls ?? []), photoKey];
   const { error: updErr } = await sb
     .from('consignment_sales_order_items')
@@ -1960,6 +1971,7 @@ consignmentOrders.post('/:docNo/items/:itemId/photos', async (c) => {
     .eq('id', itemId);
   if (updErr) {
     await c.env.SO_ITEM_PHOTOS.delete(photoKey).catch(() => {});
+    await deleteThumbFor(c.env.SO_ITEM_PHOTOS, photoKey);
     return c.json({ error: 'db_update_failed', reason: updErr.message }, 500);
   }
 
@@ -1977,7 +1989,10 @@ consignmentOrders.post('/:docNo/items/:itemId/photos', async (c) => {
   try {
     const bindings = soItemPhotoBindings(c.env);
     const { signedUrl, expiresAt } = await signSoItemPhotoUrl(bindings, photoKey);
-    return c.json({ photoKey, photoUrl: signedUrl, expiresAt }, 201);
+    // WO-7: thumbUrl is signed for the `.thumb` sibling. When no thumb was
+    // uploaded the URL 404s on fetch and the frontend falls back to photoUrl.
+    const { signedUrl: thumbUrl } = await signSoItemPhotoUrl(bindings, thumbKeyFor(photoKey));
+    return c.json({ photoKey, photoUrl: signedUrl, thumbUrl, expiresAt }, 201);
   } catch (e) {
     const photoUrl = `/consignment-orders/${docNo}/items/${itemId}/photos/${encodeURIComponent(photoKey)}`;
     // eslint-disable-next-line no-console
@@ -2008,7 +2023,10 @@ consignmentOrders.get('/:docNo/items/:itemId/photos/:photoKey/signed', async (c)
   try {
     const bindings = soItemPhotoBindings(c.env);
     const { signedUrl, expiresAt } = await signSoItemPhotoUrl(bindings, photoKey);
-    return c.json({ signedUrl, expiresAt });
+    // WO-7: signed thumb sibling. Pre-existing photos have no thumb object —
+    // the frontend's <img> onError falls back to signedUrl on the 404.
+    const { signedUrl: thumbUrl } = await signSoItemPhotoUrl(bindings, thumbKeyFor(photoKey));
+    return c.json({ signedUrl, thumbUrl, expiresAt });
   } catch (e) {
     return c.json({ error: 'signing_failed', reason: e instanceof Error ? e.message : String(e) }, 500);
   }
@@ -2025,6 +2043,8 @@ consignmentOrders.get('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
   }
 
+  // WO-7: a `.thumb` sibling is authorised against its BASE key — thumbs
+  // are never listed in photo_urls.
   const { data: item } = await sb
     .from('consignment_sales_order_items')
     .select('doc_no, photo_urls')
@@ -2033,7 +2053,7 @@ consignmentOrders.get('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
   if (!item) return c.json({ error: 'item_not_found' }, 404);
   const i = item as { doc_no: string; photo_urls: string[] | null };
   if (i.doc_no !== docNo) return c.json({ error: 'item_doc_mismatch' }, 400);
-  if (!(i.photo_urls ?? []).includes(photoKey)) {
+  if (!(i.photo_urls ?? []).includes(baseKeyOf(photoKey))) {
     return c.json({ error: 'photo_not_in_item' }, 404);
   }
 
@@ -2082,6 +2102,7 @@ consignmentOrders.delete('/:docNo/items/:itemId/photos/:photoKey', async (c) => 
   if (updErr) return c.json({ error: 'db_update_failed', reason: updErr.message }, 500);
 
   await c.env.SO_ITEM_PHOTOS.delete(photoKey).catch(() => {});
+  await deleteThumbFor(c.env.SO_ITEM_PHOTOS, photoKey);
 
   await recordSoAudit(sb, {
     docNo,

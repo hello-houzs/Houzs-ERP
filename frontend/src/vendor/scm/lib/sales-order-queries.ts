@@ -22,6 +22,7 @@ import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
 import { retryUnlessClientError } from '../../../lib/retryPolicy';
+import { prepareImageForUpload } from '../../../lib/imagePipeline';
 
 // The vendored authedFetch already handles FormData correctly (it omits the
 // JSON content-type for non-string bodies so the multipart boundary survives),
@@ -403,6 +404,9 @@ export const useUpdateSoItemStockStatus = () => {
 export type UploadSoItemPhotoResult = {
   photoKey: string;
   photoUrl: string;
+  /** WO-7 — signed URL for the `.thumb` sibling; absent from pre-thumb
+   *  backends. Grids try it first and fall back to photoUrl on 404. */
+  thumbUrl?: string;
   expiresAt?: string;
 };
 
@@ -412,8 +416,13 @@ export const useUploadSoItemPhoto = () => {
     mutationFn: async ({ docNo, itemId, file }: {
       docNo: string; itemId: string; file: File;
     }): Promise<UploadSoItemPhotoResult> => {
+      /* WO-7 — downscale/re-encode the photo and generate its thumbnail in
+         ONE decode pass (lib/imagePipeline). Falls back to the original file
+         (thumb: null) when the browser can't compress. */
+      const prepared = await prepareImageForUpload(file);
       const fd = new FormData();
-      fd.append('file', file);
+      fd.append('file', prepared.file);
+      if (prepared.thumb) fd.append('thumb', prepared.thumb);
       return authedFetch<UploadSoItemPhotoResult>(
         `/mfg-sales-orders/${docNo}/items/${itemId}/photos`,
         { method: 'POST', body: fd },
@@ -501,7 +510,12 @@ export const useDeleteSalesOrderPayment = () => {
 
 /* ── Photo signed-URL helper (plain async fn, not a hook) ─────────────────── */
 
-export type SignedPhotoUrlResponse = { signedUrl: string; expiresAt: string };
+export type SignedPhotoUrlResponse = {
+  signedUrl: string;
+  /** WO-7 — signed `.thumb` sibling URL (absent from pre-thumb backends). */
+  thumbUrl?: string;
+  expiresAt: string;
+};
 
 export async function fetchSoItemPhotoSignedUrl(
   docNo: string,

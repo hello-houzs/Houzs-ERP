@@ -11,6 +11,7 @@ import { authedFetch, API_URL, humanApiError } from './authed-fetch';
 // See authed-fetch.ts's import note: the token may be in sessionStorage, so the
 // read must come from the shared accessor, never an inlined localStorage hit.
 import { readAuthToken } from '../../../lib/authToken';
+import { prepareImageForUpload } from '../../../lib/imagePipeline';
 
 // Matches the lorry_type enum in migration 0195 / Houzs scm 0053.
 export const LORRY_TYPES = [
@@ -249,9 +250,13 @@ export async function fetchServiceInvoiceUrl(recordId: string): Promise<{ url: s
 export function useUploadServiceInvoice(lorryId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, file }: { id: string; file: File }) => {
+    mutationFn: async ({ id, file }: { id: string; file: File }) => {
+      /* WO-7 — workshop invoices are usually phone photos; compress before
+         upload (PDFs pass through untouched). Viewed one-at-a-time, so no
+         thumbnail. */
+      const prepared = await prepareImageForUpload(file, { wantThumb: false });
       const fd = new FormData();
-      fd.append('file', file);
+      fd.append('file', prepared.file);
       return authedFetch<{ record: LorryServiceRecord }>(
         `/lorry-service-records/${id}/invoice`, { method: 'PUT', body: fd },
       );

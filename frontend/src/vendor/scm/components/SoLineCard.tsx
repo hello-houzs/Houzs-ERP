@@ -1167,9 +1167,11 @@ const SoLineCardInner = ({
                             // the URL the API just minted so PhotoThumb
                             // doesn't do a redundant /signed round-trip
                             // on first render of the just-uploaded photo.
+                            // WO-7 — carry the thumbUrl the same way.
                             if (res.expiresAt && res.photoUrl?.startsWith('http')) {
                               signedUrlCache.set(res.photoKey, {
                                 signedUrl: res.photoUrl,
+                                thumbUrl: res.thumbUrl,
                                 expiresAt: new Date(res.expiresAt).getTime(),
                               });
                             }
@@ -1664,7 +1666,12 @@ const SpecialsAccordion = ({
    ────────────────────────────────────────────────────────────────────── */
 
 const SIGNED_URL_SKEW_BUFFER_MS = 30_000;
-const signedUrlCache = new Map<string, { signedUrl: string; expiresAt: number }>();
+const signedUrlCache = new Map<string, { signedUrl: string; thumbUrl?: string; expiresAt: number }>();
+
+/* WO-7 — photoKeys whose `.thumb` sibling 404'd (every photo uploaded before
+   thumbnails shipped). Remembered at module level so reopening the SO doesn't
+   re-attempt a thumb we already know is missing. */
+const thumbMissingKeys = new Set<string>();
 
 const isCachedUrlFresh = (entry: { expiresAt: number } | undefined): boolean =>
   !!entry && entry.expiresAt - SIGNED_URL_SKEW_BUFFER_MS > Date.now();
@@ -1678,11 +1685,16 @@ const PhotoThumb = ({
   canDelete: boolean;
   onDelete:  () => void;
 }) => {
-  const [src, setSrc]     = useState<string | null>(() => {
+  const [urls, setUrls]   = useState<{ signedUrl: string; thumbUrl?: string } | null>(() => {
     const cached = signedUrlCache.get(photoKey);
-    return isCachedUrlFresh(cached) ? cached!.signedUrl : null;
+    return isCachedUrlFresh(cached) ? cached! : null;
   });
   const [error, setError] = useState<string | null>(null);
+  /* WO-7 — start on the thumb unless this key is already known thumbless.
+     A failed thumb load flips to the full signedUrl (the required fallback
+     for pre-thumb photos); a failed FULL load keeps the original
+     refetch-once behaviour below. */
+  const [useFull, setUseFull] = useState<boolean>(() => thumbMissingKeys.has(photoKey));
   // Tracks whether we've already retried after a 403/error. Prevents
   // a permanently-broken key from looping forever.
   const retriedRef = useRef(false);
@@ -1690,13 +1702,14 @@ const PhotoThumb = ({
   const loadSignedUrl = async (cancelled: () => boolean) => {
     if (!docNo || !itemId) return;
     try {
-      const { signedUrl, expiresAt } = await fetchSoItemPhotoSignedUrl(docNo, itemId, photoKey);
+      const { signedUrl, thumbUrl, expiresAt } = await fetchSoItemPhotoSignedUrl(docNo, itemId, photoKey);
       if (cancelled()) return;
       signedUrlCache.set(photoKey, {
         signedUrl,
+        thumbUrl,
         expiresAt: new Date(expiresAt).getTime(),
       });
-      setSrc(signedUrl);
+      setUrls({ signedUrl, thumbUrl });
       setError(null);
     } catch (e) {
       if (!cancelled()) setError(e instanceof Error ? e.message : String(e));
@@ -1707,7 +1720,7 @@ const PhotoThumb = ({
     let cancelled = false;
     const cached = signedUrlCache.get(photoKey);
     if (isCachedUrlFresh(cached)) {
-      setSrc(cached!.signedUrl);
+      setUrls(cached!);
       return;
     }
     // Cache miss or stale entry — fetch a fresh signed URL.
@@ -1716,7 +1729,17 @@ const PhotoThumb = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docNo, itemId, photoKey]);
 
+  const showingThumb = !useFull && !!urls?.thumbUrl;
+
   const handleImgError = () => {
+    /* Thumb tier failed — almost always a pre-thumb photo whose `.thumb`
+       object does not exist (signed URL 404s). Fall back to the full image
+       WITHOUT burning the retry: the full URL is already in hand. */
+    if (showingThumb) {
+      thumbMissingKeys.add(photoKey);
+      setUseFull(true);
+      return;
+    }
     // The signed URL we handed to <img src> didn't load. Most likely
     // it expired (cache survived a tab being suspended for >1 hour);
     // could also be an R2 transient. Drop the cache entry and refetch
@@ -1728,7 +1751,7 @@ const PhotoThumb = ({
     }
     retriedRef.current = true;
     signedUrlCache.delete(photoKey);
-    setSrc(null);
+    setUrls(null);
     const cancelled = false;
     loadSignedUrl(() => cancelled);
     // No cleanup return — this isn't an effect; the cancelled flag
@@ -1736,6 +1759,8 @@ const PhotoThumb = ({
     // would also blow away the setState calls harmlessly.
     void cancelled;
   };
+
+  const src = urls ? (showingThumb ? urls.thumbUrl! : urls.signedUrl) : null;
 
   return (
     <div className={styles.photoTile}>
