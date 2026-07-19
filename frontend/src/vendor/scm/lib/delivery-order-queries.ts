@@ -58,6 +58,55 @@ export const useDeliverableSoLines = () => useQuery({
   retry: 1,
 });
 
+/* SO customer/delivery header for the New-DO form's PREFILL. Reads the dedicated
+   company-UNSCOPED backend endpoint (GET /delivery-orders-mfg/so-convert-header)
+   rather than the full, company+sales-scoped /mfg-sales-orders/:docNo detail: a
+   2990-mirrored SO (company 2) is routinely converted while browsing as Houzs,
+   and the scoped detail 404s for that cross-company doc — which used to leave
+   the desktop DO form's customer name/phone/email/address/salesperson blank even
+   though the line items carried over. This mirrors what POST /from-sos already
+   reads server-side, so the reviewable form prefills the SAME customer the
+   server-side conversion would stamp. */
+export type SoConvertHeader = {
+  doc_no: string;
+  debtor_code: string | null;
+  debtor_name: string | null;
+  agent: string | null;
+  salesperson_id: string | null;
+  address1: string | null;
+  address2: string | null;
+  address3: string | null;
+  address4: string | null;
+  city: string | null;
+  customer_state: string | null;
+  postcode: string | null;
+  phone: string | null;
+  email: string | null;
+  customer_type: string | null;
+  building_type: string | null;
+  venue: string | null;
+  venue_id: string | null;
+  ref: string | null;
+  po_doc_no: string | null;
+  customer_so_no: string | null;
+  sales_location: string | null;
+  customer_delivery_date: string | null;
+  emergency_contact_name: string | null;
+  emergency_contact_phone: string | null;
+  emergency_contact_relationship: string | null;
+};
+
+export const useSoConvertHeader = (docNo: string | null) => useQuery({
+  queryKey: ['mfg-delivery-orders', 'so-convert-header', docNo],
+  enabled: !!docNo,
+  queryFn: () => authedFetch<{ header: SoConvertHeader }>(
+    `/delivery-orders-mfg/so-convert-header/${encodeURIComponent(docNo!)}`,
+  ).then((r) => r.header),
+  staleTime: 30_000,
+  retry: 1,
+  retryDelay: 800,
+});
+
 /* Remaining deliverable lines scoped to ONE Sales Order — feeds the SO-linked
    DO Detail "Add Line" picker so it can only add the SO's still-undelivered
    lines (qty capped to remaining), matching the line-level convert picker.

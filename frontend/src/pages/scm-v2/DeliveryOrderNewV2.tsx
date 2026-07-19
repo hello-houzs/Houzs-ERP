@@ -48,6 +48,7 @@ import {
   useAddMfgDeliveryOrderItem,
   useUpdateMfgDeliveryOrderItem,
   useDeleteMfgDeliveryOrderItem,
+  useSoConvertHeader,
 } from "../../vendor/scm/lib/delivery-order-queries";
 import { useIdempotencyKey } from "../../lib/idempotency";
 import { useMfgSalesOrderDetail } from "../../vendor/scm/lib/sales-order-queries";
@@ -475,6 +476,14 @@ export function DeliveryOrderNewV2() {
 
   const [soDocNo, setSoDocNo] = useState<string>(fromSoParam);
   const soDetail = useMfgSalesOrderDetail(soDocNo || null);
+  /* Customer/delivery header for the prefill comes from the dedicated,
+     company-UNSCOPED so-convert-header read — NOT soDetail. The full SO detail
+     endpoint is company + sales scoped, so a 2990-mirrored SO (company 2)
+     converted while browsing as Houzs 404s there and the customer header came
+     back blank (line items still filled from the picker's own unscoped stash).
+     soDetail is kept only for the bare ?fromSo= line fallback below. Skipped in
+     edit mode — an existing DO prefills from itself. */
+  const soConvertHeader = useSoConvertHeader(editId ? null : (soDocNo || null));
   const doDetail = useMfgDeliveryOrderDetail(editId || null);
   const createDo = useCreateMfgDeliveryOrder();
   /* One key for the one DO this page is open to raise (lib/idempotency.ts).
@@ -589,53 +598,66 @@ export function DeliveryOrderNewV2() {
     }
   }, [fromPicks, stashSeeded]);
 
-  // ── Prefill from SO detail (when converting) ───────────────────────
-  // Header/customer fields only. Lines come from the stash above (fromPicks);
-  // a bare ?fromSo= without picks falls back to the SO's items. Skipped in edit
+  // ── Prefill customer/delivery header from the SO (when converting) ─────
+  // Reads the company-UNSCOPED so-convert-header (see the hook above), NOT the
+  // scoped soDetail — otherwise a 2990-mirrored SO converted while browsing as
+  // Houzs 404s and every customer field stays blank. Address2 falls back to
+  // address3/address4 the way the server-side /from-sos conversion does, so a
+  // 2990 SO that parked its street in address3/4 still fills in. Skipped in edit
   // mode — an existing DO prefills from itself, not from its parent SO.
   useEffect(() => {
     if (editId) return;
-    const so = (soDetail.data as { salesOrder?: Record<string, unknown> } | undefined)?.salesOrder;
+    const so = soConvertHeader.data;
     if (!so || !soDocNo) return;
     setCustomerName(String(so.debtor_name ?? ""));
     setCustomerSoRef(String(so.customer_so_no ?? so.po_doc_no ?? so.ref ?? ""));
     setPhone(String(so.phone ?? ""));
     setEmail(String(so.email ?? ""));
     setCustomerType(String(so.customer_type ?? ""));
-    setSalesperson(String((so.agent ?? so.salesperson_id ?? "") as string));
+    setSalesperson(String(so.agent ?? so.salesperson_id ?? ""));
     setAddr1(String(so.address1 ?? ""));
-    setAddr2(String(so.address2 ?? ""));
+    setAddr2(String(
+      so.address2 ?? [so.address3, so.address4].filter(Boolean).join(", "),
+    ));
     setState(String(so.customer_state ?? ""));
     setCity(String(so.city ?? ""));
     setPostcode(String(so.postcode ?? ""));
     setSalesLocation(String(so.sales_location ?? ""));
     setBuildingType(String(so.building_type ?? ""));
     setVenue(String(so.venue ?? ""));
-    // Lines fallback — only when the line-level picker didn't hand a stash over.
-    if (!fromPicks) {
-      const items = (soDetail.data as { items?: Array<Record<string, unknown>> } | undefined)?.items ?? [];
-      if (items.length > 0) {
-        setLines(
-          items.map((it) => ({
-            ...newDoLine(null),
-            itemCode: String(it.item_code ?? ""),
-            itemGroup: String(it.item_group ?? "others"),
-            description: String(it.description ?? ""),
-            uom: String(it.uom ?? "UNIT"),
-            qty: Number(it.qty ?? 1),
-            unitPriceCenti: Number(it.unit_price_centi ?? 0),
-            discountCenti: Number(it.discount_centi ?? 0),
-            unitCostCenti: Number(it.unit_cost_centi ?? 0),
-            variants:
-              it.variants && typeof it.variants === "object"
-                ? (it.variants as Record<string, unknown>)
-                : {},
-            remark: String(it.remark ?? ""),
-          }))
-        );
-      }
-    }
+    setEcName(String(so.emergency_contact_name ?? ""));
+    setEcRelationship(String(so.emergency_contact_relationship ?? ""));
+    setEcPhone(String(so.emergency_contact_phone ?? ""));
     setFlash(`Prefilled from ${soDocNo}`);
+  }, [soConvertHeader.data, soDocNo, editId]);
+
+  // ── Lines fallback for a bare ?fromSo= (no line-picker stash) ─────────
+  // The line-level picker (?fromPicks=1) hands its lines over via sessionStorage
+  // above; only a bare ?fromSo= (e.g. the "From Sales Order" modal) falls back to
+  // the SO's own items here. Kept on soDetail — the picker path is the mirrored-
+  // SO route and it never reaches this branch.
+  useEffect(() => {
+    if (editId || fromPicks) return;
+    const items = (soDetail.data as { items?: Array<Record<string, unknown>> } | undefined)?.items ?? [];
+    if (items.length === 0) return;
+    setLines(
+      items.map((it) => ({
+        ...newDoLine(null),
+        itemCode: String(it.item_code ?? ""),
+        itemGroup: String(it.item_group ?? "others"),
+        description: String(it.description ?? ""),
+        uom: String(it.uom ?? "UNIT"),
+        qty: Number(it.qty ?? 1),
+        unitPriceCenti: Number(it.unit_price_centi ?? 0),
+        discountCenti: Number(it.discount_centi ?? 0),
+        unitCostCenti: Number(it.unit_cost_centi ?? 0),
+        variants:
+          it.variants && typeof it.variants === "object"
+            ? (it.variants as Record<string, unknown>)
+            : {},
+        remark: String(it.remark ?? ""),
+      }))
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [soDetail.data, soDocNo, editId, fromPicks]);
 
