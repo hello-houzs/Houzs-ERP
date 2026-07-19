@@ -32,6 +32,20 @@ export type AmendmentRow = {
   requested_by: string | null;
   created_at: string | null;
   updated_at: string | null;
+  /* mig 0149 — how the amendment was CLOSED and why. `resolution` separates an
+     approver's refusal ('REJECTED') from the requester pulling it back
+     ('WITHDRAWN'); both sit on status REJECTED so the state machine and the
+     one-open index are unchanged. NULL while still in flight, and on every row
+     created before 0149. */
+  resolution?: 'REJECTED' | 'WITHDRAWN' | null;
+  rejection_reason?: string | null;
+  rejected_by?: string | null;
+  rejected_at?: string | null;
+  /* mig 0149 — an amendment corrected in place while still REQUESTED. The audit
+     trail carries WHAT changed; this is the "revised since it was raised"
+     signal the approver needs on the card itself. */
+  edited_at?: string | null;
+  edit_count?: number | null;
 };
 
 export type AmendmentLine = {
@@ -231,13 +245,32 @@ export const useSendAmendment = () => {
   });
 };
 
+/* Reject — an APPROVER refusing the request. The reason is REQUIRED (the server
+   400s without one): a refusal that does not say why leaves the requester
+   guessing and resubmitting, which is the competing-documents problem that
+   useWithdrawAmendment / useEditAmendment exist to end. */
 export const useRejectAmendment = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
+    mutationFn: ({ id, reason }: { id: string; reason: string }) =>
       authedFetch<{ amendment: AmendmentRow }>(`/so-amendments/${id}/reject`, {
         method: 'PATCH', body: JSON.stringify({ reason }),
       }),
     onSuccess: (_, vars) => invalidateAmendmentSideEffects(qc, vars.id),
   });
 };
+
+/* Withdraw — the REQUESTER pulling their own request back, which reject cannot
+   express (reject is gated to scm.amendment.approve_po, which a salesperson does
+   not hold). REQUESTED only; the server refuses once anyone has acted on it. */
+export const useWithdrawAmendment = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason?: string }) =>
+      authedFetch<{ amendment: AmendmentRow }>(`/so-amendments/${id}/withdraw`, {
+        method: 'PATCH', body: JSON.stringify({ reason }),
+      }),
+    onSuccess: (_, vars) => invalidateAmendmentSideEffects(qc, vars.id),
+  });
+};
+
