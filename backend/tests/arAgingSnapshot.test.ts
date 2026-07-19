@@ -197,7 +197,7 @@ describe("company scoping is isolated in BOTH directions", () => {
 // it is readable inside the workerd isolate — the same mechanism migrationNumbers
 // uses to see the migration listing.
 const MIGRATION_SQL = Object.values(
-  import.meta.glob("../src/db/migrations-pg/0151_*.sql", {
+  import.meta.glob("../src/db/migrations-pg/0152_*.sql", {
     query: "?raw",
     import: "default",
     eager: true,
@@ -212,9 +212,9 @@ const INDEX_TS = Object.values(
   }) as Record<string, string>,
 )[0];
 
-describe("migration 0151 ships the snapshot correctly", () => {
+describe("migration 0152 ships the snapshot correctly", () => {
   test("the migration file was globbed (guards a vacuous pass)", () => {
-    expect(typeof MIGRATION_SQL, "0151_*.sql did not glob").toBe("string");
+    expect(typeof MIGRATION_SQL, "0152_*.sql did not glob").toBe("string");
     expect(MIGRATION_SQL.length).toBeGreaterThan(0);
   });
 
