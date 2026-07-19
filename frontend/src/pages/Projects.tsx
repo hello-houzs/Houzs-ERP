@@ -14,6 +14,7 @@ import {
   Trash2,
   Upload,
   FileText,
+  ImageOff,
   Image as ImageIcon,
   Upload as UploadIcon,
   X,
@@ -91,6 +92,7 @@ import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
 import { isSalesStaff, isDirectorUser, isSalesDirectorUser } from "../auth/salesAccess";
+import { readProjectAccess, projectAccessUnresolved } from "../auth/projectAccess";
 import { PMS_STAGE_LABEL, pmsStageVariant } from "../vendor/scm/lib/pms-status";
 import { ACCESS_RANK } from "../types";
 import { Forbidden } from "./Forbidden";
@@ -4633,16 +4635,22 @@ function ProjectDetailContent({
   const trips = detail.data?.trips ?? [];
   const attachments = detail.data?.attachments ?? [];
 
-  // PIC-only panels (Payment, Logistics, Stock Transfers, Finance Ledger)
-  // are hidden when the viewer is a scoped rep. The backend returns
-  // _access.level = "limited" in that case and also omits the underlying
-  // finance data, so there's nothing to show anyway.
-  const fullAccess = !detail.data?._access || detail.data._access.level === "full";
-  // PMS role-based refinement (sales-department visibility). When the backend
-  // supplies `_access.pms`, it decides finance/payment/edit visibility; when
-  // absent (older cached response) we fall back to `fullAccess`.
-  const pms = detail.data?._access?.pms;
-  const canEditDetail = fullAccess && (pms ? pms.canEdit : true);
+  // PIC-only panels (Payment, Logistics, Stock Transfers, Finance Ledger) are
+  // hidden when the viewer is a scoped rep. The backend returns
+  // _access.level = "limited" in that case and also omits the underlying finance
+  // data, so there's nothing to show anyway.
+  //
+  // ALL of these now come from the ONE fail-closed reader (auth/projectAccess).
+  // They used to read the raw payload with `!_access || …` and `pms ? … : true`,
+  // which made a MISSING permission payload mean FULL ACCESS. See the header of
+  // projectAccess.ts for what each fallback granted.
+  const access = readProjectAccess(detail.data);
+  const accessUnresolved = projectAccessUnresolved(detail.data);
+  const fullAccess = access.full;
+  // Both terms kept (it was `fullAccess && pms.canEdit`) so this stays exactly
+  // as narrow as before for a RESOLVED payload; only the unresolved case moves,
+  // and it moves from "true" to "false".
+  const canEditDetail = fullAccess && access.canEdit;
   // Owner 2026-07-18: PIC assignment AND Sales-Attending assignment are open to
   // EVERYONE holding projects.write EXCEPT the Sales Director. This SUPERSEDES
   // the earlier director/logistics (pms.canEdit) + own-PIC gates on these two
@@ -4808,6 +4816,20 @@ function ProjectDetailContent({
       )}
       {p && (
         <>
+          {/* The project loaded but carried NO permission payload. Every
+              section gate above therefore reads false and most of this page is
+              missing. That is the safe answer, but silently hiding half a page
+              is the outage nobody reports — people stop using the feature and
+              never file a ticket. Say which of the two it is: "we couldn't load
+              your permissions" sends an operator to IT, "you don't have
+              permission" sends them to their manager. */}
+          {accessUnresolved && (
+            <ProjectBanner
+              message="We couldn't load your permissions for this project, so some sections are hidden. This is a system problem, not a restriction on your account — please reload, and tell IT if it persists."
+              tone="error"
+            />
+          )}
+
           {/* Banner — optional per-project warning */}
           {p.banner_message && <ProjectBanner message={p.banner_message} tone={p.banner_tone} />}
 
@@ -4887,9 +4909,9 @@ function ProjectDetailContent({
                   role's visibility widens; the new flag only SUBTRACTS. When
                   hidden it renders NOTHING (off, not read-only): the
                   /api/fleet/staff + /api/scm/lorries + phase-photos fetches
-                  never fire. Falls back to prior behaviour when the backend
-                  omitted pms (older cached response). */}
-              {fullAccess && (pms ? pms.canSetupDismantle : true) && (
+                  never fire. An UNRESOLVED payload now hides it too — it used to
+                  fall back to `true`, i.e. show. */}
+              {fullAccess && access.canSetupDismantle && (
                 <>
                   <LogisticsCrewSection project={p} patch={patch} />
                   <PhasePhotosSection projectId={id} />
@@ -4897,8 +4919,15 @@ function ProjectDetailContent({
               )}
               {/* Finance Ledger + Financial Snapshot: DIRECTOR-level only.
                   The backend NULLs finance data for non-directors, so this
-                  gate keeps a sales PIC from seeing an empty finance shell. */}
-              {(pms ? pms.canFinancial : fullAccess) && (
+                  gate keeps a sales PIC from seeing an empty finance shell.
+
+                  This was `pms ? pms.canFinancial : fullAccess`. The fallback
+                  was not just fail-open, it was fail-open to the WRONG COHORT:
+                  `fullAccess` is the ROW tier (PIC on this project), which every
+                  project's own PIC satisfies, while canFinancial is the SECTION
+                  tier (isFinanceViewer). An unresolved payload therefore opened
+                  the Finance Ledger to every PIC. It now closes. */}
+              {access.canFinancial && (
                 <FinanceLedgerSection
                   projectId={id}
                   sizeSqm={p.size_sqm ?? null}
@@ -8764,12 +8793,33 @@ function LogisticsCrewSection({
   const readOnly = isSalesStaff(user);
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [lorryOptions, setLorryOptions] = useState<string[]>([]);
+  // A failed reference read must not render as an empty list. `.catch(() => {})`
+  // here meant a 403 (or a cold-pool 503, or a network drop) left `crew` and
+  // `lorryOptions` at [], and the crew/lorry pickers then said "no drivers" —
+  // the same defect that made a 403 look like an empty dropdown, and the same
+  // one that printed an SO PDF claiming the full amount owed. The message is
+  // already plain language: api.client throws HttpError whose `.message` is
+  // humanHttpMessage(status, body).
+  const [refError, setRefError] = useState<string | null>(null);
   useEffect(() => {
-    api.get<{ data: CrewMember[] }>("/api/fleet/staff").then((r) => setCrew(r.data ?? [])).catch(() => {});
+    let live = true;
+    const fail = (e: unknown) => {
+      if (!live) return;
+      setRefError(
+        e instanceof Error && e.message
+          ? e.message
+          : "We couldn't load the crew and lorry lists. Please try again.",
+      );
+    };
+    api
+      .get<{ data: CrewMember[] }>("/api/fleet/staff")
+      .then((r) => { if (live) setCrew(r.data ?? []); })
+      .catch(fail);
     api
       .get<{ lorries: { plate: string }[] }>("/api/scm/lorries")
-      .then((r) => setLorryOptions((r.lorries ?? []).map((l) => l.plate).filter(Boolean)))
-      .catch(() => {});
+      .then((r) => { if (live) setLorryOptions((r.lorries ?? []).map((l) => l.plate).filter(Boolean)); })
+      .catch(fail);
+    return () => { live = false; };
   }, []);
   const isType = (u: CrewMember, kind: string) =>
     (u.role_name || "").toLowerCase() === kind || (u.user_type || "").toLowerCase() === kind;
@@ -8792,6 +8842,15 @@ function LogisticsCrewSection({
         </span>
       }
     >
+      {refError && (
+        <div
+          role="alert"
+          className="mb-3 rounded-md border border-err/40 bg-err/10 px-3 py-2 text-[12px] text-err"
+        >
+          {refError} The crew and lorry choices below may be incomplete — don't
+          save until they load.
+        </div>
+      )}
       <div>
         <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} readOnly={readOnly} />
       </div>
@@ -8842,15 +8901,30 @@ function LogisticsScheduleSection({
   const drivers = useMemo(() => crew.filter((u) => isType(u, "driver") && (u.name || "").trim() !== ""), [crew]);
   const helpers = useMemo(() => crew.filter((u) => isType(u, "helper") && (u.name || "").trim() !== ""), [crew]);
 
+  // Same swallow, same section: a 403 / 503 / dropped connection used to leave
+  // both lists empty and silent, so the driver and lorry pickers below simply
+  // offered nothing and the phase-header chips resolved to no driver. An empty
+  // list and a failed read must not look identical.
+  const [refError, setRefError] = useState<string | null>(null);
   useEffect(() => {
+    let live = true;
+    const fail = (e: unknown) => {
+      if (!live) return;
+      setRefError(
+        e instanceof Error && e.message
+          ? e.message
+          : "We couldn't load the crew and lorry lists. Please try again.",
+      );
+    };
     api
       .get<{ data: CrewMember[] }>("/api/fleet/staff")
-      .then((r) => setCrew(r.data ?? []))
-      .catch(() => {});
+      .then((r) => { if (live) setCrew(r.data ?? []); })
+      .catch(fail);
     api
       .get<{ lorries: { id: string; plate: string; type: string | null }[] }>("/api/scm/lorries")
-      .then((r) => setLorries(r.lorries ?? []))
-      .catch(() => {});
+      .then((r) => { if (live) setLorries(r.lorries ?? []); })
+      .catch(fail);
+    return () => { live = false; };
   }, []);
 
   const setupTrip = trips.find(
@@ -8872,6 +8946,15 @@ function LogisticsScheduleSection({
 
   return (
     <PanelSection title="Logistics Schedule" muted>
+      {refError && (
+        <div
+          role="alert"
+          className="mb-3 rounded-md border border-err/40 bg-err/10 px-3 py-2 text-[12px] text-err"
+        >
+          {refError} Driver and lorry choices may be incomplete — don't save
+          until they load.
+        </div>
+      )}
       <PhaseHeader
         phase="Setup"
         trip={setupTrip}
@@ -9226,16 +9309,28 @@ function PhasePhotoThumb({
   const isImage = (photo.content_type || "").startsWith("image/");
   const isVideo = (photo.content_type || "").startsWith("video/");
   const [url, setUrl] = useState<string | null>(null);
+  // A thumbnail that fails to load used to render an empty grey square,
+  // indistinguishable from one still loading and from a photo that isn't there.
+  // Keep the reason: the tile shows a broken-image state and the tooltip carries
+  // the plain-language message (api.client throws HttpError whose `.message` is
+  // already humanHttpMessage — a 403 reads "You don't have permission to do
+  // that", not a status dump).
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     if (!isImage) return;
     let revoke: string | null = null;
+    setLoadError(null);
     api
       .fetchBlobUrl(`/api/projects/attachments/${photo.r2_key}`)
       .then((u) => {
         revoke = u;
         setUrl(u);
       })
-      .catch(() => {});
+      .catch((e: unknown) => {
+        setLoadError(
+          e instanceof Error && e.message ? e.message : "This preview couldn't be loaded.",
+        );
+      });
     return () => {
       if (revoke) URL.revokeObjectURL(revoke);
     };
@@ -9267,6 +9362,16 @@ function PhasePhotoThumb({
           {isImage ? (
             url ? (
               <img src={url} alt={photo.caption || ""} className="h-full w-full object-cover" />
+            ) : loadError ? (
+              <div
+                className="flex h-full w-full flex-col items-center justify-center gap-0.5 p-1 text-center"
+                title={loadError}
+              >
+                <ImageOff size={18} className="text-err" />
+                <div className="text-[8px] font-semibold uppercase tracking-wide text-err">
+                  Failed
+                </div>
+              </div>
             ) : (
               <div className="h-full w-full" />
             )
@@ -11796,18 +11901,27 @@ function AttachmentTile({
 }) {
   const dialog = useDialog();
   const [thumb, setThumb] = useState<string | null>(null);
+  // See PhasePhotoThumb: a swallowed thumbnail failure is indistinguishable from
+  // "still loading" and from "not an image". Keep the reason and show it.
+  const [thumbError, setThumbError] = useState<string | null>(null);
   const isImage = (attachment.mime_type || "").startsWith("image/");
 
   useEffect(() => {
     if (!isImage) return;
     let revoked = false;
+    setThumbError(null);
     api
       .fetchBlobUrl(`/api/projects/attachments/${attachment.r2_key}`)
       .then((url) => {
         if (revoked) URL.revokeObjectURL(url);
         else setThumb(url);
       })
-      .catch(() => {});
+      .catch((e: unknown) => {
+        if (revoked) return;
+        setThumbError(
+          e instanceof Error && e.message ? e.message : "This preview couldn't be loaded.",
+        );
+      });
     return () => {
       revoked = true;
       if (thumb) URL.revokeObjectURL(thumb);
@@ -11871,6 +11985,16 @@ function AttachmentTile({
             alt={attachment.file_name || ""}
             className="h-24 w-full object-cover"
           />
+        ) : isImage && thumbError ? (
+          <div
+            className="flex h-24 w-full flex-col items-center justify-center gap-1 bg-bg/60 px-2 text-center text-err"
+            title={thumbError}
+          >
+            <ImageOff size={22} />
+            <span className="text-[9px] font-semibold uppercase tracking-wide">
+              Preview failed
+            </span>
+          </div>
         ) : (
           <div className="flex h-24 w-full items-center justify-center bg-bg/60 text-ink-muted">
             {isImage ? <ImageIcon size={24} /> : <FileText size={24} />}

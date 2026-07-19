@@ -8,6 +8,7 @@ import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesDirectorUser } from "../auth/salesAccess";
 import { capability } from "../auth/capabilities";
+import { readProjectAccess, projectAccessUnresolved } from "../auth/projectAccess";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
@@ -566,8 +567,12 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
 // ── Detail ──
 function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const { pageAccess, can, user } = useAuth();
-  // Finance-gate key mirrors the desktop Projects page (usePageAccess).
-  const canSeeFinance = pageAccess("projects.finances") !== "none";
+  // NOTE: the old `canSeeFinance = pageAccess("projects.finances") !== "none"`
+  // is gone. It was only ever the FALLBACK arm of the finance gate, and it
+  // answered a different question (page matrix) than the one being asked (the
+  // PMS FINANCIAL section). The gate now reads `access.canFinancial` — the
+  // server's own answer — with no second source to drift from. The desktop
+  // Projects.tsx finance gate does the same.
   // Sales quick-log gate (the Sales page-access, mirrors desktop).
   const salesAccess = pageAccess("sales");
   const canLogSale = salesAccess !== "none";
@@ -587,19 +592,28 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     staleTime: 15_000,
   });
 
+  // THE server's decision for this user × project, read fail-closed. One reader,
+  // shared with the desktop Projects.tsx (auth/projectAccess) — desktop and
+  // mobile are one logic layer. Resolved up here so it can gate the FETCHES
+  // below, not just the rendering: "off" means the query never fires.
+  //
+  // `data == null` (still loading) resolves to all-denied, which is the same
+  // answer the old code gave and is what keeps the phase-photos fetch from
+  // firing before we know.
+  const access = readProjectAccess(data);
+  const accessUnresolved = projectAccessUnresolved(data);
+
   // Setup & Dismantle section (crew editor + phase photos) is section-gated by
   // the PMS role (owner 2026-07-15): hidden from every non-director Sales user,
   // even the project's own PIC — single logic layer with the desktop
-  // Projects.tsx gate. Fall back to the row-level "full" level when the backend
-  // omitted pms (older cached response); the backend strips the crew + document
-  // rows either way. Computed up here so it can also gate the phase-photos fetch
-  // below (off, not hide — no fetch when the section is hidden).
-  const canSetupDismantle =
-    data == null
-      ? false // unknown until the detail loads — don't fire the phase-photos fetch yet
-      : data._access?.pms
-        ? !!data._access.pms.canSetupDismantle
-        : (data._access?.level ?? "full") === "full";
+  // Projects.tsx gate. The backend strips the crew + document rows either way.
+  // Computed up here so it can also gate the phase-photos fetch below (off, not
+  // hide — no fetch when the section is hidden).
+  //
+  // Reads the ONE fail-closed reader (auth/projectAccess) — desktop and mobile
+  // share that logic layer. The `(data._access?.level ?? "full") === "full"`
+  // fallback is gone: it made a MISSING permission payload mean full access.
+  const canSetupDismantle = access.canSetupDismantle;
 
   // Crew-uploaded setup/dismantle evidence photos (mig 084) live on a
   // separate endpoint. Used only for the uploader credit on the Setup &
@@ -700,22 +714,24 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
 
   const p = data?.project;
   const archived = !!p?.archived_at;
-  // PMS role refinement (sales-department visibility). When present it decides
-  // finance/edit visibility; when absent (older cached response) fall back to
-  // the page-access gate (finance) / canWrite (edit).
-  const pms = data?._access?.pms;
-  // Show finance only when the user has the page-access AND the backend
-  // actually returned the finance block (it strips it server-side for a
-  // role whose PMS position lacks FINANCIAL). Gating follows the real
-  // backend permission — no in-screen view-as switcher (removed to match v4).
-  const financeVisible =
-    (pms ? !!pms.canFinancial : canSeeFinance) && !!data?.finance;
+  // Show finance only when the server says canFinancial AND it actually returned
+  // the finance block (it strips it server-side for a role whose PMS position
+  // lacks FINANCIAL). Gating follows the real backend permission — no in-screen
+  // view-as switcher (removed to match v4).
+  //
+  // The `pms ? … : canSeeFinance` fallback is gone. `canSeeFinance` is the PAGE
+  // matrix level, a different question from the PMS FINANCIAL section, so an
+  // unresolved payload used to answer the finance question with the page answer.
+  const financeVisible = access.canFinancial && !!data?.finance;
   // Rental & payment section: gate on the PMS PAYMENT flag. The backend blanks
   // payment_* cols for a role without it (#345), so a non-payment sales user
-  // would otherwise see an empty "N/A" section — hide it outright. Fail-open
-  // when pms/canPayment is absent (older cached response); backend enforces
-  // the POST /:id/payment either way.
-  const paymentVisible = pms ? pms.canPayment ?? true : true;
+  // would otherwise see an empty "N/A" section — hide it outright.
+  //
+  // THIS WAS `pms ? pms.canPayment ?? true : true` — a `?? true` on a MONEY
+  // surface. Both branches granted: an absent `pms` block showed the card, and a
+  // present block with the flag omitted ALSO showed it. A permission we could
+  // not read is NO, and never more so than on payment.
+  const paymentVisible = access.canPayment;
   // ── Mobile role-based checklist visibility (owner 2026-07-16) ──────────────
   // Gate specific items/sections by the viewer's org role. Keyed off stable org
   // fields (position_name / department_name / role_name), mirroring
@@ -884,6 +900,26 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
 
         {!isLoading && !error && data && p && (
           <>
+            {/* The project loaded but carried NO permission payload, so every
+                section gate reads false and most of this screen is missing.
+                Safe, but say WHICH it is: a system failure sends the operator to
+                IT, "no permission" sends them to their manager. Same wording and
+                same trigger as the desktop Projects.tsx banner — one logic layer. */}
+            {accessUnresolved && (
+              <div
+                role="alert"
+                style={{
+                  border: "1px solid #b23a3a", borderRadius: 8, padding: "10px 12px",
+                  marginBottom: 12, fontSize: 12, lineHeight: 1.45, color: "#b23a3a",
+                  background: "rgba(178,58,58,0.06)",
+                }}
+              >
+                We couldn't load your permissions for this project, so some sections
+                are hidden. This is a system problem, not a restriction on your
+                account — please reload, and tell IT if it persists.
+              </div>
+            )}
+
             {/* stage pipeline (design "Pipeline" card) — hidden from the field/sales cohort */}
             {!cohort5 && <StagePipeline stage={p.stage} sections={data.section_progress} />}
 
@@ -1022,7 +1058,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 photos={photos}
                 drivers={drivers}
                 lorries={lorries}
-                canWrite={canWrite && (pms ? pms.canEdit !== false : true) && !archived}
+                /* `canEdit !== false` treated BOTH an absent pms block and an
+                   omitted flag as writable. Now the server's answer, fail-closed. */
+                canWrite={canWrite && access.canEdit && !archived}
                 busy={busy}
                 setBusy={setBusy}
                 patchProject={patchProject}

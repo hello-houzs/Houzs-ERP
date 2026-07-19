@@ -7727,12 +7727,25 @@ function StaffLightbox({
     return () => { document.body.style.overflow = prev; };
   }, []);
 
+  // This is a FULL-SCREEN viewer, not a thumbnail: with `.catch(() => {})` a
+  // denied or failed fetch left the "Loading…" placeholder up forever, so a 403
+  // was indistinguishable from a slow network and the operator waited on
+  // something that was never coming. Keep the reason and render it.
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     setUrl(null);
+    setLoadError(null);
     let revoked = false;
     api.fetchBlobUrl(`/api/assr/attachments/${att.r2_key}`)
       .then((u) => { if (!revoked) setUrl(u); })
-      .catch(() => {});
+      .catch((e: unknown) => {
+        if (revoked) return;
+        setLoadError(
+          e instanceof Error && e.message
+            ? e.message
+            : "We couldn't load this attachment. Please try again.",
+        );
+      });
     return () => { revoked = true; if (url) URL.revokeObjectURL(url); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [att.r2_key]);
@@ -7822,6 +7835,16 @@ function StaffLightbox({
               draggable={false}
             />
           )
+        ) : loadError ? (
+          <div
+            role="alert"
+            className="flex h-64 w-72 flex-col items-center justify-center gap-2 rounded bg-white/5 px-4 text-center text-[12px] leading-relaxed text-white/80"
+          >
+            <span className="font-semibold text-white">
+              This attachment couldn't be opened
+            </span>
+            <span>{loadError}</span>
+          </div>
         ) : (
           <div className="flex h-64 w-64 items-center justify-center rounded bg-white/5 text-white/60">
             Loading…
