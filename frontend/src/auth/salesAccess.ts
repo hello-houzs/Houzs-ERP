@@ -166,6 +166,47 @@ export function canViewScmCosting(user: AuthUser | null | undefined): boolean {
   return !!user?.project_finance_viewer;
 }
 
+// ── Fair Report access (owner-ruled 2026-07-19) ─────────────────────────────
+//
+// Three tiers, PER STAGE, mirroring the backend lib/fair-report.fairReportAccess:
+//   * ordinary salespeople → no access (nav absent + route guard)
+//   * Sales Director       → SO stage only
+//   * MANAGEMENT           → all three stages
+// MANAGEMENT = isFinanceViewer AND NOT a Sales Director = {`*` owner/IT, Super
+// Admin, Finance Manager}. isDirectorUser is the FE mirror of the backend
+// isFinanceViewer (both OR in project_finance_viewer + the exact director
+// position names — see its docblock), so subtracting the Sales Director yields
+// management exactly. The Sales-Director check reuses the shared, EXACT-name
+// isSalesDirectorUser so a free-text rename can never slide into a tier.
+//
+// NOTE: deliberately NOT gated on COSTING_DISPLAY_ENABLED (unlike
+// canViewScmCosting). The backend endpoint returns cost/margin to these two
+// tiers unconditionally, so the FE must not hide behind the SCM costing switch
+// or the nav + page would disagree with what the API will serve.
+
+export type FairStage = "so" | "do" | "invoice";
+
+/** MANAGEMENT tier for the Fair Report — all three stages. */
+export function isFairManagementUser(user: AuthUser | null | undefined): boolean {
+  return isDirectorUser(user) && !isSalesDirectorUser(user);
+}
+
+/** The Fair Report stages this user may open, in canonical order. Empty = no
+ *  access. Drives both nav visibility and per-tab visibility on the page. */
+export function fairAllowedStages(user: AuthUser | null | undefined): FairStage[] {
+  if (isFairManagementUser(user)) return ["so", "do", "invoice"];
+  if (isSalesDirectorUser(user)) return ["so"];
+  return [];
+}
+
+/** Nav + route guard — may this user open the Fair Report at all (any stage).
+ *  True for management + the Sales Director; false for ordinary sales / office
+ *  (defence-in-depth + UX only — the backend fairReportAccess stays the
+ *  authority and 403s every refused stage). */
+export function canViewFairReport(user: AuthUser | null | undefined): boolean {
+  return fairAllowedStages(user).length > 0;
+}
+
 /**
  * PRODUCT COST gate — "may this user see a SKU's cost price".
  *

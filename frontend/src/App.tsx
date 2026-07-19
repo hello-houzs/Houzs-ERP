@@ -3,7 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { useAuth } from "./auth/AuthContext";
 import { canUseAssistant } from "./auth/assistantAccess";
-import { isSalesStaff, isDirectorUser, isSalesDirectorUser, canViewScmCosting } from "./auth/salesAccess";
+import { isSalesStaff, isDirectorUser, isSalesDirectorUser, canViewScmCosting, canViewFairReport } from "./auth/salesAccess";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
@@ -128,6 +128,7 @@ const ScmDoDetailListingV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderDeta
 const ScmSiDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesInvoiceDetailListing").then((m) => ({ default: m.SalesInvoiceDetailListing })));
 const ScmDrDetailListingV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnDetailListing").then((m) => ({ default: m.DeliveryReturnDetailListing })));
 const ScmFulfillmentCostingV2 = lazy(() => import("./pages/scm-v2/FulfillmentCosting").then((m) => ({ default: m.FulfillmentCosting })));
+const FairReportV2 = lazy(() => import("./pages/scm-v2/FairReport").then((m) => ({ default: m.FairReport })));
 const ScmDeliveryOrdersV2 = lazy(() => import("./pages/scm-v2/MfgDeliveryOrdersListV2").then((m) => ({ default: m.MfgDeliveryOrdersListV2 })));
 const ScmDeliveryOrderNewV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderNewV2").then((m) => ({ default: m.DeliveryOrderNewV2 })));
 const ScmDeliveryOrderFromSoV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderFromSo").then((m) => ({ default: m.DeliveryOrderFromSo })));
@@ -301,6 +302,20 @@ function SoMaintenanceGuard({ children }: { children: React.ReactNode }) {
 function FinanceCostingGuard({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   if (!canViewScmCosting(user)) return <Forbidden page="scm.finance" />;
+  return <>{children}</>;
+}
+
+/**
+ * Fair Report route guard — management + the Sales Director only, mirroring the
+ * backend fairReportAccess cohort (auth/salesAccess.canViewFairReport =
+ * management OR Sales Director). Ordinary sales / office are Forbidden BEFORE the
+ * page mounts, so none of the report's data hooks fire (off, not hidden). The
+ * PER-STAGE split (a Sales Director sees the SO tab only) is enforced inside the
+ * page via fairAllowedStages, and the backend still 403s every refused stage.
+ */
+function FairReportGuard({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  if (!canViewFairReport(user)) return <Forbidden page="reports.fair" />;
   return <>{children}</>;
 }
 
@@ -596,6 +611,11 @@ export default function App() {
         {/* Finance > Fulfillment Costing — three-way cost report; finance-only
             (FinanceCostingGuard mirrors the backend canViewScmFinance gate). */}
         <Route path="/scm/reports/fulfillment-costing" element={<FinanceCostingGuard><Scm2990Shell><ScmFulfillmentCostingV2 /></Scm2990Shell></FinanceCostingGuard>} />
+        {/* Fair Report — exhibition-performance report (SO / DO / Invoice stages).
+            Top-level /reports/* (not nested under /scm) so it reads as a clean
+            management report, not a deep SCM leaf. Management + Sales Director
+            only (FairReportGuard mirrors the backend fairReportAccess cohort). */}
+        <Route path="/reports/fair-report" element={<FairReportGuard><Scm2990Shell><FairReportV2 /></Scm2990Shell></FairReportGuard>} />
         {/* allowSales — a salesperson READS the DO list/detail generated from
             their own SOs (backend row-scopes own+downline, strips cost/margin).
             Create routes below deliberately OMIT allowSales (read-only). */}
