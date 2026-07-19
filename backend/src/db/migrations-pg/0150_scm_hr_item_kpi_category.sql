@@ -1,4 +1,17 @@
--- 0147: item-KPI rules can target a whole product CATEGORY.
+-- 0150: item-KPI rules can target a whole product CATEGORY.
+--
+-- NUMBERING (this file has moved twice — read before renumbering it again):
+--   0147 -> 0148 -> 0150. `main` holds through 0147
+--   (0147_scm_settle_pi_paid_centi.sql, #824, deployed). 0148 is claimed by the
+--   OPEN PR #830 (0148_venue_binding.sql). 0149 is deliberately left free for
+--   the OPEN PR #829, which is currently sitting on a DUPLICATE of main's live
+--   0147 and must move.
+--   The number must be resolved against the live remote AND the open PRs at the
+--   moment of push — not against a listing taken earlier — because every branch
+--   independently reaches for "the next free number" and two of them landing on
+--   the same one is the failure this comment exists to prevent. Gaps are
+--   harmless (_pg_migrations is keyed by FILENAME); a DUPLICATE is not, and a
+--   failed migration blocks EVERY deploy on this repo, not just this branch's.
 --
 -- WHY
 --   Owner 2026-07-18: a bonus rule of type `product` must be able to name either
