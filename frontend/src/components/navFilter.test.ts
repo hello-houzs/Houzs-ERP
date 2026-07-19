@@ -320,3 +320,29 @@ describe("nav — Finance / HR are top-level, not under Supply Chain", () => {
     }
   });
 });
+
+/**
+ * Every groupId App.tsx mounts a sub-group hub for must resolve SOMEWHERE in
+ * NAV_TABS. ScmSubgroupHub used to look these up inside `scm.children` only, so
+ * lifting Finance to the root turned /scm/finance — a live, bookmarkable URL —
+ * into "Not found". The lookup is tree-wide now; this pins that it stays true.
+ */
+describe("nav — every sub-group hub groupId still resolves", () => {
+  const findGroup = (tabs: readonly NavTab[], id: string): NavTab | undefined => {
+    for (const t of tabs) {
+      if (t.groupId === id) return t;
+      const hit = t.children && findGroup(t.children, id);
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+
+  it.each([
+    "scm-sales", "scm-consignment", "scm-procurement",
+    "scm-transportation", "scm-warehouse", "scm-finance",
+  ])("%s exists and has children to render", (id) => {
+    const g = findGroup(NAV_TABS, id);
+    expect(g, `groupId "${id}" is mounted by App.tsx but absent from NAV_TABS`).toBeDefined();
+    expect(g!.children?.length ?? 0).toBeGreaterThan(0);
+  });
+});

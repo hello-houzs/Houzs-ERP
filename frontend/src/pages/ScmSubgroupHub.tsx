@@ -102,8 +102,21 @@ export function ScmSubgroupHub({
     return true;
   };
 
-  const scm = NAV_TABS.find((t) => t.groupId === "scm");
-  const group = scm?.children?.find((g) => g.groupId === groupId);
+  /* Search the WHOLE registry, not just Supply Chain's children. Finance was
+     lifted to a root nav group (owner 2026-07-18: "finance and HR is not under
+     supply chain") and a lookup anchored to `scm.children` silently turned
+     /scm/finance — a live, bookmarkable URL — into "Not found". The sub-group
+     hubs are keyed by groupId, so where that group SITS in the tree is not this
+     component's business. */
+  const findGroup = (tabs: readonly NavTab[]): NavTab | undefined => {
+    for (const t of tabs) {
+      if (t.groupId === groupId) return t;
+      const hit = t.children && findGroup(t.children);
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  const group = findGroup(NAV_TABS);
   const kids = (group?.children ?? []).filter(visible);
 
   // Empty state — a role with SCM access but no leaves inside this specific
