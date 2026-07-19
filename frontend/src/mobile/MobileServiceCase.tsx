@@ -1754,10 +1754,11 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   // ticket ref. Maps to assr_cases.ref_no; when left blank the create
   // endpoint falls back to the SO's pre-printed Ref (input.ref_no ?? ctx.Ref).
   const [issueNo, setIssueNo] = useState("");
-  // Complaint date (assr_cases.complained_date) — defaults to today (MYT).
-  // Stored/sent as YYYY-MM-DD (the native date input's value format, which
-  // is also what the backend's todayMyt() default produces).
-  const [complainedDate, setComplainedDate] = useState<string>(() => todayMyt());
+  // Complaint date (assr_cases.complained_date) — owner ruling (2026-07):
+  // it is stamped automatically to today (MYT) and is NOT user-editable.
+  // Fixed value, no setter — kept as YYYY-MM-DD (the format the backend's
+  // todayMyt() default also produces) so it flows straight into the payload.
+  const [complainedDate] = useState<string>(() => todayMyt());
   // SO line-item lookup — once an SO is chosen, offer its items so the
   // Product field is a picker (GET /api/assr/lookup-items/:docNo), not free
   // text. Staff can still type a custom code if the item isn't listed.
@@ -2061,15 +2062,17 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                   className="fld-i money"
                 />
               </label>
-              {/* Complaint date — assr_cases.complained_date. Native date input
-                  (value = YYYY-MM-DD), defaulted to today (MYT). */}
+              {/* Complaint date — assr_cases.complained_date. Owner ruling:
+                  automatic + read-only, always today (MYT). Rendered as a
+                  disabled field so the user cannot change it; the fixed
+                  today value still flows into the payload below. */}
               <label className="fld">
-                <span className="fld-l">Complaint date *</span>
+                <span className="fld-l">Complaint date</span>
                 <input
-                  type="date"
-                  value={complainedDate}
-                  max={todayMyt()}
-                  onChange={(e) => setComplainedDate(e.target.value)}
+                  type="text"
+                  value={dm(complainedDate)}
+                  readOnly
+                  disabled
                   className="fld-i money"
                 />
               </label>

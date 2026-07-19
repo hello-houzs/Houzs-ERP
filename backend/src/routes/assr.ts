@@ -1527,8 +1527,16 @@ app.post(
     assigned_to?: number | null;
   }>();
 
-  if (!body.doc_no || !body.complaint_issue) {
-    return c.json({ error: "doc_no and complaint_issue are required" }, 400);
+  // Owner ruling (2026-07): Issue Category is REQUIRED and must be enforced
+  // server-side, not only by the FE button gate — the server previously
+  // accepted a null/blank category. Treat whitespace-only as missing.
+  const hasCategory =
+    typeof body.issue_category === "string" && body.issue_category.trim().length > 0;
+  if (!body.doc_no || !body.complaint_issue || !hasCategory) {
+    return c.json(
+      { error: "doc_no, complaint_issue and issue_category are required" },
+      400,
+    );
   }
 
   // Support both old format (item_code string) and new (items array)
