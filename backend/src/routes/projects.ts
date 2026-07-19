@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import type { Env } from "../types";
 import { requirePermission, requireAnyPermission, requirePageAccess } from "../middleware/auth";
 import {
@@ -61,6 +62,11 @@ import {
 import { and, eq, sql } from "drizzle-orm";
 import { activeCompanyId, activeCompanySql } from "../scm/lib/companyScope";
 
+/* The context the extracted handlers below receive. They are exported so the
+   route tests can drive them directly; the shape is exactly what app.get/post
+   would have passed to an inline handler — including the PATH literal, which is
+   what keeps c.req.param("id") a plain string rather than string | undefined. */
+type HandlerCtx = Context<{ Bindings: Env }, "/brands/:id/logo">;
 const app = new Hono<{ Bindings: Env }>();
 
 // Multi-company (mig-pg 0093): Projects are a PER-COMPANY module — every
@@ -437,11 +443,11 @@ app.post("/brands/:id/logo", requirePermission("projects.manage"), async (c) => 
  * manager thumbnail and the SO PDF are drawn client-side by every
  * signed-in user. 404 when no logo is set.
  */
-app.get("/brands/:id/logo", async (c) => {
+export const getBrandLogoHandler = async (c: HandlerCtx) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Invalid ID." }, 400);
   const brand = await c.env.DB.prepare(
-    `SELECT logo_r2_key FROM project_brands WHERE id = ?`
+    `SELECT logo_r2_key FROM project_brands WHERE id = ?${activeCompanySql(c)}`
   )
     .bind(id)
     .first<{ logo_r2_key: string | null }>();
@@ -454,18 +460,23 @@ app.get("/brands/:id/logo", async (c) => {
   obj.writeHttpMetadata(headers);
   headers.set("cache-control", "private, max-age=300");
   return new Response(obj.body, { headers });
-});
+};
+app.get("/brands/:id/logo", getBrandLogoHandler);
 
 /**
  * DELETE /brands/:id/logo
  * Clears the logo pointer and best-effort deletes the object — the SO
  * PDF falls back to the company letterhead logo.
  */
-app.delete("/brands/:id/logo", requirePermission("projects.manage"), async (c) => {
+export const deleteBrandLogoHandler = async (c: HandlerCtx) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Invalid ID." }, 400);
+  /* Scoped on BOTH halves: the load that decides whether to delete, and the
+     UPDATE that performs it. Scoping only the load would leave the write able to
+     null another company's logo if the two ever drifted apart. */
+  const brandCoSql = activeCompanySql(c);
   const brand = await c.env.DB.prepare(
-    `SELECT logo_r2_key FROM project_brands WHERE id = ?`
+    `SELECT logo_r2_key FROM project_brands WHERE id = ?${brandCoSql}`
   )
     .bind(id)
     .first<{ logo_r2_key: string | null }>();
@@ -473,7 +484,7 @@ app.delete("/brands/:id/logo", requirePermission("projects.manage"), async (c) =
   const prevKey = brandLogoKeyOf(brand);
   if (prevKey) {
     await c.env.DB.prepare(
-      `UPDATE project_brands SET logo_r2_key = NULL WHERE id = ?`
+      `UPDATE project_brands SET logo_r2_key = NULL WHERE id = ?${brandCoSql}`
     )
       .bind(id)
       .run();
@@ -487,7 +498,8 @@ app.delete("/brands/:id/logo", requirePermission("projects.manage"), async (c) =
     meta: { logo_r2_key: prevKey },
   });
   return c.json({ ok: true });
-});
+};
+app.delete("/brands/:id/logo", requirePermission("projects.manage"), deleteBrandLogoHandler);
 
 app.put("/event-types/reorder", requirePermission("projects.manage"), async (c) => {
   const body = await c.req.json<{ ids?: unknown }>();
@@ -2455,12 +2467,17 @@ app.get("/:id/phase-photos", async (c) => {
     if (!phases.length) return c.json({ error: "Forbidden" }, 403);
   }
 
+  /* project_phase_photos carries no company_id of its own, so the boundary is
+     the parent project — the same EXISTS form GET /:id/activity already uses. */
+  const photoCoSql = activeCompanySql(c, "p.company_id");
   const rows = await c.env.DB.prepare(
     `SELECT pp.id, pp.phase, pp.r2_key, pp.content_type, pp.caption,
             pp.uploaded_by, u.name as uploaded_by_name, pp.uploaded_at
        FROM project_phase_photos pp
        LEFT JOIN users u ON u.id = pp.uploaded_by
-      WHERE pp.project_id = ?
+      WHERE pp.project_id = ?${
+        photoCoSql ? ` AND EXISTS (SELECT 1 FROM projects p WHERE p.id = pp.project_id${photoCoSql})` : ""
+      }
       ORDER BY pp.uploaded_at DESC, pp.id DESC`
   )
     .bind(id)

@@ -30,7 +30,8 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { recordEntityAudit, compactChanges, fieldChange, statusChange, assertAuditWritable, auditUnavailableBody, type FieldChange } from '../lib/entity-audit';
 
 export const stockTakes = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -45,6 +46,21 @@ const LINE =
 
 const VALID_STATUS = new Set(['OPEN', 'POSTED', 'CANCELLED']);
 const VALID_SCOPE  = new Set(['ALL', 'CATEGORY', 'CODE_PREFIX']);
+
+/* Runs ONLY on the zero-rows path of a scoped conditional flip, so it cannot
+   disturb the happy path or the flip's single-flight role. It separates the two
+   reasons that flip can match nothing — the take is not in the expected status
+   (409, unchanged) versus it is not this company's at all (404). Without it the
+   cross-company refusal would masquerade as a state error. */
+async function notOpenOrNotOurs(
+  sb: any, id: string, companyId: number, expected: string,
+): Promise<{ body: Record<string, unknown>; status: 404 | 409 }> {
+  const { data } = await scopeToCompanyId(
+    sb.from('stock_takes').select('id').eq('id', id), companyId,
+  ).maybeSingle();
+  if (!data) return { body: NOT_THIS_COMPANY, status: 404 };
+  return { body: { error: expected === 'OPEN' ? 'not_open' : 'not_posted' }, status: 409 };
+}
 
 const nextTakeNo = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
@@ -409,17 +425,19 @@ stockTakes.patch('/:id/cancel', async (c) => {
   /* The flip below is this handler's first statement that touches anything, and
      it is also its not-found / wrong-state check, so the probe sits directly in
      front of it rather than behind a guard. The flip keeps its single-flight
-     role untouched. companyId is omitted: the row's company is only known from
-     the flip's own result, and no read is worth adding for it. */
-  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'CANCEL' });
+     role untouched. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
+  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'CANCEL', companyId: co.companyId });
   if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
-  const { data, error } = await sb.from('stock_takes')
+  const { data, error } = await scopeToCompanyId(sb.from('stock_takes')
     .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString() })
-    .eq('id', id).eq('status', 'OPEN')
-    .select('id, status, cancelled_at, take_no, company_id').single();
+    .eq('id', id), co.companyId).eq('status', 'OPEN')
+    .select('id, status, cancelled_at, take_no, company_id').maybeSingle();
   if (error) return c.json({ error: 'cancel_failed', reason: error.message }, 500);
-  if (!data)  return c.json({ error: 'not_open' }, 409);
+  if (!data)  { const r = await notOpenOrNotOurs(sb, id, co.companyId, 'OPEN'); return c.json(r.body, r.status); }
 
   /* The .eq('status','OPEN') gate means only the call that actually flipped it
      gets a row back, so this records once. The prior status is OPEN by
@@ -464,16 +482,19 @@ stockTakes.patch('/:id/reverse', async (c) => {
   /* Probe before the flip: the flip is the first mutating call and doubles as
      the state check, so there is no earlier guard to sit behind. It remains the
      single-flight lock. */
-  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'REVERSE', companyId: activeCompanyId(c) });
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
+  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'REVERSE', companyId: co.companyId });
   if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
   // Flip status first so a concurrent reverse can't double-write movements.
-  const { data: cancelled, error: cErr } = await sb.from('stock_takes')
+  const { data: cancelled, error: cErr } = await scopeToCompanyId(sb.from('stock_takes')
     .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString() })
-    .eq('id', id).eq('status', 'POSTED')
-    .select(HEADER).single();
+    .eq('id', id), co.companyId).eq('status', 'POSTED')
+    .select(HEADER).maybeSingle();
   if (cErr)       return c.json({ error: 'reverse_failed', reason: cErr.message }, 500);
-  if (!cancelled) return c.json({ error: 'not_posted' }, 409);
+  if (!cancelled) { const r = await notOpenOrNotOurs(sb, id, co.companyId, 'POSTED'); return c.json(r.body, r.status); }
 
   const header = cancelled as unknown as {
     id: string; take_no: string; warehouse_id: string;
@@ -606,23 +627,33 @@ stockTakes.delete('/:id', async (c) => {
 // Lines with counted_qty == NULL are treated as "untouched" (commander
 // never got to that SKU) and skipped — no movement, no audit trail beyond
 // the line itself.
-stockTakes.patch('/:id/post', async (c) => {
+export const postStockTakeHandler = async (c: any) => {
   const sb = c.get('supabase');
   const user = c.get('user');
   const id = c.req.param('id');
 
   /* Probe before the flip, for the same reason as /reverse: the flip is both
      the first write and the state check, and it stays the single-flight lock. */
-  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'POST', companyId: activeCompanyId(c) });
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
+  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'POST', companyId: co.companyId });
   if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
-  // Flip status first so concurrent posts don't double-write movements.
-  const { data: posted, error: pErr } = await sb.from('stock_takes')
+  /* Company predicate on the FLIP itself, which is this handler's only gate —
+     there is no load to scope. It matters more here than elsewhere because the
+     two siblings below were ALREADY company-aware while this was not: the
+     inventory_balances read is scopeToCompany'd and the movements insert is
+     stampCompany'd. Posting another company's take therefore compared THEIR
+     counted qty against OUR on-hand (no rows -> live 0), turning every line
+     into a full-quantity phantom movement stamped to us. Scoping the flip is
+     what closes that; the two siblings are deliberately left as they are. */
+  const { data: posted, error: pErr } = await scopeToCompanyId(sb.from('stock_takes')
     .update({ status: 'POSTED', posted_at: new Date().toISOString() })
-    .eq('id', id).eq('status', 'OPEN')
-    .select(HEADER).single();
+    .eq('id', id), co.companyId).eq('status', 'OPEN')
+    .select(HEADER).maybeSingle();
   if (pErr)    return c.json({ error: 'post_failed', reason: pErr.message }, 500);
-  if (!posted) return c.json({ error: 'not_open' }, 409);
+  if (!posted) { const r = await notOpenOrNotOurs(sb, id, co.companyId, 'OPEN'); return c.json(r.body, r.status); }
 
   const header = posted as unknown as {
     id: string; take_no: string; warehouse_id: string;
@@ -734,4 +765,5 @@ stockTakes.patch('/:id/post', async (c) => {
     movementsWritten: movementErrors.length ? 0 : adjustmentRows.length,
     movementErrors: movementErrors.length ? movementErrors : undefined,
   });
-});
+};
+stockTakes.patch('/:id/post', postStockTakeHandler);
