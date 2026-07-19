@@ -287,11 +287,29 @@ function denyAll(): CapabilitySet {
  * compute is not one we may grant, and the throw is re-surfaced by the caller
  * (routes/auth.ts) rather than swallowed into a blank.
  */
-export function resolveCapabilities(u: CapabilityCaller | null | undefined): CapabilitySet {
+export function resolveCapabilities(
+  u: CapabilityCaller | null | undefined,
+  opts?: { costingDisplayEnabled?: boolean },
+): CapabilitySet {
   if (!u) return denyAll();
   const out = {} as Record<CapabilityKey, boolean>;
   for (const key of Object.keys(PREDICATES) as CapabilityKey[]) {
     out[key] = PREDICATES[key](u) === true;
+  }
+  // GLOBAL cost/margin DISPLAY switch (env COSTING_DISPLAY_ENABLED, resolved by
+  // scm/lib/costing-enabled and passed in by routes/auth.ts). It is ONE env flag,
+  // not a per-user predicate, so it cannot live in the (u) => boolean registry
+  // above; it is applied here as the single global multiplier on the one
+  // capability it governs. OFF forces scm.finance.view false for EVERYONE, so the
+  // FE's canViewScmCosting (which reads this capability) hides the cost/margin
+  // columns + nav, in lock-step with canViewScmFinance stripping the SAME fields
+  // from the wire — ONE switch, both sides, the two-rule split closed. Absent opts
+  // (or true) = ON, the no-regression default; only an explicit false hides. This
+  // touches ONLY scm.finance.view: the finance-viewer COHORT (isFinanceViewer) is
+  // unchanged, and product cost (scm.productCost.view) deliberately does NOT ride
+  // the display switch — cost ENTRY must not depend on a cost-DISPLAY toggle.
+  if (opts?.costingDisplayEnabled === false) {
+    out["scm.finance.view"] = false;
   }
   return out;
 }

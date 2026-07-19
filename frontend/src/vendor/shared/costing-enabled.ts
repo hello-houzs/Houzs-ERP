@@ -40,10 +40,22 @@
 
 /** Whether cost / margin may be DISPLAYED anywhere in the Houzs document UI.
  *  ON since 2026-07-17 — see the header for what a HOUZS 100% still means.
- *  This gates the surface only; the server always computed and stored
- *  cost/margin regardless. The position gate (canViewScmCosting /
- *  canViewScmFinance -> project_finance_viewer) applies independently on top:
- *  BOTH must pass, so a salesperson sees nothing either way. */
+ *
+ *  NO LONGER THE AUTHORITATIVE switch (fix/cost-display-backend-gate). The
+ *  BACKEND now carries a twin — the env var COSTING_DISPLAY_ENABLED (backend
+ *  scm/lib/costing-enabled) — which IS authoritative: when it is off the server
+ *  strips cost/margin from every SCM sales-document response (canViewScmFinance)
+ *  AND drops the scm.finance.view capability, so canViewScmCosting already
+ *  returns false and the columns vanish. It used to be that "the server computed
+ *  and stored cost/margin regardless" and this const only blanked the FE column
+ *  — that was the two-rule split. This const now stays as a build-time
+ *  defence-in-depth term ANDed on top (canViewScmCosting): it can only ever hide
+ *  MORE, never re-show cost the server withheld. To actually withhold cost, flip
+ *  the BACKEND var; flipping this alone only blanks the FE column.
+ *
+ *  The position gate (scm.finance.view capability, backend isFinanceViewer)
+ *  applies independently on top: BOTH the switch and the position must pass, so a
+ *  salesperson sees nothing either way. */
 // Typed `boolean`, NOT left to infer a literal. With a literal type every
 // `COSTING_DISPLAY_ENABLED && x` narrows away, and the strict `tsc -b` the CI
 // runs can then flag the gated branches as unreachable — the annotation keeps

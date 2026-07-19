@@ -73,6 +73,14 @@ export type Env = {
   // "true" enables admin login-as-member (routes/users.ts impersonation).
   // Set ONLY in [env.staging.vars] — must never be set on prod.
   IMPERSONATION_ENABLED?: string;
+  // Cost/margin DISPLAY switch — the ONE backend-authoritative toggle for
+  // whether SCM sales-document cost/margin may reach the wire at all. "false"
+  // withholds cost/margin from EVERY response (canViewScmFinance returns false
+  // for everyone) and drops the scm.finance.view capability, so the FE hides the
+  // columns too. Absent / anything but "false" = ON (current prod behaviour, no
+  // regression). Parsed once via scm/lib/costing-enabled.isCostingDisplayEnabled.
+  // Mirrors the FE build-time COSTING_DISPLAY_ENABLED, but THIS is authoritative.
+  COSTING_DISPLAY_ENABLED?: string;
   // Mail Center inbound ingest secret (shared with the standalone
   // houzs-mail-inbound CF Email Worker / IMAP bridge). The pre-auth
   // POST /api/mail-center/inbound route 503s until this is set and >= 16 chars.
