@@ -21,7 +21,7 @@
 //                                    back to model_id NULL (FK ON DELETE SET NULL).
 // ----------------------------------------------------------------------------
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
@@ -157,7 +157,7 @@ const PatchBody = z.object({
 const COLS = 'id, branding, model_code, name, category, description, photo_url, allowed_options, active, created_at, updated_at';
 
 // ── GET / ──────────────────────────────────────────────────────────────────
-productModels.get('/', async (c) => {
+export const listProductModelsHandler = async (c: Context<{ Bindings: Env; Variables: Variables }>) => {
   const supabase = c.get('supabase');
   const category = c.req.query('category');
 
@@ -194,8 +194,16 @@ productModels.get('/', async (c) => {
      opens without re-running the list + grouped-count round-trip. Kept short so
      a Model/allowed-options edit surfaces within a minute. */
   c.header('cache-control', 'private, max-age=60');
+  /* Multi-company (fix/so-product-company-scope): same leak as GET /mfg-products.
+     The 60s private cache is URL-keyed while the active company rides in the
+     X-Company-Id header, so without Vary the sofa-model picker serves the previous
+     company's models for up to a minute after a top-bar switch (a page reload does
+     not bypass a still-fresh fetch response). The query is company-scoped
+     (scopeToCompany); Vary keeps the CACHED RESPONSE company-scoped too. */
+  c.header('vary', 'X-Company-Id');
   return c.json({ models });
-});
+};
+productModels.get('/', listProductModelsHandler);
 
 // ── GET /by-code/:code ───────────────────────────────────────────────────────
 // Resolve a SKU's Model allowed_options pools by the SKU's item code, mirroring
