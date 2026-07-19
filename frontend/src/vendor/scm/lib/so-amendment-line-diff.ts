@@ -42,6 +42,15 @@ export type AmendmentOldSnapshot = {
   unitPriceSen?: number;
   description2?: string | null;
   variants?: unknown;
+  /* The line's item GROUP, stamped server-side at create time from the SO item
+     row (mfg_sales_order_items.item_group). buildVariantSummary BRANCHES on it —
+     bedframe reads divanHeight / gap / totalHeight / colourLabel, everything else
+     reads seatHeight / legHeight — so rendering a bedframe blob without it drops
+     three real axes off the Requesting side. Absent on rows created before that
+     stamp; resolveVariantGroup recovers it from the blob rather than guessing.
+     `item_group` is accepted too: so-revision's ADD path already reads that key. */
+  itemGroup?: string | null;
+  item_group?: string | null;
 };
 
 /** The subset of an amendment line this module reads. Structural, so the
@@ -70,11 +79,90 @@ const EVERYTHING: AmendmentLineChangedFields = {
   itemCode: true, qty: true, unitPrice: true, variants: true,
 };
 
-/** Render one variant blob the way the surfaces do. The '' itemGroup matches
-    what all three already pass — what matters here is that BOTH sides go through
-    it identically (see variantsChanged). */
-const summaryOf = (v: unknown): string =>
-  buildVariantSummary('', (v as Record<string, unknown> | null) ?? null).trim();
+/* ── item group: the branch selector buildVariantSummary reads ──────────────
+   Owner 2026-07-18 (SO-2607-018/A1, "customer change colour"): a colour-only
+   amendment on a BEDFRAME line rendered
+     WAS         PC151-14 / DIVAN 8" + LEG 1" / GAP 12" / T.Heights 21"
+     REQUESTING  PC151-01 / LEG 1"
+   and the owner read it as the amendment having wiped the divan, gap and total
+   height off the spec. It had not — the persisted new_variants blob carried all
+   four axes and applySoAmendment writes the blob whole. What was wrong was the
+   RENDERING: summaryOf passed '' as the item group, so buildVariantSummary took
+   its non-bedframe branch and simply never read divanHeight / gap / totalHeight,
+   while the Was side (old_snapshot.description2) was stamped server-side with the
+   line's REAL group and did read them. The two sides were being formatted by two
+   different rules and the difference read as data loss.
+
+   The same '' also went through variantsChanged, which is the dangerous half: a
+   bedframe amendment that changed ONLY the divan height produced identical
+   summaries on both sides, so the line scored as no-change and was dropped by
+   visibleAmendmentLines — the approver never saw the request at all. */
+
+/* The axes buildVariantSummary reads ONLY on its bedframe branch. A blob that
+   carries any of them is a bedframe blob: this is read off the data, not
+   guessed, and it is exactly the set the non-bedframe branch would silently
+   drop. Keep in sync with buildVariantSummary. */
+const BEDFRAME_ONLY_AXES = ['divanHeight', 'gap', 'totalHeight', 'colourLabel'] as const;
+
+/* The axes the NON-bedframe branch reads and the bedframe branch does not. */
+const SOFA_ONLY_AXES = ['seatHeight', 'depth'] as const;
+
+const asBag = (v: unknown): Record<string, unknown> | null =>
+  v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+
+const hasAxis = (v: unknown, keys: readonly string[]): boolean => {
+  const bag = asBag(v);
+  if (!bag) return false;
+  return keys.some((k) => bag[k] != null && String(bag[k]).trim() !== '');
+};
+
+/**
+ * The item group BOTH sides of this line must be rendered with.
+ *
+ * Order of trust:
+ *   1. the group stamped on old_snapshot at create time — authoritative, it is
+ *      the SO item's own mfg_sales_order_items.item_group;
+ *   2. for rows created before that stamp: bedframe when EITHER blob carries a
+ *      bedframe-only axis. That is not a guess — those keys exist only on a
+ *      bedframe line, and they are precisely the ones the other branch drops;
+ *   3. '' otherwise, which is safe: with no bedframe axis present, the
+ *      non-bedframe branch discards nothing.
+ *
+ * Returned for BOTH sides so the Was and Requesting columns are always formatted
+ * by the same rule. That symmetry is what the module already relied on; it was
+ * just symmetric on the WRONG group.
+ */
+export const resolveVariantGroup = (l: DiffableAmendmentLine): string => {
+  const old = amendmentOldSnapshot(l);
+  const stamped = (old.itemGroup ?? old.item_group ?? '').trim();
+  if (stamped) return stamped;
+  if (hasAxis(l.new_variants, BEDFRAME_ONLY_AXES)) return 'bedframe';
+  if (hasAxis(old.variants, BEDFRAME_ONLY_AXES)) return 'bedframe';
+  return '';
+};
+
+/**
+ * The non-empty variant axes that a summary rendered with `group` would NOT
+ * show — i.e. real spec the reader would never see on this card.
+ *
+ * This is the honesty backstop the owner's rule demands: an axis we cannot
+ * render must surface as a warning, never as a silently shorter string. In
+ * practice resolveVariantGroup makes this empty; it stays because the failure
+ * mode it guards (a blob carrying both vocabularies, or a future axis added to
+ * buildVariantSummary but not to the lists above) is exactly the one that
+ * produced this bug, and it must be loud rather than invisible next time.
+ */
+export const unrenderedVariantAxes = (group: string, variants: unknown): string[] => {
+  const dropped = group.toLowerCase().includes('bedframe') ? SOFA_ONLY_AXES : BEDFRAME_ONLY_AXES;
+  const bag = asBag(variants);
+  if (!bag) return [];
+  return dropped.filter((k) => bag[k] != null && String(bag[k]).trim() !== '');
+};
+
+/** Render one variant blob the way the surfaces do, under the group BOTH sides
+    of this line share (see resolveVariantGroup). */
+const summaryOf = (group: string, v: unknown): string =>
+  buildVariantSummary(group, asBag(v)).trim();
 
 /** The variant summary each side RENDERS — old_snapshot.description2 is the
     server-stamped summary (built with the line's REAL item group), the new side
@@ -82,10 +170,33 @@ const summaryOf = (v: unknown): string =>
     NOT use this pair, deliberately. */
 export const amendmentVariantSummaries = (
   l: DiffableAmendmentLine,
-): { from: string; to: string } => ({
-  from: (amendmentOldSnapshot(l).description2 ?? '').trim(),
-  to: summaryOf(l.new_variants),
-});
+): { from: string; to: string } => {
+  const group = resolveVariantGroup(l);
+  const old = amendmentOldSnapshot(l);
+  /* Prefer rendering the RAW old blob under the resolved group over the stored
+     description2. Both are the same string when the stamp is right, but only the
+     re-render is guaranteed to be formatted by the SAME rule as the Requesting
+     side — and a Was/Requesting pair formatted by two different rules is exactly
+     what made a colour-only change look like a wiped spec. description2 stays as
+     the fallback for a legacy row that recorded no raw blob. */
+  const from = old.variants != null
+    ? summaryOf(group, old.variants)
+    : (old.description2 ?? '').trim();
+  return { from, to: summaryOf(group, l.new_variants) };
+};
+
+/** Variant axes present on this line that the card will not display, per side.
+    Non-empty means the rendered summary is INCOMPLETE and the surface must say
+    so rather than show a shorter string that reads as a deletion. */
+export const amendmentUnrenderedAxes = (
+  l: DiffableAmendmentLine,
+): { from: string[]; to: string[] } => {
+  const group = resolveVariantGroup(l);
+  return {
+    from: unrenderedVariantAxes(group, amendmentOldSnapshot(l).variants),
+    to: unrenderedVariantAxes(group, l.new_variants),
+  };
+};
 
 /**
  * Did the request actually move the variants?
@@ -106,11 +217,12 @@ export const amendmentVariantSummaries = (
  */
 const variantsChanged = (l: DiffableAmendmentLine): boolean => {
   const old = amendmentOldSnapshot(l);
-  const to = summaryOf(l.new_variants);
+  const group = resolveVariantGroup(l);
+  const to = summaryOf(group, l.new_variants);
   // No raw blob recorded (legacy row) — the stamped summary is the only signal
   // left, so fall back to it rather than guess.
   if (old.variants == null) return (old.description2 ?? '').trim() !== to;
-  return summaryOf(old.variants) !== to;
+  return summaryOf(group, old.variants) !== to;
 };
 
 export function amendmentLineChangedFields(

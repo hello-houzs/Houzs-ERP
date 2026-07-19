@@ -10004,17 +10004,74 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
   // header-only amendment is a first-class case (Guard 5 already rejected the
   // no-lines-AND-no-header-changes case).
   const lines = submittedLines;
+
+  /* Stamp the line's ITEM GROUP into old_snapshot, server-side and
+     authoritatively (Owner 2026-07-18, SO-2607-018/A1).
+
+     buildVariantSummary BRANCHES on the item group: a bedframe line's summary
+     reads divanHeight / gap / totalHeight / colourLabel, every other group reads
+     seatHeight / legHeight. The amendment card had no group to render with, so
+     it formatted the Requesting side with the non-bedframe rule while the Was
+     side carried a summary stamped with the real group — and a colour-only
+     amendment on a bedframe line displayed as though DIVAN, GAP and T.Heights
+     had been deleted from the spec. Recording the group makes both sides
+     renderable by one rule.
+
+     Read from the SO item row rather than trusting the client's copy: the
+     snapshot is the approver's evidence of what the line WAS, so it must come
+     from the record, not from the browser that is asking to change it.
+
+     An unreadable group is an ERROR, not a blank. A missing item row means the
+     payload references a line that is not on this order — writing the amendment
+     anyway would put a request in the approval queue whose "before" side cannot
+     be trusted. Refuse and say which line. */
+  const referencedItemIds = [...new Set(
+    lines.map((l) => l.salesOrderItemId).filter((x): x is string => typeof x === 'string' && x.length > 0),
+  )];
+  const itemGroupById = new Map<string, string | null>();
+  if (referencedItemIds.length > 0) {
+    const { data: groupRows, error: groupErr } = await sb.from('mfg_sales_order_items')
+      .select('id, item_group').eq('doc_no', docNo).in('id', referencedItemIds);
+    if (groupErr) {
+      return c.json({
+        error: 'create_failed',
+        reason: 'Could not read the current lines of this Sales Order, so the amendment was not saved. Please try again.',
+      }, 500);
+    }
+    for (const r of (groupRows ?? []) as Array<{ id: string; item_group: string | null }>) {
+      itemGroupById.set(r.id, r.item_group);
+    }
+    const missing = referencedItemIds.filter((id) => !itemGroupById.has(id));
+    if (missing.length > 0) {
+      return c.json({
+        error: 'amendment_line_not_on_order',
+        reason: `${missing.length} of the changed lines are no longer on this Sales Order. Reload the order and submit the amendment again.`,
+      }, 409);
+    }
+  }
+
   if (lines.length > 0) {
-    const lineRows = lines.map((l) => ({
-      amendment_id:        amendment.id,
-      sales_order_item_id: l.salesOrderItemId ?? null,   // null = added line
-      change_type:         String(l.changeType ?? 'SPEC'),
-      new_item_code:       l.newItemCode ?? null,
-      new_variants:        l.newVariants ?? null,
-      new_qty:             l.newQty ?? null,
-      new_unit_price_sen:  l.newUnitPriceSen ?? null,
-      old_snapshot:        l.oldSnapshot ?? null,
-    }));
+    const lineRows = lines.map((l) => {
+      const snapshot = (l.oldSnapshot ?? null) as Record<string, unknown> | null;
+      /* An ADD line has no persisted item and therefore no old_snapshot; its
+         group rides on the requested blob instead (the same key so-revision's
+         ADD path already reads). */
+      const group = l.salesOrderItemId
+        ? itemGroupById.get(l.salesOrderItemId) ?? null
+        : ((l.newVariants as Record<string, unknown> | null)?.itemGroup ?? null);
+      return {
+        amendment_id:        amendment.id,
+        sales_order_item_id: l.salesOrderItemId ?? null,   // null = added line
+        change_type:         String(l.changeType ?? 'SPEC'),
+        new_item_code:       l.newItemCode ?? null,
+        new_variants:        l.newVariants ?? null,
+        new_qty:             l.newQty ?? null,
+        new_unit_price_sen:  l.newUnitPriceSen ?? null,
+        old_snapshot:        snapshot || group != null
+          ? { ...(snapshot ?? {}), ...(group != null ? { itemGroup: String(group) } : {}) }
+          : null,
+      };
+    });
     // stampCompany: tag every line row with the active company (mig 0080); no-op pre-activation.
     const { error: lineErr } = await sb.from('so_amendment_lines').insert(stampCompany(lineRows, c));
     if (lineErr) {

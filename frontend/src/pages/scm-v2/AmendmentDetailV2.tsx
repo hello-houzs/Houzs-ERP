@@ -65,6 +65,7 @@ import {
 import {
   amendmentLineChangedFields,
   amendmentOldSnapshot,
+  amendmentUnrenderedAxes,
   amendmentVariantSummaries,
   visibleAmendmentLines,
 } from "../../vendor/scm/lib/so-amendment-line-diff";
@@ -265,6 +266,12 @@ function DiffCard({ line }: { line: AmendmentLine }) {
   const changed = amendmentLineChangedFields(line);
   const isAdd = line.change_type === "ADD";
   const isRemove = line.change_type === "REMOVE";
+  /* An axis this line carries that the summary above cannot show. Normally
+     empty. When it is not, the spec strings are INCOMPLETE, and a short spec
+     string on the Requesting side is precisely what reads as "the amendment
+     deleted my divan height". Say it out loud instead. */
+  const unrendered = amendmentUnrenderedAxes(line);
+  const unrenderedAll = [...new Set([...unrendered.from, ...unrendered.to])];
 
   return (
     <div className="overflow-hidden rounded-md border border-border">
@@ -331,6 +338,12 @@ function DiffCard({ line }: { line: AmendmentLine }) {
           )}
         </div>
       </div>
+      {unrenderedAll.length > 0 && (
+        <div className="border-t border-border-subtle bg-warn/10 px-3 py-2 text-[11.5px] text-ink">
+          This line also carries {unrenderedAll.join(", ")}, which the summary above
+          cannot display. Open the Sales Order to check the full specification before approving.
+        </div>
+      )}
     </div>
   );
 }
