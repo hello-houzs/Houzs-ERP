@@ -1,26 +1,54 @@
 import { describe, expect, test } from "vitest";
-import { ASSISTANT_DENIED_POSITIONS, canUseAssistant } from "./assistantAccess";
+import { ASSISTANT_DENIED_POSITIONS, ASSISTANT_KNOWN_POSITIONS, canUseAssistant } from "./assistantAccess";
 
-/* LOCKSTEP with backend/src/services/assistant-scope.ts. The two files share no
-   import under the vendored-clone architecture, so these fixtures ARE the contract.
-   If the backend list changes and this does not, a Driver sees a menu item that
-   403s — or worse, the FE hides a tab the backend would have served. */
+/* LOCKSTEP with backend/src/services/assistant-scope.ts and its test. The two
+   files share no import under the vendored-clone architecture, so these fixtures
+   ARE the contract. If the backend list changes and this does not, a Sales user
+   sees a launcher that 403s — or worse, the FE hides a tab the backend serves. */
 
-describe("assistant deny list (FE mirror)", () => {
-  test("exactly the three the owner named, lowercased", () => {
-    expect([...ASSISTANT_DENIED_POSITIONS].sort()).toEqual(["driver", "helper", "storekeeper", "storekeeper supervisor"]);
+describe("assistant access (FE mirror)", () => {
+  test("deny list is field crew + Sales, lowercased", () => {
+    expect([...ASSISTANT_DENIED_POSITIONS].sort()).toEqual([
+      "driver",
+      "helper",
+      "sales director",
+      "sales executive",
+      "sales manager",
+      "sales person",
+      "storekeeper",
+      "storekeeper supervisor",
+    ]);
   });
 
-  test("denies the field crew, allows everyone else", () => {
-    for (const p of ["Driver", "Helper", "Storekeeper", " storekeeper ", "Storekeeper Supervisor"]) {
+  test("denies field crew and Sales", () => {
+    for (const p of [
+      "Driver", "Helper", "Storekeeper", " storekeeper ", "Storekeeper Supervisor",
+      "Sales Director", "Sales Manager", "Sales Executive", "Sales Person",
+    ]) {
       expect(canUseAssistant({ permissions: [], position_name: p }), p).toBe(false);
     }
-    for (const p of ["Sales Executive", "Operation Manager", null]) {
+  });
+
+  test("FAIL CLOSED: a named position not on the KNOWN list is denied", () => {
+    for (const p of ["Regional Head", "Marketing Manager", "Senior Sales Consultant"]) {
+      expect(canUseAssistant({ permissions: [], position_name: p }), p).toBe(false);
+    }
+  });
+
+  test("recognised non-denied positions, and no-position, may open it", () => {
+    for (const p of ["Operation Manager", "HR Manager", "Service Admin", null]) {
       expect(canUseAssistant({ permissions: [], position_name: p }), String(p)).toBe(true);
     }
   });
 
-  test("wildcard bypasses the deny list", () => {
+  test("every denied position is also known — the lists cannot silently drift", () => {
+    for (const p of ASSISTANT_DENIED_POSITIONS) {
+      expect(ASSISTANT_KNOWN_POSITIONS.has(p), p).toBe(true);
+    }
+  });
+
+  test("wildcard bypasses every gate", () => {
     expect(canUseAssistant({ permissions: ["*"], position_name: "Driver" })).toBe(true);
+    expect(canUseAssistant({ permissions: ["*"], position_name: "Ghost Title" })).toBe(true);
   });
 });

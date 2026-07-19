@@ -109,7 +109,10 @@ function assrPinsToHouzs(c: Context<any>): boolean {
   const user = c.get("user") as AuthUser | undefined;
   return isSalesUser(user) && !isDirectorUser(user);
 }
-function assrCompanySql(c: Context<any>, col = "company_id"): string {
+// Exported for backend/tests/assrCompanyScope.test.ts, which pins the role-aware
+// rule (directors both companies, rank-and-file Sales HOUZS-only). Otherwise
+// unchanged from origin/main.
+export function assrCompanySql(c: Context<any>, col = "company_id"): string {
   return assrPinsToHouzs(c) ? houzsCompanySql(c, col) : allowedCompaniesSql(c, col);
 }
 // `number[] | undefined` — `undefined` = company context unresolved (degrade to

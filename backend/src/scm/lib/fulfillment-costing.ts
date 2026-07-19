@@ -267,13 +267,71 @@ export function summarize(rows: LineComparison[]): CostingSummary {
 
 export type CostingDimension = 'item' | 'category' | 'menu' | 'state';
 
+/* ── Category case collision (owner-reported 2026-07-19) ──────────────────────
+ * Observed live: this report rendered NINE category groups for Houzs, six of
+ * which were case-variant pairs of each other — `bedframe` (6 lines) alongside
+ * `BEDFRAME` (10 lines), `mattress`/`MATTRESS`, `accessory`/`ACCESSORY` — each
+ * half reporting its own partial cost and variance, with nothing on screen
+ * saying so. Every per-category cost and margin figure was a fraction.
+ *
+ * Mechanism, from the code: this dimension reads `mfg_sales_order_items
+ * .item_group`, which is plain `text` — no enum, no FK, no check constraint.
+ * Two writers disagree about case. The product-driven path lowercases the
+ * enum (`String(prod.category ?? 'others').toLowerCase()`, mfg-sales-orders.ts),
+ * while client-supplied lines pass `it.itemGroup` straight through, so an
+ * import or a caller echoing the UPPERCASE `mfg_product_category` enum value
+ * stores it verbatim. Same taxonomy, two spellings, one unconstrained column.
+ *
+ * The five enum members correspond 1:1 with the five lowercase slugs, so
+ * case-folding them is a merge of genuinely identical concepts, not a guess.
+ * `others` is the one value with NO enum counterpart: it is synthesised at
+ * write time when the product lookup misses, and it is also the SO line
+ * editor's default for a fresh row. It is a FALLBACK, not a category — hence
+ * the explicit label below, so nobody reads it as a product family.
+ *
+ * Fixed at the READ layer only. The stored values are left exactly as they
+ * are: rewriting `item_group` on existing rows is a data migration, needs
+ * staging first and the owner's sign-off, and is not decided here. */
+const CATEGORY_LABELS: Readonly<Record<string, string>> = {
+  sofa: 'Sofa',
+  bedframe: 'Bedframe',
+  mattress: 'Mattress',
+  accessory: 'Accessory',
+  service: 'Service',
+  others: 'Others (uncategorised)',
+};
+
+/** Escape the LIKE metacharacters so a value can be handed to `ilike` and mean
+ *  "equals, ignoring case" instead of "matches this pattern". Without it a
+ *  category containing `%` or `_` would silently match unrelated rows. */
+export function escapeLikeLiteral(value: string): string {
+  return value.replace(/([\\%_])/g, '\\$1');
+}
+
+/** Case/whitespace-fold a stored `item_group` into one stable bucket key.
+ *  Returns '' for a missing value so it still groups under "Unspecified". */
+export function normaliseCategoryKey(raw: string | null | undefined): string {
+  return String(raw ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Display name for a folded category key. Known values get a fixed spelling
+ *  so the group heading no longer inherits whichever case happened to be
+ *  stored first; anything unrecognised is shown verbatim rather than hidden. */
+export function categoryLabel(raw: string | null | undefined): string {
+  const key = normaliseCategoryKey(raw);
+  if (!key) return 'Unspecified';
+  return CATEGORY_LABELS[key] ?? String(raw).trim();
+}
+
 /** The group key + human label for a row under a chosen dimension. A missing
  *  value groups under a stable '' key labelled "Unspecified" rather than being
  *  dropped — an un-stated state or category is itself an answer worth seeing. */
 export function dimensionKeyLabel(row: LineComparison, dim: CostingDimension): { key: string; label: string } {
   switch (dim) {
     case 'item':     return { key: row.item_code, label: row.item_name ? `${row.item_code} — ${row.item_name}` : row.item_code };
-    case 'category': return { key: row.category ?? '', label: row.category ?? 'Unspecified' };
+    // Folded — see the block comment above. The key is the fold so the two
+    // spellings land in one bucket; the label is the canonical spelling.
+    case 'category': return { key: normaliseCategoryKey(row.category), label: categoryLabel(row.category) };
     case 'menu':     return { key: row.menu ?? '', label: row.menu ?? 'Unspecified' };
     case 'state':    return { key: row.customer_state ?? '', label: row.customer_state ?? 'Unspecified' };
   }

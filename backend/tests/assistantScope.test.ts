@@ -8,6 +8,7 @@ import {
   scopeForUser,
   canUseAssistant,
   ASSISTANT_DENIED_POSITIONS,
+  ASSISTANT_KNOWN_POSITIONS,
   type AssistantScope,
 } from "../src/services/assistant-scope";
 
@@ -163,9 +164,9 @@ describe("scopeForUser — derived from the ONE policy, never re-authored", () =
   });
 });
 
-describe("canUseAssistant — the field crew get no surface at all", () => {
-  test("the three the owner named are denied", () => {
-    for (const p of ["Driver", "Helper", "Storekeeper"]) {
+describe("canUseAssistant — field crew and Sales get no surface, unknown fails closed", () => {
+  test("the field crew the owner named are denied", () => {
+    for (const p of ["Driver", "Helper", "Storekeeper", "Storekeeper Supervisor"]) {
       expect(canUseAssistant({ permissions: [], position_name: p }), p).toBe(false);
     }
   });
@@ -182,21 +183,23 @@ describe("canUseAssistant — the field crew get no surface at all", () => {
     expect(canUseAssistant({ permissions: [], position_name: "  storekeeper   supervisor " })).toBe(false);
   });
 
-  test("the deny list now EQUALS positionPolicy's restricted cohort", () => {
-    // Two lists that mean the same thing are two lists that can drift. They are
-    // the same set now, and this pins it.
+  test("the deny list is field crew + Sales, lowercased", () => {
+    // Two lists that mean the same thing are two lists that can drift. This pins
+    // it so the FE mirror (auth/assistantAccess.ts) can assert the same set.
     expect([...ASSISTANT_DENIED_POSITIONS].sort())
-      .toEqual(["driver", "helper", "storekeeper", "storekeeper supervisor"]);
+      .toEqual(["driver", "helper", "sales director", "sales executive", "sales manager", "sales person", "storekeeper", "storekeeper supervisor"]);
   });
 
-  test("EXACT match, not substring — a rename must not move permissions", () => {
+  test("FAIL CLOSED: an unrecognised name is denied, and exact-match keeps the deny list precise", () => {
     // /Storekeeper/ would swallow "Storekeeper Supervisor". A word-boundary
-    // regex over a free-text position name has already misfired twice here.
-    expect(canUseAssistant({ permissions: [], position_name: "Assistant Driver Coordinator" })).toBe(true);
+    // regex over a free-text position name has already misfired twice here. Under
+    // fail-closed this name is denied for being UNKNOWN, not for the substring
+    // "driver" — exact .has() still keeps the deny list precise; whitelist first.
+    expect(canUseAssistant({ permissions: [], position_name: "Assistant Driver Coordinator" })).toBe(false);
   });
 
-  test("everyone else, including no position, may open it", () => {
-    for (const p of ["Sales Executive", "Operation Manager", "HR Manager", null]) {
+  test("recognised non-denied positions, and no-position, may open it", () => {
+    for (const p of ["Operation Manager", "Operation Executive", "HR Manager", "Finance Manager", "Service Admin", null]) {
       expect(canUseAssistant({ permissions: [], position_name: p }), String(p)).toBe(true);
     }
   });
@@ -205,8 +208,24 @@ describe("canUseAssistant — the field crew get no surface at all", () => {
     expect(canUseAssistant({ permissions: ["*"], position_name: "Driver" })).toBe(true);
   });
 
-  test("the deny list is exactly three, lowercased", () => {
-    // Pinned so the FE mirror (auth/assistantAccess.ts) can assert the same set.
-    expect([...ASSISTANT_DENIED_POSITIONS].sort()).toEqual(["driver", "helper", "storekeeper", "storekeeper supervisor"]);
+  test("Sales is denied — owner 2026-07-19 'remove the Assistant from Sales first'", () => {
+    for (const p of ["Sales Director", "Sales Manager", "Sales Executive", "Sales Person", "  SALES   PERSON "]) {
+      expect(canUseAssistant({ permissions: [], position_name: p }), p).toBe(false);
+    }
+  });
+
+  test("FAIL CLOSED even with no denied token — an unknown name gets nothing until whitelisted", () => {
+    // The owner's concern: a NEW position row must not silently inherit the
+    // Assistant (positionPolicy fails OPEN into cohort "full"). "Regional Head"
+    // holds no denied token and is denied purely for being unrecognised.
+    for (const p of ["Regional Head", "Marketing Manager", "Senior Sales Consultant"]) {
+      expect(canUseAssistant({ permissions: [], position_name: p }), p).toBe(false);
+    }
+  });
+
+  test("every denied position is also a known position — the two lists cannot silently drift", () => {
+    for (const p of ASSISTANT_DENIED_POSITIONS) {
+      expect(ASSISTANT_KNOWN_POSITIONS.has(p), p).toBe(true);
+    }
   });
 });
