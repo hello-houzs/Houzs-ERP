@@ -211,7 +211,7 @@ function OrganizerManager() {
       q.reload();
       toast.success(`Added ${trimmed}`);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setAdding(false);
     }
@@ -232,7 +232,7 @@ function OrganizerManager() {
       toast.success("Organizer removed");
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -346,7 +346,7 @@ function VenueManager() {
       q.reload();
       toast.success(`Added ${trimmed}`);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setAdding(false);
     }
@@ -358,7 +358,7 @@ function VenueManager() {
       toast.success("Venue saved");
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -377,7 +377,7 @@ function VenueManager() {
       toast.success("Venue removed");
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -509,7 +509,7 @@ function ChecklistManager() {
       eventTypesQ.reload();
       templatesQ.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -633,7 +633,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
       q.reload();
       toast.success("Section added");
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setAddingSection(false);
     }
@@ -650,7 +650,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
       setEditingSectionName("");
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -669,7 +669,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
       toast.success("Section removed");
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -725,7 +725,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
       q.reload();
       toast.success("Item added");
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setAdding(false);
     }
@@ -736,7 +736,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
       await api.patch(`/api/projects/checklist-templates/items/${itemId}`, body);
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -755,7 +755,7 @@ function ChecklistItemsEditor({ templateId }: { templateId: number }) {
       toast.success("Item removed");
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -1509,7 +1509,7 @@ function BrandManager() {
       q.reload();
       toast.success(`Added ${trimmed}`);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setAdding(false);
     }
@@ -1523,7 +1523,7 @@ function BrandManager() {
       await api.patch(`/api/projects/brands/${b.id}`, body);
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -1542,7 +1542,7 @@ function BrandManager() {
       toast.success("Brand hidden");
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -1720,7 +1720,7 @@ function EventTypeManager() {
       q.reload();
       toast.success(`Added ${trimmed}`);
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
       setAdding(false);
     }
@@ -1731,7 +1731,7 @@ function EventTypeManager() {
       await api.patch(`/api/projects/event-types/${t.id}`, body);
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -1750,7 +1750,7 @@ function EventTypeManager() {
       toast.success("Event type hidden");
       q.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 
@@ -2006,7 +2006,7 @@ function CostRateRowEditor({
       });
       onSaved();
     } catch (e: any) {
-      onError(e?.message || "Failed");
+      onError(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSaving(false);
     }

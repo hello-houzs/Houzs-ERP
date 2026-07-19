@@ -2602,7 +2602,7 @@ const SkuFormDialog = ({
     // fires on success only, so the draft is never lost on error.
     const onError = (err: unknown) => notify({
       title: 'Save failed',
-      body: err instanceof Error ? err.message : String(err),
+      body: err instanceof Error ? err.message : 'Something went wrong.',
       tone: 'error',
     });
     if (editing) {
@@ -2837,7 +2837,7 @@ const SupplierInfoCard = ({
       onSuccess: onClose,
       // Never fail silently (Commander 2026-06-16 — "Save 没有反应"): surface the
       // real error so a server reject (e.g. a stale DB constraint) is visible.
-      onError: (err) => notify({ title: 'Save failed', body: `${err instanceof Error ? err.message : String(err)}`, tone: 'error' }),
+      onError: (err) => notify({ title: 'Save failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' }),
     });
   };
 
@@ -3293,7 +3293,7 @@ const ModelSkuPickerDialog = ({
       // Staff #7 — keep the dialog open + show the error on a failed bind.
       onError: (err: unknown) => notify({
         title: 'Binding failed',
-        body: err instanceof Error ? err.message : String(err),
+        body: err instanceof Error ? err.message : 'Something went wrong.',
         tone: 'error',
       }),
     });

@@ -60,7 +60,7 @@ export function Assistant() {
     } catch (e) {
       setMsgs((m) => [
         ...m,
-        { role: "bot", text: `Couldn't reach the assistant: ${e instanceof Error ? e.message : String(e)}`, degraded: true },
+        { role: "bot", text: `Couldn't reach the assistant: ${e instanceof Error ? e.message : "Something went wrong."}`, degraded: true },
       ]);
     } finally {
       setBusy(false);

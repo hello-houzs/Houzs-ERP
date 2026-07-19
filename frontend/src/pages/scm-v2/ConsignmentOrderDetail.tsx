@@ -285,7 +285,7 @@ export const ConsignmentOrderDetail = () => {
       })
       .catch((e) => {
         setSavingOrder(false);
-        setSaveError(e instanceof Error ? e.message : String(e));
+        setSaveError(e instanceof Error ? e.message : 'Something went wrong.');
       });
   };
 
@@ -296,7 +296,7 @@ export const ConsignmentOrderDetail = () => {
         { docNo: stableDocNo, ...patch },
         {
           onSuccess: () => cb?.onSuccess?.(),
-          onError:   (e) => cb?.onError?.(e instanceof Error ? e.message : String(e)),
+          onError:   (e) => cb?.onError?.(e instanceof Error ? e.message : 'Something went wrong.'),
         },
       );
     },
@@ -477,7 +477,7 @@ export const ConsignmentOrderDetail = () => {
         generateSalesOrderPdf(header as never, items as never, [], 'save', [], {
           docTitle: 'CONSIGNMENT ORDER', docNoLabel: 'CO No', docNoun: 'consignment order',
         }))
-      .catch((e) => notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }));
+      .catch((e) => notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' }));
   };
 
   return (

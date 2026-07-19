@@ -84,7 +84,7 @@ export function Trips() {
         body: `${km(r.totalDistanceMetres)} · ${mins(r.totalDurationSeconds)} driving${apply ? ' — stop order and ETAs saved.' : ' — nothing saved yet.'}`,
       });
     } catch (e) {
-      notify({ title: 'Optimise failed', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+      notify({ title: 'Optimise failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' });
     }
   };
 

@@ -168,7 +168,7 @@ const NewFabricDialog = ({ onClose }: { onClose: () => void }) => {
         }
         onClose();
       },
-      onError: (e) => notify({ title: 'Create failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' }),
+      onError: (e) => notify({ title: 'Create failed', body: `${e instanceof Error ? e.message : 'Something went wrong.'}`, tone: 'error' }),
     });
   };
 
@@ -272,7 +272,7 @@ const ImportPreviewDialog = ({
         await notify({ title: `Imported ${res.upserted} fabric${res.upserted === 1 ? '' : 's'}.${trailing}` });
         onClose();
       },
-      onError: (e) => notify({ title: 'Import failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' }),
+      onError: (e) => notify({ title: 'Import failed', body: `${e instanceof Error ? e.message : 'Something went wrong.'}`, tone: 'error' }),
     });
   };
 

@@ -367,7 +367,7 @@ export const GoodsReceivedDetail = () => {
       setHeaderDraft(null);
       setLineDrafts({});
     } catch (e) {
-      notify({ title: 'Save failed', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+      notify({ title: 'Save failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' });
     } finally {
       setSavingDraft(false);
     }
@@ -378,7 +378,7 @@ export const GoodsReceivedDetail = () => {
     // purchase-order-pdf helper, here the GRN-specific grn-pdf helper.
     import('../../vendor/scm/lib/grn-pdf').then(({ generateGrnPdf }) =>
       generateGrnPdf(grn, items as any),
-    ).catch((e) => notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }));
+    ).catch((e) => notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' }));
   };
 
   return (
@@ -442,7 +442,7 @@ export const GoodsReceivedDetail = () => {
                   danger: true,
                 }))) return;
                 cancel.mutate(grn.id, {
-                  onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+                  onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
                 });
               }}
               disabled={cancel.isPending}>
@@ -506,7 +506,7 @@ export const GoodsReceivedDetail = () => {
                 confirmLabel: 'Confirm & Receive',
               }))) return;
               confirmGrn.mutate(grn.id, {
-                onError: (err) => notify({ title: 'Confirm failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+                onError: (err) => notify({ title: 'Confirm failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
               });
             }}
             disabled={confirmGrn.isPending}>

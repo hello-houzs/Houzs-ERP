@@ -136,7 +136,7 @@ export function MobileSearch({
         setHits(res.hits ?? []);
       } catch (e) {
         if (ctrl.signal.aborted) return;
-        setError(e instanceof Error ? e.message : String(e));
+        setError(e instanceof Error ? e.message : "Something went wrong.");
       } finally {
         if (!ctrl.signal.aborted) setLoading(false);
       }

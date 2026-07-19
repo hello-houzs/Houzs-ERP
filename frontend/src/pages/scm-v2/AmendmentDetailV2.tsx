@@ -431,7 +431,7 @@ function SupplierConfirmModal({
         onError: (e) =>
           notify({
             title: "Could not record the confirmation",
-            body: e instanceof Error ? e.message : String(e),
+            body: e instanceof Error ? e.message : "Something went wrong.",
             tone: "error",
           }),
       }

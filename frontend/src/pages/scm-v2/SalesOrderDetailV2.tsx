@@ -566,11 +566,32 @@ function SalesOrderDetailV2ReadOnly() {
   // was dead — nothing consumed that param — so the button did nothing.
   const goPrintPdf = () => {
     if (!salesOrder) return;
-    if (printPaymentsQ.isLoading) {
-      notify({ title: "Loading payments… please try again in a moment." });
+    /* The guard below used to be keyed on `isLoading` alone with a `?? []`
+       fallback. On a FAILED payments read react-query leaves `isLoading` false
+       and `data` undefined, so the guard passed and this printed the
+       CUSTOMER-FACING PDF with an empty Payments table — telling the customer
+       they had paid nothing and owed the full total. V1 (SalesOrderDetail.tsx)
+       was fixed on 2026-07-19; this twin never was.
+
+       An empty array is an ANSWER (a genuinely unpaid order correctly prints an
+       empty table). The ABSENCE of an array is not — `data` is set only by a
+       successful fetch. So print only once we actually know what was paid, and
+       distinguish "still loading" from "we asked and it failed", because those
+       need different actions from the operator. */
+    const paymentRows = printPaymentsQ.data;
+    if (!Array.isArray(paymentRows)) {
+      if (printPaymentsQ.isFetching) {
+        notify({ title: "Loading payments… please try again in a moment." });
+      } else {
+        notify({
+          title: "Cannot print — payments could not be loaded",
+          body: "We couldn't read the payments for this order. Printing now would show the customer an empty Payments table. Please refresh and try again.",
+          tone: "error",
+        });
+      }
       return;
     }
-    const payments = printPaymentsQ.data ?? [];
+    const payments = paymentRows;
     // `pwpCodes` rides on the same GET /:docNo payload — vouchers this SO's
     // trigger items issued, so the printed PDF can mark the trigger lines.
     const pwpCodes = ((detail.data as { pwpCodes?: unknown[] } | undefined)
@@ -588,7 +609,7 @@ function SalesOrderDetailV2ReadOnly() {
       .catch((e) =>
         notify({
           title: "PDF generation failed",
-          body: e instanceof Error ? e.message : String(e),
+          body: e instanceof Error ? e.message : "Something went wrong.",
           tone: "error",
         })
       );

@@ -2,6 +2,7 @@ import { useEffect, useState, lazy, Suspense, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "./AuthContext";
+import { signInErrorMessage } from "./loginErrors";
 import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
 import { api } from "../api/client";
@@ -261,10 +262,11 @@ export function LoginScreen() {
       const res = await login(email, password, remember);
       if (res.kind === "totp") setChallenge(res.challenge);
     } catch (e: any) {
-      // A 401 here means bad credentials — show that specific wording rather
-      // than the generic "session expired" sentence the humanized message
-      // carries. Match on the status flag (the message no longer embeds "401").
-      setErr(e?.status === 401 ? "Password incorrect." : e?.message || "Login failed");
+      // Wording lives in auth/loginErrors — ONE source for desktop and mobile.
+      // Read the comment there before changing it: "Password incorrect." was
+      // both a false statement on a mistyped email and an account-existence
+      // oracle if it were ever made accurate.
+      setErr(signInErrorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -277,11 +279,13 @@ export function LoginScreen() {
     try {
       await verifyTotpLogin(challenge!, code.trim());
     } catch (e: any) {
-      setErr(
-        e?.status === 401
-          ? "That code didn't work — try the current code or a backup code."
-          : e?.message || "Verification failed",
-      );
+      /* A 2FA 401 is not one thing: wrong code, expired 30s window, an EXPIRED
+         CHALLENGE ("start again" — retyping codes is futile), or 2FA broken for
+         the account. The backend sends a distinct plain sentence for each, and
+         the old blanket "That code didn't work" here overwrote them all — the
+         expired-challenge case told people to keep trying codes forever. Show
+         the server's sentence; the fallback only covers a non-HTTP throw. */
+      setErr(e?.message || "That code didn't work — try the current code or a backup code.");
     } finally {
       setBusy(false);
     }
@@ -484,7 +488,7 @@ export function BootstrapScreen() {
     try {
       await bootstrap(email, name, password);
     } catch (e: any) {
-      setErr(e?.message || "Bootstrap failed");
+      setErr(e?.message || "We couldn't create the owner account. Please try again.");
     } finally {
       setBusy(false);
     }

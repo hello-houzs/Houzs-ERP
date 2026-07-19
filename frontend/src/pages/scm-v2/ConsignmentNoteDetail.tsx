@@ -193,7 +193,7 @@ export const ConsignmentNoteDetail = () => {
         { id: stableId, ...patch },
         {
           onSuccess: () => cb?.onSuccess?.(),
-          onError: (e) => cb?.onError?.(e instanceof Error ? e.message : String(e)),
+          onError: (e) => cb?.onError?.(e instanceof Error ? e.message : 'Something went wrong.'),
         },
       );
     },
@@ -287,7 +287,7 @@ export const ConsignmentNoteDetail = () => {
           .then(() => { setSavingOrder(false); setIsEditing(false); })
           .catch((e) => {
             setSavingOrder(false);
-            setSaveError(`Lines failed to save: ${e instanceof Error ? e.message : String(e)}`);
+            setSaveError(`Lines failed to save: ${e instanceof Error ? e.message : 'Something went wrong.'}`);
           });
       },
       onError: (msg) => { setSavingOrder(false); setSaveError(msg); },
@@ -318,7 +318,7 @@ export const ConsignmentNoteDetail = () => {
     import('../../vendor/scm/lib/delivery-order-pdf')
       .then(({ generateDeliveryOrderPdf }) =>
         generateDeliveryOrderPdf(header as never, items as never, { docTitle: 'CONSIGNMENT NOTE', docNoLabel: 'CN No', showPicking: false }))
-      .catch((e) => notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }));
+      .catch((e) => notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' }));
   };
 
   const handleCancel = async () => {

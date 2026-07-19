@@ -131,7 +131,13 @@ app.post("/disable", async (c) => {
       ok = false;
     }
   }
-  if (!ok) return c.json({ error: "Invalid code" }, 400);
+  // Backup codes are accepted here too (device may be gone) — say so.
+  if (!ok) {
+    return c.json(
+      { error: "That code didn't match — try the current code from your authenticator app, or a backup code." },
+      400,
+    );
+  }
 
   await c.env.DB.prepare(
     `UPDATE users

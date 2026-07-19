@@ -284,7 +284,7 @@ export const PaymentVoucherDetail = () => {
       });
       setIsEditing(false);
     } catch (err) {
-      notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      notify({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     }
   };
 
@@ -293,7 +293,7 @@ export const PaymentVoucherDetail = () => {
     try {
       await post.mutateAsync(id);
     } catch (err) {
-      notify({ title: 'Post failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      notify({ title: 'Post failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     }
   };
 
@@ -302,7 +302,7 @@ export const PaymentVoucherDetail = () => {
     try {
       await cancel.mutateAsync(id);
     } catch (err) {
-      notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     }
   };
 

@@ -310,7 +310,7 @@ export const PurchaseConsignmentOrderDetail = () => {
     import('../../vendor/scm/lib/purchase-order-pdf')
       .then(({ generatePurchaseOrderPdf }) =>
         generatePurchaseOrderPdf(po as never, items as never, { docTitle: 'PURCHASE CONSIGNMENT ORDER' }))
-      .catch((e) => notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }));
+      .catch((e) => notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' }));
   };
 
   const setHeaderField = (k: keyof HeaderDraft, v: string) => {
@@ -464,7 +464,7 @@ export const PurchaseConsignmentOrderDetail = () => {
       setHeaderDraft(null);
       setEditLines([]);
     } catch (e) {
-      notify({ title: 'Save failed', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+      notify({ title: 'Save failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' });
     } finally {
       setSavingDraft(false);
     }
@@ -501,7 +501,7 @@ export const PurchaseConsignmentOrderDetail = () => {
                     danger: true,
                   }))) return;
                   cancel.mutate(po.id, {
-                    onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+                    onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
                   });
                 }}
                 disabled={cancel.isPending}>
@@ -520,7 +520,7 @@ export const PurchaseConsignmentOrderDetail = () => {
                   }))) return;
                   deletePo.mutate(po.id, {
                     onSuccess: () => navigate('/scm/purchase-consignment-orders'),
-                    onError:   (err) => notify({ title: 'Delete failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+                    onError:   (err) => notify({ title: 'Delete failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
                   });
                 }}
                 disabled={deletePo.isPending}>

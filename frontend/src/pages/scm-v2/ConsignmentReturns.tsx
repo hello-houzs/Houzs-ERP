@@ -384,7 +384,7 @@ export const ConsignmentReturns = () => {
       danger: true,
     }))) return;
     updateStatus.mutate({ id: row.id, status: 'CANCELLED' },
-      { onError: (e) => notify({ title: 'Failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }) });
+      { onError: (e) => notify({ title: 'Failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' }) });
   };
 
   const kpiTile = (label: string, value: string, accent?: 'good' | 'bad' | 'burnt'): JSX.Element => (
@@ -418,7 +418,7 @@ export const ConsignmentReturns = () => {
       {error && !isLoading && (
         <div className={styles.bannerWarn}>
           <strong>Failed to load.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
         </div>
       )}
 

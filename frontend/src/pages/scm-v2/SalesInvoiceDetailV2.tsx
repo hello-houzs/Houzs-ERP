@@ -701,7 +701,7 @@ export function SalesInvoiceDetailV2() {
       .catch((e) =>
         notify({
           title: "PDF generation failed",
-          body: e instanceof Error ? e.message : String(e),
+          body: e instanceof Error ? e.message : "Something went wrong.",
           tone: "error",
         })
       );
@@ -778,7 +778,19 @@ export function SalesInvoiceDetailV2() {
   // persisted SI payment; add / delete only).
   const flushPaymentDrafts = async () => {
     if (!salesInvoice) return;
-    const persisted = paymentsQ.data ?? [];
+    /* `paymentsQ.data ?? []` here was a money bug, not a cosmetic one. This
+       flush decides what to POST by DIFFERENCE against what is already stored.
+       If the payments read failed, `data` is undefined, so `persisted` became
+       empty, `persistedIds` became empty, and every draft — including rows that
+       are already in the ledger — was re-POSTed: duplicate payment rows against
+       a real invoice. An empty array means "no payments"; undefined means "we do
+       not know", and you must not diff against a set you never read. */
+    const persisted = paymentsQ.data;
+    if (!Array.isArray(persisted)) {
+      throw new Error(
+        "We couldn't check which payments are already saved, so nothing was changed. Please refresh and try again.",
+      );
+    }
     const draftIds = new Set(paymentDrafts.map((d) => d.uid));
     for (const p of persisted) {
       if (!draftIds.has(p.id)) {
@@ -814,7 +826,7 @@ export function SalesInvoiceDetailV2() {
       .catch((e) =>
         notify({
           title: "Failed to save payments",
-          body: e instanceof Error ? e.message : String(e),
+          body: e instanceof Error ? e.message : "Something went wrong.",
           tone: "error",
         })
       )
@@ -829,7 +841,17 @@ export function SalesInvoiceDetailV2() {
         confirmLabel: "Mark paid",
       })
     ) {
-      updateStatus.mutate({ id: salesInvoice.id, status: "PAID" });
+      updateStatus.mutate(
+        { id: salesInvoice.id, status: "PAID" },
+        {
+          onError: (e) =>
+            notify({
+              title: "Couldn't mark this invoice as paid",
+              body: `${e instanceof Error ? e.message : "Something went wrong."} The invoice is unchanged — please try again.`,
+              tone: "error",
+            }),
+        },
+      );
     }
   };
 

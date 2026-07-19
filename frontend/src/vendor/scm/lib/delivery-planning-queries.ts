@@ -412,7 +412,7 @@ export function useScheduleDelivery() {
          up" — a failure must never be indistinguishable from a success. */
       serviceNotify({
         title: 'Schedule not saved',
-        body: err instanceof Error ? err.message : String(err),
+        body: err instanceof Error ? err.message : 'Something went wrong.',
         tone: 'error',
       });
     },
@@ -488,7 +488,7 @@ export function useConvertSosToDo() {
             );
             out.converted.push({ docNo, doNumber: res.doNumber });
           } catch (e) {
-            out.failed.push({ docNo, message: e instanceof Error ? e.message : String(e) });
+            out.failed.push({ docNo, message: e instanceof Error ? e.message : 'Something went wrong.' });
           }
         }));
       }

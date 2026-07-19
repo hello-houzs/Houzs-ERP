@@ -482,7 +482,8 @@ export function StockAdjustments() {
       {error && !isLoading && (
         <div className="mb-4 rounded-lg border border-err/30 bg-err-bg px-3.5 py-2.5 text-[12px] text-err">
           <strong>Failed to load.</strong>{" "}
-          {error instanceof Error ? error.message : String(error)}
+          {/* authedFetch already humanised `message`; fallback for a non-Error throw. */}
+          {error instanceof Error ? error.message : "Something went wrong."}
         </div>
       )}
 

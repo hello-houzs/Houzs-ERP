@@ -162,7 +162,7 @@ export const StockTransferNew = () => {
       },
       {
         onSuccess: (res) => navigate(`/scm/stock-transfers/${res.id}`),
-        onError:   (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+        onError:   (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
       },
     );
   };

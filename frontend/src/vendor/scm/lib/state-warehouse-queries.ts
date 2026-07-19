@@ -61,7 +61,7 @@ export function useUpsertStateWarehouseMapping() {
          reverted edit misroutes real goods. */
       serviceNotify({
         title: 'Warehouse mapping not saved',
-        body: err instanceof Error ? err.message : String(err),
+        body: err instanceof Error ? err.message : 'Something went wrong.',
         tone: 'error',
       });
     },

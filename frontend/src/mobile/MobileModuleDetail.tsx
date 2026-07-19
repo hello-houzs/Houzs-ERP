@@ -831,17 +831,33 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
   const cancelled = isCancelledDoc(map.status(header));
 
   /* Download the DO / SI PDF — reuses the SAME desktop generators so phone output
-     is byte-identical. Only wired for the two doc types with a mobile-relevant PDF. */
+     is byte-identical. Only wired for the two doc types with a mobile-relevant PDF.
+
+     The screen already says "Couldn't load line items" when the detail read
+     fails (see below), but the PDF button stayed live and `items` fell back to
+     `[]` — so tapping it produced a Delivery Order or Sales Invoice PDF with an
+     EMPTY line table. That is not a degraded document, it is a false one: it
+     reads as a complete record of a delivery of nothing, and unlike a screen it
+     is durable and leaves the phone. Refuse instead, and say why. */
+  const canPdf = !error && !isLoading;
+  const refusePdf = async () => {
+    void detailNotify({
+      title: "Can't make the PDF yet",
+      body: isLoading
+        ? "The line items are still loading. Please try again in a moment."
+        : "We couldn't load the line items for this document. Making the PDF now would produce one with no items on it. Please refresh and try again.",
+    });
+  };
   const onPdf =
     moduleKey === "delivery-orders-mfg"
-      ? async () => {
+      ? !canPdf ? refusePdf : async () => {
           try {
             const { generateDeliveryOrderPdf } = await import("../vendor/scm/lib/delivery-order-pdf");
             await generateDeliveryOrderPdf(header as never, items as never);
           } catch (e) { void detailNotify({ title: "Couldn't generate the PDF", body: e instanceof Error ? e.message : "Please try again." }); }
         }
       : moduleKey === "sales-invoices"
-        ? async () => {
+        ? !canPdf ? refusePdf : async () => {
             try {
               const { generateSalesInvoicePdf } = await import("../vendor/scm/lib/sales-invoice-pdf");
               await generateSalesInvoicePdf(header as never, items as never);

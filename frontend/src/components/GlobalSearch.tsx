@@ -156,7 +156,9 @@ function Palette({ onClose }: { onClose: () => void }) {
         setSelected(0);
       } catch (e: any) {
         if (ctrl.signal.aborted) return;
-        setError(e?.message || String(e));
+        // e.message is already humanized by the API client; the fallback only
+        // fires on a non-Error throw and must be a sentence, not String(e).
+        setError(e?.message || "Search isn't working right now. Please try again.");
       } finally {
         if (!ctrl.signal.aborted) setLoading(false);
       }

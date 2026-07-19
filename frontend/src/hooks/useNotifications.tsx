@@ -51,6 +51,13 @@ interface Ctx {
   feed: NotificationItem[];
   unreadByProject: Record<number, number>;
   totalUnread: number;
+  /* True once a poll has failed and we have never successfully loaded, i.e.
+     `feed: []` means "we don't know", not "there is nothing". Consumers MUST
+     consult this before rendering a reassuring empty state: the inbox used to
+     tell people "You're all caught up." on a failed read, which is the single
+     most misleading thing this app can say — it is the screen operators use to
+     decide whether anything needs their attention. */
+  loadFailed: boolean;
   reload: () => void;
   // Houzs Points — present once the first poll lands.
   pointsBalance: number;
@@ -62,6 +69,7 @@ const NotificationsContext = createContext<Ctx>({
   feed: [],
   unreadByProject: {},
   totalUnread: 0,
+  loadFailed: false,
   reload: () => {},
   pointsBalance: 0,
   giftingBalance: 0,
@@ -104,6 +112,9 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [feed, setFeed] = useState<NotificationItem[]>([]);
   const [unreadByProject, setUnread] = useState<Record<number, number>>({});
   const [totalUnread, setTotal] = useState(0);
+  /* Sticky until a poll succeeds. A later poll clearing it is exactly right:
+     once we have real data the feed is authoritative again. */
+  const [loadFailed, setLoadFailed] = useState(false);
   const [lastTick, setLastTick] = useState(0);
   const [pointsBalance, setPoints] = useState(0);
   const [giftingBalance, setGifting] = useState(0);
@@ -153,8 +164,13 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
          on NotificationsTickContext for why BrowserPushSink needs that. It is in
          its own context, so this line no longer re-renders the app. */
       setLastTick(Date.now());
+      setLoadFailed(false);
     } catch {
-      // Swallow — polling error shouldn't noise the UI. Next tick retries.
+      /* Still swallowed as far as toasts go — a background poll must not throw
+         noise at the user every 30s. But it is no longer invisible: the flag
+         lets the inbox say "we couldn't load this" instead of asserting that
+         there is nothing waiting. Silence and emptiness are different answers. */
+      setLoadFailed(true);
     }
   }, [user?.id]);
 
@@ -203,12 +219,13 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       feed,
       unreadByProject,
       totalUnread,
+      loadFailed,
       reload: fetchOnce,
       pointsBalance,
       giftingBalance,
       currentStreak,
     }),
-    [feed, unreadByProject, totalUnread, fetchOnce, pointsBalance, giftingBalance, currentStreak],
+    [feed, unreadByProject, totalUnread, loadFailed, fetchOnce, pointsBalance, giftingBalance, currentStreak],
   );
 
   return (

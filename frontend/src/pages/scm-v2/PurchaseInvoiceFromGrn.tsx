@@ -139,7 +139,11 @@ export const PurchaseInvoiceFromGrn = () => {
               <X {...ICON} /> Clear picks
             </Button>
             <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
+              {/* The ternary went loading → empty with no error arm, so a failed
+                  read announced that every posted GRN had already been invoiced
+                  — the opposite of the truth, and revenue goes unbilled on it. */}
               {itemsQ.isLoading ? 'Loading…'
+                : itemsQ.isError ? "We couldn't load the outstanding lines — please refresh and try again."
                 : items.length === 0 ? 'No outstanding lines — every posted GRN has already been invoiced.'
                 : `${items.length} line${items.length === 1 ? '' : 's'} across ${grouped.length} GRN${grouped.length === 1 ? '' : 's'}`}
             </span>

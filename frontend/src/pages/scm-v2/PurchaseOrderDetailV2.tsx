@@ -448,7 +448,7 @@ function PurchaseOrderDetailV2ReadOnly() {
       .catch((e) =>
         notify({
           title: "PDF generation failed",
-          body: e instanceof Error ? e.message : String(e),
+          body: e instanceof Error ? e.message : "Something went wrong.",
           tone: "error",
         })
       );
@@ -513,7 +513,7 @@ function PurchaseOrderDetailV2ReadOnly() {
          moments ago) reach here already in plain language: authedFetch runs the
          response through humanApiError and throws an Error carrying that
          sentence, so e.message is the operator-facing text. */
-      notify({ title: "Send failed", body: e instanceof Error ? e.message : String(e), tone: "error" });
+      notify({ title: "Send failed", body: e instanceof Error ? e.message : "Something went wrong.", tone: "error" });
     } finally {
       setSendingToSupplier(false);
     }

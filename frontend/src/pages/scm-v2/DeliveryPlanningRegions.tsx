@@ -61,7 +61,7 @@ export const DeliveryPlanningRegions = () => {
     if (Object.keys(patch).length === 1) { clearBuf(); return; }
     updateMutate(patch, {
       onSuccess: clearBuf,
-      onError: (err) => notify({ title: 'Update failed', body: String((err as Error).message ?? err), tone: 'error' }),
+      onError: (err) => notify({ title: 'Update failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 
@@ -74,7 +74,7 @@ export const DeliveryPlanningRegions = () => {
     }))) return;
     del.mutate(row.id, {
       // The route returns 409 region_in_use with a plain-language reason — surface it.
-      onError: (err) => notify({ title: 'Cannot delete region', body: String((err as Error).message ?? err), tone: 'error' }),
+      onError: (err) => notify({ title: 'Cannot delete region', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 
@@ -156,7 +156,7 @@ export const DeliveryPlanningRegions = () => {
           <input type="checkbox" checked={r.active}
             onChange={(e) => updateMutate(
               { id: r.id, active: e.target.checked },
-              { onError: (err) => notify({ title: 'Update failed', body: String((err as Error).message ?? err), tone: 'error' }) },
+              { onError: (err) => notify({ title: 'Update failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }) },
             )} />
           <span style={{ fontSize: 'var(--fs-12)', color: r.active ? 'var(--c-secondary-a)' : 'var(--fg-muted)' }}>
             {r.active ? 'Active' : 'Inactive'}
@@ -249,7 +249,7 @@ const CreateRegionDrawer = ({ onClose, nextSort }: { onClose: () => void; nextSo
       active: true,
     }, {
       onSuccess: onClose,
-      onError: (err) => notify({ title: 'Create failed', body: String((err as Error).message ?? err), tone: 'error' }),
+      onError: (err) => notify({ title: 'Create failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
     });
   };
 

@@ -116,7 +116,7 @@ export const PaymentVouchers = () => {
   const doCancelPv = async (r: PaymentVoucherRow) => {
     if (!(await askConfirm({ title: `Cancel voucher ${r.pv_number}?`, body: 'This sets status to CANCELLED and reverses the GL entry if it was posted.', confirmLabel: 'Cancel voucher', danger: true }))) return;
     cancelPv.mutate(r.id, {
-      onError: (e) => notify({ title: 'Cancel failed', body: `${e instanceof Error ? e.message : String(e)}`, tone: 'error' }),
+      onError: (e) => notify({ title: 'Cancel failed', body: `${e instanceof Error ? e.message : 'Something went wrong.'}`, tone: 'error' }),
     });
   };
 
@@ -144,7 +144,7 @@ export const PaymentVouchers = () => {
       {error && !isLoading && (
         <div className={styles.bannerWarn}>
           <strong>Failed to load payment vouchers.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
         </div>
       )}
 

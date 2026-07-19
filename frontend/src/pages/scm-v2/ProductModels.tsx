@@ -332,7 +332,7 @@ export const ProductModels = () => {
 
       {error && (
         <div className={BANNER_ERR}>
-          Failed to load: {error instanceof Error ? error.message : String(error)}
+          Failed to load: {error instanceof Error ? error.message : 'Something went wrong.'}
         </div>
       )}
 
@@ -379,7 +379,7 @@ export const ProductModels = () => {
                 const ids = Array.from(selectedIds);
                 const results = await Promise.all(ids.map((id) =>
                   deleteMut.mutateAsync(id).then(() => ({ id, ok: true as const }))
-                    .catch((e) => ({ id, ok: false as const, err: e instanceof Error ? e.message : String(e) })),
+                    .catch((e) => ({ id, ok: false as const, err: e instanceof Error ? e.message : 'Something went wrong.' })),
                 ));
                 setDeleting(false);
                 setSelectedIds(new Set());
@@ -923,7 +923,7 @@ export function NewModelDialog({
             const r = await generateMut.mutateAsync({ id: m.id });
             return { model: m, generated: r.generated ?? 0, skipped: r.skipped ?? 0, codes: r.codes ?? [], error: null as string | null, reason: r.reason ?? null };
           } catch (err) {
-            return { model: m, generated: 0, skipped: 0, codes: [] as string[], error: err instanceof Error ? err.message : String(err), reason: null as string | null };
+            return { model: m, generated: 0, skipped: 0, codes: [] as string[], error: err instanceof Error ? err.message : 'Something went wrong.', reason: null as string | null };
           }
         }));
         totalGenerated = results.reduce((sum, r) => sum + r.generated, 0);
@@ -1020,7 +1020,7 @@ export function NewModelDialog({
         onClose();
       }
     } catch (e2) {
-      setBatchError(e2 instanceof Error ? e2.message : String(e2));
+      setBatchError(e2 instanceof Error ? e2.message : 'Something went wrong.');
     } finally {
       setSubmitting(false);
     }
@@ -1643,7 +1643,7 @@ function EditModelDialog({
           }
           onClose();
         },
-        onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+        onError: (e) => setError(e instanceof Error ? e.message : 'Something went wrong.'),
       },
     );
   };
@@ -1956,7 +1956,7 @@ export function ModularAssignSupplierDialog({
         }
         onSaved();
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Something went wrong.'))
       .finally(() => setSaving(false));
   };
 

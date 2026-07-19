@@ -305,7 +305,7 @@ export const PurchaseConsignmentReturnNew = () => {
       await notify({ title: `Purchase Consignment Return ${createRes.returnNumber} created + posted.` });
       navigate(`/scm/purchase-consignment-returns/${createRes.id}`);
     } catch (err) {
-      notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      notify({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     }
   };
 

@@ -233,7 +233,7 @@ function CustomFieldsSection({ udf, label }: { udf: UseUdfResult; label: string 
       setOptionsRaw("");
       setCreating(false);
     } catch (e: any) {
-      setFormError(e?.message || "Failed");
+      setFormError(e?.message || "Something went wrong. Please try again.");
     } finally {
       setSubmitting(false);
     }

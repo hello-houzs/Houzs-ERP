@@ -1178,7 +1178,7 @@ const SoLineCardInner = ({
                           } catch (err) {
                             // eslint-disable-next-line no-console
                             console.error('[so-line-photo] upload failed:', err);
-                            notify({ title: `Photo upload failed for ${f.name}`, body: err instanceof Error ? err.message : String(err), tone: 'error' });
+                            notify({ title: `Photo upload failed for ${f.name}`, body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
                           }
                         }
                         if (newKeys.length > 0) {
@@ -1712,7 +1712,7 @@ const PhotoThumb = ({
       setUrls({ signedUrl, thumbUrl });
       setError(null);
     } catch (e) {
-      if (!cancelled()) setError(e instanceof Error ? e.message : String(e));
+      if (!cancelled()) setError(e instanceof Error ? e.message : 'Something went wrong.');
     }
   };
 

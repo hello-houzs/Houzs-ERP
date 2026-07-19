@@ -59,7 +59,7 @@ export function RolesTab({
       toast.success(`Deleted ${r.name}`);
       reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed");
+      toast.error(e?.message || "Something went wrong. Please try again.");
     }
   }
 

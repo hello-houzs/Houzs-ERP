@@ -287,7 +287,8 @@ export const Suppliers = () => {
         {error && !isLoading && (
           <div className="rounded-lg border border-err/40 bg-err/10 px-4 py-2.5 text-[12.5px] text-err">
             <strong className="font-semibold">Failed to load suppliers.</strong>{' '}
-            {error instanceof Error ? error.message : String(error)}
+            {/* authedFetch already humanised `message`; fallback for a non-Error throw. */}
+            {error instanceof Error ? error.message : 'Something went wrong.'}
             <span className="mt-1 block text-[12px] text-ink-secondary">
               If this keeps happening, sign out and back in — your session may have expired — or let IT know.
             </span>

@@ -90,7 +90,7 @@ export const useCancelPurchaseInvoice = () => {
       qc.invalidateQueries({ queryKey: ['purchase-invoice-detail', id] });
     },
     onError: (err) => {
-      serviceNotify({ title: 'Cancel invoice failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      serviceNotify({ title: 'Cancel invoice failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     },
   });
 };

@@ -784,7 +784,7 @@ export const SalesOrderDetail = () => {
             tone: 'error',
           });
         } else {
-          setSaveError(e instanceof Error ? e.message : String(e));
+          setSaveError(e instanceof Error ? e.message : 'Something went wrong.');
         }
       });
   };
@@ -953,7 +953,7 @@ export const SalesOrderDetail = () => {
     } catch (e) {
       setSavingOrder(false);
       // authed-fetch already humanises the API error to one plain sentence.
-      setSaveError(e instanceof Error ? e.message : String(e));
+      setSaveError(e instanceof Error ? e.message : 'Something went wrong.');
     }
   };
 
@@ -999,7 +999,7 @@ export const SalesOrderDetail = () => {
         {
           onSuccess: () => cb?.onSuccess?.(),
           // Pass the raw Error too — its `.body` carries the aggregated problems.
-          onError:   (e) => cb?.onError?.(e instanceof Error ? e.message : String(e), e),
+          onError:   (e) => cb?.onError?.(e instanceof Error ? e.message : 'Something went wrong.', e),
         },
       );
     },
@@ -1343,7 +1343,7 @@ export const SalesOrderDetail = () => {
     approveSo.mutate({ id: openAmendment.id }, {
       onError: (e) => notify({
         title: 'Could not approve the revision',
-        body: e instanceof Error ? e.message : String(e),
+        body: e instanceof Error ? e.message : 'Something went wrong.',
         tone: 'error',
       }),
       onSuccess: () => notify({ title: 'SO revision approved' }),
@@ -1420,7 +1420,7 @@ export const SalesOrderDetail = () => {
       console.error('PDF generation failed:', e);
       notify({
         title: 'PDF generation failed',
-        body: `${e instanceof Error ? e.message : String(e)}`,
+        body: `${e instanceof Error ? e.message : 'Something went wrong.'}`,
         tone: 'error',
       });
     });
@@ -3142,7 +3142,7 @@ const ScannedImageCard = ({
         url = u;
         setSrc(u);
       })
-      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Something went wrong.'); });
     return () => {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
@@ -3396,7 +3396,7 @@ const SupplierConfirmForm = ({
         onSuccess: () => { notify({ title: 'Supplier confirmation recorded' }); onDone(); },
         onError: (e) => notify({
           title: 'Could not record the confirmation',
-          body: e instanceof Error ? e.message : String(e),
+          body: e instanceof Error ? e.message : 'Something went wrong.',
           tone: 'error',
         }),
       },
@@ -3507,7 +3507,7 @@ const AmendmentDiffModal = ({
           ) : error ? (
             <div className={styles.bannerWarn}>
               <strong>Could not load the changes.</strong>{' '}
-              {error instanceof Error ? error.message : String(error)}
+              {error instanceof Error ? error.message : 'Something went wrong.'}
             </div>
           ) : lines.length === 0 && headerDiffs.length === 0 ? (
             /* Distinguish "nothing recorded" from "every recorded line is a
@@ -3619,7 +3619,7 @@ const RevisionsTab = ({ docNo, currency }: { docNo: string; currency: string }) 
         ) : error ? (
           <div className={styles.bannerWarn}>
             <strong>Could not load revisions.</strong>{' '}
-            {error instanceof Error ? error.message : String(error)}
+            {error instanceof Error ? error.message : 'Something went wrong.'}
           </div>
         ) : revisions.length === 0 ? (
           <p className={styles.muted}>

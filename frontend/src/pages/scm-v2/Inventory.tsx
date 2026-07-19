@@ -360,7 +360,7 @@ const BalancesTab = ({
       {error && !isLoading && (
         <div className={BANNER_ERR}>
           <strong className="font-semibold">Failed to load.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
         </div>
       )}
 
@@ -695,7 +695,7 @@ const BatchesTab = ({
       {error && !isLoading && (
         <div className={BANNER_ERR}>
           <strong className="font-semibold">Failed to load.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
         </div>
       )}
 
@@ -1141,7 +1141,7 @@ const MovementsTab = ({
       {error && !isLoading && (
         <div className={BANNER_ERR}>
           <strong className="font-semibold">Failed to load.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
         </div>
       )}
 

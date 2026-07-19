@@ -211,7 +211,7 @@ export const ConsignmentReturnDetail = () => {
         { id: stableId, ...patch },
         {
           onSuccess: () => cb?.onSuccess?.(),
-          onError: (e) => cb?.onError?.(e instanceof Error ? e.message : String(e)),
+          onError: (e) => cb?.onError?.(e instanceof Error ? e.message : 'Something went wrong.'),
         },
       );
     },
@@ -305,7 +305,7 @@ export const ConsignmentReturnDetail = () => {
           .then(() => { setSavingOrder(false); setIsEditing(false); })
           .catch((e) => {
             setSavingOrder(false);
-            setSaveError(`Lines failed to save: ${e instanceof Error ? e.message : String(e)}`);
+            setSaveError(`Lines failed to save: ${e instanceof Error ? e.message : 'Something went wrong.'}`);
           });
       },
       onError: (msg) => { setSavingOrder(false); setSaveError(msg); },
@@ -342,7 +342,7 @@ export const ConsignmentReturnDetail = () => {
           docTitle: 'CONSIGNMENT RETURN', docNoLabel: 'CR No',
           amountLabel: 'Value', totalLabel: 'TOTAL VALUE',
         }))
-      .catch((e) => notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }));
+      .catch((e) => notify({ title: 'PDF generation failed', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' }));
   };
 
   const handleCancel = async () => {

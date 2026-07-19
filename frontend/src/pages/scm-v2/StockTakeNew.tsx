@@ -134,7 +134,7 @@ export const StockTakeNew = () => {
       },
       {
         onSuccess: (res) => navigate(`/scm/stock-takes/${res.id}`),
-        onError:   (err) => notify({ title: 'Create failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+        onError:   (err) => notify({ title: 'Create failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
       },
     );
   };

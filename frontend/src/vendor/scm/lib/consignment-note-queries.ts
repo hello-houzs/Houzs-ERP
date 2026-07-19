@@ -145,7 +145,7 @@ export const useUpdateConsignmentNoteStatus = () => {
       qc.invalidateQueries({ queryKey: ['consignment-note-detail', vars.id] });
     },
     onError: (err) => {
-      serviceNotify({ title: 'Status update failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+      serviceNotify({ title: 'Status update failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' });
     },
   });
 };

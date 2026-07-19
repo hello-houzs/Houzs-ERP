@@ -572,7 +572,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
                   setNewCountry('');
                   toast.success(`Added ${country}. Drill in to add states.`);
                 } catch (err) {
-                  toast.error(`Add failed: ${err instanceof Error ? err.message : String(err)}`);
+                  toast.error(`Add failed: ${err instanceof Error ? err.message : 'Something went wrong.'}`);
                 }
               }}
             >
@@ -676,7 +676,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
                                           next.set(s.state, prev);
                                           return next;
                                         });
-                                        toast.error(`Region save failed: ${err instanceof Error ? err.message : String(err)}`);
+                                        toast.error(`Region save failed: ${err instanceof Error ? err.message : 'Something went wrong.'}`);
                                       },
                                     },
                                   );
@@ -713,7 +713,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
                                       next.delete(s.state);
                                       return next;
                                     });
-                                    toast.error(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
+                                    toast.error(`Save failed: ${err instanceof Error ? err.message : 'Something went wrong.'}`);
                                   },
                                 },
                               );
@@ -739,7 +739,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
                                 { state: s.state, warehouseId: current?.warehouseId ?? null, notes },
                                 {
                                   onSuccess: () => toast.success(`Notes saved for ${s.state}`),
-                                  onError: (err) => toast.error(`Notes save failed: ${err instanceof Error ? err.message : String(err)}`),
+                                  onError: (err) => toast.error(`Notes save failed: ${err instanceof Error ? err.message : 'Something went wrong.'}`),
                                 },
                               );
                             }}
@@ -765,7 +765,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
                                         return next;
                                       });
                                     },
-                                    onError: (err) => toast.error(`Clear failed: ${err instanceof Error ? err.message : String(err)}`),
+                                    onError: (err) => toast.error(`Clear failed: ${err instanceof Error ? err.message : 'Something went wrong.'}`),
                                   },
                                 )}
                                 aria-label={`Clear warehouse for ${s.state}`}
@@ -840,7 +840,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
                   setNewState(''); setNewStateCode(''); setNewCountry('');
                   toast.success(`Added ${state}${whId ? ' with default warehouse' : ''}`);
                 } catch (err) {
-                  toast.error(`Add failed: ${err instanceof Error ? err.message : String(err)}`);
+                  toast.error(`Add failed: ${err instanceof Error ? err.message : 'Something went wrong.'}`);
                 }
               }}
             >

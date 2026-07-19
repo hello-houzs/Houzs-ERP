@@ -225,7 +225,7 @@ export const SoFromProducts = () => {
         const res = await createSo.mutateAsync(specToBody(s));
         created.push(res.docNo);
       } catch (e) {
-        errors.push({ name: s.customerName, msg: e instanceof Error ? e.message : String(e) });
+        errors.push({ name: s.customerName, msg: e instanceof Error ? e.message : 'Something went wrong.' });
       }
       setProgress((p) => ({ done: p.done + 1, total: p.total }));
     }
@@ -449,6 +449,7 @@ export const SoFromProducts = () => {
             </Button>
             <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
               {prodQ.isLoading ? 'Loading products…'
+                : prodQ.isError ? "We couldn't load the product catalog — please refresh and try again."
                 : products.length === 0 ? 'No products in catalog.'
                 : `Target ${totalTest} · mattress ${byCat.mattress.length} · bedframe ${byCat.bedframe.length} · sofa ${byCat.sofa.length} SKUs available`}
             </span>
@@ -540,7 +541,9 @@ export const SoFromProducts = () => {
               rowKey={(p) => p.code}
               searchPlaceholder="Filter products…"
               isLoading={prodQ.isLoading}
-              emptyMessage="No products in catalog."
+              emptyMessage={prodQ.isError
+                ? "We couldn't load the product catalog. That is not the same as it being empty — please refresh and try again."
+                : "No products in catalog."}
               rowStyle={(p) => (picks[p.code]?.picked ? { background: 'rgba(213,90,40,0.04)' } : undefined)}
             />
           </div>
