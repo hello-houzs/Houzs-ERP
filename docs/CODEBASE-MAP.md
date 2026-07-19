@@ -49,7 +49,7 @@ External integration: **AutoCount** (accounting) via a .NET middleware at
 | `POD_BUCKET` | R2 | bucket `houzs-erp` (proof-of-delivery, attachments) |
 | `SESSION_CACHE` | KV | `c25f593f…` (60s session-user cache + rate-limit counters) |
 | ~~D1~~ | — | **removed 2026-06-13**; old `autocount-sync` D1 kept cold, unbound |
-| `ERP_METRICS` | Analytics Engine | commented out / deferred |
+| `ERP_METRICS` | Analytics Engine | dataset `houzs_erp_metrics` (needs one-time account-level AE enable before deploy; reads need `AE_QUERY_TOKEN` + `CF_ACCOUNT_ID` secrets) |
 
 - **Vars** (names only): `AUTOCOUNT_API_URL`, `AUTOCOUNT_SYNC_DISABLED="true"`,
   `PUBLIC_APP_URL`, `EMAIL_FROM`, `EMAIL_REPLY_TO`.
