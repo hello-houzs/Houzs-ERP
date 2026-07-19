@@ -99,7 +99,9 @@ describe("requirePageAccess middleware — Sales pilot", () => {
     });
     const res = await api("GET", "/api/sales/entries", outsider.bearer);
     expect(res.status).toBe(403);
-    expect(String(res.json?.error ?? "")).toMatch(/sales/i);
+    // Plain-language 403 body (fix/zero-jargon-mopup): no longer leaks the
+    // internal pageKey/level ("Forbidden: needs full access to sales").
+    expect(String(res.json?.error ?? "")).toMatch(/permission to view this page/i);
   });
 
   test("explicit 'none' row overrides backfill — even sales.read can't pass", async () => {
@@ -129,6 +131,8 @@ describe("requirePageAccess middleware — Sales pilot", () => {
     const res = await api("POST", "/api/sales/entries/9999/push", rep.bearer);
     // 403 (not 404) — the gate fires before any row lookup.
     expect(res.status).toBe(403);
-    expect(String(res.json?.error ?? "")).toMatch(/full|sales/i);
+    // Plain-language 403 body (fix/zero-jargon-mopup): the manage-only gate
+    // returns the same jargon-free message rather than naming the level.
+    expect(String(res.json?.error ?? "")).toMatch(/permission to view this page/i);
   });
 });

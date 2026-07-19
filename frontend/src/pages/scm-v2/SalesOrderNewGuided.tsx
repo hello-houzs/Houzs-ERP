@@ -52,6 +52,7 @@ import {
 import { useIdempotencyKey } from "../../lib/idempotency";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
+import { fmtCenti } from "../../vendor/shared/format";
 import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../../vendor/scm/lib/so-form-validate";
 import { hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../../vendor/shared/so-variant-rule";
 import { todayMyt } from "../../vendor/scm/lib/dates";
@@ -109,11 +110,8 @@ const TIER_LABELS: Record<Tier, { short: string; long: string }> = {
   PRICE_3: { short: "Tier 3", long: "PRICE_3 · top-end fabric / leather" },
 };
 
-const fmtRm = (sen: number): string =>
-  `RM ${(sen / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+// Guarded centi→"RM …" — "—" for an absent/non-finite amount, never "RM NaN".
+const fmtRm = (sen: number | null | undefined): string => fmtCenti(sen);
 
 // ── Hooks (wizard-local) ────────────────────────────────────────────────────
 

@@ -80,9 +80,9 @@ function requireServiceCaseAccess(
 ): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
     const user = c.get("user");
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
     if (!canAccessServiceCases(user, perms)) {
-      return c.json({ error: "Forbidden: service cases" }, 403);
+      return c.json({ error: "You don't have permission to open service cases." }, 403);
     }
     await next();
   };
@@ -2017,7 +2017,7 @@ app.patch("/attachments/:attId/visibility", requirePermission("service_cases.wri
     .json<{ visible_to_customer?: boolean }>()
     .catch(() => ({} as { visible_to_customer?: boolean }));
   if (typeof body.visible_to_customer !== "boolean") {
-    return c.json({ error: "visible_to_customer is required" }, 400);
+    return c.json({ error: "Please choose whether this is visible to the customer." }, 400);
   }
   const r = await c.env.DB.prepare(
     `UPDATE assr_attachments SET visible_to_customer = ? WHERE id = ?`
@@ -2376,7 +2376,7 @@ app.get("/metrics/drill", requirePermission("service_cases.read"), async (c) => 
       const name = (c.req.query("customer_name") || "").trim();
       const phone = (c.req.query("phone") || "").trim();
       if (!name) {
-        return c.json({ error: "customer_name is required for customer_cases" }, 400);
+        return c.json({ error: "We couldn't load that customer's cases. Please try again." }, 400);
       }
       conds.push(`c.customer_name = ? AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`);
       binds.push(name);
@@ -2395,7 +2395,7 @@ app.get("/metrics/drill", requirePermission("service_cases.read"), async (c) => 
       // item_code. Window by sinceDays for parity with the card.
       const code = (c.req.query("item_code") || "").trim();
       if (!code) {
-        return c.json({ error: "item_code is required for item_cases" }, 400);
+        return c.json({ error: "We couldn't load that item's cases. Please try again." }, 400);
       }
       joinItems = true;
       conds.push(`i.item_code = ? AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`);

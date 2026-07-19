@@ -36,6 +36,7 @@ import { Badge } from "../../components/Badge";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { cn } from "../../lib/utils";
+import { fmtCenti } from "../../vendor/shared/format";
 import { retryUnlessClientError } from '../../lib/retryPolicy';
 
 // ─── Types — mirrors the endpoint's Row / buckets / totals ──────────────────
@@ -74,11 +75,8 @@ type UnbilledResponse = {
   };
 };
 
-const fmtRm = (centi: number): string =>
-  `RM ${(centi / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+// Guarded centi→"RM …" — "—" for an absent/non-finite amount, never "RM NaN".
+const fmtRm = (centi: number | null | undefined): string => fmtCenti(centi);
 
 const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";

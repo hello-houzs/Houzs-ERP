@@ -19,10 +19,10 @@ declare module "hono" {
 export const supplierTrack: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   const header = c.req.header("Authorization") || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!token) return c.json({ error: "Unauthorized" }, 401);
+  if (!token) return c.json({ error: "This link is no longer valid. Please request a new one." }, 401);
 
   const scope = await resolveSupplierToken(c.env, token);
-  if (!scope) return c.json({ error: "Unauthorized" }, 401);
+  if (!scope) return c.json({ error: "This link is no longer valid. Please request a new one." }, 401);
 
   c.set("supplierScope", scope);
   await next();

@@ -50,4 +50,45 @@ describe("humanHttpMessage", () => {
     // mutation retry that rides out a Hyperdrive cold start.
     expect(humanHttpMessage(503, "")).toMatch(/briefly unavailable|try again in a moment/i);
   });
+
+  test("a leaked SQLite/D1 constraint error is NOT shown — falls to the status map", () => {
+    // A backend catch that echoes `e.message` on a UNIQUE violation used to
+    // surface the raw driver string. It must never reach the operator.
+    const body = JSON.stringify({
+      error: "D1_ERROR: UNIQUE constraint failed: project_team.project_id, project_team.user_id",
+    });
+    const msg = humanHttpMessage(409, body);
+    expect(msg).not.toMatch(/constraint|D1_ERROR|project_team/i);
+    expect(msg).toBe("That conflicts with existing data. Please refresh and try again.");
+  });
+
+  test("a leaked Postgres error is NOT shown — falls to the status map", () => {
+    const body = JSON.stringify({
+      error: 'duplicate key value violates unique constraint "roles_pkey"',
+    });
+    const msg = humanHttpMessage(409, body);
+    expect(msg).not.toMatch(/violates|constraint|duplicate key|roles_pkey/i);
+    expect(msg).toBe("That conflicts with existing data. Please refresh and try again.");
+  });
+
+  test("a bare HTTP reason phrase is neutralised to the friendly status sentence", () => {
+    // "Not found"/"Forbidden"/"Unauthorized" verbatim are the status code in
+    // words — replace with the plain sentence, never echo the machine phrase.
+    expect(humanHttpMessage(404, JSON.stringify({ error: "Not found" }))).toBe(
+      "We couldn't find what you were looking for.",
+    );
+    expect(humanHttpMessage(403, JSON.stringify({ error: "Forbidden" }))).toBe(
+      "You don't have permission to do that.",
+    );
+    expect(humanHttpMessage(400, "Bad Request")).toBe(
+      "Something in that request wasn't right. Please check and try again.",
+    );
+  });
+
+  test("a genuine sentence that merely contains a number is still shown as-is", () => {
+    // The internals guard must not swallow a legitimate message — only DB/driver
+    // vocabulary is suppressed, not ordinary sentences with digits.
+    const body = JSON.stringify({ error: "Order 12345 has already been invoiced." });
+    expect(humanHttpMessage(409, body)).toBe("Order 12345 has already been invoiced.");
+  });
 });

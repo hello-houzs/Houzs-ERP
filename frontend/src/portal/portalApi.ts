@@ -50,7 +50,9 @@ async function portalFetch(input: string, init: RequestInit, timeoutMs: number):
     if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
       throw new PortalApiError(0, "The server took too long to respond. Please check your connection and try again.");
     }
-    throw e;
+    // Any other fetch rejection is a network drop; its raw message ("Failed to
+    // fetch" / "Load failed") is machine vocabulary the customer must never see.
+    throw new PortalApiError(0, "We couldn't reach the server. Please check your connection and try again.");
   }
 }
 

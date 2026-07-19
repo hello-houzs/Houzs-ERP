@@ -579,7 +579,7 @@ app.get("/:id/activity", requirePermission("users.read"), async (c) => {
  */
 app.put("/me/profile-pic", async (c) => {
   const user = c.get("user");
-  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
   const filename = c.req.query("name") || `profile-${Date.now()}.bin`;
   const contentType =
     c.req.header("content-type") || "application/octet-stream";
@@ -611,7 +611,7 @@ app.put("/me/profile-pic", async (c) => {
  */
 app.delete("/me/profile-pic", async (c) => {
   const user = c.get("user");
-  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
   await c.env.DB.prepare(
     `UPDATE users SET profile_pic_r2_key = NULL WHERE id = ?`,
   )
@@ -739,7 +739,7 @@ app.post("/invite", requirePermissionOrSalesDirector("users.manage"), async (c) 
   }
 
   if (!body.email || !body.role_id) {
-    return c.json({ error: "email and role_id are required" }, 400);
+    return c.json({ error: "Please enter an email and choose a role." }, 400);
   }
   const email = body.email.toLowerCase().trim();
   const name = body.name?.trim() || null;
@@ -1245,7 +1245,7 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
       set.manager_id = null;
     } else {
       const mgr = parseInt(String(body.manager_id), 10);
-      if (!mgr) return c.json({ error: "Invalid manager_id" }, 400);
+      if (!mgr) return c.json({ error: "Please choose a valid manager." }, 400);
       if (mgr === id) return c.json({ error: "Cannot report to yourself" }, 400);
       // Cycle check: walk the prospective manager's chain — if this user
       // is anywhere in it, the assignment would create a loop.
@@ -1277,7 +1277,7 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
       set.department_id = null;
     } else {
       const dept = parseInt(String(body.department_id), 10);
-      if (!dept) return c.json({ error: "Invalid department_id" }, 400);
+      if (!dept) return c.json({ error: "Please choose a valid department." }, 400);
       const exists = await db
         .select({ id: departments.id })
         .from(departments)
@@ -1293,7 +1293,7 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
       set.position_id = null;
     } else {
       const posId = parseInt(String(body.position_id), 10);
-      if (!posId) return c.json({ error: "Invalid position_id" }, 400);
+      if (!posId) return c.json({ error: "Please choose a valid position." }, 400);
       const pos = await db
         .select({ id: positions.id, department_id: positions.department_id })
         .from(positions)

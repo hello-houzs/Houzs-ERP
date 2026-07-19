@@ -564,7 +564,7 @@ app.get("/", requirePermissionOrSalesDirector("announcements.read"), async (c) =
 app.get("/banner", async (c) => {
   const user = c.get("user");
   if (!user || !user.id) {
-    return c.json({ success: false, error: "Unauthorized" }, 401);
+    return c.json({ success: false, error: "Your session has expired. Please sign in again." }, 401);
   }
 
   // PER-USER KV snapshot (inbox.ts pattern) — this payload is per-user three
@@ -1159,7 +1159,7 @@ app.delete("/:id", requirePermissionOrSalesDirector("announcements.write"), asyn
 app.post("/:id/ack", async (c) => {
   const user = c.get("user");
   if (!user || !user.id) {
-    return c.json({ success: false, error: "Unauthorized" }, 401);
+    return c.json({ success: false, error: "Your session has expired. Please sign in again." }, 401);
   }
   const id = c.req.param("id");
   const row = await getScopedAnnouncement(c, id);
@@ -1272,7 +1272,7 @@ app.put(
 // ============================================================
 app.get("/:id/attachments/:key{.+}", async (c) => {
   const user = c.get("user");
-  if (!user || !user.id) return c.json({ error: "Unauthorized" }, 401);
+  if (!user || !user.id) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
 
   const id = c.req.param("id");
   const key = c.req.param("key");

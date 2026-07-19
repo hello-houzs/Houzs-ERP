@@ -91,7 +91,7 @@ app.put("/", requirePermission("settings.manage"), async (c) => {
   try {
     body = await c.req.json<Partial<Branding>>();
   } catch {
-    return c.json({ error: "Invalid JSON body" }, 400);
+    return c.json({ error: "We couldn't save those changes. Please try again." }, 400);
   }
 
   // Company name is the one load-bearing field (it anchors the OCR prompt +

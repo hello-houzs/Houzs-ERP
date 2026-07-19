@@ -230,7 +230,7 @@ paymentVouchers.get('/:id', async (c) => {
 
 paymentVouchers.post('/', async (c) => {
   if (!hasHouzsPerm(c, 'scm.payment_voucher.create')) {
-    return c.json({ error: 'Forbidden: missing scm.payment_voucher.create' }, 403);
+    return c.json({ error: "You don't have permission to do that." }, 403);
   }
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -333,7 +333,7 @@ paymentVouchers.post('/', async (c) => {
 
 paymentVouchers.patch('/:id', async (c) => {
   if (!hasHouzsPerm(c, 'scm.payment_voucher.write')) {
-    return c.json({ error: 'Forbidden: missing scm.payment_voucher.write' }, 403);
+    return c.json({ error: "You don't have permission to do that." }, 403);
   }
   const id = c.req.param('id');
   let body: Record<string, unknown>;
@@ -444,7 +444,7 @@ paymentVouchers.patch('/:id', async (c) => {
 
 paymentVouchers.post('/:id/post', async (c) => {
   if (!hasHouzsPerm(c, 'scm.payment_voucher.post')) {
-    return c.json({ error: 'Forbidden: missing scm.payment_voucher.post' }, 403);
+    return c.json({ error: "You don't have permission to do that." }, 403);
   }
   const sb = c.get('supabase'); const id = c.req.param('id');
 
@@ -623,7 +623,7 @@ paymentVouchers.post('/:id/post', async (c) => {
 
 export const cancelPaymentVoucherHandler = async (c: any) => {
   if (!hasHouzsPerm(c, 'scm.payment_voucher.cancel')) {
-    return c.json({ error: 'Forbidden: missing scm.payment_voucher.cancel' }, 403);
+    return c.json({ error: "You don't have permission to do that." }, 403);
   }
   const sb = c.get('supabase'); const id = c.req.param('id');
 

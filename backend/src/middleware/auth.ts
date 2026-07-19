@@ -124,7 +124,7 @@ export const auth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   const header = c.req.header("Authorization") || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
   if (!token) {
-    return c.json({ error: "Unauthorized" }, 401);
+    return c.json({ error: "Your session has expired. Please sign in again." }, 401);
   }
 
   // Legacy shared key — service-tier access for tooling and cron. No session
@@ -141,7 +141,7 @@ export const auth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   // Otherwise it's a session token.
   const user = await getUserBySession(c.env, token);
   if (!user) {
-    return c.json({ error: "Unauthorized" }, 401);
+    return c.json({ error: "Your session has expired. Please sign in again." }, 401);
   }
   c.set("user", user);
   // ASSR routes (assr.ts + assrPortal.ts) read `c.get("userId")` for
@@ -167,13 +167,13 @@ export const auth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
 export function requirePermission(perm: string): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
     const user = c.get("user");
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
     // Fast path: O(1) Set lookup. Falls back to the array form for
     // any caller that builds AuthUser without going through
     // hydrateAuthUser (e.g. tests / scripts).
     const granted = user.permissions_set ?? user.permissions;
     if (!hasPermission(granted, perm)) {
-      return c.json({ error: `Forbidden: missing ${perm}` }, 403);
+      return c.json({ error: "You don't have permission to do that." }, 403);
     }
     await next();
   };
@@ -197,13 +197,13 @@ export function requirePermissionOrSalesDirector(
 ): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
     const user = c.get("user");
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
     const granted = user.permissions_set ?? user.permissions;
     if (hasPermission(granted, perm) || isSalesDirectorUser(user)) {
       await next();
       return;
     }
-    return c.json({ error: `Forbidden: missing ${perm}` }, 403);
+    return c.json({ error: "You don't have permission to do that." }, 403);
   };
 }
 
@@ -221,13 +221,13 @@ export function requirePermissionOrSalesView(
 ): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
     const user = c.get("user");
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
     const granted = user.permissions_set ?? user.permissions;
     if (hasPermission(granted, perm) || isDirectorUser(user) || isSalesUser(user)) {
       await next();
       return;
     }
-    return c.json({ error: `Forbidden: missing ${perm}` }, 403);
+    return c.json({ error: "You don't have permission to do that." }, 403);
   };
 }
 
@@ -252,7 +252,7 @@ export function requirePageAccessOrSalesView(
 ): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
     const user = c.get("user");
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
     const granted = user.permissions_set ?? user.permissions;
     // 1) Wildcard / matrix path — identical to requirePageAccess, unchanged.
     if (hasPermission(granted, "*")) {
@@ -278,7 +278,7 @@ export function requirePageAccessOrSalesView(
       return;
     }
     return c.json(
-      { error: `Forbidden: needs ${minLevel} access to ${pageKey}` },
+      { error: "You don't have permission to view this page." },
       403,
     );
   };
@@ -298,11 +298,11 @@ export function requirePageAccessOrSalesView(
 export function requireAnyPermission(perms: string[]): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
     const user = c.get("user");
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
     const granted = user.permissions_set ?? user.permissions;
     if (!perms.some((p) => hasPermission(granted, p))) {
       return c.json(
-        { error: `Forbidden: requires one of ${perms.join(", ")}` },
+        { error: "You don't have permission to do that." },
         403
       );
     }
@@ -325,7 +325,7 @@ export function requireAnyPermission(perms: string[]): MiddlewareHandler<{ Bindi
  */
 export const requireScmAccess: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   const user = c.get("user");
-  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
   const granted = user.permissions_set ?? user.permissions;
   // Legacy pass conditions — kept exactly as before.
   if (hasPermission(granted, "*") || hasPermission(granted, "scm.access")) {
@@ -390,7 +390,7 @@ export const requireScmAccess: MiddlewareHandler<{ Bindings: Env }> = async (c, 
     return;
   }
   return c.json(
-    { error: "Forbidden: requires one of *, scm.access" },
+    { error: "You don't have permission to open this area." },
     403,
   );
 };
@@ -417,7 +417,7 @@ export function requirePageAccess(
 ): MiddlewareHandler<{ Bindings: Env }> {
   return async (c, next) => {
     const user = c.get("user");
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    if (!user) return c.json({ error: "Your session has expired. Please sign in again." }, 401);
     const granted = user.permissions_set ?? user.permissions;
     if (hasPermission(granted, "*")) {
       c.set("access_level", "full");
@@ -427,7 +427,7 @@ export function requirePageAccess(
     const level: AccessLevel = (user.page_access?.[pageKey] ?? "none") as AccessLevel;
     if (!meetsLevel(level, minLevel)) {
       return c.json(
-        { error: `Forbidden: needs ${minLevel} access to ${pageKey}` },
+        { error: "You don't have permission to view this page." },
         403,
       );
     }

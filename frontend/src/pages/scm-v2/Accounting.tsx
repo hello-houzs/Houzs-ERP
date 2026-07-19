@@ -26,6 +26,7 @@ import {
   type JournalEntry,
 } from '../../vendor/scm/lib/accounting-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
+import { fmtCenti } from '../../vendor/shared/format';
 import { byText } from '../../vendor/scm/lib/sort-options';
 import styles from './Suppliers.module.css';
 import { PageHeader } from '../../components/Layout';
@@ -33,8 +34,9 @@ import { fmtDateOrDash } from '@2990s/shared';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
-const fmt = (sen: number) =>
-  `RM ${(sen / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// The ONE guarded centi→"RM …" formatter — returns "—" for an absent/non-finite
+// amount, never "RM NaN". Kept under the local name so callsites are unchanged.
+const fmt = (sen: number | null | undefined) => fmtCenti(sen);
 
 type Tab = 'je' | 'gl' | 'balances' | 'ar' | 'ap';
 
