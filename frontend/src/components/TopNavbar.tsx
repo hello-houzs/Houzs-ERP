@@ -282,6 +282,8 @@ const ROUTE_LABELS: Array<[RegExp, string]> = [
   [/^\/creditors\/.+$/, "Creditor"],
   [/^\/assr\/.+$/, "Service Case"],
   [/^\/assr$/, "Service Cases"],
+  [/^\/my-cases\/.+$/, "My Case"],
+  [/^\/my-cases$/, "My Cases"],
   [/^\/projects\/.+$/, "Project"],
   [/^\/projects$/, "Projects"],
   [/^\/sales$/, "Sales"],
@@ -289,6 +291,15 @@ const ROUTE_LABELS: Array<[RegExp, string]> = [
   [/^\/gamification$/, "Engagement"],
   [/^\/settings$/, "Settings"],
   [/^\/profile$/, "Profile"],
+  [/^\/mail-center\/.+$/, "Mail Center"],
+  [/^\/mail-center$/, "Mail Center"],
+  [/^\/agents$/, "Agent Console"],
+  [/^\/system-health$/, "System Health"],
+  [/^\/reports\/fair-report$/, "Sales Report"],
+  // The Supply Chain hub is a single-segment route, so it never reaches the
+  // /scm/* segment table below (which needs a 2nd segment). Curate it here —
+  // without this entry labelForPath title-cased the slug to a bare "Scm".
+  [/^\/scm$/, "Supply Chain"],
 ];
 
 // SCM V2 routes ship dozens of /scm/* pages — hand-rolling a regex per page
@@ -303,6 +314,7 @@ const SCM_SEGMENT_LABELS: Record<string, [string, string]> = {
   "delivery-orders": ["Delivery Orders", "Delivery Order"],
   "sales-invoices": ["Sales Invoices", "Sales Invoice"],
   "delivery-returns": ["Delivery Returns", "Delivery Return"],
+  "amendments": ["Amendments", "Amendment"],
   // Procurement chain
   "purchase-orders": ["Purchase Orders", "Purchase Order"],
   "purchase-invoices": ["Purchase Invoices", "Purchase Invoice"],
@@ -325,6 +337,8 @@ const SCM_SEGMENT_LABELS: Record<string, [string, string]> = {
   "accounting": ["Accounting", "Accounting"],
   "outstanding": ["Outstanding", "Outstanding"],
   "unbilled-deliveries": ["Not Billed", "Delivered, Not Yet Billed"],
+  "payment-vouchers": ["Payment Vouchers", "Payment Voucher"],
+  "currencies": ["Currencies", "Currency"],
   // Transportation
   "drivers": ["Drivers", "Driver"],
   "delivery-planning": ["Delivery Planning", "Delivery Planning"],
@@ -339,6 +353,16 @@ const SCM_SEGMENT_LABELS: Record<string, [string, string]> = {
   "purchase-consignment-orders": ["Purchase Consignment Orders", "Purchase Consignment Order"],
   "purchase-consignment-receives": ["Purchase Consignment Receives", "Purchase Consignment Receive"],
   "purchase-consignment-returns": ["Purchase Consignment Returns", "Purchase Consignment Return"],
+  // Section hubs — the Level-2 sub-group landing pages (ScmSubgroupHub). Their
+  // slug is the singular group id and the label mirrors the NAV_TABS group
+  // header the hub itself renders as its title (no detail child → singular ==
+  // plural). Without these, /scm/<group> title-cased the slug to "Scm".
+  "sales-order": ["Sales Order", "Sales Order"],
+  "consignment": ["Consignment", "Consignment"],
+  "procurement": ["Procurement", "Procurement"],
+  "transportation": ["Transportation", "Transportation"],
+  "warehouse": ["Warehouse", "Warehouse"],
+  "finance": ["Finance", "Finance"],
   // Misc
   "maintenance": ["Maintenance", "Maintenance"],
 };
@@ -350,6 +374,14 @@ const SCM_REPORT_LABELS: Record<string, string> = {
   "delivery-order-detail-listing": "DO Detail Listing",
   "sales-invoice-detail-listing": "SI Detail Listing",
   "delivery-return-detail-listing": "DR Detail Listing",
+};
+
+// /scm/hr/<leaf-slug> — HR sits one level deeper too (segs[2] is the leaf) and
+// has no /scm/hr hub page, so like reports it gets its own table. Labels mirror
+// the NAV_TABS HR leaves. Without this, /scm/hr/* title-cased "scm" to "Scm".
+const SCM_HR_LABELS: Record<string, string> = {
+  "commission": "Commission",
+  "settings": "HR Settings",
 };
 
 // Path segments that are actions/children rather than entity IDs — used to
@@ -379,6 +411,9 @@ function labelForPath(pathname: string): string {
   if (segs[0] === "scm" && segs.length >= 2) {
     if (segs[1] === "reports" && segs[2]) {
       return SCM_REPORT_LABELS[segs[2]] ?? "Report";
+    }
+    if (segs[1] === "hr" && segs[2]) {
+      return SCM_HR_LABELS[segs[2]] ?? "HR";
     }
     const entry = SCM_SEGMENT_LABELS[segs[1]];
     if (entry) {
