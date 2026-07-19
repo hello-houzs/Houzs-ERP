@@ -239,7 +239,14 @@ export const useApprovePo = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id }: { id: string }) =>
-      authedFetch<{ amendment: AmendmentRow; revisedPurchaseOrders: Array<{ poNumber: string; revision: number }> }>(
+      authedFetch<{
+        amendment: AmendmentRow;
+        revisedPurchaseOrders: Array<{ poNumber: string; revision: number }>;
+        /* Plain-language notes about anything the reconciliation left for a human:
+           an already-received removed line, an added item with no open PO, an
+           emptied PO. Absent/empty on a clean revision. */
+        warnings?: string[];
+      }>(
         `/so-amendments/${id}/approve-po`, { method: 'PATCH' },
       ),
     onSuccess: (_, vars) => invalidateAmendmentSideEffects(qc, vars.id),

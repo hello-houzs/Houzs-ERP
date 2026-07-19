@@ -153,9 +153,38 @@ export async function snapshotSo(
     .order('line_no', { ascending: true, nullsFirst: true });
   if (lErr) throw new Error(`snapshotSo: lines load failed: ${lErr.message}`);
 
+  /* Freeze the SO line -> bound-PO line linkage NOW, while it is still intact.
+     purchase_order_items.so_item_id is a FK with ON DELETE SET NULL (verified on
+     the live schema), so the instant applySoAmendment REMOVEs an SO line the
+     database wipes that PO line's ONLY trace of which SO line it served — the
+     line survives, unlinked, and keeps ordering + billing an item the customer
+     no longer has. This snapshot runs BEFORE any line is removed, so it is the
+     one moment that mapping still exists; the Approve-PO gate (reviseBoundPo)
+     reads it back to find and reconcile the orphaned PO line. Keyed
+     SO-line-id -> [bound PO line ids]; empty when no PO is bound yet.
+
+     Idempotent by construction: this whole row upserts with ignoreDuplicates on
+     (so_doc_no, revision), so an Approve-SO retry (which runs AFTER the removal,
+     when the link is already gone) cannot overwrite the good pre-removal
+     capture — the first snapshot wins. */
+  const lineIds = ((lines ?? []) as Array<{ id: string }>).map((r) => r.id);
+  const poLinks: Record<string, string[]> = {};
+  if (lineIds.length > 0) {
+    const { data: poLinkRows, error: poLinkErr } = await sb
+      .from('purchase_order_items')
+      .select('id, so_item_id')
+      .in('so_item_id', lineIds);
+    if (poLinkErr) throw new Error(`snapshotSo: PO linkage load failed: ${poLinkErr.message}`);
+    for (const r of (poLinkRows ?? []) as Array<{ id: string; so_item_id: string | null }>) {
+      if (!r.so_item_id) continue;
+      (poLinks[r.so_item_id] ??= []).push(r.id);
+    }
+  }
+
   const snapshot = {
     header,
     lines: lines ?? [],
+    poLinks,
     snapshotAt: new Date().toISOString(),
   };
 
@@ -614,33 +643,64 @@ export async function snapshotPo(
 
 /* ── reviseBoundPo ──────────────────────────────────────────────────────────
    The Approve-PO engine. For an amendment whose SO has already been revised
-   (Approve-SO ran first), re-derive every bound PO's lines from the NOW-REVISED
-   SO lines using the SAME derivation "Create PO from SO" uses: each PO line is
-   1:1 with a SO line via `purchase_order_items.so_item_id`, and carries the SO
-   line's qty / variants / item_group / description2 / per-line warehouse +
-   delivery date. We re-read each PO line's source SO line and rewrite exactly
-   those carried fields, AND re-derive the supplier COST (`unit_price_centi`)
-   from the revised spec — a fabric/spec swap usually costs differently, so the
-   revised PO's cost must re-anchor off the new spec, NOT carry over the old
-   figure (deriveMfgPoUnitCost: the supplier binding's price_matrix + fabric tier
-   + maintenance surcharges via computeMfgPoUnitCost). Scope note: the create
-   path additionally re-spreads a SOFA-COMBO total across a matched module set;
-   that group-level step is NOT reproduced on a per-line revision.
+   (Approve-SO ran first), reconcile every bound PO so its line SET matches the
+   NOW-REVISED SO, using the SAME derivation "Create PO from SO" uses. Three
+   moves, because an amendment can change the line SET, not just a line's fields:
+
+     • RE-DERIVE a surviving line — each PO line is 1:1 with a SO line via
+       `purchase_order_items.so_item_id`; carry the SO line's qty / variants /
+       item_group / description2 / per-line warehouse + delivery date and
+       re-derive the supplier COST (`unit_price_centi`) from the revised spec
+       (deriveMfgPoUnitCost — a fabric/spec swap re-prices; never carry the old
+       figure). Scope note: the create path additionally re-spreads a SOFA-COMBO
+       total across a matched module set; that group step is NOT reproduced here.
+
+     • REMOVE an orphaned line — when an amendment REMOVEs an SO line, its bound
+       PO line is otherwise left ordering + billing an item the customer no longer
+       has (the company eats the cost). It CANNOT be found by so_item_id: that FK
+       is ON DELETE SET NULL (verified on the live schema), so deleting the SO
+       line already wiped the PO line's only link. Instead we read the SO→PO
+       linkage snapshotSo froze at Approve-SO — the one moment before removal —
+       and delete exactly those PO lines. A line already (partly) received is NOT
+       deleted (goods already received are not ours to discard); it is left in
+       place and surfaced as a plain-language warning for manual handling.
+
+     • ADD a missing line — when an amendment ADDs an SO line, no PO line exists
+       for it (item sold but never ordered → stock shortfall). We insert one on
+       the live bound PO whose supplier matches the added line's main-supplier
+       binding, priced with the SAME deriveMfgPoUnitCost and carrying the same
+       per-line warehouse/date the create path stamps. If no open bound PO belongs
+       to that supplier (or the SKU has no supplier bound), we do NOT invent a new
+       PO here — raising one is the create path's decision — and warn instead.
+
+   Only THEN is the existing PO subtotal recompute correct: the line SET matches.
 
    Houzs note: the SO line's per-line delivery date column is `line_delivery_date`
    (2990's was `delivery_date`); the bound PO line's own column stays
    `delivery_date`.
 
-   Bound PO discovery: SO line ids → purchase_order_items.so_item_id → distinct
-   purchase_order_id → purchase_orders (NON-cancelled). No bound PO ⇒ NO-OP.
+   Bound PO discovery: the surviving SO lines' so_item_id ∪ the snapshot's frozen
+   links for removed lines → distinct non-cancelled purchase_orders. No bound PO
+   ⇒ NO-OP.
 
-   Received floor: BEFORE mutating anything, any PO line whose revised SO qty
-   would drop below that PO line's already-received_qty ABORTS the whole revision
-   (receivedFloorViolation) — you can't revise a PO down past goods already
-   received against it. */
+   Received floor: BEFORE mutating anything, any SURVIVING PO line whose revised
+   SO qty would drop below its already-received_qty ABORTS the whole revision
+   (receivedFloorViolation). An orphaned (removed) line already received is warned,
+   not aborted.
+
+   Idempotency: re-running Approve-PO cannot double anything — an added line is
+   skipped once a PO line already carries its so_item_id, an orphan delete no-ops
+   once the line is gone, and snapshotPo upserts idempotently on (po_id, revision). */
 export type ReviseBoundPoResult = {
   revisedPoIds: string[];
-  perPo: Array<{ poId: string; poNumber: string; revision: number; linesRederived: number }>;
+  perPo: Array<{
+    poId: string; poNumber: string; revision: number;
+    linesRederived: number; linesRemoved: number; linesAdded: number;
+  }>;
+  /* Plain-language notes for the operator about anything that needs a human hand:
+     an orphaned line left in place because it was already received, an added item
+     whose supplier has no open PO, or a PO left with no lines at all. */
+  warnings: string[];
 };
 
 export class ReceivedFloorError extends Error {
@@ -665,6 +725,8 @@ export async function reviseBoundPo(
   userId: string | null,
   c?: Context<any>,
 ): Promise<ReviseBoundPoResult> {
+  const noop = (): ReviseBoundPoResult => ({ revisedPoIds: [], perPo: [], warnings: [] });
+
   // (1) Load amendment → SO doc_no.
   const { data: amdRow, error: amdErr } = await sb
     .from('so_amendments')
@@ -676,60 +738,130 @@ export async function reviseBoundPo(
   const docNo = (amdRow as AmendmentRow).so_doc_no;
   assertNotMirrored(docNo, 'reviseBoundPo');
 
-  // (2) Resolve the bound PO(s): SO line ids → purchase_order_items.so_item_id →
-  //     distinct non-cancelled purchase_orders. Empty ⇒ light branch (no-op).
+  /* (2) The SO's company — the ADD-line supplier binding is scoped to it. The SO,
+     and every PO bound to it, belong to this company; the REQUEST's active
+     company may differ (an amendment can be approved while another is active), so
+     scoping the binding by the active company would be the wrong tenant. Scope is
+     applied ONLY when the company is known (REQUIRED-half); a genuinely unset
+     company (pre-migration / single-company) degrades to no filter — never a
+     cross-company `??` default. */
+  const { data: soHdr, error: soHdrErr } = await sb
+    .from('mfg_sales_orders')
+    .select('company_id')
+    .eq('doc_no', docNo)
+    .maybeSingle();
+  if (soHdrErr) throw new Error(`reviseBoundPo: SO company load failed: ${soHdrErr.message}`);
+  const soCompanyId = (soHdr as { company_id?: number | null } | null)?.company_id ?? null;
+
+  /* (3) The SO→bound-PO linkage snapshotSo froze at Approve-SO, BEFORE any line
+     was removed. This is the ONLY durable record of which PO line served a
+     since-removed SO line (its so_item_id was SET NULL on the SO line's delete).
+     Loaded by amendment_id — not "latest revision" — so a concurrent amendment on
+     the same SO cannot misdirect the reconciliation. */
+  const { data: snapRow, error: snapErr } = await sb
+    .from('so_revisions')
+    .select('snapshot')
+    .eq('amendment_id', amendmentId)
+    .order('revision', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (snapErr) throw new Error(`reviseBoundPo: revision snapshot load failed: ${snapErr.message}`);
+  const snap = (snapRow as { snapshot?: { lines?: Array<{ id?: string }>; poLinks?: Record<string, string[]> } } | null)?.snapshot ?? null;
+  const prevLineIds = new Set(
+    ((snap?.lines ?? []) as Array<{ id?: string }>)
+      .map((r) => String(r.id ?? ''))
+      .filter((x) => x.length > 0),
+  );
+  const poLinks = (snap?.poLinks ?? {}) as Record<string, string[]>;
+
+  // (4) Current (post-Approve-SO) SO line ids.
   const { data: soItemRows, error: soItemErr } = await sb
     .from('mfg_sales_order_items')
     .select('id')
     .eq('doc_no', docNo);
   if (soItemErr) throw new Error(`reviseBoundPo: SO items load failed: ${soItemErr.message}`);
   const soItemIds = ((soItemRows ?? []) as Array<{ id: string }>).map((r) => r.id);
-  if (soItemIds.length === 0) return { revisedPoIds: [], perPo: [] };
+  const currentIdSet = new Set(soItemIds);
 
-  const { data: poItemRows, error: poItemErr } = await sb
-    .from('purchase_order_items')
-    .select('id, purchase_order_id, so_item_id, qty, received_qty')
-    .in('so_item_id', soItemIds);
-  if (poItemErr) throw new Error(`reviseBoundPo: PO items load failed: ${poItemErr.message}`);
-  const allPoItems = (poItemRows ?? []) as Array<{
-    id: string;
-    purchase_order_id: string | null;
-    so_item_id: string | null;
-    qty: number | null;
-    received_qty: number | null;
-  }>;
-  const candidatePoIds = [...new Set(
-    allPoItems.map((r) => r.purchase_order_id).filter((x): x is string => Boolean(x)),
-  )];
-  if (candidatePoIds.length === 0) return { revisedPoIds: [], perPo: [] };
+  /* ADDED   = a current line the pre-amendment snapshot did not have (an ADD diff
+               inserts a brand-new row id; SPEC/QTY reuse the same id).
+     REMOVED = a snapshot line the current SO no longer has.
+     With no snapshot (amendments created before this fix), we cannot classify —
+     degrade to re-derive-only (no inserts, no orphan deletes), the prior
+     behaviour, rather than guess. */
+  const addedSoItemIds = prevLineIds.size > 0
+    ? soItemIds.filter((id) => !prevLineIds.has(id))
+    : [];
+  const removedSoItemIds = [...prevLineIds].filter((id) => !currentIdSet.has(id));
+  const orphanPoItemIds = [...new Set(removedSoItemIds.flatMap((id) => poLinks[id] ?? []))];
+
+  // (5) Existing bound PO lines for the SURVIVING SO lines (the re-derive set).
+  const boundSoItemIdSet = new Set<string>();
+  let allPoItems: Array<{
+    id: string; purchase_order_id: string | null; so_item_id: string | null;
+    qty: number | null; received_qty: number | null;
+  }> = [];
+  if (soItemIds.length > 0) {
+    const { data: poItemRows, error: poItemErr } = await sb
+      .from('purchase_order_items')
+      .select('id, purchase_order_id, so_item_id, qty, received_qty')
+      .in('so_item_id', soItemIds);
+    if (poItemErr) throw new Error(`reviseBoundPo: PO items load failed: ${poItemErr.message}`);
+    allPoItems = (poItemRows ?? []) as typeof allPoItems;
+    for (const pi of allPoItems) if (pi.so_item_id) boundSoItemIdSet.add(pi.so_item_id);
+  }
+
+  /* (6) The orphaned PO lines (removed SO lines' frozen links), read FRESH so
+     received_qty + PO ownership reflect NOW. A link already deleted between the
+     two gates (a re-run, or a manual delete) simply drops out here — idempotent. */
+  let orphanRows: Array<{
+    id: string; purchase_order_id: string | null; received_qty: number | null;
+    material_code: string | null; material_name: string | null;
+  }> = [];
+  if (orphanPoItemIds.length > 0) {
+    const { data: oRows, error: oErr } = await sb
+      .from('purchase_order_items')
+      .select('id, purchase_order_id, received_qty, material_code, material_name')
+      .in('id', orphanPoItemIds);
+    if (oErr) throw new Error(`reviseBoundPo: orphan PO lines load failed: ${oErr.message}`);
+    orphanRows = (oRows ?? []) as typeof orphanRows;
+  }
+
+  // (7) Candidate POs = those serving a surviving line ∪ those holding an orphan.
+  //     Empty ⇒ no PO is bound to this SO at all ⇒ NO-OP (an added line will be
+  //     picked up when the PO is first raised; a removed line has no orphan).
+  const candidatePoIds = [...new Set([
+    ...allPoItems.map((r) => r.purchase_order_id),
+    ...orphanRows.map((r) => r.purchase_order_id),
+  ].filter((x): x is string => Boolean(x)))];
+  if (candidatePoIds.length === 0) return noop();
 
   const { data: poHeaders, error: poHeadErr } = await sb
     .from('purchase_orders')
-    .select('id, po_number, status, revision, supplier_id')
+    .select('id, po_number, status, revision, supplier_id, purchase_location_id, company_id')
     .in('id', candidatePoIds);
   if (poHeadErr) throw new Error(`reviseBoundPo: PO headers load failed: ${poHeadErr.message}`);
-  // Exclude cancelled POs — a cancelled PO is not a live obligation to revise.
+  // Exclude cancelled POs — a cancelled PO is not a live obligation (nor billing).
   const livePos = ((poHeaders ?? []) as Array<{
-    id: string; po_number: string; status: string; revision: number | null; supplier_id: string | null;
+    id: string; po_number: string; status: string; revision: number | null;
+    supplier_id: string | null; purchase_location_id: string | null; company_id: number | null;
   }>).filter((p) => String(p.status).toUpperCase() !== 'CANCELLED');
-  if (livePos.length === 0) return { revisedPoIds: [], perPo: [] };
+  if (livePos.length === 0) return noop();
   const livePoIds = new Set(livePos.map((p) => p.id));
 
-  // (3) Re-read the NOW-REVISED SO lines keyed by id (the derivation source).
+  // (8) Re-read the NOW-REVISED SO lines keyed by id (the derivation source).
   //     Houzs: the per-line delivery date column is `line_delivery_date`.
   const { data: revisedSoRows, error: revErr } = await sb
     .from('mfg_sales_order_items')
-    .select('id, item_code, item_group, qty, variants, warehouse_id, line_delivery_date')
+    .select('id, item_code, item_group, qty, variants, warehouse_id, line_delivery_date, description')
     .in('id', soItemIds);
   if (revErr) throw new Error(`reviseBoundPo: revised SO lines load failed: ${revErr.message}`);
-  const revisedById = new Map<string, {
-    item_code: string | null;
-    item_group: string | null;
-    qty: number | null;
-    variants: Record<string, unknown> | null;
-    warehouse_id: string | null;
-    line_delivery_date: string | null;
-  }>();
+  type RevisedLine = {
+    item_code: string | null; item_group: string | null; qty: number | null;
+    variants: Record<string, unknown> | null; warehouse_id: string | null;
+    line_delivery_date: string | null; description: string | null;
+  };
+  const revisedById = new Map<string, RevisedLine>();
   for (const r of (revisedSoRows ?? []) as Array<Record<string, unknown>>) {
     revisedById.set(String(r.id), {
       item_code:          (r.item_code as string | null) ?? null,
@@ -738,17 +870,20 @@ export async function reviseBoundPo(
       variants:           (r.variants as Record<string, unknown> | null) ?? null,
       warehouse_id:       (r.warehouse_id as string | null) ?? null,
       line_delivery_date: (r.line_delivery_date as string | null) ?? null,
+      description:        (r.description as string | null) ?? null,
     });
   }
 
-  // Only the PO items belonging to a LIVE bound PO whose SO line still exists.
+  // Only the PO items on a LIVE bound PO whose SO line still exists = re-derive set.
   const targetPoItems = allPoItems.filter(
     (pi) => pi.purchase_order_id && livePoIds.has(pi.purchase_order_id)
       && pi.so_item_id && revisedById.has(pi.so_item_id),
   );
 
-  // (4) RECEIVED-FLOOR PRE-CHECK — abort BEFORE any mutation. For each bound PO
-  //     line, the revised SO qty must not drop below what's already received.
+  // (9) RECEIVED-FLOOR PRE-CHECK — abort BEFORE any mutation. A SURVIVING PO
+  //     line's revised qty must not drop below what's already received. (An
+  //     orphaned/removed line that is received is handled by warning in (12b),
+  //     not by aborting the whole revision.)
   for (const pi of targetPoItems) {
     const revised = revisedById.get(pi.so_item_id as string)!;
     const receivedQty = Number(pi.received_qty ?? 0);
@@ -757,23 +892,87 @@ export async function reviseBoundPo(
     }
   }
 
-  // (5) Snapshot each live bound PO, then rewrite its derived lines from the
-  //     revised SO lines, recompute totals + expected_at, bump revision, audit.
-  const perPo: ReviseBoundPoResult['perPo'] = [];
-  const itemsByPo = new Map<string, typeof targetPoItems>();
-  for (const pi of targetPoItems) {
-    const key = pi.purchase_order_id as string;
-    const arr = itemsByPo.get(key) ?? [];
-    arr.push(pi);
-    itemsByPo.set(key, arr);
+  /* (10) Resolve each newly ADDED line (one with no PO line yet) to its supplier
+     and its target bound PO. Supplier = the SKU's main-supplier binding, scoped
+     to the SO's company. Target PO = a live bound PO on this SO whose supplier
+     matches, preferring one whose warehouse matches the line's (mirrors the
+     create path's (warehouse, supplier) bucket). No matching open PO, or no
+     supplier bound at all, is NOT auto-resolved by inventing a PO here — it is
+     warned so the operator raises one. */
+  const warnings: string[] = [];
+  const addedNeedingPo = addedSoItemIds.filter((id) => !boundSoItemIdSet.has(id) && revisedById.has(id));
+  const addedByPo = new Map<string, Array<{ soItemId: string; line: RevisedLine; supplierSku: string | null }>>();
+  if (addedNeedingPo.length > 0) {
+    const codes = [...new Set(
+      addedNeedingPo.map((id) => revisedById.get(id)?.item_code).filter((x): x is string => Boolean(x)),
+    )];
+    const mainBindingByCode = new Map<string, { supplierId: string; supplierSku: string | null }>();
+    if (codes.length > 0) {
+      let q = sb.from('supplier_material_bindings')
+        .select('material_code, supplier_id, supplier_sku, is_main_supplier')
+        .in('material_code', codes)
+        .eq('material_kind', 'mfg_product')
+        .order('is_main_supplier', { ascending: false });
+      if (soCompanyId != null) q = q.eq('company_id', soCompanyId);
+      const { data: bRows, error: bErr } = await q;
+      if (bErr) throw new Error(`reviseBoundPo: added-line supplier binding load failed: ${bErr.message}`);
+      // is_main_supplier DESC → the first row seen per code is its main supplier.
+      for (const b of (bRows ?? []) as Array<{ material_code: string; supplier_id: string; supplier_sku: string | null }>) {
+        if (!mainBindingByCode.has(b.material_code)) {
+          mainBindingByCode.set(b.material_code, { supplierId: b.supplier_id, supplierSku: b.supplier_sku ?? null });
+        }
+      }
+    }
+    for (const soItemId of addedNeedingPo) {
+      const line = revisedById.get(soItemId)!;
+      const itemCode = line.item_code ?? '';
+      const label = (line.description || itemCode || 'a new item').trim();
+      const binding = itemCode ? mainBindingByCode.get(itemCode) : undefined;
+      if (!binding) {
+        warnings.push(`A newly added item (${label}) has no supplier set, so it could not be added to a purchase order. Set its main supplier, then raise a purchase order for it.`);
+        continue;
+      }
+      const forSupplier = livePos.filter((p) => p.supplier_id === binding.supplierId);
+      const target = forSupplier.find((p) => p.purchase_location_id && p.purchase_location_id === line.warehouse_id)
+        ?? forSupplier[0];
+      if (!target) {
+        warnings.push(`A newly added item (${label}) is from a supplier that has no open purchase order on this sales order, so a purchase order still needs to be raised for it.`);
+        continue;
+      }
+      const arr = addedByPo.get(target.id) ?? [];
+      arr.push({ soItemId, line, supplierSku: binding.supplierSku });
+      addedByPo.set(target.id, arr);
+    }
   }
 
+  // (11) Group the re-derive + orphan work per PO.
+  const matchedByPo = new Map<string, typeof targetPoItems>();
+  for (const pi of targetPoItems) {
+    const key = pi.purchase_order_id as string;
+    const arr = matchedByPo.get(key) ?? [];
+    arr.push(pi);
+    matchedByPo.set(key, arr);
+  }
+  const orphansByPo = new Map<string, typeof orphanRows>();
+  for (const orow of orphanRows) {
+    if (!orow.purchase_order_id || !livePoIds.has(orow.purchase_order_id)) continue;
+    const arr = orphansByPo.get(orow.purchase_order_id) ?? [];
+    arr.push(orow);
+    orphansByPo.set(orow.purchase_order_id, arr);
+  }
+
+  // (12) Per live bound PO: snapshot, re-derive surviving lines, delete orphaned
+  //      lines (warn if received), insert added lines, recompute totals, bump,
+  //      audit.
+  const perPo: ReviseBoundPoResult['perPo'] = [];
   for (const po of livePos) {
     const nextRevision = await snapshotPo(sb, po.id, amendmentId, userId, c);
-    const poItems = itemsByPo.get(po.id) ?? [];
     let linesRederived = 0;
+    let linesRemoved = 0;
+    let linesAdded = 0;
 
-    for (const pi of poItems) {
+    // (12a) RE-DERIVE each surviving line in place from its revised SO line.
+    for (const pi of matchedByPo.get(po.id) ?? []) {
       const revised = revisedById.get(pi.so_item_id as string)!;
       // Read the existing PO line's discount + material_code (the SKU the
       // supplier binding is keyed on).
@@ -814,23 +1013,72 @@ export async function reviseBoundPo(
       linesRederived += 1;
     }
 
+    /* (12b) DELETE each orphaned line whose SO line was removed — UNLESS it has
+       already been (partly) received, in which case deleting it would discard a
+       receipt: leave it in place and warn for manual handling. Idempotent: a
+       re-run finds the line already gone (it dropped out of orphanRows above). */
+    for (const orow of orphansByPo.get(po.id) ?? []) {
+      const receivedQty = Number(orow.received_qty ?? 0);
+      const label = (orow.material_name || orow.material_code || 'a removed item').trim();
+      if (receivedQty > 0) {
+        warnings.push(`A removed item (${label}) was already received on purchase order ${po.po_number}, so it was left on the purchase order and needs manual handling (for example, a purchase return).`);
+        continue;
+      }
+      const { error: delErr } = await sb.from('purchase_order_items').delete().eq('id', orow.id);
+      if (delErr) throw new Error(`reviseBoundPo: orphan PO line delete failed for ${orow.id}: ${delErr.message}`);
+      linesRemoved += 1;
+    }
+
+    /* (12c) INSERT a PO line for each added SO line assigned to this PO — same
+       column shape + cost anchor "Create PO from SO" uses. Idempotent: an added
+       line that already carries a PO line was excluded from addedNeedingPo, so a
+       re-run inserts nothing. company_id follows the PO's own company (authoritative
+       in a cross-company approve), not the request's active company. */
+    for (const add of addedByPo.get(po.id) ?? []) {
+      const line = add.line;
+      const qty = line.qty != null ? Math.max(1, line.qty) : 1;
+      const itemGroup = line.item_group;
+      const variants = line.variants;
+      const unitPriceCenti = await deriveMfgPoUnitCost(sb, {
+        supplierId: po.supplier_id ?? '',
+        itemCode:   line.item_code ?? '',
+        itemGroup,
+        variants:   variants ?? null,
+      });
+      const { error: insErr } = await sb.from('purchase_order_items').insert({
+        ...(po.company_id != null ? { company_id: po.company_id } : {}),
+        purchase_order_id: po.id,
+        material_kind:     'mfg_product',
+        material_code:     line.item_code ?? '',
+        material_name:     line.description ?? line.item_code ?? '',
+        supplier_sku:      add.supplierSku ?? '',
+        qty,
+        unit_price_centi:  unitPriceCenti,
+        line_total_centi:  qty * unitPriceCenti,
+        delivery_date:     line.line_delivery_date,
+        warehouse_id:      line.warehouse_id,
+        item_group:        itemGroup,
+        variants,
+        description2:      buildVariantSummary(String(itemGroup ?? ''), variants ?? null) || null,
+        so_item_id:        add.soItemId,
+        from_mrp:          false,
+      });
+      if (insErr) throw new Error(`reviseBoundPo: added PO line insert failed for SO line ${add.soItemId}: ${insErr.message}`);
+      linesAdded += 1;
+    }
+
     // Recompute PO subtotal/total from the live lines and the header expected_at
     // = earliest non-null line delivery_date (mirrors recomputePoTotals /
-    // recomputePoExpectedAt in mfg-purchase-orders.ts).
-    /* The roll-up zeroing shape (BUG-HISTORY 2026-07-17, fix/zeroing-twins) — this
-       is a 16th instance of it, reached from the amendment engine rather than a
-       line route. `?? []` folds a failed read to subtotal 0, and the update below
-       is unconditional: the PO's subtotal_centi AND total_centi go to 0 and
-       expected_at to null while its lines sit there intact and priced.
-       Throws rather than logging-and-skipping, unlike the 15 — the contract here
-       is the opposite one and it is stated in this function's own docblock. Every
-       other load and write in it throws; the approve-po route catches, returns 500
-       and deliberately does NOT advance the amendment status, so the operator
-       retries and snapshotPo's upsert is idempotent on (po_id, revision). The
-       retry cannot duplicate a document the way a re-POSTed create can (#657/#658)
-       — it is a PATCH on one amendment id behind a status-transition guard. And
-       the bump 12 lines below already throws, stranding the identical half-revised
-       PO, so this adds no new failure state — it only refuses to write a zero. */
+    // recomputePoExpectedAt in mfg-purchase-orders.ts). NOW correct because the
+    // line SET matches the revised SO (orphans gone, added lines present).
+    /* The roll-up zeroing shape (BUG-HISTORY 2026-07-17, fix/zeroing-twins): the
+       read below THROWS on error (unlike the log-and-skip 15), so `?? []` is not
+       hiding a failed read — it is the genuinely-empty case, which is now REAL:
+       an amendment can remove every line a PO served, leaving it with no lines,
+       for which subtotal 0 is the correct total (and (12b) warns the operator the
+       PO may need cancelling). Every load/write here throws; the approve-po route
+       catches, returns 500 and does NOT advance the amendment status, so the
+       operator retries and snapshotPo is idempotent on (po_id, revision). */
     const { data: liveLines, error: liveErr } = await sb
       .from('purchase_order_items')
       .select('line_total_centi, delivery_date')
@@ -839,6 +1087,10 @@ export async function reviseBoundPo(
     const rows = (liveLines ?? []) as Array<{ line_total_centi: number | null; delivery_date: string | null }>;
     const subtotal = rows.reduce((s, r) => s + Number(r.line_total_centi ?? 0), 0);
     const dates = rows.map((r) => r.delivery_date).filter((d): d is string => Boolean(d)).sort();
+
+    if (rows.length === 0 && linesRemoved > 0) {
+      warnings.push(`Every item on purchase order ${po.po_number} was removed from the sales order, so it now has no lines and may need to be cancelled.`);
+    }
 
     const { error: bumpErr } = await sb.from('purchase_orders').update({
       subtotal_centi: subtotal,
@@ -860,12 +1112,15 @@ export async function reviseBoundPo(
         { field: 'po_number', to: po.po_number },
         { field: 'po_revision', from: nextRevision - 1, to: nextRevision },
         { field: 'lines_rederived', to: linesRederived },
+        { field: 'lines_removed', to: linesRemoved },
+        { field: 'lines_added', to: linesAdded },
       ],
-      note: `PO ${po.po_number} re-derived from revised SO ${docNo} (rev ${nextRevision})`,
+      note: `PO ${po.po_number} reconciled to revised SO ${docNo} (rev ${nextRevision}): `
+        + `${linesRederived} re-derived, ${linesRemoved} removed, ${linesAdded} added`,
     });
 
-    perPo.push({ poId: po.id, poNumber: po.po_number, revision: nextRevision, linesRederived });
+    perPo.push({ poId: po.id, poNumber: po.po_number, revision: nextRevision, linesRederived, linesRemoved, linesAdded });
   }
 
-  return { revisedPoIds: perPo.map((p) => p.poId), perPo };
+  return { revisedPoIds: perPo.map((p) => p.poId), perPo, warnings };
 }
