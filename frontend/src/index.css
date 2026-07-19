@@ -3,8 +3,10 @@
  *
  * The `@import url(...)` that used to sit here now lives in index.html as a
  * <link>, which starts the fetch a round trip earlier — see the comment there
- * for why, and keep the family list in sync with it. Offline / air-gapped
- * installs still swap that link for local @font-face declarations.
+ * for why, and keep the family list in sync with it. That link now points at
+ * self-hosted /fonts/fonts.css (public/fonts/), so nothing is fetched from a
+ * font CDN — which also covers the offline / air-gapped installs that used
+ * to have to swap the link out by hand.
  *
  * Nothing font-related belongs at the top of this file any more: an @import
  * must be the first rule in a stylesheet, so re-adding one here would silently

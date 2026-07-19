@@ -19,29 +19,29 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Houzs ERP" />
 
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <!-- The brand web fonts. This link used to request a DIFFERENT family set
-         (Manrope + Plus Jakarta Sans + IBM Plex Mono) while src/index.css
-         requested this one via `@import url(...)`, so every load fetched two
-         separate stylesheets from fonts.googleapis.com. Manrope and Plus
-         Jakarta Sans were dead: no font-family in the built CSS names either
-         (the only mentions left in the tree are stale comments), so ten font
-         weights were downloaded for nothing. IBM Plex Mono, the one live family
-         in that set, is already in the list below at the same weights.
+    <!-- The brand web fonts, self-hosted — no external font origin on first
+         paint. /fonts/fonts.css declares the same @font-face set the Google
+         Fonts css2 endpoint used to serve here: IBM Plex Sans 400-700,
+         IBM Plex Serif 400-700, IBM Plex Mono 400-600, Noto Sans SC
+         400/500/700/900, Noto Serif SC 400-900, Caveat 400/600, Archivo
+         500-700 — woff2 with unicode-range intact, so a browser still
+         downloads only the small CJK range chunks a page actually renders.
 
-         The surviving request moved OUT of index.css and up here. An `@import`
-         at the top of a stylesheet cannot start until that stylesheet has been
-         fetched and parsed, which put the font CSS a full round trip behind the
-         bundle CSS, and the font FILES another one behind that — all of it
-         render-blocking. Declared here it starts during HTML parse instead,
-         alongside the bundle rather than after it. Same fonts, same URL, one
-         less serial hop.
+         Files live in public/fonts/ and are cached immutable for a year
+         (public/_headers), fonts.css included: any change to the font set
+         must ship under NEW file names and repoint this link — an in-place
+         edit will not reach returning browsers.
+
+         Declared here rather than @import'ed in src/index.css for the same
+         reason the external link was: a <link> starts fetching during HTML
+         parse, while an `@import` cannot start until the importing stylesheet
+         has been fetched and parsed — and would silently no-op anyway once
+         the bundler concatenates index.css behind another sheet.
 
          Keep this in sync with tailwind.config.js fontFamily and the
          --font-script / --font-mark tokens in src/vendor/design-system/
          tokens.css, which is what Caveat and Archivo are here for. -->
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Serif+SC:wght@400;500;600;700;900&family=Caveat:wght@400;600&family=Archivo:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/fonts/fonts.css" />
     <title>Houzs Century ERP</title>
   </head>
   <body>

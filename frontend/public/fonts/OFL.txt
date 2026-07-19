@@ -1,4 +1,26 @@
-Noto Sans SC — subset bundled with this application
+Self-hosted web fonts (*.woff2 + fonts.css)
+=====================================================
+
+The woff2 files in this directory are the unmodified builds served by the
+Google Fonts CDN for these families, vendored here so the app loads no
+third-party font origin. All are licensed under the SIL Open Font
+License, Version 1.1 (http://scripts.sil.org/OFL):
+
+  IBM Plex Sans, IBM Plex Serif, IBM Plex Mono
+      Copyright IBM Corp. 2017, with Reserved Font Name "Plex"
+  Noto Sans SC, Noto Serif SC
+      Copyright Adobe / Google, with Reserved Font Name "Source"
+      (derived from Source Han Sans / Source Han Serif)
+  Caveat
+      Copyright 2014 Impallari Type, with Reserved Font Name "Caveat"
+  Archivo
+      Copyright 2019 Omnibus-Type, with Reserved Font Name "Archivo"
+
+fonts.css carries the @font-face declarations (including Google's
+unicode-range slicing for the CJK families) rewritten to load the files
+above from /fonts/.
+
+Noto Sans SC — subset bundled with this application (PDF export, *.ttf)
 =====================================================
 
 Family      : Noto Sans SC
