@@ -31,8 +31,72 @@
   --surface: var(--card);
   --dark: var(--ink-dark);
   --gold-lt: #d8a85a;  /* lighter gold used by avatar / app-icon shine */
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Bengali (bn) is the one non-Latin-and-non-CJK script the mobile UI now
+     renders. The named Bengali families below are appended AFTER the existing
+     Latin stack: Latin/CJK glyph coverage and metrics are unchanged (the first
+     matching family still wins per-glyph), and Bengali codepoints — which no
+     font in the original stack covers — now resolve to a real Bengali face
+     instead of whatever the browser picks last.
+       "Noto Sans Bengali"  — Android / ChromeOS / most Linux
+       "Nirmala UI"         — Windows
+       "Bangla Sangam MN"   — iOS / macOS
+       "Shonar Bangla"      — older Windows
+     Deliberately NO webfont: a Bengali face is ~300KB+, the shop floor is on
+     patchy mobile data, and every current iOS/Android ships one of the above.
+     If a real device is ever found without Bengali coverage, revisit here. */
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Noto Sans Bengali", "Nirmala UI", "Bangla Sangam MN", "Shonar Bangla", sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Bengali metrics ----------------------------------------------------
+   Bengali stacks vowel signs and the matra (headline) ABOVE the x-height and
+   hangs conjuncts BELOW the baseline, so its ink box is materially taller than
+   Latin at the same font-size. Several mobile surfaces set line-height: 1.25
+   (announcement list row + detail headline).
+
+   Precisely what goes wrong there — two different failure modes, don't conflate
+   them: (1) a line-height shorter than the ink does NOT clip in normal flow, it
+   makes consecutive lines OVERLAP, so a two-line Bengali headline has the
+   descenders of line 1 colliding with the matra of line 2; (2) it DOES clip
+   wherever an ancestor sets overflow:hidden or a fixed height. Both look like a
+   rendering bug to the reader. The bumps below fix (1) outright and give (2)
+   enough room to be a non-issue on the surfaces we control.
+
+   These rules key off <html lang="bn">, which useApplyHtmlLang() stamps, so
+   they apply ONLY when the reader has actually chosen Bengali — Latin layout
+   is untouched, pixel for pixel. `min-height` on the heading rather than a
+   fixed height keeps the row growing with the text instead of truncating it.
+
+   VERIFICATION STATUS (be honest, do not assume this is settled): the font
+   stack was confirmed to resolve on Windows (Nirmala UI present). It has NOT
+   been checked on a physical Android or iOS handset, which is the actual
+   target and the one place this can still look wrong. Anyone touching mobile
+   next: open Profile > Language > বাংলা on a real phone and read an
+   announcement before assuming this works. */
+:root[lang="bn"] .hz-m,
+:root[lang="bn"] .hz-m .card,
+:root[lang="bn"] .hz-m .spill { line-height: 1.65; }
+
+:root[lang="bn"] .hz-m h1,
+:root[lang="bn"] .hz-m h2,
+:root[lang="bn"] .hz-m h3,
+:root[lang="bn"] .hz-m .scr-title,
+:root[lang="bn"] .hz-m .ey { line-height: 1.5; }
+
+/* Announcement headline + list row: raise the 1.25 inline line-heights and
+   make sure nothing clamps them to a single clipped line. */
+:root[lang="bn"] #ann-d-title,
+:root[lang="bn"] #ann-d-body { line-height: 1.75 !important; }
+
+/* Any element that would otherwise ellipsis-truncate a Bengali string on one
+   line gets to wrap instead — a truncated Bengali word can lose its matra and
+   become unreadable rather than merely shortened. */
+:root[lang="bn"] .hz-m .ann-row-title {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.6 !important;
 }
 .hz-m *,
 .hz-m *::before,

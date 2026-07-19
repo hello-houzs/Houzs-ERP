@@ -44,10 +44,19 @@ async function anthropicFetchWithRetry(
 }
 
 // Four supported languages — English, Bahasa Melayu, Simplified Chinese,
-// Burmese. Mirrors the Hookka worker portal even though Houzs office staff
-// today mostly read English (covers future regional expansion + keeps the
-// translation blob stable so a 5th language is a single column addition).
-export const ANNOUNCEMENT_LANGS = ["en", "ms", "zh", "my"] as const;
+// Bengali (Bangladesh). Ported from the Hookka worker portal, but Hookka's
+// 4th language is Burmese ("my") and Houzs's is Bengali ("bn") — owner ruling
+// 2026-07-17: "把缅甸语换成孟加拉语". Houzs has no Burmese-speaking staff.
+//
+// NO MIGRATION is needed for the swap. `announcements.translations` is a TEXT
+// column holding an opaque JSON blob and readTranslations() in
+// routes/announcements.ts JSON.parses it WITHOUT validating the key set. Rows
+// written before this change carry a "my" key: it is simply never read again,
+// and the absent "bn" key makes localizeAnnouncement() fall back to the
+// original posted title/body — which is the correct, honest behaviour for a
+// notice that was never translated into Bengali. Do NOT backfill by
+// machine-translating historic rows silently.
+export const ANNOUNCEMENT_LANGS = ["en", "ms", "zh", "bn"] as const;
 export type AnnouncementLang = (typeof ANNOUNCEMENT_LANGS)[number];
 
 // One translated pair.
@@ -68,11 +77,11 @@ Target languages (use exactly these JSON keys):
   - en — English
   - ms — Bahasa Melayu (Malay)
   - zh — Simplified Chinese
-  - my — Burmese
+  - bn — Bengali (বাংলা), as written in Bangladesh
 
 Rules:
   - Return STRICT JSON ONLY, no commentary, no markdown fences, in exactly this shape:
-    {"en":{"title":"...","body":"..."},"ms":{"title":"...","body":"..."},"zh":{"title":"...","body":"..."},"my":{"title":"...","body":"..."}}
+    {"en":{"title":"...","body":"..."},"ms":{"title":"...","body":"..."},"zh":{"title":"...","body":"..."},"bn":{"title":"...","body":"..."}}
   - Translate naturally for office staff — plain, clear, professional.
   - For the language the notice is ALREADY in, return its original text unchanged.
   - PRESERVE all numbers, dates, times, money amounts, product codes, SKUs, and proper names verbatim.
