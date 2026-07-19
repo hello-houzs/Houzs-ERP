@@ -95,13 +95,39 @@ function extractErrorMessage(body: string): string {
    in the JSON body ({error|message|detail}); otherwise map the status code.
    The 503 wording keeps the "briefly unavailable / try again in a moment"
    phrases that isColdPool503() matches on, so cold-pool retry still works. */
+/* A machine CODE, not a sentence: snake_case with no spaces. The backend sends
+   these in `error` alongside a human `message` (see middleware/idempotency.ts).
+   Returning one verbatim shows the operator literal "idempotency_in_flight",
+   which is exactly the DB-internals leak this function exists to prevent. */
+const isErrorCode = (s: string) => /^[a-z][a-z0-9_]*$/.test(s);
+
+/* Curated plain-language text for codes worth their own wording. Mirrors the
+   SCM client's ERROR_CODE_MESSAGES (vendor/scm/lib/authed-fetch.ts); an
+   uncurated code falls back to the body's `message`, then the status map. */
+const ERROR_CODE_MESSAGES: Record<string, string> = {
+  // The idempotency middleware's in-flight 409: this exact write is ALREADY
+  // running. That is not a failure and must never read like one — telling the
+  // operator it failed invites the double-submit the key exists to prevent.
+  idempotency_in_flight:
+    "This is already going through — give it a moment, then refresh to check. Please don't send it again.",
+};
+
 export function humanHttpMessage(status: number, body: string): string {
   const t = (body ?? "").trim();
   if (t && (t.startsWith("{") || t.startsWith("["))) {
     try {
       const j = JSON.parse(t) as { error?: unknown; message?: unknown; detail?: unknown };
-      const m = j?.error ?? j?.message ?? j?.detail;
-      if (typeof m === "string" && m.trim()) return m.trim();
+      // A code-shaped `error` is looked up, never shown raw; a sentence-shaped
+      // `error` keeps the historic behaviour of being surfaced as-is.
+      if (typeof j?.error === "string" && isErrorCode(j.error.trim())) {
+        const mapped = ERROR_CODE_MESSAGES[j.error.trim()];
+        if (mapped) return mapped;
+        const fallback = j?.message ?? j?.detail;
+        if (typeof fallback === "string" && fallback.trim()) return fallback.trim();
+      } else {
+        const m = j?.error ?? j?.message ?? j?.detail;
+        if (typeof m === "string" && m.trim()) return m.trim();
+      }
     } catch { /* not json — fall through to the status map */ }
   } else if (t && t.length <= 200 && !t.startsWith("<") && !/^\d+\s*:/.test(t)) {
     return t; // a short, human-ish plain-text body (not HTML, not a code dump)
@@ -171,8 +197,18 @@ async function binaryFetch(url: string, init: RequestInit, timeoutMs: number): P
 // slow-but-working query still completes (we never fast-fail it — see
 // backend db/pg.ts "fix slow queries, not by capping") and only a true hang
 // is aborted, then retried once the connection has had a moment to warm.
-// Mutations are NOT retried (not idempotent) and are left uncapped.
+// Mutations are NOT retried (not idempotent).
 const GET_TIMEOUT_MS = 27_000;
+/* Mutations used to be left UNCAPPED — a hung save spun forever and the
+   operator walked away believing it had gone through ("人家以为做成功了，然后
+   才发现没有" — owner, 2026-07-19). A save must fail LOUDLY, never quietly, so
+   a mutation now gets its own deadline and a plain-language failure.
+   Deliberately higher than the GET cap: a save legitimately does more work
+   (document-number mint, line writes, stock moves) and must not be aborted
+   while it is still making progress. This is safe to add ONLY because the
+   idempotency middleware landed first — see the message split in request(),
+   which is where the abort-a-committed-write hazard is actually handled. */
+const MUTATION_TIMEOUT_MS = 45_000;
 // Cold-start ride-through (2026-07-04): a Worker isolate that just restarted
 // (deploy) OR woke from idle (first user in the morning) opens COLD Hyperdrive
 // connections; for a few seconds requests answer 503 "briefly unavailable"
@@ -241,11 +277,19 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const token = tokenStore.get();
   const method = (opts?.method || "GET").toUpperCase();
   const retries = method === "GET" ? GET_RETRIES : 0;
+  const isGet = method === "GET";
+  // Whether THIS request carried an idempotency key decides what we may honestly
+  // tell the operator when it times out — see the two messages below.
+  const hasIdemKey = Boolean(
+    (opts?.headers as Record<string, string> | undefined)?.["Idempotency-Key"],
+  );
 
   for (let attempt = 0; ; attempt++) {
     const ctrl = new AbortController();
-    const timer =
-      method === "GET" ? setTimeout(() => ctrl.abort(), GET_TIMEOUT_MS) : null;
+    const timer = setTimeout(
+      () => ctrl.abort(),
+      isGet ? GET_TIMEOUT_MS : MUTATION_TIMEOUT_MS,
+    );
     const startedAt = performance.now();
     try {
       const res = await fetch(`${baseUrl}${path}`, {
@@ -286,11 +330,29 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
         await sleep(600 + attempt * 1200);
         continue;
       }
+      /* The save did not come back. NEVER fail quietly here (owner ruling
+         2026-07-19): the operator must be told, in plain words, that it did not
+         go through and what to do next.
+
+         The two wordings are NOT cosmetic. Aborting a POST does not abort the
+         Worker — the write may already have committed server-side. So:
+         • with an Idempotency-Key, a retry REPLAYS the first response instead
+           of creating a second document, so "try again" is safe advice;
+         • without one, "try again" is how you get a duplicate sales order, so
+           we tell them to CHECK first. Telling the truth about our uncertainty
+           beats a confident instruction that mints a duplicate. */
+      if (!isGet) {
+        throw new Error(
+          hasIdemKey
+            ? "That took too long and didn't go through. Please try saving again."
+            : "That took too long and we couldn't confirm whether it saved. Please refresh and check before trying again — saving twice may create a duplicate.",
+        );
+      }
       throw new Error(
         "Network error — the server took too long to respond. Please try again."
       );
     } finally {
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
     }
   }
 }
@@ -326,16 +388,32 @@ function mutate<T>(path: string, opts: RequestInit): Promise<T> {
   });
 }
 
+/** Per-call mutation options. `idempotencyKey` opts this write into the backend
+ *  idempotency middleware, so a retry replays the first response instead of
+ *  creating a second document. Mint it with newIdempotencyKey/useIdempotencyKey
+ *  from lib/idempotency — read that module's rules first: a key minted per
+ *  CLICK is a fix that does nothing, and a key derived from the PAYLOAD is a fix
+ *  that loses money. */
+export type MutateOpts = { idempotencyKey?: string };
+
+const idemHeader = (o?: MutateOpts) =>
+  o?.idempotencyKey ? { "Idempotency-Key": o.idempotencyKey } : undefined;
+
 export const api = {
   baseUrl,
   get: <T>(p: string) => cachedGet<T>(p),
-  post: <T>(p: string, b?: any) =>
-    mutate<T>(p, { method: "POST", body: b ? JSON.stringify(b) : undefined }),
-  patch: <T>(p: string, b: any) =>
-    mutate<T>(p, { method: "PATCH", body: JSON.stringify(b) }),
-  put: <T>(p: string, b: any) =>
-    mutate<T>(p, { method: "PUT", body: JSON.stringify(b) }),
-  del: <T>(p: string) => mutate<T>(p, { method: "DELETE" }),
+  post: <T>(p: string, b?: any, o?: MutateOpts) =>
+    mutate<T>(p, {
+      method: "POST",
+      body: b ? JSON.stringify(b) : undefined,
+      headers: idemHeader(o),
+    }),
+  patch: <T>(p: string, b: any, o?: MutateOpts) =>
+    mutate<T>(p, { method: "PATCH", body: JSON.stringify(b), headers: idemHeader(o) }),
+  put: <T>(p: string, b: any, o?: MutateOpts) =>
+    mutate<T>(p, { method: "PUT", body: JSON.stringify(b), headers: idemHeader(o) }),
+  del: <T>(p: string, o?: MutateOpts) =>
+    mutate<T>(p, { method: "DELETE", headers: idemHeader(o) }),
 
   /**
    * Raw binary upload — used for POD photos and signatures. Skips the

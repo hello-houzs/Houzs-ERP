@@ -562,6 +562,13 @@ export function MobileNewSO({
      minutes apart never collide. Unused by the isEdit PATCH branch, which
      addresses one existing docNo and cannot duplicate. */
   const soIdemKey = useIdempotencyKey();
+  /* The isEdit branch's amendment submit gets its OWN per-mount key. Same rule
+     as soIdemKey: this mount is one amendment intent (it navigates away on
+     success), so a retry after a timeout replays the first response instead of
+     filing a second amendment — the amendment number is minted `count + 1`, so
+     a duplicate is a real one. A separate constant from soIdemKey purely for
+     legibility; the two never run on the same mount. */
+  const amendIdemKey = useIdempotencyKey();
   const staffQ = useStaff();
   const { staff: authStaff } = useAuth();
   /* FIX A — the app-level Houzs auth exposes the permission gate + the signed-in
@@ -1740,6 +1747,7 @@ export function MobileNewSO({
           try {
             await createAmendment.mutateAsync({
               docNo, reason: reason.trim() || undefined, lines: amLines, headerChanges,
+              idempotencyKey: amendIdemKey,
             });
           } catch (e) {
             setSubmitting(false);

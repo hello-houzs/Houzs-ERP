@@ -65,6 +65,28 @@ async function fetchWithTimeout(url: string, init: RequestInit, path: string): P
     return await fetch(url, { ...init, signal: callerSignal ?? timeoutSignal(path) });
   } catch (e) {
     if (!callerSignal && e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      /* A timed-out READ is just a read — "try again" is sound advice. A timed-out
+         WRITE is not: aborting the fetch does not abort the Worker, so the save
+         may already have committed. What we may honestly tell the operator turns
+         on whether this request carried an Idempotency-Key:
+           • with one, a retry REPLAYS the first response rather than minting a
+             second document, so "try again" is safe;
+           • without one, "try again" is how a duplicate sales order gets raised,
+             so we say CHECK first. Admitting the uncertainty beats a confident
+             instruction that creates a duplicate.
+         Either way it fails LOUDLY — never a spinner the operator walks away
+         from believing it saved (owner ruling 2026-07-19). */
+      const method = String(init.method ?? 'GET').toUpperCase();
+      if (method !== 'GET') {
+        const hasIdemKey = Boolean(
+          (init.headers as Record<string, string> | undefined)?.['Idempotency-Key'],
+        );
+        throw new Error(
+          hasIdemKey
+            ? "That took too long and didn't go through. Please try saving again."
+            : "That took too long and we couldn't confirm whether it saved. Please refresh and check before trying again — saving twice may create a duplicate.",
+        );
+      }
       throw new Error('The request took too long — please check your connection and try again.');
     }
     throw e;
