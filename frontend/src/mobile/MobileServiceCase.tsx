@@ -1721,7 +1721,8 @@ function NoteSheet({ onClose, onSave, saving }: {
 
 // ── NEW CASE SHEET (#service-new) ─────────────────────────────────
 // The backend requires doc_no (SO), at least one item (item_code), and
-// complaint_issue; issue_category + priority are optional. Customer +
+// complaint_issue; issue_category is required at intake (owner ruling
+// 2026-07-19, enforced in the submit gate below), priority is optional. Customer +
 // supplier are resolved server-side from the SO. The design shows a
 // "SO # / reference / customer" lookup + item; we keep both fields wired.
 function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: number) => void }) {
@@ -1871,7 +1872,10 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
     },
   });
 
-  const valid = docNo.trim() && selItems.length > 0 && complaint.trim() && complainedDate.trim();
+  // Issue category is REQUIRED (owner ruling 2026-07-19): the field already
+  // carries a "*" marker, so the submit gate must actually block on it — same
+  // greyed-out disabled Create button the other required fields use.
+  const valid = docNo.trim() && selItems.length > 0 && complaint.trim() && complainedDate.trim() && category.trim();
 
   // FIXED + z-index 40 (the .sheet-bd pattern) — NOT absolute/z20. When
   // Service is the active TAB this sheet renders inside the tab-content
