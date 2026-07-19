@@ -13,6 +13,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { getActiveCompanyId } from '../../../lib/activeCompany';
 
 export type StaffRoleValue = 'sales' | 'showroom_lead' | 'coordinator' | 'finance' | 'admin';
 
@@ -30,23 +31,36 @@ export interface StaffRow {
   phone: string | null;
 }
 
-/* Namespace the roster cache by the ACTIVE COMPANY (mirrors
-   mfg-products-queries' activeCompanyKey). The /api/scm tree is
-   company-switchable via the 'houzs.activeCompanyId' header, so a bare
-   ['staff'] key could bleed one company's cache into another the day /staff
-   starts scoping — and it keeps this key consistent with every other SCM list.
-   Harmless today (a company switch full-reloads the app, clearing the cache).
-   No `??`: a missing/blank id resolves to an explicit 'default' namespace. */
-function activeStaffCompanyKey(): string {
-  const raw = localStorage.getItem('houzs.activeCompanyId');
-  return raw && raw.trim() ? raw : 'default';
-}
-
+// FULL roster — every company, active AND inactive/departed. This is the id ->
+// name DISPLAY source (useStaffLookup, the SO/DO/SI/consignment list Salesperson
+// columns, persisted-payment "Collected By" names). It must NOT be company-scoped
+// or those names blank out on historical / cross-company documents.
 export const useStaff = () =>
   useQuery({
-    queryKey: ['staff', activeStaffCompanyKey()],
+    queryKey: ['staff'],
     queryFn: async (): Promise<StaffRow[]> => {
       const res = await authedFetch<{ staff: StaffRow[] }>('/staff');
+      return res.staff ?? [];
+    },
+    staleTime: 10 * 60_000,
+  });
+
+// COMPANY-SCOPED, active-only — the salesperson / "Collected By" SELECTION list.
+// The backend (GET /staff/pickable) derives each person's company from their
+// Team grants and returns only the ACTIVE company's people, closing the
+// cross-company picker leak (a Houzs order could otherwise pick a 2990
+// salesperson). Use this for dropdown OPTIONS; use useStaff for DISPLAY.
+//
+// The active company id is part of the query key so switching companies never
+// serves the other company's cached list (the company-switch stale-cache trap).
+// authed-fetch stamps the same id as the X-Company-Id header the backend scopes
+// on; when unset (single-company Houzs) the backend degrades to the full active
+// roster, so this is behaviourally unchanged there.
+export const usePickableStaff = () =>
+  useQuery({
+    queryKey: ['staff', 'pickable', getActiveCompanyId()],
+    queryFn: async (): Promise<StaffRow[]> => {
+      const res = await authedFetch<{ staff: StaffRow[] }>('/staff/pickable');
       return res.staff ?? [];
     },
     staleTime: 10 * 60_000,

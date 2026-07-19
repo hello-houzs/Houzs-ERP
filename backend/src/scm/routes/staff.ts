@@ -18,27 +18,29 @@
 import { Hono } from "hono";
 import { supabaseAuth } from "../middleware/auth";
 import { requireHouzsPerm } from "../lib/houzs-perms";
+import { activeCompanyId, houzsCompanyId, mirrorCompanyId } from "../lib/companyScope";
+import { filterStaffToCompany } from "../lib/staffCompanyScope";
 import type { Env, Variables } from "../env";
 
 export const staff = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 staff.use("*", supabaseAuth);
 
-// GET / — list all staff rows ordered by staff_code (mirrors 2990's useStaff
-// .order('staff_code')). Degrades to [] when the relation is missing.
-staff.get("/", async (c) => {
-  const supabase = c.get("supabase");
-  const { data, error } = await supabase
-    .from("staff")
-    .select("id, staff_code, name, role, showroom_id, venue_id, showroom_warehouse_id, user_id, initials, color, active, email, phone")
-    .order("staff_code", { ascending: true });
-  if (error) {
-    if (/relation .* does not exist/i.test(error.message)) return c.json({ staff: [] });
-    return c.json({ error: "load_failed", reason: error.message }, 500);
-  }
-  // Dual-read camelCase ?? snake_case — the PostgREST driver may camelCase result
-  // columns; cover both so we never read undefined.
-  const staffRows = (data ?? []).map((r: Record<string, unknown>) => ({
+// The columns every staff read selects. Shared by GET / (full roster, for
+// id -> name DISPLAY) and GET /pickable (company-scoped, for the salesperson
+// PICKERS) so the two can never drift on shape.
+const STAFF_COLUMNS =
+  "id, staff_code, name, role, showroom_id, venue_id, showroom_warehouse_id, user_id, initials, color, active, email, phone";
+
+// The seeded super_admin system row (mig 0022 / 0066; the SCM auth bridge pins
+// every caller to it). Same literal as middleware/auth.ts + staff-mirror.ts —
+// it carries user_id NULL but is a HOUZS artifact, not a 2990 mirror row.
+const SCM_SYSTEM_STAFF_ID = "00000000-0000-4000-8000-000000000001";
+
+// Dual-read camelCase ?? snake_case — the PostgREST driver may camelCase result
+// columns; cover both so we never read undefined.
+function toStaffRow(r: Record<string, unknown>) {
+  return {
     id: r.id,
     staffCode: r.staffCode ?? r.staff_code ?? "",
     name: r.name,
@@ -57,8 +59,136 @@ staff.get("/", async (c) => {
     active: r.active,
     email: r.email ?? null,
     phone: r.phone ?? null,
-  }));
-  return c.json({ staff: staffRows });
+  };
+}
+
+/** The numeric user link off a raw staff row (either casing), or null. */
+function rowUserId(r: Record<string, unknown>): number | null {
+  const raw = r.user_id ?? r.userId;
+  if (raw == null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Company grants for a set of Houzs users, as user_id -> [company_id, …], read
+ * from public.user_companies via the Postgres-backed env.DB shim (the SAME
+ * source companyContext resolves the caller's own grants from). An absent map
+ * entry means that user has ZERO grant rows. Degrades to an empty map — never
+ * throws the picker — when the table is missing (pre-0f) or a read blips; every
+ * LINKED row then falls to its 0-grant default (HOUZS base), matching
+ * companyContext's own "absent table = no grants" behaviour.
+ */
+async function loadGrantsByUserId(
+  env: Env,
+  userIds: number[],
+): Promise<Map<number, number[]>> {
+  const map = new Map<number, number[]>();
+  if (userIds.length === 0) return map;
+  try {
+    const placeholders = userIds.map(() => "?").join(",");
+    const res = await env.DB.prepare(
+      `SELECT user_id, company_id FROM user_companies WHERE user_id IN (${placeholders})`,
+    )
+      .bind(...userIds)
+      .all<{ user_id: number | string; company_id: number | string }>();
+    for (const row of res.results ?? []) {
+      const uid = Number(row.user_id);
+      const cid = Number(row.company_id);
+      if (!Number.isInteger(uid) || !Number.isInteger(cid) || cid <= 0) continue;
+      const arr = map.get(uid);
+      if (arr) arr.push(cid);
+      else map.set(uid, [cid]);
+    }
+  } catch {
+    // user_companies absent (pre-0f) or a transient DB error — keep the empty
+    // map. Never throw: a picker that 500s is worse than one that falls back to
+    // the HOUZS-base default for linked rows.
+  }
+  return map;
+}
+
+// GET / — list ALL staff rows ordered by staff_code (mirrors 2990's useStaff
+// .order('staff_code')). Degrades to [] when the relation is missing.
+//
+// UNSCOPED ON PURPOSE: this is the id -> name DISPLAY source (useStaffLookup +
+// the SO/DO/SI/consignment list "Salesperson" columns). It must return the WHOLE
+// roster — inactive/departed people whose names still appear on historical
+// orders, and the other company's people whose names appear on mirrored docs in
+// the shared Delivery-Planning queue — or those names render as raw UUIDs /
+// "Unknown user". The company scoping lives on GET /pickable below, which the
+// salesperson SELECTION dropdowns read; DISPLAY and SELECTION are different
+// surfaces with different needs.
+staff.get("/", async (c) => {
+  const supabase = c.get("supabase");
+  const { data, error } = await supabase
+    .from("staff")
+    .select(STAFF_COLUMNS)
+    .order("staff_code", { ascending: true });
+  if (error) {
+    if (/relation .* does not exist/i.test(error.message)) return c.json({ staff: [] });
+    return c.json({ error: "load_failed", reason: error.message }, 500);
+  }
+  return c.json({ staff: (data ?? []).map(toStaffRow) });
+});
+
+// GET /pickable — the salesperson SELECTION list, scoped to the ACTIVE company.
+//
+// This closes the last cross-company picker leak: GET / lists every company's
+// salespeople, so a Houzs order could pick a 2990 salesperson and vice-versa.
+// The salesperson dropdowns (SO / SI / DR / consignment new+edit, mobile New SO,
+// PaymentsTable "Collected By") read THIS endpoint instead; DISPLAY keeps GET /.
+//
+// SCOPING RULE — see scm/lib/staffCompanyScope.ts (owner 2026-07-19: a
+// salesperson's company is their Team assignment; "both" appears in both). Only
+// ACTIVE rows are pickable (a departed salesperson is resolved for display via
+// GET /, never offered for a NEW order).
+//
+// THREE-STATE COMPANY GATE — mirrors scm/lib/companyScope.ts, so this endpoint
+// behaves like every other scoped read:
+//   · companies master ABSENT (pre-migration / cold-start / D1 test mirror) —
+//     single-company Houzs, nothing to leak to: DEGRADE to the full ACTIVE
+//     roster, exactly as before this fix.
+//   · master LOADED + active company RESOLVED — scope to it via the grant rule.
+//   · master LOADED + active company UNRESOLVED (a caller restricted to no
+//     active company) — FAIL CLOSED to []. In a live multi-company world an
+//     unknown active company must NEVER dump every company's salespeople.
+staff.get("/pickable", async (c) => {
+  const supabase = c.get("supabase");
+  const { data, error } = await supabase
+    .from("staff")
+    .select(STAFF_COLUMNS)
+    .eq("active", true)
+    .order("staff_code", { ascending: true });
+  if (error) {
+    if (/relation .* does not exist/i.test(error.message)) return c.json({ staff: [] });
+    return c.json({ error: "load_failed", reason: error.message }, 500);
+  }
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+
+  const companies = c.get("companies") ?? [];
+  // Pre-migration / cold-start: no companies master → single-company Houzs.
+  // Degrade to the full active roster (the pre-fix behaviour).
+  if (companies.length === 0) return c.json({ staff: rows.map(toStaffRow) });
+
+  const active = activeCompanyId(c);
+  // Multi-company context but no resolvable active company → fail closed.
+  if (active == null) return c.json({ staff: [] });
+
+  const linkedIds = Array.from(
+    new Set(rows.map(rowUserId).filter((n): n is number => n != null)),
+  );
+  const grantsByUserId = await loadGrantsByUserId(c.env, linkedIds);
+  const ids = { active, houzs: houzsCompanyId(c), mirror: mirrorCompanyId(c) };
+
+  const scoped = filterStaffToCompany(
+    rows.map((r) => ({ raw: r, id: String(r.id), user_id: rowUserId(r) })),
+    grantsByUserId,
+    ids,
+    SCM_SYSTEM_STAFF_ID,
+  ).map((s) => toStaffRow(s.raw));
+
+  return c.json({ staff: scoped });
 });
 
 /* ── SHOWROOM PARKING (owner 2026-07-19, migration 0148) ────────────────────

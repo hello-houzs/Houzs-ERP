@@ -30,7 +30,7 @@ import {
   useCreateDeliveryReturn, useMfgDeliveryOrderDetail,
 } from '../../vendor/scm/lib/delivery-return-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
-import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
@@ -63,7 +63,7 @@ export const DeliveryReturnNew = () => {
      useCreateDeliveryReturn), so a re-press after a stalled submit books the
      goods back IN twice unless it replays. */
   const idemKey = useIdempotencyKey();
-  const staffQ = useStaff();
+  const staffQ = usePickableStaff();
   const loc = useLocalities();
 
   // Prefill source — the DO this return is being issued from (if any).

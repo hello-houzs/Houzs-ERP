@@ -32,7 +32,7 @@ import {
   useCreateConsignmentNote, useAddConsignmentNotePayment,
 } from '../../vendor/scm/lib/consignment-note-queries';
 import { useConsignmentOrderDetail } from '../../vendor/scm/lib/consignment-order-queries';
-import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import { useDrivers } from '../../vendor/scm/lib/drivers-queries';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
@@ -76,7 +76,7 @@ export const ConsignmentNoteNew = () => {
   const idemKey = useIdempotencyKey();
   const create = useCreateConsignmentNote();
   const addPayment = useAddConsignmentNotePayment();
-  const staffQ = useStaff();
+  const staffQ = usePickableStaff();
   const driversQ = useDrivers();
   const loc = useLocalities();
   const coDetail = useConsignmentOrderDetail(fromConsignmentOrder);

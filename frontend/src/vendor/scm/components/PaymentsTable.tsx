@@ -46,7 +46,7 @@ import {
   type PaymentMethodCode,
 } from '@2990s/shared/payment-methods';
 import { useAuth } from '../lib/auth';
-import { useStaff } from '../lib/admin-queries';
+import { useStaff, usePickableStaff } from '../lib/admin-queries';
 import {
   useSalesOrderPayments,
   useAddSalesOrderPayment,
@@ -415,7 +415,12 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
   const draftUnlocked = props.draftUnlocked ?? false;
 
   const staffQ = useStaff();
-  const staff  = staffQ.data ?? [];
+  const staff  = staffQ.data ?? [];        // FULL roster — resolves persisted collected_by names
+  /* The Collected-By SELECTION list is company-scoped via the Team-grant rule
+     (usePickableStaff); the display of already-recorded rows keeps the full
+     roster (staffNameById) so a scoped-out / departed collector still resolves
+     to a name. */
+  const pickableStaff = usePickableStaff().data ?? [];
   const auth   = useAuth();
 
   /* Task #118 — methods are DB-backed (so_dropdown_options 'payment_method',
@@ -1227,7 +1232,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     <option value="">—</option>
                     {(() => {
                       const allowed = props.collectedByAllowedIds;
-                      const active = staff.filter((s) => s.active);
+                      const active = pickableStaff; // already active + company-scoped
                       const filtered = allowed
                         ? active.filter((s) =>
                             allowed.has(s.id) ||

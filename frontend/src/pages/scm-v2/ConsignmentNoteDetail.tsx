@@ -49,7 +49,7 @@ import {
 import {
   useSoDropdownOptions, optionsOrFallback,
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
-import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
@@ -531,7 +531,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
 }, ref) => {
   const localities = useLocalities();
   const localityRows = useMemo(() => localities.data ?? [], [localities.data]);
-  const staffQ = useStaff();
+  const staffQ = usePickableStaff();
   const staffList = (staffQ.data ?? []).filter((s) => s.active);
 
   const customerTypeOptsQ = useSoDropdownOptions('customer_type');
