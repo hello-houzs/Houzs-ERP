@@ -64,7 +64,7 @@ export function ServiceLogistics() {
   const [type, setType] = useState<string>("");
   const [search, setSearch] = useState("");
 
-  const list = useQuery<ServiceLogisticsResponse>(
+  const list = useQuery<ServiceLogisticsResponse>("/api/assr/logistics/all",
     () =>
       api.get(
         "/api/assr/logistics/all" +

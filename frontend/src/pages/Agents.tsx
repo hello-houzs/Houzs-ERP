@@ -185,7 +185,7 @@ function getData<T>(path: string): Promise<T> {
 export function Agents() {
   const toast = useToast();
   const dialog = useDialog();
-  const status = useQuery<StatusResp>(() => getData("/api/agents/status"));
+  const status = useQuery<StatusResp>("/api/agents/status", () => getData("/api/agents/status"));
   const [selected, setSelected] = useState<Family>("DELIVERY");
   const [view, setView] = useState<"console" | "scorecard">("console");
   const [busy, setBusy] = useState<string | null>(null);
@@ -565,7 +565,7 @@ function RecentErrors({ errors }: { errors: RunRow[] }) {
 
 function RunHistory({ meta }: { meta: FamilyMeta }) {
   const [open, setOpen] = useState(false);
-  const q = useQuery<RunRow[]>(
+  const q = useQuery<RunRow[]>("/api/agents/history?family=:&limit=20",
     () => (open ? getData(`/api/agents/history?family=${meta.id}&limit=20`) : Promise.resolve([])),
     [meta.id, open],
   );
@@ -613,7 +613,7 @@ function RunHistory({ meta }: { meta: FamilyMeta }) {
 }
 
 function AiFocus({ meta }: { meta: FamilyMeta }) {
-  const brief = useQuery<BriefResp | null>(() => getData(`/api/agents/${meta.base}/brief`), [meta.base]);
+  const brief = useQuery<BriefResp | null>("/api/agents/:/brief", () => getData(`/api/agents/${meta.base}/brief`), [meta.base]);
   const focus = brief.data?.aiFocus;
   if (!focus) return null;
   return (
@@ -627,7 +627,7 @@ function AiFocus({ meta }: { meta: FamilyMeta }) {
 function ProposalsPanel({ meta }: { meta: FamilyMeta }) {
   const toast = useToast();
   const dialog = useDialog();
-  const q = useQuery<EngineProposal[]>(
+  const q = useQuery<EngineProposal[]>("/api/agents/:/proposals?status=PENDING",
     () => getData(`/api/agents/${meta.base}/proposals?status=PENDING`),
     [meta.base],
   );
@@ -706,7 +706,7 @@ function ProposalsPanel({ meta }: { meta: FamilyMeta }) {
 
 function FindingsPanel({ meta }: { meta: FamilyMeta }) {
   const toast = useToast();
-  const q = useQuery<Finding[]>(
+  const q = useQuery<Finding[]>("/api/agents/:/findings?status=OPEN",
     () => getData(`/api/agents/${meta.base}/findings?status=OPEN`),
     [meta.base],
   );
@@ -771,7 +771,7 @@ function FindingsPanel({ meta }: { meta: FamilyMeta }) {
 
 function ConfigPanel({ family }: { family: Family }) {
   const toast = useToast();
-  const q = useQuery<ConfigProposal[]>(() => getData("/api/agents/config-proposals?status=PENDING"));
+  const q = useQuery<ConfigProposal[]>("/api/agents/config-proposals?status=PENDING", () => getData("/api/agents/config-proposals?status=PENDING"));
   const [busy, setBusy] = useState<string | null>(null);
   const prefix = `${family.toLowerCase()}.`;
   const rows = (q.data ?? []).filter((p) => p.paramKey.startsWith(prefix));
@@ -829,7 +829,7 @@ function ConfigPanel({ family }: { family: Family }) {
 
 function FeedbackPanel({ meta }: { meta: FamilyMeta }) {
   const toast = useToast();
-  const q = useQuery<Feedback[]>(
+  const q = useQuery<Feedback[]>("/api/agents/feedback?agent=:&status=ACTIVE",
     () => getData(`/api/agents/feedback?agent=${meta.id}&status=ACTIVE`),
     [meta.id],
   );
@@ -913,7 +913,7 @@ function pct(part: number, whole: number): number | null {
 }
 
 function Scorecard() {
-  const q = useQuery<ReviewResp>(() => getData("/api/agents/review"));
+  const q = useQuery<ReviewResp>("/api/agents/review", () => getData("/api/agents/review"));
 
   if (q.loading && !q.data) return <ListSkeleton />;
   if (q.error) {

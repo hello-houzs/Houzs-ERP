@@ -52,7 +52,7 @@ export function Settings() {
     setParams(p, { replace: true });
   }
 
-  const status = useQuery<SyncStatusResponse>(() => api.get("/api/sync/status"));
+  const status = useQuery<SyncStatusResponse>("/api/sync/status", () => api.get("/api/sync/status"));
 
   const tabs: TabOption<SettingsTab>[] = [
     { value: "connection", label: "Connection" },
@@ -301,7 +301,7 @@ const EMAIL_TOGGLES: { key: string; label: string; description: string }[] = [
 
 function EmailTab() {
   const toast = useToast();
-  const q = useQuery<EmailSettingsResponse>(() => api.get("/api/settings/email"));
+  const q = useQuery<EmailSettingsResponse>("/api/settings/email", () => api.get("/api/settings/email"));
   const [saving, setSaving] = useState<string | null>(null);
   const [testAddr, setTestAddr] = useState("");
   const [testing, setTesting] = useState(false);
@@ -482,7 +482,7 @@ function BrandingTab() {
   const { can } = useAuth();
   const canEdit = can("settings.manage");
 
-  const q = useQuery<BrandingResponse>(() => api.get("/api/branding"));
+  const q = useQuery<BrandingResponse>("/api/branding", () => api.get("/api/branding"));
   const [form, setForm] = useState<Branding | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -771,7 +771,7 @@ function ActivityLog() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useLocalStorage<number>("pp:logs", 50);
 
-  const list = useQuery<Paginated<ExecutionLog>>(
+  const list = useQuery<Paginated<ExecutionLog>>("/api/logs:)}",
     () =>
       api.get(`/api/logs${buildQuery({ type, status: logStatus, page, per_page: perPage })}`),
     [type, logStatus, page, perPage]

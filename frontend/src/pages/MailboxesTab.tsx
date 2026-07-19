@@ -72,11 +72,11 @@ function grantKey(addressId: string, userId: number): string {
 
 export function MailboxesTab() {
   // ── Data ──────────────────────────────────────────────────────────────
-  const addressesQ = useQuery<MailAddress[]>(() => fetchAddresses());
-  const membersQ = useQuery<{ users: TeamMember[] }>(() =>
+  const addressesQ = useQuery<MailAddress[]>("mailboxes-addresses", () => fetchAddresses());
+  const membersQ = useQuery<{ users: TeamMember[] }>("/api/users", () =>
     api.get("/api/users"),
   );
-  const deptsQ = useQuery<{ departments: Department[] }>(() =>
+  const deptsQ = useQuery<{ departments: Department[] }>("/api/departments", () =>
     api.get("/api/departments"),
   );
 
@@ -705,10 +705,10 @@ function AccessMatrix({
   const toast = useToast();
   const dialog = useDialog();
 
-  const accessQ = useQuery<{ addressId: string; userId: number }[]>(() =>
+  const accessQ = useQuery<{ addressId: string; userId: number }[]>("mailboxes-access", () =>
     fetchAccess(),
   );
-  const levelsQ = useQuery<{ userId: number; level: MailScopeLevel }[]>(() =>
+  const levelsQ = useQuery<{ userId: number; level: MailScopeLevel }[]>("mailboxes-scope-levels", () =>
     fetchScopeLevels(),
   );
 

@@ -129,7 +129,7 @@ function DefaultAssigneeSection() {
   // the permission the page is actually for.
   const { can } = useAuth();
   const canManageService = can("service_cases.manage");
-  const settings = useQuery<ServiceSettingsResponse>(
+  const settings = useQuery<ServiceSettingsResponse>("/api/assr/settings",
     () => api.get("/api/assr/settings"),
     [],
     { enabled: canManageService }

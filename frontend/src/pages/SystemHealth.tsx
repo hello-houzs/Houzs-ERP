@@ -181,12 +181,12 @@ export function SystemHealth() {
   const [sensitiveOnly, setSensitiveOnly] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
 
-  const live = useQuery<LivePayload>(() => api.get("/api/admin/health/live"));
+  const live = useQuery<LivePayload>("/api/admin/health/live", () => api.get("/api/admin/health/live"));
   // Inventory-ledger integrity — the working corruption-check endpoint that was
   // previously never called by the frontend. Surfaces silent partial stock
   // writes as a count the operator can act on.
-  const ledger = useQuery<LedgerPayload>(() => api.get("/api/admin/health/ledger"));
-  const feed = useQuery<AuditFeed>(
+  const ledger = useQuery<LedgerPayload>("/api/admin/health/ledger", () => api.get("/api/admin/health/ledger"));
+  const feed = useQuery<AuditFeed>("/api/admin/health/audit-feed?range=::",
     () =>
       api.get(
         `/api/admin/health/audit-feed?range=${range}${sensitiveOnly ? "&sensitive=1" : ""}`

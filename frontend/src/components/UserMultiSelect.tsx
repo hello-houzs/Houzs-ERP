@@ -34,7 +34,7 @@ export function useUsersSearch(
 ) {
   const term = q.trim();
   const enabled = (opts?.enabled ?? true) && term.length >= MIN_QUERY;
-  return useQuery<{ users: UserOptionItem[] }>(
+  return useQuery<{ users: UserOptionItem[] }>("/api/users?q=:",
     () => api.get(`/api/users?q=${encodeURIComponent(term)}`),
     [term],
     { enabled, keepPreviousData: true },

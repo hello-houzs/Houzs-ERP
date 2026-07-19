@@ -49,13 +49,16 @@ export type BrandingWithCompany = Branding & { companyCode: string };
 export function useBranding(): BrandingWithCompany {
   // Company identity is effectively static, so cache it well past the 30s
   // default to keep it out of the per-navigation waterfall. NOT Infinity on
-  // purpose: an edit in Settings force-refetches via q.reload(), but that only
-  // reaches this hook if both callsites hash to the same TanStack key
-  // (fetcher.toString()), which minification can break by aliasing the imported
-  // `api` differently per module. A bounded staleTime keeps a self-healing net —
-  // worst case the chrome shows old branding for <=10min, never "stuck until
-  // reload". Edits are rare and the editor sees their own change immediately.
-  const q = useQuery<BrandingResponse>(() => api.get("/api/branding"), [], {
+  // purpose: a bounded staleTime keeps a self-healing net — worst case the
+  // chrome shows old branding for <=10min, never "stuck until reload". Edits
+  // are rare and the editor sees their own change immediately.
+  //
+  // The key is now EXPLICIT, so an edit in Settings that force-refetches via
+  // q.reload() reliably reaches every consumer of this hook. It used to be
+  // derived from `fetcher.toString()`, which minification could break by
+  // aliasing the imported `api` differently per module — two callsites wanting
+  // the same branding could end up on different keys and disagree.
+  const q = useQuery<BrandingResponse>("/api/branding", () => api.get("/api/branding"), [], {
     staleTime: 10 * 60_000,
   });
 

@@ -883,16 +883,16 @@ export function MailInbox() {
     loading: countsLoading,
     error: countsError,
     reload: reloadCounts,
-  } = useQuery<MailThreadRow[]>(() => api.get(countsUrl), [countsUrl], {
+  } = useQuery<MailThreadRow[]>("mail-center-counts", () => api.get(countsUrl), [countsUrl], {
     // Folder / filter switch keeps the current counts on screen while the next
     // folder loads instead of flashing empty badges.
     keepPreviousData: true,
   });
-  const { data: addresses } = useQuery<MailAddress[]>(
+  const { data: addresses } = useQuery<MailAddress[]>("/api/mail-center/addresses",
     () => api.get("/api/mail-center/addresses"),
     [],
   );
-  const { data: labelCatalog } = useQuery<MailLabel[]>(
+  const { data: labelCatalog } = useQuery<MailLabel[]>("/api/mail-center/labels",
     () => api.get("/api/mail-center/labels"),
     [],
   );
@@ -900,7 +900,7 @@ export function MailInbox() {
   const trashCountUrl = `/api/mail-center/threads?status=trashed${
     filter.kind === "mailbox" ? `&mailbox=${encodeURIComponent(filter.value)}` : ""
   }`;
-  const { data: trashedThreads } = useQuery<MailThreadRow[]>(
+  const { data: trashedThreads } = useQuery<MailThreadRow[]>("mail-center-trash-count",
     () => api.get(trashCountUrl),
     [trashCountUrl],
   );

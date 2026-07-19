@@ -221,21 +221,21 @@ export function Announcements() {
   // NOTE: this fetch is unbounded (no LIMIT/pagination) — the backend returns
   // every announcement. Capping it server-side is a separate follow-up; the DOM
   // list below is windowed so a large payload no longer freezes rendering.
-  const listQ = useQuery<ListResponse>(() => api.get("/api/announcements"));
+  const listQ = useQuery<ListResponse>("/api/announcements", () => api.get("/api/announcements"));
   const items = listQ.data?.data ?? [];
 
   // Lookups for the audience pickers + the "To: …" pill resolver.
-  const usersQ = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users"));
-  const deptsQ = useQuery<{ departments: Department[] }>(() =>
+  const usersQ = useQuery<{ users: TeamMember[] }>("/api/users", () => api.get("/api/users"));
+  const deptsQ = useQuery<{ departments: Department[] }>("/api/departments", () =>
     api.get("/api/departments"),
   );
-  const positionsQ = useQuery<{ positions: Position[] }>(() =>
+  const positionsQ = useQuery<{ positions: Position[] }>("/api/positions", () =>
     api.get("/api/positions"),
   );
   // Multi-company: the company-target selector + row chip only appear when the
   // companies master returns MORE THAN ONE company (mirrors the top-bar
   // CompanySwitcher no-op rule). Single-company Houzs shows neither.
-  const companiesQ = useQuery<CompaniesResponse>(() =>
+  const companiesQ = useQuery<CompaniesResponse>("/api/companies", () =>
     api.get("/api/companies"),
   );
 

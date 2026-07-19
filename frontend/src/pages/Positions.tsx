@@ -43,9 +43,9 @@ type PageAccessExport = {
 export function PositionsTab() {
   const toast = useToast();
   const dialog = useDialog();
-  const positionsQ = useQuery<{ positions: Position[] }>(() => api.get("/api/positions"));
-  const pagesQ = useQuery<{ pages: PageDef[] }>(() => api.get("/api/positions/pages"));
-  const deptsQ = useQuery<{ departments: Department[] }>(() => api.get("/api/departments"));
+  const positionsQ = useQuery<{ positions: Position[] }>("/api/positions", () => api.get("/api/positions"));
+  const pagesQ = useQuery<{ pages: PageDef[] }>("/api/positions/pages", () => api.get("/api/positions/pages"));
+  const deptsQ = useQuery<{ departments: Department[] }>("/api/departments", () => api.get("/api/departments"));
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // null = closed · "new" = create · Position = edit that one
   const [editing, setEditing] = useState<Position | "new" | null>(null);
@@ -583,7 +583,7 @@ function PositionMatrixEditor({
      *  backend does not send it, and absent must read as "not told", never as
      *  "there are none". */
     orphan_rows?: Array<{ page_key: string; level: string }>;
-  }>(() => api.get(`/api/positions/${position.id}/page-access`), [position.id]);
+  }>("position-page-access#row", () => api.get(`/api/positions/${position.id}/page-access`), [position.id]);
 
   const [levels, setLevels] = useState<Record<string, AccessLevel>>({});
   const [dirty, setDirty] = useState<Set<string>>(new Set());

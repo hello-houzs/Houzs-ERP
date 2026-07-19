@@ -433,7 +433,7 @@ function CasesView({
     creditor_code: creditorFilter || undefined,
   };
 
-  const list = useQuery<Paginated<AssrCase>>(
+  const list = useQuery<Paginated<AssrCase>>("assr-list",
     () =>
       api.get(
         `/api/assr${buildQuery({
@@ -1036,7 +1036,7 @@ function StageStatStrip({
   // toast. Gate the fetch so it never fires for them; the strip just renders
   // its empty/zero state instead.
   const canReadSummary = can("service_cases.read");
-  const q = useQuery<AssrSummary>(
+  const q = useQuery<AssrSummary>("/api/assr/summary?since_days=730",
     () => api.get("/api/assr/summary?since_days=730"),
     [],
     { enabled: canReadSummary }
@@ -1196,7 +1196,7 @@ function CasesBoardView({
     ...filters,
     exclude_stage: filters.stage === "completed" ? filters.exclude_stage : "completed",
   };
-  const q = useQuery<Paginated<AssrCase>>(
+  const q = useQuery<Paginated<AssrCase>>("assr-list-export",
     () => api.get(`/api/assr${buildQuery({ ...effective, page: 1, per_page: 500 })}`),
     [
       effective.stage,
@@ -1430,7 +1430,7 @@ function CasesCalendarView({
   const toISO = isoLocal(winEnd);
   const dateField = basis === "deadline" ? "deadline" : "reported";
 
-  const q = useQuery<Paginated<AssrCase>>(
+  const q = useQuery<Paginated<AssrCase>>("assr-list-date-range",
     () =>
       api.get(
         `/api/assr${buildQuery({
@@ -2237,7 +2237,7 @@ function CreatePanel({
   // intake form mirrors what admins maintain in Service Maintenance.
   // Fall back to the legacy ISSUE_CATEGORIES constant if the call
   // hasn't returned yet.
-  const issueCategoriesQ = useQuery<{ data: { slug: string; name: string }[] }>(
+  const issueCategoriesQ = useQuery<{ data: { slug: string; name: string }[] }>("/api/assr/lookups/issue-categories",
     () => api.get("/api/assr/lookups/issue-categories"),
     [],
   );
@@ -2246,7 +2246,7 @@ function CreatePanel({
   // Product Category options mirror AutoCount's item groups (Nick
   // 2026-07-14) — admin-maintained in Service Maintenance until the
   // AutoCount reconnect back-fills the authoritative list.
-  const productCategoriesQ = useQuery<{ data: { slug: string; name: string }[] }>(
+  const productCategoriesQ = useQuery<{ data: { slug: string; name: string }[] }>("/api/assr/lookups/product-categories",
     () => api.get("/api/assr/lookups/product-categories"),
     [],
   );
@@ -2885,7 +2885,7 @@ function DetailContent({
   toast: ReturnType<typeof useToast>;
 }) {
   const dialog = useDialog();
-  const detail = useQuery<AssrDetail>(
+  const detail = useQuery<AssrDetail>("/api/assr/:",
     () => api.get(`/api/assr/${id}`),
     [id]
   );
@@ -2935,7 +2935,7 @@ function DetailContent({
       }
     })();
   }, [detail.data]);
-  const users = useQuery<{ id: number; name: string; department_name?: string }[]>(
+  const users = useQuery<{ id: number; name: string; department_name?: string }[]>("/api/users#unwrapped",
     () => api.get<any>("/api/users").then((r: any) => r.users ?? r.data ?? r ?? []),
     []
   );
@@ -2944,19 +2944,19 @@ function DetailContent({
   // are still cheap. Fall back to the legacy hardcoded constants when
   // the API hasn't returned yet so the form stays usable.
   type LookupOpt = { slug: string; name: string };
-  const issueCategoriesQ = useQuery<{ data: LookupOpt[] }>(
+  const issueCategoriesQ = useQuery<{ data: LookupOpt[] }>("/api/assr/lookups/issue-categories",
     () => api.get("/api/assr/lookups/issue-categories"),
     [],
   );
-  const resolutionMethodsQ = useQuery<{ data: LookupOpt[] }>(
+  const resolutionMethodsQ = useQuery<{ data: LookupOpt[] }>("/api/assr/lookups/resolution-methods",
     () => api.get("/api/assr/lookups/resolution-methods"),
     [],
   );
-  const prioritiesQ = useQuery<{ data: LookupOpt[] }>(
+  const prioritiesQ = useQuery<{ data: LookupOpt[] }>("/api/assr/lookups/priorities",
     () => api.get("/api/assr/lookups/priorities"),
     [],
   );
-  const ncrCategoriesQ = useQuery<{ data: LookupOpt[] }>(
+  const ncrCategoriesQ = useQuery<{ data: LookupOpt[] }>("/api/assr/lookups/ncr-categories",
     () => api.get("/api/assr/lookups/ncr-categories"),
     [],
   );
@@ -6720,7 +6720,7 @@ function CostTrackingPanel({
 }
 
 function CustomerHistory({ id }: { id: number }) {
-  const q = useQuery<{ cases: CustomerHistoryRow[] }>(
+  const q = useQuery<{ cases: CustomerHistoryRow[] }>("/api/assr/:/customer-history",
     () => api.get(`/api/assr/${id}/customer-history`),
     [id]
   );

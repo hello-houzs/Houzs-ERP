@@ -480,7 +480,7 @@ function OrganizerPicker({
 }) {
   const dialog = useDialog();
   const toast = useToast();
-  const q = useQuery<{ data: { id: number; name: string }[] }>(
+  const q = useQuery<{ data: { id: number; name: string }[] }>("/api/projects/organizers",
     () => api.get("/api/projects/organizers"),
     []
   );
@@ -558,7 +558,7 @@ function VenuePicker({
   const toast = useToast();
   const q = useQuery<{
     data: { id: number; name: string; state: string | null }[];
-  }>(() => api.get("/api/projects/venues"), []);
+  }>("/api/projects/venues", () => api.get("/api/projects/venues"), []);
   const options = q.data?.data ?? [];
 
   async function addNew() {
@@ -1000,7 +1000,7 @@ function ProjectsListView() {
   const excludeDoneParam =
     hideCompleted && section !== "__done" ? 1 : undefined;
 
-  const list = useQuery<Paginated<ProjectRow>>(
+  const list = useQuery<Paginated<ProjectRow>>("/api/projects:",
     () =>
       api.get(
         `/api/projects${buildQuery({
@@ -1040,15 +1040,15 @@ function ProjectsListView() {
     upcoming_30d: number;
     live_count: number;
     overdue_tasks: number;
-  }>(() => api.get("/api/projects/summary"));
+  }>("/api/projects/summary", () => api.get("/api/projects/summary"));
 
-  const brands = useQuery<{ data: string[] }>(() => api.get("/api/projects/brands"));
-  const eventTypes = useQuery<{ data: EventType[] }>(() =>
+  const brands = useQuery<{ data: string[] }>("/api/projects/brands", () => api.get("/api/projects/brands"));
+  const eventTypes = useQuery<{ data: EventType[] }>("/api/projects/event-types", () =>
     api.get("/api/projects/event-types")
   );
   // Distinct active section names — drives the Section filter dropdown.
   // Empty until any project has tasklist sections defined.
-  const sectionsList = useQuery<{ data: string[] }>(() =>
+  const sectionsList = useQuery<{ data: string[] }>("/api/projects/sections-distinct", () =>
     api.get("/api/projects/sections-distinct")
   );
 
@@ -1980,11 +1980,11 @@ function FinanceListView() {
     setPage(1)
   );
 
-  const brandsQ = useQuery<{ data: string[] }>(() =>
+  const brandsQ = useQuery<{ data: string[] }>("/api/projects/brands", () =>
     api.get("/api/projects/brands")
   );
 
-  const list = useQuery<FinanceByProjectResponse>(
+  const list = useQuery<FinanceByProjectResponse>("/api/projects/finance/by-project:)}",
     () =>
       api.get(
         `/api/projects/finance/by-project${buildQuery({
@@ -2493,15 +2493,15 @@ function ProjectsAnalyticsView() {
   const [eventTypeId, setEventTypeId] = useState<string>("");
   const toast = useToast();
 
-  const brands = useQuery<{ data: string[] }>(() => api.get("/api/projects/brands"));
-  const eventTypes = useQuery<{ data: EventType[] }>(() =>
+  const brands = useQuery<{ data: string[] }>("/api/projects/brands", () => api.get("/api/projects/brands"));
+  const eventTypes = useQuery<{ data: EventType[] }>("/api/projects/event-types", () =>
     api.get("/api/projects/event-types")
   );
-  const organizers = useQuery<{ data: { id: number; name: string }[] }>(() =>
+  const organizers = useQuery<{ data: { id: number; name: string }[] }>("/api/projects/organizers", () =>
     api.get("/api/projects/organizers")
   );
 
-  const q = useQuery<ProfitabilityResponse>(
+  const q = useQuery<ProfitabilityResponse>("/api/projects/analytics/profitability:)}",
     () =>
       api.get(
         `/api/projects/analytics/profitability${buildQuery({
@@ -2916,14 +2916,14 @@ function ProjectsCalendarView() {
     "projects:cal:expandAll",
     false
   );
-  const brandsQ = useQuery<{ data: string[] }>(() =>
+  const brandsQ = useQuery<{ data: string[] }>("/api/projects/brands", () =>
     api.get("/api/projects/brands")
   );
-  const organizersQ = useQuery<{ data: { id: number; name: string }[] }>(() =>
+  const organizersQ = useQuery<{ data: { id: number; name: string }[] }>("/api/projects/organizers", () =>
     api.get("/api/projects/organizers")
   );
   // Active template's sections, mirroring the list-view pill row.
-  const sectionsListQ = useQuery<{ data: string[] }>(() =>
+  const sectionsListQ = useQuery<{ data: string[] }>("/api/projects/sections-distinct", () =>
     api.get("/api/projects/sections-distinct")
   );
   // ?mode=week swaps the 6×7 month grid for a single 1×7 row anchored
@@ -3086,7 +3086,7 @@ function ProjectsCalendarView() {
   const fromStr = startDay.toISOString().slice(0, 10);
   const toStr = endDay.toISOString().slice(0, 10);
 
-  const q = useQuery<{ projects: CalendarProject[]; tasks: CalendarTask[] }>(
+  const q = useQuery<{ projects: CalendarProject[]; tasks: CalendarTask[] }>("/api/projects/calendar/events?from=:&to=:",
     () => api.get(`/api/projects/calendar/events?from=${fromStr}&to=${toStr}`),
     [fromStr, toStr]
   );
@@ -4314,7 +4314,7 @@ function CreateProjectPanel({
   // department coverage so admins can't assign someone whose dept
   // doesn't cover the brand. Empty brand → empty list (with a hint
   // shown in the dropdown rendering).
-  const usersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>(
+  const usersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>("/api/users?brand=:",
     () =>
       brand
         ? api.get(`/api/users?brand=${encodeURIComponent(brand)}`)
@@ -4608,10 +4608,10 @@ function ProjectDetailContent({
 }) {
   const { can, user } = useAuth();
   const dialog = useDialog();
-  const detail = useQuery<ProjectDetail>(() => api.get(`/api/projects/${id}`), [id]);
+  const detail = useQuery<ProjectDetail>("/api/projects/:", () => api.get(`/api/projects/${id}`), [id]);
   // Users list — fetched once per open panel, reused for owner pickers
   // in the logistics section, checklist add form, and reassign dropdowns.
-  const usersQ = useQuery<{ id: number; name: string }[]>(
+  const usersQ = useQuery<{ id: number; name: string }[]>("/api/users#unwrapped",
     () => api.get<any>("/api/users").then((r: any) => r.users ?? r.data ?? r ?? []),
     []
   );
@@ -4625,7 +4625,7 @@ function ProjectDetailContent({
   // brand (owner: Option A). The backend ?department= filter matches the
   // dept name case-insensitively/by-substring (prod = "Sales Department"),
   // and the PIC-save brand gate is brand-relaxed for Sales-dept members.
-  const picUsersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string; phone?: string | null }> }>(
+  const picUsersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string; phone?: string | null }> }>("/api/users?department=:",
     () => api.get(`/api/users?department=${encodeURIComponent("Sales")}`),
     []
   );
@@ -5018,7 +5018,7 @@ function ProjectTeamSection({
   // Sales-attending picker — gated on projects.write, role-filtered to
   // sales_person. Brand-relaxed (owner: Option A): lists ALL active
   // Sales Persons regardless of brand. See GET /api/projects/sales-rep-options.
-  const repsQ = useQuery<{ data: SalesRepBrief[] }>(
+  const repsQ = useQuery<{ data: SalesRepBrief[] }>("/api/projects/sales-rep-options",
     () => api.get(`/api/projects/sales-rep-options`),
     []
   );
@@ -5760,8 +5760,8 @@ export function ProjectDetail() {
   const { id: idStr } = useParams<{ id: string }>();
   const id = idStr ? parseInt(idStr, 10) : NaN;
   const toast = useToast();
-  const brandsQ = useQuery<{ data: string[] }>(() => api.get("/api/projects/brands"));
-  const eventTypesQ = useQuery<{ data: EventType[] }>(() =>
+  const brandsQ = useQuery<{ data: string[] }>("/api/projects/brands", () => api.get("/api/projects/brands"));
+  const eventTypesQ = useQuery<{ data: EventType[] }>("/api/projects/event-types", () =>
     api.get("/api/projects/event-types")
   );
 
@@ -9234,7 +9234,7 @@ interface PhasePhoto {
 }
 
 function PhasePhotosSection({ projectId }: { projectId: number }) {
-  const photos = useQuery<{ photos: PhasePhoto[] }>(
+  const photos = useQuery<{ photos: PhasePhoto[] }>("/api/projects/:/phase-photos",
     () => api.get(`/api/projects/${projectId}/phase-photos`),
     [projectId]
   );
@@ -9937,7 +9937,7 @@ function ProjectSalesEntriesSection({
   const list = useQuery<{
     data: SalesEntry[];
     totals: { amount: number; count: number; by_status: { draft: number; submitted: number; pushed: number } };
-  }>(
+  }>("/api/sales/entries?project_id=::",
     () =>
       api.get(
         `/api/sales/entries?project_id=${projectId}${
