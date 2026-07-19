@@ -2367,6 +2367,41 @@ deliveryOrdersMfg.get('/deliverable-so-lines', async (c) => {
   return c.json({ lines });
 });
 
+/* SO customer/delivery header for the reviewable New-DO form's PREFILL.
+   ── Why a dedicated, company-UNSCOPED read (matching POST /from-sos) ──
+   The desktop New-DO form (DeliveryOrderNewV2) converts a Sales Order into a
+   reviewable DO draft. It used to prefill the customer header from the full SO
+   detail endpoint /mfg-sales-orders/:docNo, which is company- AND sales-scoped
+   (scopeToCompany + salesDocOutOfScope). A 2990-mirrored SO carries company_id=2
+   and is routinely converted while browsing as Houzs (active company 1) — the
+   line-level picker feeding this form reads the UNSCOPED /deliverable-so-lines,
+   so it shows those cross-company lines, but the scoped SO detail then 404s for
+   the same doc → the form's customer name/phone/email/address/salesperson all
+   came back blank while the (stash-carried) line items filled in. The
+   server-side conversion POST /from-sos already reads this SAME header UNSCOPED
+   by doc_no (see SO_HEADER there) precisely because DO conversion is a designed
+   cross-company action; this read mirrors it so the reviewable form matches the
+   server. Customer/delivery fields only — no cost/margin — so nothing finance
+   leaks that /from-sos doesn't already surface on the resulting DO. */
+deliveryOrdersMfg.get('/so-convert-header/:docNo', async (c) => {
+  const sb = c.get('supabase');
+  const docNo = c.req.param('docNo');
+  const SO_CONVERT_HEADER =
+    'doc_no, debtor_code, debtor_name, agent, salesperson_id, ' +
+    'address1, address2, address3, address4, city, customer_state, postcode, phone, ' +
+    'email, customer_type, building_type, venue, venue_id, ref, po_doc_no, customer_so_no, ' +
+    'sales_location, customer_delivery_date, ' +
+    'emergency_contact_name, emergency_contact_phone, emergency_contact_relationship';
+  const { data, error } = await sb
+    .from('mfg_sales_orders')
+    .select(SO_CONVERT_HEADER)
+    .eq('doc_no', docNo)
+    .maybeSingle();
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  if (!data) return c.json({ error: 'not_found' }, 404);
+  return c.json({ header: data });
+});
+
 // ── Detail ──────────────────────────────────────────────────────────────
 deliveryOrdersMfg.get('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
