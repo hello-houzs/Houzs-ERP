@@ -58,6 +58,69 @@ export function activeCompanyId(c: CompanyScopeCtx): number | undefined {
   return c.get("companyId") as number | undefined;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   STRICT flavour — for WRITES that must never act across companies.
+   ═══════════════════════════════════════════════════════════════════════════
+
+   The helpers above DEGRADE when the active company is unresolved: no
+   predicate, so single-company Houzs kept serving through a pre-migration or
+   cold-start window. That is the right trade for a READ. It is the wrong trade
+   for a WRITE, where "I don't know which company" degrades to "act on ALL
+   companies' rows" — which is how setting your default warehouse came to demote
+   the other company's default.
+
+   So writes resolve through requireActiveCompanyId and REFUSE when it is
+   unknown. There is deliberately no default and no `?? `: an unresolvable
+   company is a condition to surface, never one to guess past. And the company
+   id is a REQUIRED positional argument to scopeToCompanyId — not an optional
+   field on an options bag — so a caller cannot omit it and silently get
+   "every company" (this codebase has pooled Houzs and 2990 data twice for
+   exactly that reason). */
+
+export type CompanyScopeRefusal = { error: string; message: string };
+
+/** Plain-language refusal when the active company can't be resolved. Kept SHORT
+ *  on purpose: the SCM client discards any server message of 200 characters or
+ *  more and falls back to a generic clash line, so a long explanation reaches
+ *  the operator as a blank wall. `error` is curated to the same sentence in the
+ *  client's ERROR_CODE_MESSAGES, which is read before `message`. */
+export const COMPANY_UNRESOLVED: CompanyScopeRefusal = {
+  error: "company_unresolved",
+  message: "We couldn't tell which company this belongs to. Please refresh and try again.",
+};
+
+/** Plain-language refusal when the target document is not this company's. Says
+ *  the same thing as "no such document" ON PURPOSE — confirming that someone
+ *  else's id exists is itself a leak. */
+export const NOT_THIS_COMPANY: CompanyScopeRefusal = {
+  error: "not_found_in_company",
+  message: "That record isn't available in the company you're working in.",
+};
+
+export type RequiredCompany =
+  | { ok: true; companyId: number }
+  | { ok: false; refusal: CompanyScopeRefusal };
+
+/**
+ * Resolve the active company for a WRITE, or refuse. Never degrades, never
+ * defaults. Callers: `const co = requireActiveCompanyId(c); if (!co.ok) return
+ * c.json(co.refusal, 409);`
+ */
+export function requireActiveCompanyId(c: CompanyScopeCtx): RequiredCompany {
+  const id = Number(activeCompanyId(c));
+  if (Number.isInteger(id) && id > 0) return { ok: true, companyId: id };
+  return { ok: false, refusal: COMPANY_UNRESOLVED };
+}
+
+/**
+ * PER-COMPANY, STRICT: filter a supabase-js query to one company. The id is a
+ * required argument, so there is no "unresolved" branch to fall through — get
+ * it from requireActiveCompanyId first.
+ */
+export function scopeToCompanyId<Q>(query: Q, companyId: number): Q {
+  return (query as unknown as { eq(col: string, val: unknown): Q }).eq("company_id", companyId);
+}
+
 /**
  * THE ALLOW-LIST SENTINEL — three states, never two. Read this before touching
  * any consumer; collapsing the first two together is a cross-company LEAK, and
