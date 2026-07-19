@@ -120,7 +120,12 @@ const BUDGETS = {
   // the point: this should trip again in a few pages' time and make someone
   // look. Unlike INITIAL_JS_GZIP, growth here is not a first-paint cost — but
   // it IS the number to watch if the lazy tail ever stops being lazy.
-  TOTAL_JS_GZIP: 1750 * KB,
+  // 1750 -> 1770 on 2026-07-19: the Fulfillment Costing mobile screen is one new
+  // lazy chunk (MobileFulfillmentCosting, +4.5 KB gzip: 1748.9 -> 1753.4),
+  // fetched only by the finance cohort that opens it; initial JS is unchanged
+  // (still PASS at 156/165). Exactly the "one more page" growth this budget
+  // exists to surface — bumped with ~16 KB headroom for a few more.
+  TOTAL_JS_GZIP: 1770 * KB,
   // Any single chunk, raw. A route blowing past this should be split.
   // Raised to fit the heaviest vendored lib — xlsx (~430 KB raw), pulled
   // out of the eager `vendor` chunk and loaded only on export.
