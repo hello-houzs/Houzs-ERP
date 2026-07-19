@@ -346,18 +346,21 @@ export const HrSettings = () => {
         await createItemKpi.mutateAsync({ flagType, ref: c.ref, label: c.label, bonusCenti });
         added.push(c.label);
       } catch (e) {
-        const failed = chosen.slice(chosen.indexOf(c)).map((x) => x.label);
+        // Everything from the one that failed onwards is still unsaved.
+        const failed = chosen.slice(chosen.indexOf(c));
         await notify({
           title: added.length === 0 ? 'Could not add the bonus rule' : 'Only some rules were added',
           body:
-            (added.length > 0 ? `Added: ${added.join(', ')}.\nNot added: ${failed.join(', ')}.\n\n` : '') +
+            (added.length > 0
+              ? `Added: ${added.join(', ')}.\nNot added: ${failed.map((x) => x.label).join(', ')}.\n\n`
+              : '') +
             // authed-fetch already ran the response through humanApiError and
             // threw an Error carrying that plain sentence — do not re-wrap it.
             `${(e as Error)?.message ?? 'The system did not say why.'}\n\nPlease add the missing ones again — the rules listed as added are already saved, so do not re-add those.`,
           tone: 'error',
         });
         // Keep the failures selected so the retry is one click, not a re-pick.
-        setFlagRefs(failed.map((label) => chosen.find((x) => x.label === label)!.ref));
+        setFlagRefs(failed.map((x) => x.ref));
         return;
       }
     }
