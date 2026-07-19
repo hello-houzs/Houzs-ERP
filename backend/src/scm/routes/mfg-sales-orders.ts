@@ -3068,6 +3068,58 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     }
   }
 
+  /* Fair Report FOUNDATION (owner 2026-07-19) — HARD-LINK this SO to the fair
+     (= exhibition PROJECT) it was written at, by stamping the resolved project's
+     id into mfg_sales_orders.project_id. It runs the SAME active-fair resolver
+     the venue logic above uses — the latest project (by start_date <= the SO
+     date) the logged-in salesperson is the PIC of OR a Sales Attending rep of
+     (owner 2026-06-25: "PIC 或 Sales Attending 都算"), venue non-empty — NOT
+     venue+date inference. It is deliberately resolved INDEPENDENTLY of
+     resolvedVenueName: the Backend New-SO form pre-fills body.venue from
+     /active-venue, which makes the venue fallback query above skip, so hooking
+     the link onto that query would leave project_id NULL for the very flow the
+     report needs. Mirroring the resolver's filters keeps project_id and the
+     stamped venue pointing at the SAME fair. STRICTLY ADDITIVE + NON-FATAL: any
+     error, or no active fair, leaves project_id NULL and MUST NEVER block SO
+     creation — an unlinked SO is merely unreported (a later PR), never a lost
+     sale. Reads the PUBLIC schema via c.env.DB (projects live there, not scm). */
+  let projectIdToStamp: number | null = null;
+  {
+    const houzsUser = c.get('houzsUser');
+    const uid = houzsUser?.id != null ? Number(houzsUser.id) : NaN;
+    if (Number.isFinite(uid)) {
+      const soDateForProject =
+        typeof body.soDate === 'string' && body.soDate.trim()
+          ? body.soDate.trim().slice(0, 10)
+          : todayMyt();
+      try {
+        const projRow = await c.env.DB.prepare(
+          `SELECT p.id AS id
+             FROM projects p
+            WHERE p.start_date IS NOT NULL
+              AND p.start_date <= ?
+              AND p.venue IS NOT NULL AND p.venue <> ''
+              AND (
+                p.pic_id = ?
+                OR EXISTS (
+                  SELECT 1 FROM project_sales_attendees psa
+                    JOIN sales_reps sr ON sr.id = psa.sales_rep_id
+                   WHERE psa.project_id = p.id AND sr.user_id = ?
+                )
+              )
+            ORDER BY p.start_date DESC
+            LIMIT 1`,
+        )
+          .bind(soDateForProject, uid, uid)
+          .first<{ id?: number | null }>();
+        const pid = projRow?.id ?? null;
+        if (typeof pid === 'number' && Number.isFinite(pid)) projectIdToStamp = pid;
+      } catch {
+        /* non-fatal — leave project_id NULL if the project lookup fails */
+      }
+    }
+  }
+
   /* Houzs venue_id guard — the New-SO Venue dropdown is sourced from
      public.project_venues (INTEGER ids, mapped to string in the FE), but
      mfg_sales_orders.venue_id is a UUID FK to the (empty/unused) scm.venues.
@@ -4415,6 +4467,10 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
        Guarded to a real uuid; project_venues integer ids are nulled (the venue
        TEXT carries the value). See the venueIdUuid guard above. */
     venue_id: venueIdUuid,
+    /* Fair Report FOUNDATION (migration 0146) — the active fair this SO belongs
+       to, resolved above via the active-fair resolver. NULL when the salesperson
+       has no active fair; never blocks creation. */
+    project_id: projectIdToStamp,
     address1: (body.address1 as string) ?? null,
     address2: (body.address2 as string) ?? null,
     address3: (body.address3 as string) ?? null,
