@@ -1058,7 +1058,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     secondary: (r) => join(r.do_number, r.status, dm(r.do_date)),
     right: (r) => r.local_total_centi,
     rightMoney: true,
-    search: (r) => join(r.debtor_name, r.do_number, r.so_doc_no, r.ref),
+    search: (r) => join(r.debtor_name, r.do_number, r.so_doc_no, r.ref, r.phone),
     statusDocType: "do",
     pill: (r) => scmStatusLabel("do", pick(r, "status")),
     // Spec #do-list: name + status badge, "{{doc_no}} · {{delivery_date}}" sub-
@@ -1103,7 +1103,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     secondary: (r) => join(r.invoice_number, r.status, dm(r.invoice_date)),
     right: (r) => r.total_centi,
     rightMoney: true,
-    search: (r) => join(r.debtor_name, r.invoice_number, r.so_doc_no, r.ref),
+    search: (r) => join(r.debtor_name, r.invoice_number, r.so_doc_no, r.ref, r.phone),
     statusDocType: "si",
     pill: (r) => scmStatusLabel("si", pick(r, "status")),
     // Spec #si-list: "{{doc_no}} · due {{due_date}}" sub-line, footer

@@ -24,7 +24,7 @@ import { maybeSendDeliveryOrderEmail } from '../lib/do-email';
 import { warehouseLabel } from '../lib/warehouse-label';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { escapeForOr } from '../lib/postgrest-search';
+import { escapeForOr, phoneSearchOrParts } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap } from '../lib/companyScope';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
@@ -2249,7 +2249,14 @@ deliveryOrdersMfg.get('/', async (c) => {
     const search = c.req.query('q');
     if (search) {
       const s = escapeForOr(search);
-      if (s) q = q.or(`do_number.ilike.%${s}%,so_doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%,ref.ilike.%${s}%,branding.ilike.%${s}%,sales_location.ilike.%${s}%,driver_name.ilike.%${s}%`);
+      // Match customer NAME (debtor_name), PHONE, and the linked SO REFERENCE
+      // (ref, snapshotted onto the DO) — plus the doc numbers it already covered.
+      if (s) q = q.or([
+        `do_number.ilike.%${s}%`, `so_doc_no.ilike.%${s}%`, `debtor_name.ilike.%${s}%`,
+        `debtor_code.ilike.%${s}%`, `ref.ilike.%${s}%`, `branding.ilike.%${s}%`,
+        `sales_location.ilike.%${s}%`, `driver_name.ilike.%${s}%`,
+        ...phoneSearchOrParts(s, search, normalizePhone),
+      ].join(','));
     }
     const from = c.req.query('from'); if (from) q = q.gte('do_date', from);
     const to = c.req.query('to'); if (to) q = q.lte('do_date', to);

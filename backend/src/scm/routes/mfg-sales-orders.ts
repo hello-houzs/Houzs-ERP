@@ -64,7 +64,7 @@ import {
   MIRRORED_SO_READONLY, MIRRORED_SO_CREATE_BLOCKED,
 } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
-import { escapeForOr } from '../lib/postgrest-search';
+import { escapeForOr, phoneSearchOrParts } from '../lib/postgrest-search';
 import { paginateAll } from '../lib/paginate-all';
 import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-time';
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
@@ -1060,11 +1060,18 @@ mfgSalesOrders.get('/', async (c) => {
     if (scopeIds) q = q.in('salesperson_id', scopeIds);
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
     const status = c.req.query('status'); if (status) q = q.eq('status', status);
-    /* free-text search replaces the legacy `debtor` param in this branch */
+    /* free-text search replaces the legacy `debtor` param in this branch.
+       One term matches customer NAME (debtor_name), PHONE, or the SO
+       REFERENCE (ref) — plus doc_no / debtor_code / agent / location /
+       branding it already covered. */
     const search = c.req.query('q');
     if (search) {
       const s = escapeForOr(search);
-      if (s) q = q.or(`doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%,agent.ilike.%${s}%,sales_location.ilike.%${s}%,ref.ilike.%${s}%,branding.ilike.%${s}%`);
+      if (s) q = q.or([
+        `doc_no.ilike.%${s}%`, `debtor_name.ilike.%${s}%`, `debtor_code.ilike.%${s}%`,
+        `agent.ilike.%${s}%`, `sales_location.ilike.%${s}%`, `ref.ilike.%${s}%`, `branding.ilike.%${s}%`,
+        ...phoneSearchOrParts(s, search, normalizePhone),
+      ].join(','));
     }
     /* Optional so_date window (ISO yyyy-mm-dd, inclusive). The mobile list's
        period chips (this-month / last-month / next-month / this-year) send a

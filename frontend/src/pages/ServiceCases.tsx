@@ -940,7 +940,7 @@ function CasesView({
         search={{
           value: search,
           onChange: (v) => { setPage(1); setSearch(v); },
-          placeholder: "Search ASSR no, SO no, Ref no, customer…",
+          placeholder: "Search ASSR no, SO no, Ref no, customer, phone…",
         }}
         resetFilters={{
           active: !!(
