@@ -1495,7 +1495,7 @@ async function renameThreadLabel(
 // this sub-path (the router is mounted whole), so gate inline on isMailAdmin.
 app.post("/test-inject", async (c) => {
   if (!isMailAdmin(c.get("user"))) {
-    return c.json({ error: "Forbidden: requires mail_center.manage" }, 403);
+    return c.json({ error: "You do not have permission to manage the Mail Center." }, 403);
   }
   // Land it on a real configured address if one exists, else <branding domain>.
   const addr = await c.env.DB.prepare(
@@ -1532,7 +1532,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // POST /api/mail-center/addresses — create an alias for a user.
 app.post("/addresses", async (c) => {
   if (!isMailAdmin(c.get("user"))) {
-    return c.json({ error: "Forbidden: requires mail_center.manage" }, 403);
+    return c.json({ error: "You do not have permission to manage the Mail Center." }, 403);
   }
 
   type CreateBody = {
@@ -1608,7 +1608,7 @@ app.post("/addresses", async (c) => {
 // PATCH /api/mail-center/addresses/:id — toggle active / relabel / reassign.
 app.patch("/addresses/:id", async (c) => {
   if (!isMailAdmin(c.get("user"))) {
-    return c.json({ error: "Forbidden: requires mail_center.manage" }, 403);
+    return c.json({ error: "You do not have permission to manage the Mail Center." }, 403);
   }
   const id = c.req.param("id");
 
@@ -1682,7 +1682,7 @@ app.patch("/addresses/:id", async (c) => {
 // GET /api/mail-center/access — every (addressId,userId) grant.
 app.get("/access", async (c) => {
   if (!isMailAdmin(c.get("user"))) {
-    return c.json({ error: "Forbidden: requires mail_center.manage" }, 403);
+    return c.json({ error: "You do not have permission to manage the Mail Center." }, 403);
   }
   // Scope grants to the active company. Guarded — no-op when unresolved.
   const res = await c.env.DB.prepare(
@@ -1700,7 +1700,7 @@ app.get("/access", async (c) => {
 // POST /api/mail-center/access {addressId,userId} — grant access. Idempotent.
 app.post("/access", async (c) => {
   if (!isMailAdmin(c.get("user"))) {
-    return c.json({ error: "Forbidden: requires mail_center.manage" }, 403);
+    return c.json({ error: "You do not have permission to manage the Mail Center." }, 403);
   }
   const body = await c.req
     .json<{ addressId?: string; userId?: number }>()
@@ -1739,7 +1739,7 @@ app.post("/access", async (c) => {
 // DELETE /api/mail-center/access {addressId,userId} — revoke a grant.
 app.delete("/access", async (c) => {
   if (!isMailAdmin(c.get("user"))) {
-    return c.json({ error: "Forbidden: requires mail_center.manage" }, 403);
+    return c.json({ error: "You do not have permission to manage the Mail Center." }, 403);
   }
   const body = await c.req
     .json<{ addressId?: string; userId?: number }>()
@@ -1768,7 +1768,7 @@ app.delete("/access", async (c) => {
 // GET /api/mail-center/scope-levels — every per-user level row.
 app.get("/scope-levels", async (c) => {
   if (!isMailAdmin(c.get("user"))) {
-    return c.json({ error: "Forbidden: requires mail_center.manage" }, 403);
+    return c.json({ error: "You do not have permission to manage the Mail Center." }, 403);
   }
   const res = await c.env.DB.prepare(
     `SELECT user_id, level FROM mail_user_scope`,
@@ -1785,7 +1785,7 @@ app.get("/scope-levels", async (c) => {
 // PUT /api/mail-center/scope-level {userId,level} — upsert a user's level.
 app.put("/scope-level", async (c) => {
   if (!isMailAdmin(c.get("user"))) {
-    return c.json({ error: "Forbidden: requires mail_center.manage" }, 403);
+    return c.json({ error: "You do not have permission to manage the Mail Center." }, 403);
   }
   const body = await c.req
     .json<{ userId?: number; level?: string }>()
