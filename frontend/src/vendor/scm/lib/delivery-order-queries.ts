@@ -122,6 +122,63 @@ export const useDeliverableSoLinesForDoc = (docNo: string | null) => useQuery({
   retry: retryUnlessClientError,
 });
 
+/* ── SO → DO conversion source (Create-DO prefill) ────────────────────────
+   The header fields a Delivery Order copies off its source Sales Order.
+
+   WHY NOT useMfgSalesOrderDetail, which this page used to call. That endpoint
+   (GET /mfg-sales-orders/:docNo) is wrapped in scopeToCompany. A MIRRORED SO
+   carries company_id = 2 ("2990-" doc prefix, stamped by so-mirror.ts), so read
+   while the active company is HOUZS it answers 404 — and the prefill effect bailed
+   on `!so` with no error path, leaving EVERY header field blank while the
+   "Converted from <doc>" badge and the document-flow strip, both derived from the
+   ?fromSo= query STRING rather than from this fetch, kept rendering the linkage.
+   Blank document, perfect linkage. That was the bug.
+
+   /so-source/:docNo is the converter's OWN read: same columns, same mapping and
+   the same cross-company reach as POST /from-sos, which has always loaded the
+   source SO this way ("a 2990 SO may be converted while browsing as Houzs").
+   `missing` names the fields the SOURCE genuinely lacks, so the form can say so
+   instead of showing an empty box that looks like a fresh document. */
+export type SoConversionSource = {
+  soDocNo: string | null;
+  companyId: number | null;
+  debtorCode: string | null;
+  customerName: string | null;
+  customerSoRef: string | null;
+  phone: string | null;
+  email: string | null;
+  customerType: string | null;
+  salesperson: string | null;
+  salespersonId: string | null;
+  agent: string | null;
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  customerState: string | null;
+  postcode: string | null;
+  customerCountry: string | null;
+  salesLocation: string | null;
+  buildingType: string | null;
+  branding: string | null;
+  venue: string | null;
+  venueId: string | null;
+  customerDeliveryDate: string | null;
+  emergencyContactName: string | null;
+  emergencyContactPhone: string | null;
+  emergencyContactRelationship: string | null;
+  currency: string;
+};
+
+export const useSoConversionSource = (docNo: string | null) => useQuery({
+  queryKey: ['mfg-delivery-orders', 'so-source', docNo],
+  enabled: !!docNo,
+  queryFn: () => authedFetch<{ source: SoConversionSource; missing: string[] }>(
+    `/delivery-orders-mfg/so-source/${encodeURIComponent(docNo!)}`,
+  ),
+  staleTime: 30_000,
+  retry: 1,
+});
+
 /* ── DO (mfg) ─────────────────────────────────────────────────────────── */
 
 /* Any DO write that changes a delivered qty (create / cancel / add-line /

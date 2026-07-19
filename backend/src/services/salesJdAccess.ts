@@ -143,6 +143,18 @@ const DENY_REASON: Readonly<Record<string, string>> = {
     "Delivery Returns is handled by the Office team, not Sales. Ask Office to raise the return for you.",
 };
 
+/** Plain-language reason per WRITE-capped area, for the 403 body of
+ *  `salesJdWriteDenial`. Same construction as DENY_REASON: keyed off SALES_JD,
+ *  never a second list of areas. It has to name the READ that survives, because
+ *  the salesperson CAN still open the document and print it -- a bare "forbidden"
+ *  would read as "the page is broken" for someone looking straight at it. */
+const WRITE_DENY_REASON: Readonly<Record<string, string>> = {
+  "scm.sales.delivery":
+    "Delivery Orders are raised by the Office team, not Sales. You can view and print this one; ask Office to create or change a DO.",
+  "scm.sales.invoices":
+    "Sales Invoices are raised by the Office team, not Sales. You can view and print this one; ask Office to create or change an invoice.",
+};
+
 /** The tolerant caller shape. The area-guard holds a Houzs `AuthUser`; SCM route
  *  handlers hold `houzsUser` (scm/env.ts), whose fields are all optional because
  *  the bridge mirrors them. One predicate has to answer for both, so it reads
@@ -197,6 +209,69 @@ export function salesJdDenial(
   if (!isSalesCohort(user)) return null;
   if (SALES_JD[area] !== "none") return null;
   return DENY_REASON[area] ?? "This page is not part of the Sales role.";
+}
+
+const isWriteMethod = (method: string): boolean =>
+  method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE";
+
+/**
+ * Is this caller denied a WRITE on `area` by the Sales JD's `view` cap? Returns
+ * the plain-language reason for the 403 body, or null when the JD has nothing to
+ * say.
+ *
+ * THIS IS THE OTHER HALF THE HEADER SAID WAS INERT, AND IT IS NOW REAL.
+ * The header above states it plainly: the `"view"` caps on delivery/invoices
+ * "are still inert for a non-L2 rep", because the area-guard SKIPS `page_access`
+ * entirely for any caller without an explicit `scm*` row (the NO-LOCKOUT
+ * fallthrough). Only the `"none"` half was enforced. That left a real hole:
+ *
+ *   - A POSITIONED sales rep resolves through positionPolicy, whose scm.sales row
+ *     sets scm_l2_configured TRUE, so the `view` cap DID 403 their DO/SI writes.
+ *   - A user in a Sales DEPARTMENT with NO position_id hydrates from the legacy
+ *     ROLE matrix (auth.ts positionless branch). That branch backfills the scm*
+ *     keys owner-only, so they are NOT scm_l2_configured -- and the guard handed
+ *     them straight through to POST /delivery-orders-mfg and POST /sales-invoices.
+ *     `applySalesJdOverride` wrote `"view"` into their map and nothing read it.
+ *
+ * So the SAME rule was enforced for one Sales user and theatre for another, which
+ * is precisely the failure mode salesJdDenial was written to end. This predicate
+ * closes it the same way: consulted BEFORE the no-lockout fallthrough, so the cap
+ * holds for every cohort member without forcing `scm_l2_configured` true (which
+ * would backfill every unlisted SCM key to "none" and risk the z1 mass lockout).
+ *
+ * DERIVED FROM SALES_JD, never a second list. An area is write-capped iff the JD
+ * puts it at exactly `"view"` -- so `scm.sales.orders` ("edit") is untouched (Sales
+ * OWNS the SO and must keep writing it) and `scm.sales.returns` ("none") is already
+ * answered whole-method by salesJdDenial above. Adding a `"view"` line to SALES_JD
+ * is all it takes to cap a new area; there is nothing here to keep in sync.
+ *
+ * READS ARE NEVER DENIED -- the method check is first and total. Sales keeps view
+ * + Print PDF on DO and SI (both are GETs; the PDFs are rendered client-side from
+ * the GET payload), and the `readInheritsFrom: "scm.sales.orders"` hatch in
+ * scm/index.ts is untouched, so a rep still reads the DOs and SIs raised off their
+ * own Sales Orders. This rule can only ever remove a WRITE.
+ *
+ * `*` IS EXEMPT, first and unconditionally, and NOBODY OUTSIDE THE SALES COHORT IS
+ * TOUCHED -- Office keeps exactly what its position grants. A caller this cannot
+ * identify is not denied (fail-OPEN), matching salesJdDenial and moneyWriteDenial:
+ * this predicate only ever ADDS a denial on top of gates that already ran.
+ */
+export function salesJdWriteDenial(
+  user: SalesJdCaller | null | undefined,
+  area: string,
+  method: string,
+): string | null {
+  if (!user) return null;
+  // Reads are always allowed — Sales views + prints DO/SI. Method check first.
+  if (!isWriteMethod(method)) return null;
+  // Only a `view` cap denies here. "edit" grants, "none" belongs to salesJdDenial.
+  if (SALES_JD[area] !== "view") return null;
+  if (hasWildcard(user)) return null;
+  if (!isSalesCohort(user)) return null;
+  return (
+    WRITE_DENY_REASON[area] ??
+    "Creating or changing this document is not part of the Sales role. You can view and print it."
+  );
 }
 
 /**

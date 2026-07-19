@@ -48,10 +48,10 @@ import {
   useAddMfgDeliveryOrderItem,
   useUpdateMfgDeliveryOrderItem,
   useDeleteMfgDeliveryOrderItem,
-  useSoConvertHeader,
+  useSoConversionSource,
+  useDeliverableSoLinesForDoc,
 } from "../../vendor/scm/lib/delivery-order-queries";
 import { useIdempotencyKey } from "../../lib/idempotency";
-import { useMfgSalesOrderDetail } from "../../vendor/scm/lib/sales-order-queries";
 import { useSoDropdownOptions, optionsOrFallback } from "../../vendor/scm/lib/so-dropdown-options-queries";
 import {
   SoLineCard,
@@ -475,15 +475,16 @@ export function DeliveryOrderNewV2() {
   const editId = params.get("edit") ?? "";
 
   const [soDocNo, setSoDocNo] = useState<string>(fromSoParam);
-  const soDetail = useMfgSalesOrderDetail(soDocNo || null);
-  /* Customer/delivery header for the prefill comes from the dedicated,
-     company-UNSCOPED so-convert-header read — NOT soDetail. The full SO detail
-     endpoint is company + sales scoped, so a 2990-mirrored SO (company 2)
-     converted while browsing as Houzs 404s there and the customer header came
-     back blank (line items still filled from the picker's own unscoped stash).
-     soDetail is kept only for the bare ?fromSo= line fallback below. Skipped in
-     edit mode — an existing DO prefills from itself. */
-  const soConvertHeader = useSoConvertHeader(editId ? null : (soDocNo || null));
+  /* The converter's OWN read of the source SO — cross-company, same columns and
+     same mapping as POST /from-sos. Replaces useMfgSalesOrderDetail, which is
+     company-scoped and 404'd for a mirrored 2990- SO, silently blanking every
+     header field while the "Converted from" badge kept rendering. */
+  const soSource = useSoConversionSource(soDocNo || null);
+  /* Lines fallback for a bare ?fromSo= (no line-picker stash). Also cross-company,
+     and semantically the right set: what is still UNDELIVERED on that SO. */
+  const soLines = useDeliverableSoLinesForDoc(
+    !editId && soDocNo && !fromPicks ? soDocNo : null,
+  );
   const doDetail = useMfgDeliveryOrderDetail(editId || null);
   const createDo = useCreateMfgDeliveryOrder();
   /* One key for the one DO this page is open to raise (lib/idempotency.ts).
@@ -599,67 +600,63 @@ export function DeliveryOrderNewV2() {
   }, [fromPicks, stashSeeded]);
 
   // ── Prefill customer/delivery header from the SO (when converting) ─────
-  // Reads the company-UNSCOPED so-convert-header (see the hook above), NOT the
-  // scoped soDetail — otherwise a 2990-mirrored SO converted while browsing as
-  // Houzs 404s and every customer field stays blank. Address2 falls back to
-  // address3/address4 the way the server-side /from-sos conversion does, so a
-  // 2990 SO that parked its street in address3/4 still fills in. Skipped in edit
+  // Reads the converter's own cross-company soSource (see the hook above), NOT
+  // the company-scoped SO detail — otherwise a 2990-mirrored SO converted while
+  // browsing as Houzs 404s and every customer field stays blank. Skipped in edit
   // mode — an existing DO prefills from itself, not from its parent SO.
   useEffect(() => {
     if (editId) return;
-    const so = soConvertHeader.data;
+    const so = soSource.data?.source;
     if (!so || !soDocNo) return;
-    setCustomerName(String(so.debtor_name ?? ""));
-    setCustomerSoRef(String(so.customer_so_no ?? so.po_doc_no ?? so.ref ?? ""));
-    setPhone(String(so.phone ?? ""));
-    setEmail(String(so.email ?? ""));
-    setCustomerType(String(so.customer_type ?? ""));
-    setSalesperson(String(so.agent ?? so.salesperson_id ?? ""));
-    setAddr1(String(so.address1 ?? ""));
-    setAddr2(String(
-      so.address2 ?? [so.address3, so.address4].filter(Boolean).join(", "),
-    ));
-    setState(String(so.customer_state ?? ""));
-    setCity(String(so.city ?? ""));
-    setPostcode(String(so.postcode ?? ""));
-    setSalesLocation(String(so.sales_location ?? ""));
-    setBuildingType(String(so.building_type ?? ""));
-    setVenue(String(so.venue ?? ""));
-    setEcName(String(so.emergency_contact_name ?? ""));
-    setEcRelationship(String(so.emergency_contact_relationship ?? ""));
-    setEcPhone(String(so.emergency_contact_phone ?? ""));
+    /* `?? ""` here is a WRITE into a form field, not a cover for an unread value:
+       soSource has already distinguished "absent at the source" (null, and named
+       in `missing` below) from "we could not read the SO" (the query errors, and
+       the banner says so). An empty input is the honest rendering of a field the
+       source order genuinely does not carry. */
+    setCustomerName(so.customerName ?? "");
+    setCustomerSoRef(so.customerSoRef ?? "");
+    setPhone(so.phone ?? "");
+    setEmail(so.email ?? "");
+    setCustomerType(so.customerType ?? "");
+    setSalesperson(so.salesperson ?? "");
+    setAddr1(so.address1 ?? "");
+    setAddr2(so.address2 ?? "");
+    setState(so.customerState ?? "");
+    setCity(so.city ?? "");
+    setPostcode(so.postcode ?? "");
+    setSalesLocation(so.salesLocation ?? "");
+    setBuildingType(so.buildingType ?? "");
+    setVenue(so.venue ?? "");
     setFlash(`Prefilled from ${soDocNo}`);
-  }, [soConvertHeader.data, soDocNo, editId]);
+  }, [soSource.data, soDocNo, editId]);
 
-  // ── Lines fallback for a bare ?fromSo= (no line-picker stash) ─────────
-  // The line-level picker (?fromPicks=1) hands its lines over via sessionStorage
-  // above; only a bare ?fromSo= (e.g. the "From Sales Order" modal) falls back to
-  // the SO's own items here. Kept on soDetail — the picker path is the mirrored-
-  // SO route and it never reaches this branch.
+  // Lines fallback — only when the line-level picker didn't hand a stash over.
+  // Sourced from the SO's still-undeliverable remainder (cross-company, same as
+  // the header), so a bare ?fromSo= on a mirrored 2990 SO carries its lines too.
   useEffect(() => {
     if (editId || fromPicks) return;
-    const items = (soDetail.data as { items?: Array<Record<string, unknown>> } | undefined)?.items ?? [];
-    if (items.length === 0) return;
+    const rows = soLines.data;
+    if (!rows || rows.length === 0) return;
     setLines(
-      items.map((it) => ({
-        ...newDoLine(null),
-        itemCode: String(it.item_code ?? ""),
-        itemGroup: String(it.item_group ?? "others"),
-        description: String(it.description ?? ""),
-        uom: String(it.uom ?? "UNIT"),
-        qty: Number(it.qty ?? 1),
-        unitPriceCenti: Number(it.unit_price_centi ?? 0),
-        discountCenti: Number(it.discount_centi ?? 0),
-        unitCostCenti: Number(it.unit_cost_centi ?? 0),
+      rows.map((it) => ({
+        ...newDoLine(it.soItemId),
+        itemCode: it.itemCode,
+        itemGroup: it.itemGroup ?? "others",
+        description: it.description ?? "",
+        uom: it.uom ?? "UNIT",
+        qty: it.remaining,
+        unitPriceCenti: it.unitPriceCenti,
+        discountCenti: it.discountCenti,
+        unitCostCenti: it.unitCostCenti,
         variants:
           it.variants && typeof it.variants === "object"
             ? (it.variants as Record<string, unknown>)
             : {},
-        remark: String(it.remark ?? ""),
-      }))
+        remark: "",
+      })),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [soDetail.data, soDocNo, editId, fromPicks]);
+  }, [soLines.data, editId, fromPicks]);
 
   // ── Prefill from DO detail (when editing) ──────────────────────────
   // Seeds header + lines (with their persisted item id) once, and snapshots
@@ -946,6 +943,32 @@ export function DeliveryOrderNewV2() {
               </div>
             </div>
           </div>
+
+          {/* THE FORM MUST NEVER LOOK FRESH WHEN IT IS ACTUALLY BROKEN.
+              The badge above renders off the ?fromSo= STRING, so it kept saying
+              "Converted from 2990-SO-2606-002" over a form whose every field was
+              blank because the source read had 404'd. These two states now say
+              which one they are. */}
+          {!editId && soDocNo && soSource.isError && (
+            <div
+              role="alert"
+              className="mt-3 rounded-md border border-err/40 bg-err-bg px-3.5 py-2.5 text-[12.5px] text-err"
+            >
+              <b>Could not read {soDocNo}.</b> Nothing has been copied across, so
+              the fields below are blank — they are NOT the customer's details.
+              Do not retype them by hand. Reload, or pick the sales order again.
+            </div>
+          )}
+          {!editId && soDocNo && !soSource.isError && (soSource.data?.missing?.length ?? 0) > 0 && (
+            <div
+              role="status"
+              className="mt-3 rounded-md border border-warning-text/25 bg-warning-bg px-3.5 py-2.5 text-[12.5px] text-warning-text"
+            >
+              <b>{soDocNo} does not carry:</b> {soSource.data?.missing.join(", ")}.
+              These fields are blank because the sales order has no value for
+              them — fill them in from the customer, not from memory.
+            </div>
+          )}
           {/* Right actions — no-wrap */}
           <div className="flex flex-shrink-0 flex-nowrap items-center gap-2">
             <Button

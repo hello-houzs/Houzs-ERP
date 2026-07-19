@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
-import { canViewFairReport } from "../auth/salesAccess";
+import { canOperateDeliveryOrders, canOperateSalesInvoices, canViewFairReport } from "../auth/salesAccess";
 import { capability, type CapabilityKey } from "../auth/capabilities";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { makeNavVisible } from "../components/navFilter";
@@ -604,8 +604,23 @@ function MobileAppInner() {
   else if (screen.t === "module") {
     const k = screen.key;
     const convertTarget = MODULE_TO_CONVERT[k];
+    /* Owner 2026-07-17: Office operates DO and SI, Sales only looks — and
+       2026-07-18 on parity, "電話電腦的權限應該一樣的". Mobile used to hand every
+       user who could SEE the Delivery Orders / Sales Invoices list a "+" that
+       opened the convert wizard, because MobileModuleList renders the button on
+       `onNew` alone and MobileConvertWizard imports no auth at all. Withholding
+       `onNew` is what makes the control ABSENT (off, not hide), and it resolves
+       through the SAME helper the desktop uses — one decision, both platforms. */
+    const mayConvert =
+      convertTarget === "do"
+        ? canOperateDeliveryOrders(user, can, pageAccess)
+        : convertTarget === "si"
+          ? canOperateSalesInvoices(user, can, pageAccess)
+          : true;
     const onNew = convertTarget
-      ? () => setScreen({ t: "convert", key: k, title: screen.title, target: convertTarget })
+      ? mayConvert
+        ? () => setScreen({ t: "convert", key: k, title: screen.title, target: convertTarget })
+        : undefined
       : MODULE_CONFIGS[k]?.form
         ? () => setScreen({ t: "module-form", key: k, mode: "new" })
         : undefined;

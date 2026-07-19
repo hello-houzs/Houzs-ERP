@@ -2,7 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import type { Env, Variables } from "../env";
 import type { AuthUser } from "../../services/auth";
 import { meetsLevel, type AccessLevel } from "../../services/pageAccess";
-import { salesJdDenial } from "../../services/salesJdAccess";
+import { salesJdDenial, salesJdWriteDenial } from "../../services/salesJdAccess";
 import { moneyWriteDenial } from "../../services/positionPolicy";
 
 // ── L2 per-area WRITE authorization for /api/scm/* ──────────────────────────
@@ -26,6 +26,12 @@ import { moneyWriteDenial } from "../../services/positionPolicy";
 //                                         and a setting. Today: exactly
 //                                         scm.sales.returns, for the Sales
 //                                         cohort (owner 2026-07-17 "就是要关").
+//   1.55 Sales JD write-cap (salesJdAccess.salesJdWriteDenial) → 403 on WRITES
+//                                         The other half of the same rule: an area
+//                                         SALES_JD caps at `view` (DO + SI) takes
+//                                         writes away from the Sales cohort whether
+//                                         or not they are L2-configured. Reads are
+//                                         never denied — Sales keeps view + print.
 //   1.6 Money-write deny (positionPolicy.moneyWriteDenial) → 403  (ENFORCED ALWAYS)
 //                                         Owner 2026-07-18: default-full is about
 //                                         SEEING, not doing. A WRITE on the finance
@@ -130,6 +136,20 @@ export function scmAreaGuard(area: string, opts?: ScmAreaGuardOpts): MiddlewareH
     //      not deny, and `*` is exempt inside salesJdDenial.
     const jdDenial = salesJdDenial(user, area);
     if (jdDenial) return c.json({ error: jdDenial }, 403);
+
+    // 1.55) The Sales JD's WRITE-CAP half — same rule, same map, same reason it
+    //       cannot wait for the L2 rollout. SALES_JD caps scm.sales.delivery and
+    //       scm.sales.invoices at `view` (owner 2026-07-17: "后面的人是来操作 DO 和
+    //       SI 的。销售人员不可能去操作 DO 和 SI，所以他们通常只是来看而已"), but
+    //       that cap only bit for a caller who happened to be scm_l2_configured.
+    //       A Sales-DEPARTMENT user with no position_id hydrates from the legacy
+    //       role matrix, is NOT L2-configured, and step 3 below handed them POST
+    //       /delivery-orders-mfg and POST /sales-invoices with the written `view`
+    //       sitting inert in their map — the identical trap the returns deny was
+    //       written to end. Enforced here for the whole cohort; READS untouched
+    //       (method-checked inside), so view + Print PDF survive.
+    const jdWriteDenial = salesJdWriteDenial(user, area, c.req.method);
+    if (jdWriteDenial) return c.json({ error: jdWriteDenial }, 403);
 
     // 1.6) The MONEY-MOVING WRITE rule (owner 2026-07-18) — also a RULE in code,
     //      so it is likewise enforced BEFORE the no-lockout fallthrough. His

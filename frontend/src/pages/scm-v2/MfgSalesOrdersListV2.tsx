@@ -58,7 +58,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { resolveSoLocation } from "../../lib/soLocation";
 import { useAuth } from "../../auth/AuthContext";
-import { canViewScmCosting } from "../../auth/salesAccess";
+import { canViewScmCosting, canOperateDeliveryOrders } from "../../auth/salesAccess";
 import { capability } from "../../auth/capabilities";
 import { buildVariantSummary, lineIdentity } from "@2990s/shared";
 
@@ -386,6 +386,7 @@ function DetailDrawer({
   onConfirm,
   onDeliver,
   onReopen,
+  canDeliver,
   salespersonName,
 }: {
   row: SoRow | null;
@@ -396,6 +397,11 @@ function DetailDrawer({
   onConfirm: () => void;
   onDeliver: () => void;
   onReopen: () => void;
+  /** Sales may raise the SO but not operate the DO (owner 2026-07-17). False
+   *  makes the Deliver CTA ABSENT — the destination route is guarded on
+   *  scm.sales.delivery with no Sales bypass, so rendering it only ever led a
+   *  salesperson to <Forbidden>. */
+  canDeliver: boolean;
   salespersonName: string;
 }) {
   const detailQ = useMfgSalesOrderDetail(row?.doc_no ?? null);
@@ -660,6 +666,8 @@ function DetailDrawer({
                   );
                 }
                 if (s === "confirmed") {
+                  // ABSENT, not disabled, for anyone who may not operate a DO.
+                  if (!canDeliver) return null;
                   return (
                     <Button
                       variant="primary"
@@ -945,7 +953,7 @@ export function MfgSalesOrdersListV2() {
   // only DECLARED for a finance-viewer, so the column chooser never lists an
   // always-empty finance column for a non-finance user (the backend also omits
   // those keys from the payload — see canViewScmFinance).
-  const { user } = useAuth();
+  const { user, can, pageAccess } = useAuth();
   const canFinance = canViewScmCosting(user);
   // SO Maintenance (bulk import / duplicate / renumber) — the BACKEND's answer,
   // `scm.maintenance.open`, resolved once on /auth/me and read verbatim.
@@ -959,6 +967,9 @@ export function MfgSalesOrdersListV2() {
   // Owner 2026-07-15's exclusion of non-director SALES is unchanged: the sales
   // cohort satisfies neither term of the capability.
   const canMaintain = capability(user, "scm.maintenance.open");
+  // Converting an SO into a Delivery Order is the Office department's job — the
+  // ONE gate, shared with every other DO/SI control on both platforms.
+  const canDeliver = canOperateDeliveryOrders(user, can, pageAccess);
 
   const status = (params.get("status") ?? "all") as StatusTab;
   // View toggle applies at md+; on phones we always render the card list
@@ -2053,6 +2064,7 @@ export function MfgSalesOrdersListV2() {
         onConfirm={() => selected && doConfirm(selected)}
         onDeliver={() => selected && doDeliver(selected)}
         onReopen={() => selected && void doReopen(selected)}
+        canDeliver={canDeliver}
         salespersonName={
           selected
             ? salespersonNameOf(selected.agent, selected.salesperson_id)

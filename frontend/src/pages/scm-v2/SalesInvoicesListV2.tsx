@@ -12,7 +12,7 @@
 //         chrome only.)
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { canViewScmCosting } from "../../auth/salesAccess";
+import { canViewScmCosting, canOperateSalesInvoices } from "../../auth/salesAccess";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -755,14 +755,14 @@ export function SalesInvoicesListV2() {
   // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
   // DECLARED only for a finance-viewer; the backend also omits their keys from
   // the payload for everyone else (canViewScmFinance).
-  const { user, pageAccess } = useAuth();
+  const { user, can, pageAccess } = useAuth();
   const canFinance = canViewScmCosting(user);
   // Write gate — a salesperson reaches this list read-only via the sales inherit
   // hatch (App.tsx allowSales; backend readInheritsFrom scm.sales.orders) and
   // cannot create/edit an invoice or record payments. Hide the create + row
   // mutation actions rather than render-then-deny (owner off-not-hide rule).
-  // `*` resolves to "full" in pageAccess.
-  const canWriteSi = ["edit", "full"].includes(pageAccess("scm.sales.invoices"));
+  // ONE gate, shared with the DO surfaces and mobile.
+  const canWriteSi = canOperateSalesInvoices(user, can, pageAccess);
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";

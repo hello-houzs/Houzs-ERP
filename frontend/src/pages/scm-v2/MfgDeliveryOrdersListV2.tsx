@@ -11,7 +11,7 @@
 //       we don't re-derive them; the Theme C paint is chrome-only).
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { canViewScmCosting } from "../../auth/salesAccess";
+import { canViewScmCosting, canOperateDeliveryOrders } from "../../auth/salesAccess";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -813,14 +813,14 @@ export function MfgDeliveryOrdersListV2() {
   // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
   // DECLARED only for a finance-viewer; the backend also omits their keys from
   // the payload for everyone else (canViewScmFinance).
-  const { user, pageAccess } = useAuth();
+  const { user, can, pageAccess } = useAuth();
   const canFinance = canViewScmCosting(user);
   // Write gate — a salesperson reaches this list read-only via the sales inherit
   // hatch (App.tsx allowSales; backend readInheritsFrom scm.sales.orders) and
   // cannot create/edit/convert a DO. Hide the create + row mutation actions
-  // rather than render-then-deny (owner off-not-hide rule). Only an edit/full
-  // grant on the native area shows them; `*` resolves to "full" in pageAccess.
-  const canWriteDo = ["edit", "full"].includes(pageAccess("scm.sales.delivery"));
+  // rather than render-then-deny (owner off-not-hide rule).
+  // ONE gate, shared with the detail page, the SO drawer and mobile.
+  const canWriteDo = canOperateDeliveryOrders(user, can, pageAccess);
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
