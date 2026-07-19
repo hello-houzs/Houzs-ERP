@@ -46,10 +46,13 @@ describe("resolveMobileRoute", () => {
   });
 
   it("says so plainly when there is no mobile screen at all", () => {
-    // Two of the five URLs from the incident report. Neither has a mobile
-    // screen; both used to render the Sales Orders list.
-    expect(resolveMobileRoute("/scm/stock-transfers", ALL, ALL))
-      .toEqual({ t: "desktop-only", path: "/scm/stock-transfers" });
+    // Two desktop-only URLs from the incident report. Neither has a mobile
+    // screen; both used to render the Sales Orders list. (/scm/stock-transfers
+    // was the third such example here until it was given a mobile menu row —
+    // it is a real destination now, so asserting the opposite would make this
+    // test itself the lie it was written to catch.)
+    expect(resolveMobileRoute("/scm/lorry-capacity", ALL, ALL))
+      .toEqual({ t: "desktop-only", path: "/scm/lorry-capacity" });
     expect(resolveMobileRoute("/scm/hr/settings", ALL, ALL))
       .toEqual({ t: "desktop-only", path: "/scm/hr/settings" });
     // A path that exists nowhere must also NOT fall through to a document list.

@@ -159,6 +159,17 @@ const ROUTE_TO_CONFIG: Record<string, string> = {
   "/scm/drivers": "drivers",
   "/scm/warehouses": "warehouse",
   "/scm/inventory": "inventory",
+  "/scm/stock-transfers": "stock-transfers",
+  "/scm/stock-takes": "stock-takes",
+  "/scm/helpers": "helpers",
+  "/scm/delivery-planning-regions": "delivery-planning-regions",
+  "/scm/consignment-orders": "consignment-orders",
+  "/scm/consignment-notes": "consignment-notes",
+  "/scm/consignment-returns": "consignment-returns",
+  "/scm/purchase-consignment-orders": "purchase-consignment-orders",
+  "/scm/purchase-consignment-receives": "purchase-consignment-receives",
+  "/scm/purchase-consignment-returns": "purchase-consignment-returns",
+  "/scm/accounting": "accounting",
 };
 
 /** The mobile Menu mirrors the owner's design prototype `var MENU`
@@ -189,6 +200,13 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; a
     { to: "/scm/delivery-orders", label: "Delivery Orders" },
     { to: "/scm/sales-invoices", label: "Sales Invoices" },
     { to: "/scm/delivery-returns", label: "Delivery Returns" },
+    /* Chart of Accounts (MODULE_CONFIGS.accounting → GET /accounting/accounts).
+       READ-ONLY and accounts-only: the journal-entry half of the desktop page
+       (/accounting/journal-entries) has no mobile screen, so this row is the
+       account list, not the whole desktop module. Gated by its own live nav
+       entry (anyAccess scm.finance.accounting), which is also the backend area
+       guard on /api/scm/accounting/*. */
+    { to: "/scm/accounting", label: "Accounting" },
   ]},
   { group: "Projects · PMS", items: [
     { to: "/projects", label: "Projects" },
@@ -204,6 +222,21 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; a
     { to: "/scm/purchase-returns", label: "Purchase Returns" },
     { to: "/scm/products", label: "Products & Maintenance" },
     { to: "/scm/suppliers", label: "Suppliers" },
+  ]},
+  /* Consignment — the six vendored consignment doc lists, all of which already
+     had a MODULE_CONFIGS entry (eyebrow "Consignment") and a live backend list
+     endpoint, but no way in. Group + order + per-row gate mirror the desktop
+     Sidebar's own Consignment group: each row carries its OWN anyAccess key
+     (scm.consignment.orders / .notes / .returns / .po_orders / .po_receives /
+     .po_returns), which is also the backend area guard, so a position granted
+     only part of the area sees only that part. */
+  { group: "Consignment", items: [
+    { to: "/scm/consignment-orders", label: "Consignment Orders" },
+    { to: "/scm/consignment-notes", label: "Consignment Notes" },
+    { to: "/scm/consignment-returns", label: "Consignment Returns" },
+    { to: "/scm/purchase-consignment-orders", label: "Purchase Consignment Orders" },
+    { to: "/scm/purchase-consignment-receives", label: "Purchase Consignment Receives" },
+    { to: "/scm/purchase-consignment-returns", label: "Purchase Consignment Returns" },
   ]},
   { group: "Logistics", items: [
     { to: "/scm/delivery-planning", label: "Delivery Planning" },
@@ -226,10 +259,22 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; a
        (anyPerm ["*","scm.access"] + anyAccess ["scm.transportation.drivers"] +
        hideForSalesRep), so this preserves today's behaviour exactly. */
     { to: "/scm/drivers", label: "Drivers", gateVia: "/scm/fleet" },
+    /* Helpers — the delivery-crew master (scm.helpers, mig 0053). Same shape as
+       the Drivers row above and for the same reason: mobile's "Fleet" module is
+       LORRIES ONLY, so this is the only helper surface on a phone, not a
+       duplicate. `gateVia` because /scm/helpers is a mobile-only path with no
+       NAV_TABS entry, and `allowed()` fails OPEN for an unmatched path — without
+       it the row would be visible to every mobile user. /scm/fleet carries the
+       gate the backend applies to /api/scm/helpers/* (scmAreaGuard
+       "scm.transportation.drivers"), so the two agree. */
+    { to: "/scm/helpers", label: "Helpers", gateVia: "/scm/fleet" },
+    { to: "/scm/delivery-planning-regions", label: "Regions" },
   ]},
   { group: "Warehouse", items: [
     { to: "/scm/warehouses", label: "Warehouse" },
     { to: "/scm/inventory", label: "Inventory" },
+    { to: "/scm/stock-transfers", label: "Stock Transfers" },
+    { to: "/scm/stock-takes", label: "Stock Take" },
   ]},
 ];
 
