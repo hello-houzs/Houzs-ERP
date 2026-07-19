@@ -19,6 +19,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 // Re-export the DO-side prefill hooks the New-SI page pulls from this module in
 // the source (they live in the vendored DO slice — single source of truth).
@@ -30,7 +31,7 @@ export const useSalesInvoices = (status?: string) =>
     queryKey: ['sales-invoices', status ?? 'all'],
     queryFn: () => authedFetch<{ salesInvoices: any[] }>(`/sales-invoices${status ? `?status=${status}` : ''}`),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 
@@ -55,14 +56,14 @@ export function useSalesInvoicesPaged(params: { page: number; pageSize: number; 
     queryFn: () => authedFetch<{ salesInvoices: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; sent: number; partial: number; paid: number; cancelled: number } }>(`/sales-invoices?${usp.toString()}`),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }
 export const useSalesInvoiceDetail = (id: string | null) => useQuery({
   queryKey: ['sales-invoice-detail', id],
   queryFn: () => authedFetch<{ salesInvoice: any; items: any[] }>(`/sales-invoices/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 /* Create a Sales Invoice (header + line items). The server posts revenue on
    create (idempotent), so invalidate the GL queries too. */
@@ -165,7 +166,7 @@ export const useInvoiceableDoLines = () => useQuery({
     `/sales-invoices/invoiceable-do-lines`,
   ).then((r) => r.lines),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* Convert picked DO LINES (each with a partial qty) → ONE Sales Invoice. Server
@@ -296,7 +297,7 @@ export const useSalesInvoicePayments = (id: string | null) => useQuery({
   queryFn: () => authedFetch<{ payments: SiPayment[] }>(`/sales-invoices/${id}/payments`).then((r) => r.payments),
   enabled: Boolean(id),
   staleTime: 2 * 60_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 

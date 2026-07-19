@@ -1351,12 +1351,44 @@ export const SalesOrderDetail = () => {
     /* Followup #81 — Wait for the payments query before generating; legacy
        header columns (paid_centi, payment_method, …) are deprecated. If
        the query is still loading we surface a brief notice and bail out
-       rather than printing a PDF with an empty Payments table. */
-    if (printPaymentsQ.isLoading) {
-      notify({ title: 'Loading payments… please try again in a moment.' });
+       rather than printing a PDF with an empty Payments table.
+
+       2026-07-19 — the guard was keyed on `isLoading` ALONE, which is the exact
+       hole the sentence above was written to close. On a FAILED read react-query
+       leaves `isLoading` false and `data` undefined, so an errored payments
+       fetch fell straight through to `?? []` and printed the customer-facing PDF
+       with an empty Payments table — telling the customer they have paid nothing
+       and owe the full total. That is reference_houzs_nullish_hides_ignorance on
+       a document that leaves the building: "the read failed" rendered as "no
+       payments exist". Same class as MobilePOD (#653) and #1158.
+
+       An empty array is an ANSWER (a genuinely unpaid SO prints an empty
+       Payments table, correctly). The ABSENCE of an array is not — `data` is set
+       only by a successful fetch. So we print only when we actually learned what
+       was paid, and say which of the two states we are in, because "still
+       loading" and "we asked and failed" need different actions from the
+       operator. */
+    const paymentRows = printPaymentsQ.data;
+    if (!Array.isArray(paymentRows)) {
+      if (printPaymentsQ.isFetching) {
+        notify({ title: 'Loading payments… please try again in a moment.' });
+      } else {
+        notify({
+          title: 'Cannot print — payments could not be loaded',
+          /* authedFetch already runs every non-ok response through humanApiError,
+             so this arrives as a plain sentence. Re-mapping it here would be a
+             second copy of that rule. */
+          body: `${
+            printPaymentsQ.error instanceof Error
+              ? printPaymentsQ.error.message
+              : 'The payment records for this order could not be read.'
+          } Printing now would show the customer an empty Payments table.`,
+          tone: 'error',
+        });
+      }
       return;
     }
-    const payments = printPaymentsQ.data ?? [];
+    const payments = paymentRows;
     /* `pwpCodes` rides on the same GET /:docNo payload — vouchers this SO's
        trigger items issued, so the printed PDF can mark the trigger lines. */
     const pwpCodes = ((detail.data as { pwpCodes?: unknown[] } | undefined)?.pwpCodes ?? []) as never;

@@ -125,6 +125,30 @@ const BUDGETS = {
   // fetched only by the finance cohort that opens it; initial JS is unchanged
   // (still PASS at 156/165). Exactly the "one more page" growth this budget
   // exists to surface — bumped with ~16 KB headroom for a few more.
+  //
+  // 1770 -> 1800 on 2026-07-19 (perf/frontend-audit, landing the same day). It DID make someone look,
+  // so here is what was found. The "headroom is ~7 more pages" estimate above
+  // was wrong: measured on origin/main at ae79e1ad, total JS is already
+  // **1749.1 KB — 0.9 KB under the line**, i.e. the budget was fully spent and
+  // the very next change of any size was going to fail CI regardless of what it
+  // was. The frontend-audit branch adds 2.8 KB (a shared retry predicate + its
+  // ~30 imports, a debounced search input in DataTable, and the notifications
+  // context split), which is what tipped it — but attributing the failure to
+  // those 2.8 KB would be reading the wrong cause. Fulfillment Costing hit the
+  // same wall the same day from the other direction and bumped to 1770; that is
+  // two branches tripping a spent budget within hours, which is the finding.
+  //
+  // Raised by 50 KB rather than to a hair above current, so this keeps working
+  // as a tripwire instead of failing every PR. INITIAL_JS_GZIP — the number that
+  // actually governs first paint — moved 156.0 -> 156.1 KB and remains at 95%
+  // of its own budget, unchanged in substance.
+  //
+  // WHAT TO DO WHEN THIS TRIPS AGAIN: do not reflexively add another 50. Check
+  // INITIAL_JS_GZIP first (if that is healthy, the lazy tail is still lazy and
+  // growth here is users paying only for pages they open), then look for a
+  // formerly-lazy module that has become eagerly reachable — that is the failure
+  // mode this budget exists to catch, and the vite.config manualChunks comment
+  // documents the last time it happened.
   TOTAL_JS_GZIP: 1770 * KB,
   // Any single chunk, raw. A route blowing past this should be split.
   // Raised to fit the heaviest vendored lib — xlsx (~430 KB raw), pulled

@@ -26,6 +26,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── List ────────────────────────────────────────────────────────────── */
 export const useConsignmentOrders = (status?: string) => useQuery({
@@ -35,7 +36,7 @@ export const useConsignmentOrders = (status?: string) => useQuery({
     `/consignment-orders${status ? `?status=${status}` : ''}`,
   ),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* ── List (opt-in server-side pagination) ────────────────────────────────
@@ -74,7 +75,7 @@ export const useConsignmentOrdersPaged = (params: {
     queryFn: () => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentOrderAggregates }>(`/consignment-orders?${usp.toString()}`),
     placeholderData: (prev: unknown) => prev as { salesOrders: unknown[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentOrderAggregates } | undefined,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 };
@@ -84,7 +85,7 @@ export const useConsignmentOrderDetail = (docNo: string | null) => useQuery({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   queryKey: ['consignment-order-detail', docNo],
   queryFn: () => authedFetch<{ salesOrder: any; items: any[] }>(`/consignment-orders/${docNo}`),
-  enabled: Boolean(docNo), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(docNo), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 
 /* ── Create ──────────────────────────────────────────────────────────── */
@@ -281,7 +282,7 @@ export const useConsignmentOrderPayments = (docNo: string | null) => useQuery({
   queryFn: () => authedFetch<{ payments: ConsignmentPayment[] }>(`/consignment-orders/${docNo}/payments`).then((r) => r.payments),
   enabled: Boolean(docNo),
   staleTime: 2 * 60_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 
@@ -329,5 +330,5 @@ export const useConsignmentDebtorSearch = (q: string) => useQuery({
   ),
   enabled: q.trim().length >= 2,
   staleTime: 5 * 60_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });

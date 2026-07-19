@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useNotifications, type NotificationItem } from "../hooks/useNotifications";
+import { useNotifications, useNotificationsTick, type NotificationItem } from "../hooks/useNotifications";
 import {
   HOUZS_COMPANY_CODE,
   getBrandingCache,
@@ -38,7 +38,11 @@ export function setBrowserPushEnabled(enabled: boolean) {
  * don't get spammed with a backlog when first enabling the toggle.
  */
 export function BrowserPushSink() {
-  const { feed, lastTick } = useNotifications();
+  const { feed } = useNotifications();
+  /* The heartbeat now comes from its own context — it changes every 30s by
+     design, and this component (which renders null) is the only thing that
+     should re-render on that timer. See useNotifications.tsx. */
+  const lastTick = useNotificationsTick();
   const seenRef = useRef<Set<number>>(new Set());
   const primedRef = useRef(false);
 

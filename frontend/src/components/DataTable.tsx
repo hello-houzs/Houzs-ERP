@@ -105,6 +105,21 @@ interface Props<T> {
     value: string;
     onChange: (next: string) => void;
     placeholder?: string;
+    /**
+     * Milliseconds to wait after the last keystroke before calling `onChange`.
+     * Default 250. Pass 0 to propagate on every keystroke (only correct when
+     * `onChange` does nothing but set local state).
+     *
+     * WHY THIS DEFAULTS TO ON: this input is fully controlled and used to call
+     * `onChange` on EVERY keystroke. Several consumers map that value straight
+     * into a server query key — `pages/ServiceCases.tsx` (`/api/assr?search=`)
+     * and both `pages/Projects.tsx` lists — so typing an 8-character customer
+     * name fired eight requests, of which seven were already stale on arrival.
+     * Projects also writes the value into the URL, so each keystroke was a
+     * `history.replaceState` too. Debouncing here fixes every DataTable
+     * consumer at once rather than one page at a time.
+     */
+    debounceMs?: number;
   };
   /**
    * When provided, renders a "Reset" button next to the search input
@@ -230,6 +245,101 @@ const DEFAULT_COL_WIDTH = 160;
 const VIRTUAL_ROW_THRESHOLD = 30;
 const VIRTUAL_OVERSCAN = 12;
 const ROW_HEIGHT_ESTIMATE = 33; // px; corrected at runtime by measuring a real row
+
+/**
+ * The toolbar search box. Types instantly, tells the page 250ms later.
+ *
+ * The keystroke has to stay local or the caret stutters and a fast typist loses
+ * characters — so the field is driven by `draft`, and `onChange` is what gets
+ * debounced. The two-way sync is the fiddly half:
+ *
+ *  - DOWN: the page can change the value itself (a Reset Filters click, a URL
+ *    with `?search=`, a restored sticky filter). We must accept that and
+ *    overwrite the draft. But we must NOT overwrite it with the page's echo of
+ *    what we just sent up, or a slow re-render would snap the caret back to a
+ *    stale value mid-word. `lastSentRef` distinguishes the two: a `value` equal
+ *    to what we last propagated is our own echo and is ignored.
+ *  - UP: debounced, and skipped entirely when the draft already equals `value`,
+ *    so mounting or an echo never fires a redundant onChange.
+ *
+ * Flushed on Enter and on blur, because a user who types and immediately hits
+ * Enter or clicks away expects to have searched, not to wait out a timer.
+ */
+function DebouncedSearchInput({
+  value,
+  onChange,
+  placeholder,
+  delayMs,
+  className,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  placeholder: string;
+  delayMs: number;
+  className: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const lastSentRef = useRef(value);
+  const timerRef = useRef<number | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  // DOWN-sync: adopt an externally-driven change, ignore our own echo.
+  useEffect(() => {
+    if (value !== lastSentRef.current) {
+      lastSentRef.current = value;
+      setDraft(value);
+    }
+  }, [value]);
+
+  // UP-sync: debounced.
+  useEffect(() => {
+    if (draft === lastSentRef.current) return;
+    if (delayMs <= 0) {
+      lastSentRef.current = draft;
+      onChangeRef.current(draft);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      timerRef.current = null;
+      lastSentRef.current = draft;
+      onChangeRef.current(draft);
+    }, delayMs);
+    timerRef.current = t;
+    return () => {
+      window.clearTimeout(t);
+      if (timerRef.current === t) timerRef.current = null;
+    };
+  }, [draft, delayMs]);
+
+  /* Cancels the pending timer as well as sending. Without the cancel, blurring
+     100ms into a 250ms window fired onChange twice with the same value — the
+     flush, then the timer that was still armed. Harmless for a search box, but
+     it is a duplicate request per blur, which is the exact thing this component
+     exists to stop. */
+  const flush = () => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (draft === lastSentRef.current) return;
+    lastSentRef.current = draft;
+    onChangeRef.current(draft);
+  };
+
+  return (
+    <input
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") flush();
+      }}
+      onBlur={flush}
+      placeholder={placeholder}
+      className={className}
+    />
+  );
+}
 
 export function DataTable<T>({
   tableId,
@@ -912,10 +1022,11 @@ export function DataTable<T>({
                 size={13}
                 className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
               />
-              <input
+              <DebouncedSearchInput
                 value={search.value}
-                onChange={(e) => search.onChange(e.target.value)}
+                onChange={search.onChange}
                 placeholder={search.placeholder || "Search…"}
+                delayMs={search.debounceMs ?? 250}
                 className="h-9 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20 sm:h-8 sm:text-[12px]"
               />
             </div>

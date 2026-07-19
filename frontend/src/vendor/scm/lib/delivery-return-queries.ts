@@ -27,6 +27,7 @@ export { useMfgDeliveryOrderDetail } from './delivery-order-queries';
 export type { DoRemainingLine } from './sales-invoice-queries';
 
 import type { DoRemainingLine } from './sales-invoice-queries';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── Delivery Returns ────────────────────────────────────────────────── */
 export const useDeliveryReturns = (status?: string) =>
@@ -34,13 +35,13 @@ export const useDeliveryReturns = (status?: string) =>
     queryKey: ['delivery-returns', status ?? 'all'],
     queryFn: () => authedFetch<{ deliveryReturns: any[] }>(`/delivery-returns${status ? `?status=${status}` : ''}`),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 export const useDeliveryReturnDetail = (id: string | null) => useQuery({
   queryKey: ['delivery-return-detail', id],
   queryFn: () => authedFetch<{ deliveryReturn: any; items: any[] }>(`/delivery-returns/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 /* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
    rest-spread would otherwise post it as a return field. Pass one per return
@@ -77,7 +78,7 @@ export const useReturnableDoLines = () => useQuery({
     `/delivery-returns/returnable-do-lines`,
   ).then((r) => r.lines),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* Convert picked DO LINES (each with a partial qty) → ONE Delivery Return.

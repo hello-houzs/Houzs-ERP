@@ -1139,9 +1139,22 @@ export function MfgSalesOrdersListV2() {
   const clearSelection = () => setSelectedIds(new Set());
 
   // One SO's full PDF bundle — detail (header + items + pwpCodes) and the
-  // payments ledger, both via the vendored authedFetch (→ /api/scm). Payments
-  // are best-effort: a failed fetch yields [] so the PDF still renders. Mirrors
+  // payments ledger, both via the vendored authedFetch (→ /api/scm). Mirrors
   // the V1 MfgSalesOrdersList fetchSoBundle.
+  //
+  // 2026-07-19 — payments were "best-effort": `.catch(() => ({ payments: [] }))`
+  // so the PDF "still renders". But this PDF LEAVES THE BUILDING — it is the
+  // document the customer is handed. Rendering it with an empty Payments table
+  // does not degrade gracefully, it states a FALSE FACT: that the customer has
+  // paid nothing and owes the full total. "The read failed" became "nothing was
+  // paid" — reference_houzs_nullish_hides_ignorance, the same shape as #653
+  // (MobilePOD told a driver to re-collect a paid order) and #1158.
+  //
+  // A failed payments read now propagates. printSelectedSos already wraps this
+  // in try/catch → notify(tone:'error'), and authedFetch has already run the
+  // response through humanApiError, so the operator gets a plain sentence and
+  // NO document — which is the correct outcome. Not printing is recoverable;
+  // handing a customer a wrong statement of what they owe is not.
   const fetchSoBundle = async (
     docNo: string
   ): Promise<{
@@ -1156,11 +1169,14 @@ export function MfgSalesOrdersListV2() {
       ),
       authedFetch<{ payments?: unknown[] }>(
         `/mfg-sales-orders/${docNo}/payments`
-      ).catch(() => ({ payments: [] })),
+      ),
     ]);
     return {
       header: detail.salesOrder,
       items: detail.items,
+      /* `?? []` is safe HERE and nowhere above it: we are past the await, so the
+         request SUCCEEDED and the server simply omitted the key on an SO with no
+         payments. An empty array is an answer; the absence of a response is not. */
       payments: paymentsRes.payments ?? [],
       pwpCodes: detail.pwpCodes ?? [],
     };

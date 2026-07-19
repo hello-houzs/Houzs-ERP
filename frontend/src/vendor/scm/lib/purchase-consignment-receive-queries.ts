@@ -23,6 +23,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { serviceNotify } from './dialog-service';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── List ────────────────────────────────────────────────────────────── */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,7 +31,7 @@ export const usePurchaseConsignmentReceives = (status?: string) => useQuery({
   queryKey: ['pc-receive', 'list', status ?? 'all'],
   queryFn: () => authedFetch<{ grns: any[] }>(`/purchase-consignment-receives${status ? `?status=${status}` : ''}`),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 
@@ -39,7 +40,7 @@ export const usePurchaseConsignmentReceiveDetail = (id: string | null) => useQue
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   queryKey: ['pc-receive-detail', id],
   queryFn: () => authedFetch<{ grn: any; items: any[] }>(`/purchase-consignment-receives/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 
 /* ── Outstanding PC Order lines (From-Order multi-picker) ─────────────── */
@@ -69,7 +70,7 @@ export const useOutstandingPcOrderLines = () => useQuery({
     `/purchase-consignment-receives/outstanding-order-lines`,
   ).then((r) => r.lines),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* ── Create + post ───────────────────────────────────────────────────── */

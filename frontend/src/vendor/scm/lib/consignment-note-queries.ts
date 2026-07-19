@@ -22,6 +22,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── List ────────────────────────────────────────────────────────────── */
 export const useConsignmentNotes = (status?: string) => useQuery({
@@ -31,7 +32,7 @@ export const useConsignmentNotes = (status?: string) => useQuery({
     `/consignment-notes${status ? `?status=${status}` : ''}`,
   ),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* ── List (opt-in server-side pagination) ────────────────────────────────
@@ -68,7 +69,7 @@ export const useConsignmentNotesPaged = (params: {
     queryFn: () => authedFetch<{ deliveryOrders: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentNoteAggregates }>(`/consignment-notes?${usp.toString()}`),
     placeholderData: (prev: unknown) => prev as { deliveryOrders: unknown[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentNoteAggregates } | undefined,
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 };
@@ -78,7 +79,7 @@ export const useConsignmentNoteDetail = (id: string | null) => useQuery({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   queryKey: ['consignment-note-detail', id],
   queryFn: () => authedFetch<{ deliveryOrder: any; items: any[] }>(`/consignment-notes/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 
 /* ── Deliverable Consignment Order lines (From-Order multi-picker) ────── */
@@ -107,7 +108,7 @@ export const useDeliverableOrderLines = () => useQuery({
     `/consignment-notes/deliverable-order-lines`,
   ).then((r) => r.lines),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* ── Create ──────────────────────────────────────────────────────────── */
@@ -229,7 +230,7 @@ export const useConsignmentNotePayments = (id: string | null) => useQuery({
   queryFn: () => authedFetch<{ payments: ConsignmentNotePayment[] }>(`/consignment-notes/${id}/payments`).then((r) => r.payments),
   enabled: Boolean(id),
   staleTime: 2 * 60_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 

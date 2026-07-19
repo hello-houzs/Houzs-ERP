@@ -129,7 +129,7 @@ export const ProductModelDetail = ({
   const { user: costUser } = useAuth();
   const showCost = canViewProductCost(costUser);
   const navigate = useNavigate();
-  const { data, isLoading, error } = useProductModel(id);
+  const { data, isPending, error } = useProductModel(id);
   const updateMut = useUpdateProductModel();
   const deleteMut = useDeleteProductModel();
   const generateMut = useGenerateModelSkus();
@@ -236,14 +236,24 @@ export const ProductModelDetail = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.model?.id, data?.model?.updated_at, cfg, specialsByCategory]);
 
-  if (isLoading) return <SkeletonDetailPage />;
+  /* isPending, NOT isLoading (BUG-HISTORY 2026-07-16, "打開會 error 先然後再
+     loading 出來"). isLoading is (isPending && isFetching), so a pending-but-not-
+     fetching query (disabled, or paused offline) fell through to the bare
+     `!data?.model` guard below and painted "Model not found." before the fetch
+     had run. isPending covers all three states. */
+  if (isPending) return <SkeletonDetailPage />;
   if (error) {
     return (
       <div className={BANNER_ERR}>
+        {/* authedFetch already ran this through humanApiError, so `message` is a
+            plain sentence. String(error) is the non-Error fallback only. */}
         Failed to load model. {error instanceof Error ? error.message : String(error)}
       </div>
     );
   }
+  /* Reached only once the query has SETTLED and did not error, so this now means
+     "the server answered and there is no such model" — never "we haven't asked
+     yet". */
   if (!data?.model) return <div className="p-6 text-[14px] text-ink-secondary">Model not found.</div>;
 
   const model = data.model;

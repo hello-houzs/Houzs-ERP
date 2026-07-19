@@ -36,6 +36,7 @@ import { Badge } from "../../components/Badge";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { cn } from "../../lib/utils";
+import { retryUnlessClientError } from '../../lib/retryPolicy';
 
 // ─── Types — mirrors the endpoint's Row / buckets / totals ──────────────────
 
@@ -207,7 +208,7 @@ export function UnbilledDeliveriesV2() {
     queryKey: ["unbilled-deliveries"],
     queryFn: () => authedFetch<UnbilledResponse>("/unbilled-deliveries"),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 

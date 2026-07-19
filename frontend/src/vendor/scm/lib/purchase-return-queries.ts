@@ -21,6 +21,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── Purchase Returns ────────────────────────────────────────────────── */
 export const usePurchaseReturns = (status?: string) =>
@@ -30,13 +31,13 @@ export const usePurchaseReturns = (status?: string) =>
       `/purchase-returns${status ? `?status=${status}` : ''}`,
     ),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
 
 export const usePurchaseReturnDetail = (id: string | null) => useQuery({
   queryKey: ['purchase-return-detail', id],
   queryFn: () => authedFetch<{ purchaseReturn: any; items: any[] }>(`/purchase-returns/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 
 /* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the

@@ -23,6 +23,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { serviceNotify } from './dialog-service';
 import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── List ────────────────────────────────────────────────────────────── */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,7 +31,7 @@ export const usePurchaseConsignmentReturns = (status?: string) => useQuery({
   queryKey: ['pc-return', 'list', status ?? 'all'],
   queryFn: () => authedFetch<{ purchaseReturns: any[] }>(`/purchase-consignment-returns${status ? `?status=${status}` : ''}`),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 
@@ -39,7 +40,7 @@ export const usePurchaseConsignmentReturnDetail = (id: string | null) => useQuer
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   queryKey: ['pc-return-detail', id],
   queryFn: () => authedFetch<{ purchaseReturn: any; items: any[] }>(`/purchase-consignment-returns/${id}`),
-  enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
+  enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 
 /* ── Returnable PC Receive lines (From-Receive multi-picker) ──────────── */
@@ -68,7 +69,7 @@ export const useReturnablePcReceiveLines = () => useQuery({
     `/purchase-consignment-returns/returnable-receive-lines`,
   ).then((r) => r.lines),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
 });
 
 /* ── Create + post ───────────────────────────────────────────────────── */

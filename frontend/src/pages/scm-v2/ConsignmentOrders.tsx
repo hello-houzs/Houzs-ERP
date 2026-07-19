@@ -52,6 +52,7 @@ import { useAuth } from '../../auth/AuthContext';
 import styles from './MfgSalesOrdersList.module.css';
 import { PageHeader } from '../../components/Layout';
 import soDetailStyles from './SalesOrderDetail.module.css';
+import { retryUnlessClientError } from '../../lib/retryPolicy';
 
 /* Local payments hook — lazy-loaded per expanded SO row alongside the detail
    query. Kept local to this page (not exported to flow-queries.ts) because
@@ -73,7 +74,7 @@ const useSoPaymentsForDrilldown = (docNo: string | null) => useQuery({
   queryFn: () => authedFetch<{ payments: SoPaymentRow[] }>(`/consignment-orders/${docNo}/payments`),
   enabled: Boolean(docNo),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 

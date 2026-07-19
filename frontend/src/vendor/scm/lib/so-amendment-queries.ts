@@ -20,6 +20,7 @@ import { authedFetch } from './authed-fetch';
 import { idempotentInit } from '../../../lib/idempotency';
 import { invalidateSoLists } from './sales-order-queries';
 import type { SoAmendmentHeaderChanges } from './so-amendment-header';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── Row + detail shapes (mirror the API response verbatim) ─────────────────
    List rows are loosely typed (accessors read by name), matching the GRN/SO
@@ -126,7 +127,7 @@ export const useAmendments = () => useQuery({
   queryKey: ['amendments'],
   queryFn: () => authedFetch<{ amendments: AmendmentRow[] }>(`/so-amendments`),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 
@@ -136,7 +137,7 @@ export const useAmendmentDetail = (id: string | null) => useQuery({
   queryFn: () => authedFetch<AmendmentDetail>(`/so-amendments/${id}`),
   enabled: Boolean(id),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 
@@ -149,7 +150,7 @@ export const useSoRevisions = (docNo: string | null) => useQuery({
   queryFn: () => authedFetch<{ revisions: SoRevisionRow[] }>(`/mfg-sales-orders/${docNo}/revisions`),
   enabled: Boolean(docNo),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 
@@ -163,7 +164,7 @@ export const usePoRevisions = (poId: string | null) => useQuery({
   queryFn: () => authedFetch<{ revisions: SoRevisionRow[] }>(`/mfg-purchase-orders/${poId}/revisions`),
   enabled: Boolean(poId),
   staleTime: 30_000,
-  retry: 1,
+  retry: retryUnlessClientError,
   retryDelay: 800,
 });
 

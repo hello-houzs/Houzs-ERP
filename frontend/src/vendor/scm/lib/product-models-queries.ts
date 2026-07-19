@@ -18,6 +18,7 @@ import { authedFetch } from './authed-fetch';
 // /api/projects/brands — which lives OUTSIDE the /api/scm mount, so it uses the
 // Houzs-native `api` client, not the /api/scm-scoped authedFetch.
 import { api } from '../../../api/client';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 export type ProductModelRow = {
   id: string;
@@ -84,7 +85,7 @@ export function useProductModels(opts?: { category?: MfgCategory }) {
       return res.models;
     },
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
     retryDelay: 800,
   });
 }

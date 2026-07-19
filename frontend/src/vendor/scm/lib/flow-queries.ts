@@ -10,6 +10,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { retryUnlessClientError } from '../../../lib/retryPolicy';
 
 /* ── Document relationship map (SAP-style flow diagram) ─────────────────── */
 export type FlowNodeType =
@@ -34,5 +35,5 @@ export const useDocumentFlow = (type: FlowNodeType | null, id: string | null) =>
     ),
     enabled: Boolean(type && id),
     staleTime: 30_000,
-    retry: 1,
+    retry: retryUnlessClientError,
   });
