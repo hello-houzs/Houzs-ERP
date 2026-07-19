@@ -291,9 +291,18 @@ export async function reconcileDropshipBatches(
  * basis both come back consistent. We never DELETE the original rows (that would
  * desync the lots/consumptions the trigger already wrote).
  *
- * Used by the NEW reversal points (DO cancel, DR cancel, …). GRN-whole-cancel
- * and PR-cancel keep their own bespoke reversals (they predate this helper and
- * already work) — this is the shared path for everything else.
+ * LIVE CALLERS (only two): PURCHASE_RETURN cancel (routes/purchase-returns.ts)
+ * and STOCK_TRANSFER cancel (routes/stock-transfers.ts). Both are safe because
+ * neither source_doc_type carries a partial UNIQUE index on the source key, so
+ * the balancing rows insert cleanly.
+ *
+ * Do NOT route DO or DR cancel through here: uq_inv_mov_do_source /
+ * uq_inv_mov_dr_source (migrations 0100/0102, keyed WITHOUT movement_type) reject
+ * this helper's same-key opposite row (see the idempotency note below), so the
+ * reversal would silently fail (swallowed by the caller's best-effort catch) and
+ * the stock would be left mis-stated. DO/DR cancel instead post signed-ADJUSTMENT
+ * rows via reverseInventoryForDo / resyncInventoryForReturn; GRN-whole-cancel
+ * likewise keeps its own bespoke reversal.
  *
  * ── Idempotency guard (no dedicated "reversed" column exists) ──────────────
  * We sum the SIGNED qty (IN = +qty, OUT = −qty) per (product_code, variant_key,
