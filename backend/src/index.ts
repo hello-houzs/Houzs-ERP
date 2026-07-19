@@ -482,6 +482,27 @@ export default {
           })
           .catch((e) => console.error("[cron idempotency-sweep]", e)),
       );
+      // AR aging snapshot (WO-3): rebuild scm.mv_ar_aging — the pre-aggregated
+      // rollup behind the Outstanding summary's ?snapshot=1 fast path (migration
+      // 0151) — then stamp its freshness row. CONCURRENTLY so a nightly rebuild
+      // never blocks a reader (the MV carries a UNIQUE index for exactly this).
+      // The REFRESH and the meta UPDATE are TWO separate autocommit statements on
+      // purpose: REFRESH MATERIALIZED VIEW CONCURRENTLY cannot run inside a
+      // transaction, so they must never be batched (env.DB.batch wraps in one).
+      // Guarded so a refresh failure can never break the other 02:00 jobs — the
+      // endpoint keeps serving the previous snapshot (or the live path) until the
+      // next successful run.
+      ctx.waitUntil(
+        (async () => {
+          await env.DB.prepare(
+            "REFRESH MATERIALIZED VIEW CONCURRENTLY scm.mv_ar_aging",
+          ).run();
+          await env.DB.prepare(
+            "UPDATE scm.mv_ar_aging_meta SET refreshed_at = now()",
+          ).run();
+          console.log("[cron ar-aging-refresh] refreshed scm.mv_ar_aging");
+        })().catch((e) => console.error("[cron ar-aging-refresh]", e)),
+      );
       // Weekly: re-distill every salesperson's scan-so OCR rules + the
       // __GLOBAL__ alias dictionary. Reuses the daily 02:00 slot, gated to
       // Sundays so it runs once a week without a dedicated cron trigger.
