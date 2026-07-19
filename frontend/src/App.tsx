@@ -377,7 +377,16 @@ export default function App() {
         <Route
           path="/assr/:id"
           element={
-            <PageGuard page="service_cases">
+            /* allowSales, to match its three siblings (/assr, /my-cases,
+               /my-cases/:id) and — the part that actually decides it — to match
+               the API. The case-detail read is
+               `app.get("/:id{[0-9]+}", requireServiceCaseAccess())`
+               (routes/assr.ts), and requireServiceCaseAccess admits Sales via
+               canAccessServiceCases → isSalesUser, with the rows still scoped to
+               self+downline by assrVisibleUserIds. Without this word a Sales rep
+               could open the case LIST, click a row, and hit <Forbidden> on a
+               case the backend would have served them. */
+            <PageGuard page="service_cases" allowSales>
               <ServiceCaseDetail />
             </PageGuard>
           }

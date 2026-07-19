@@ -10,10 +10,51 @@
 //
 // Ported verbatim from apps/pos/src/pages/Products.tsx (SpecialAddonsManager +
 // OrderAddonsManager). Two apps can't import each other (CLAUDE.md §file
-// scoping), so the UI is copied; the data layer is the one shared API. The
-// POS edit gate (useProductsMode() === 'full') becomes `canEdit = true` here —
-// the Backend convention is to render the editor and let server RLS enforce
-// write permission, same as SkuMasterTab.
+// scoping), so the UI is copied; the data layer is the one shared API.
+//
+// ── THE EDIT GATE (2026-07-19) ───────────────────────────────────────────────
+//
+// This file used to carry `const canEdit = true` at module scope, justified as
+// "RLS is the real write gate; the editor renders for everyone (server
+// rejects)". That justification was wrong twice over.
+//
+//   1. It was not RLS. Both managers write through the Houzs Worker, not a
+//      supabase client, so no RLS policy is in the path at all. /special-addons
+//      gates every write on canWriteScmConfig (special-addons.ts requireWrite).
+//      The UI meanwhile advertised Edit / Delete / +New / inline price inputs to
+//      EVERY user who reached the tab, and each control 403'd on click — the
+//      write surface was completely ungated on this side of the wire.
+//   2. "The server rejects" is not a gate, it is an apology. A control that
+//      renders and then fails teaches the operator that the app is broken, not
+//      that they lack a permission — and it costs a round-trip to say so.
+//
+// Both managers now read ONE server-decided answer, `scm.config.write`, which
+// IS canWriteScmConfig (backend/src/services/capabilities.ts composes the same
+// two terms; backend/tests/capabilities.test.ts pins them equal over every live
+// position). The frontend computes nothing.
+//
+// ── WHY ONE KEY FOR TWO ROUTES ───────────────────────────────────────────────
+//
+// The two managers do NOT share a backend gate:
+//   Product Add-ons → /special-addons: scmAreaGuard(scm.procurement.products,
+//                     openRead) AND THEN requireWrite → canWriteScmConfig.
+//   Order Add-ons   → /addons:         scmAreaGuard(scm.procurement.products)
+//                     alone. No route-level write check.
+//
+// So `scm.config.write` is an EXACT match for the Product half and a NARROWER
+// one for the Order half. Narrower is the safe direction, and here it is also
+// the CORRECT one rather than an accident: this tab is only reachable inside SO
+// Maintenance, which is gated on `scm.maintenance.open` = canWriteScmConfig ∪
+// director. The only members of that cohort who lack canWriteScmConfig are
+// Sales Director and Finance Manager — precisely the READ-ONLY director tier the
+// owner named on 2026-07-15. Withholding the editor from them is that ruling,
+// not a new one. Nobody else can open the page to be narrowed.
+//
+// What is NOT done here, deliberately: giving /addons its own capability. That
+// would mean naming scmAreaGuard's write decision as a capability, which means
+// extracting the guard's body into a pure predicate that both the middleware and
+// the registry call. That is the right shape and it is a bigger, shared-hot-path
+// change than this one — see the PR body.
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState } from 'react';
@@ -26,6 +67,12 @@ import {
 import { DataGrid, type DataGridColumn } from './DataGrid';
 import { useConfirm } from './ConfirmDialog';
 import { sortByText } from '../lib/sort-options';
+/* The host app's capability reader — the same import ScanOrderModal already
+   makes into `../../../auth`. NOT the vendor lib/auth.ts role bridge: that shim
+   collapses every caller to super_admin-or-sales off `can('*')`, which is a
+   THIRD answer to this question and is exactly the kind of second copy the
+   capability registry exists to abolish. */
+import { useCapability } from '../../../auth/capabilities';
 
 /* Stop-propagation wrapper for interactive cells inside the DataGrid —
    keeps clicks on inputs / buttons from also firing the row click. */
@@ -33,9 +80,6 @@ const stopProps = {
   onClick: (e: React.MouseEvent) => e.stopPropagation(),
   onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
 };
-
-// RLS is the real write gate; the editor renders for everyone (server rejects).
-const canEdit = true;
 
 const SA_CATEGORIES = ['BEDFRAME', 'MATTRESS', 'SOFA'] as const;
 const senToRm = (sen: number): number => Math.round(sen) / 100;
@@ -121,6 +165,10 @@ export const SpecialAddonsManager = ({ categoryFilter }: { categoryFilter?: stri
   const update  = useUpdateSpecialAddon();
   const del     = useDeleteSpecialAddon();
   const askConfirm = useConfirm();
+  /* GATE: special-addons.ts requireWrite → houzs-perms.canWriteScmConfig.
+     Fails CLOSED — no capability set, an absent key, or anything that is not
+     literally `true` reads false and the editor does not render. */
+  const canEdit = useCapability('scm.config.write');
 
   const [editing, setEditing] = useState<{ id: string | null; draft: SpecialAddonInput } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -446,6 +494,12 @@ const OrderAddonsManager = () => {
   const create  = useCreateAddon();
   const del     = useDeleteAddon();
   const askConfirm = useConfirm();
+  /* GATE: /addons is guarded by scmAreaGuard('scm.procurement.products') at the
+     mount and has no route-level write check of its own. `scm.config.write` is
+     therefore NARROWER than this route's API gate — deliberately, and see the
+     header note for why that narrowing is the 2026-07-15 read-only-director
+     ruling rather than a new rule. Fails CLOSED either way. */
+  const canEdit = useCapability('scm.config.write');
 
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
