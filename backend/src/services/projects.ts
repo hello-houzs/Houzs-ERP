@@ -90,6 +90,18 @@ export async function logProjectActivity(
     .run();
 }
 
+/** "Name (#id)" for an activity-trail endpoint, or null for unassigned.
+ *  Deliberately NOT `?? ""` — an unassigned PIC and a user we failed to read
+ *  are different facts, and the trail must not render the second as the first. */
+async function describeUser(env: Env, userId: number | null): Promise<string | null> {
+  if (userId == null) return null;
+  const row = await env.DB.prepare(`SELECT name, email FROM users WHERE id = ?`)
+    .bind(userId)
+    .first<{ name: string | null; email: string | null }>();
+  const label = row?.name || row?.email;
+  return label ? `${label} (#${userId})` : `#${userId}`;
+}
+
 // ── Crew membership ───────────────────────────────────────────
 // Returns the phase(s) on which `userId` is crewed for `projectId`.
 // Empty array = not on the crew. Used by the Driver App project
@@ -482,22 +494,32 @@ export async function patchProject(
   // without a second SELECT.
   const wantStageOrDate =
     "stage" in body || "start_date" in body || "end_date" in body;
+  // pic_id joins the same pre-read because a PIC (re)assignment must land in
+  // the activity trail with its from → to, exactly like a stage change and
+  // like the sales_attendee_add / _remove entries its sibling endpoints
+  // already write. It had no entry at all: the PIC dropdown saves through this
+  // PATCH, so "who handed this project to whom, and when" was the one
+  // assignment the project's own history could not answer.
+  const wantPic = "pic_id" in body;
   let prevStage: string | null = null;
   let prevStart: string | null = null;
   let prevEnd: string | null = null;
-  if (wantStageOrDate) {
+  let prevPic: number | null = null;
+  if (wantStageOrDate || wantPic) {
     const row = await env.DB.prepare(
-      `SELECT stage, start_date, end_date FROM projects WHERE id = ?`
+      `SELECT stage, start_date, end_date, pic_id FROM projects WHERE id = ?`
     )
       .bind(id)
       .first<{
         stage: string;
         start_date: string | null;
         end_date: string | null;
+        pic_id: number | null;
       }>();
     prevStage = row?.stage ?? null;
     prevStart = row?.start_date ?? null;
     prevEnd = row?.end_date ?? null;
+    prevPic = row?.pic_id ?? null;
   }
 
   // end_date >= start_date when both are set after the patch.
@@ -529,6 +551,23 @@ export async function patchProject(
 
   if (prevStage != null && body.stage && prevStage !== body.stage) {
     await logProjectActivity(env, id, "stage_change", prevStage, body.stage, null, userId);
+  }
+
+  // PIC (re)assignment — logged only on an ACTUAL change so a redundant
+  // same-value save doesn't pad the trail. Names are resolved for both ends so
+  // the entry stays readable after a user is renamed or deactivated; the id is
+  // kept alongside because a name is not an identity.
+  const nextPic = wantPic ? ((body.pic_id as number | null) ?? null) : prevPic;
+  if (wantPic && nextPic !== prevPic) {
+    await logProjectActivity(
+      env,
+      id,
+      "pic_change",
+      await describeUser(env, prevPic),
+      await describeUser(env, nextPic),
+      null,
+      userId
+    );
   }
 
   // Re-derive checklist due_dates from the new start_date and each
