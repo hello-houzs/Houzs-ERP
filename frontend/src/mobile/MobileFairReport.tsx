@@ -10,6 +10,8 @@ import {
   type FairSoRow,
   type FairDoRow,
   type FairInvoiceRow,
+  type FairPnlRow,
+  type FairPnlSummary,
   type FairCostByCategory,
 } from "../vendor/scm/lib/fair-report-queries";
 import { fmtAmt, fmtCenti } from "../lib/scm";
@@ -67,6 +69,7 @@ const STAGE_TABS: { key: FairStage; label: string }[] = [
   { key: "so", label: "Sales Orders" },
   { key: "do", label: "Delivery" },
   { key: "invoice", label: "Invoices" },
+  { key: "pnl", label: "P&L" },
 ];
 
 const catRows = (c: FairCostByCategory): [string, number][] => [
@@ -205,7 +208,19 @@ export function MobileFairReport({ onBack }: { onBack: () => void }) {
             {data.stage === "so" && data.rows.map((r) => <SoCard key={r.so_no} r={r} onOpen={() => setOpenSo(r.so_no)} />)}
             {data.stage === "do" && data.rows.map((r) => <DoCard key={r.do_no} r={r} onOpen={() => r.so_no && setOpenSo(r.so_no)} />)}
             {data.stage === "invoice" && data.rows.map((r) => <InvoiceCard key={r.inv_no} r={r} onOpen={() => r.so_no && setOpenSo(r.so_no)} />)}
-            {rowCount === 0 && (
+            {data.stage === "pnl" && (data.meta.needs_project ? (
+              <div className="empty">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#c2c6bd" strokeWidth="1.6"><path d="M4 4h16v4H4zM4 10h16v10H4z" /></svg>
+                <div className="empty-t">Pick a fair</div>
+                <div className="empty-s">Choose a Project / Fair in Filters to see its P&amp;L.</div>
+              </div>
+            ) : (
+              <>
+                <PnlSummaryCard s={data.summary} ratePresent={data.meta.rate_present} brand={data.meta.brand} />
+                {data.rows.map((r) => <PnlCard key={r.so_no} r={r} onOpen={() => setOpenSo(r.so_no)} />)}
+              </>
+            ))}
+            {rowCount === 0 && data.stage !== "pnl" && (
               <div className="empty">
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#c2c6bd" strokeWidth="1.6"><path d="M4 4h16v4H4zM4 10h16v10H4z" /></svg>
                 <div className="empty-t">No records</div>
@@ -318,6 +333,50 @@ function InvoiceCard({ r, onOpen }: { r: FairInvoiceRow; onOpen: () => void }) {
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 11, fontSize: 11.5 }}>
         <span style={{ color: "var(--ink2)" }}>SO → DO → SI</span>
+        <span style={{ marginLeft: "auto", color: "var(--brand)", fontWeight: 600 }}>Tap ›</span>
+      </div>
+    </div>
+  );
+}
+
+function PnlSummaryCard({ s, ratePresent, brand }: { s: FairPnlSummary; ratePresent: boolean; brand: string | null }) {
+  const net = s.net_profit_centi;
+  return (
+    <div className={cardCls} style={{ padding: "13px 14px", background: "var(--bg)" }}>
+      <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: ".03em", textTransform: "uppercase", color: "var(--mut)" }}>Fair P&amp;L · {s.orders} orders</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginTop: 9 }}>
+        <CardStat k="Revenue" v={rm(s.total_revenue_centi)} />
+        <CardStat k={`Gross · ${pct(s.gross_margin_pct)}`} v={rm(s.gross_profit_centi)} tone={s.gross_profit_centi >= 0 ? undefined : "err"} />
+        <CardStat k="Overhead" v={rm(s.overheads.total_overhead_centi)} />
+        <CardStat k={`Net · ${pct(s.net_margin_pct)}`} v={rm(net)} tone={net >= 0 ? undefined : "err"} />
+      </div>
+      <div style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 9, lineHeight: 1.5 }}>
+        Overhead = transport {cell(s.overheads.transport_centi)} · merchandise {cell(s.overheads.merchandise_centi)} · commission {cell(s.overheads.commission_centi)} ({pct(s.overheads.commission_pct)}{s.overheads.commission_is_boost ? " boost" : ""}).
+        {!ratePresent && ` No cost-rate card for ${brand ?? "this brand"} — overhead is zero.`}
+      </div>
+    </div>
+  );
+}
+
+function PnlCard({ r, onOpen }: { r: FairPnlRow; onOpen: () => void }) {
+  const good = r.gross_profit_centi >= 0;
+  return (
+    <div className={cardCls} style={cardStyle} onClick={onOpen}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <BrandPill brand={r.branding} />
+        <span className="money" style={{ fontSize: 13, fontWeight: 700, color: "var(--brand-d)" }}>{r.so_no}</span>
+        <span className="money" style={{ marginLeft: "auto", fontSize: 13, fontWeight: 800, color: good ? "var(--green)" : "var(--red)" }}>{pct(r.margin_pct)}</span>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--ink2)", marginTop: 6 }}>
+        {r.venue ?? "—"} · <span style={{ color: "var(--mut)" }}>{formatDate(r.so_date)}</span> · {r.salesperson ?? "—"}
+      </div>
+      <div style={statGrid}>
+        <CardStat k="Revenue" v={cell(r.revenue_centi)} />
+        <CardStat k={`COGS · ${r.effective_cost_stage}`} v={cell(r.effective_cost_centi)} />
+        <CardStat k="Gross" v={cell(r.gross_profit_centi)} tone={good ? undefined : "err"} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 11, fontSize: 11.5 }}>
+        <span style={{ color: "var(--ink2)" }}>SO / DO / SI: {cell(r.so_cost_centi)} · {r.do_cost_centi == null ? "—" : cell(r.do_cost_centi)} · {r.si_cost_centi == null ? "—" : cell(r.si_cost_centi)}</span>
         <span style={{ marginLeft: "auto", color: "var(--brand)", fontWeight: 600 }}>Tap ›</span>
       </div>
     </div>

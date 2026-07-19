@@ -19,8 +19,12 @@ import { isFinanceViewer, isSalesDirectorUser } from '../../services/pmsAccess';
 import type { AuthUser } from '../../services/auth';
 
 // ── Stage ────────────────────────────────────────────────────────────────────
-export type FairStage = 'so' | 'do' | 'invoice';
-export const FAIR_STAGES: readonly FairStage[] = ['so', 'do', 'invoice'];
+// 'pnl' is the exhibition P&L view (revenue - three-way fulfillment cost -
+// project_cost_rates overhead = net profit). It is management-only, like do /
+// invoice, and additionally REQUIRES a fair (project) so the per-brand rate card
+// resolves to exactly one row.
+export type FairStage = 'so' | 'do' | 'invoice' | 'pnl';
+export const FAIR_STAGES: readonly FairStage[] = ['so', 'do', 'invoice', 'pnl'];
 
 /** Parse the `stage` query param; null when absent/unknown (route → 400). */
 export function parseStage(raw: string | null | undefined): FairStage | null {
@@ -65,7 +69,7 @@ export interface FairAccessResult {
 const DENY_ORDINARY =
   'The Sales Report is limited to management and the Sales Director. Ask an administrator if you need access.';
 const DENY_SD_BEYOND_SO =
-  'As Sales Director you can view the Sales Order stage of the Sales Report only. The Delivery and Invoice stages are limited to management.';
+  'As Sales Director you can view the Sales Order stage of the Sales Report only. The Delivery, Invoice and P&L stages are limited to management.';
 
 /**
  * The whole gate. `stage=so` is allowed for management OR the Sales Director;
@@ -81,7 +85,7 @@ export function fairReportAccess(stage: FairStage, user: AuthUser | null | undef
     if (management || salesDirector) return { allowed: true, tier };
     return { allowed: false, error: DENY_ORDINARY, tier };
   }
-  // stage === 'do' || stage === 'invoice' — management only.
+  // stage === 'do' || 'invoice' || 'pnl' — management only.
   if (management) return { allowed: true, tier };
   if (salesDirector) return { allowed: false, error: DENY_SD_BEYOND_SO, tier };
   return { allowed: false, error: DENY_ORDINARY, tier };
@@ -354,6 +358,180 @@ export function summarizeInvoice(
     s.total_si_cost_centi += r.si_cost_centi;
   }
   s.margin_pct = marginPct(s.total_invoiced_centi, s.total_si_cost_centi);
+  return s;
+}
+
+// ── stage=pnl — the exhibition P&L ───────────────────────────────────────────
+//
+// Per fair (one PROJECT): revenue = confirmed-SO amount; COGS = the three-way
+// fulfillment cost per order (the most-progressed booked stage wins — landed SI
+// cost if invoiced, else DO ship-time cost if delivered, else the SO category
+// cost); overhead = the project_cost_rates card applied to the fair's revenue.
+// net_profit = revenue − COGS − overhead. Nothing here reads the DB — the route
+// fetches, these functions decide.
+
+/** The per-brand cost-rate card (project_cost_rates, mig 063). Percentages are
+ *  plain integers (14 == 14%). `boost_min_sales` is a RINGGIT threshold — the
+ *  project_finance_lines.amount unit — NOT centi; convert before comparing. */
+export interface FairCostRate {
+  transport_pct: number;
+  merchandise_pct: number;
+  commission_normal_pct: number;
+  commission_boost_pct: number | null;
+  boost_min_gp_pct: number | null;
+  boost_min_sales: number | null;
+}
+
+export interface FairOverheads {
+  transport_centi: number;
+  merchandise_centi: number;
+  commission_centi: number;
+  commission_pct: number;       // the % actually applied (normal or boost)
+  commission_is_boost: boolean;
+  total_overhead_centi: number;
+}
+
+export function emptyOverheads(): FairOverheads {
+  return { transport_centi: 0, merchandise_centi: 0, commission_centi: 0, commission_pct: 0, commission_is_boost: false, total_overhead_centi: 0 };
+}
+
+/**
+ * Apply the per-brand rate card to a fair's revenue. MIRRORS the formula in
+ * services/projectCostRates.ts (transport / merchandise / commission = % of
+ * sales, and commission jumps to the boost rate only when the GP% gate AND the
+ * sales gate both pass) — but operates in CENTI on the fair's own confirmed-SO
+ * revenue rather than on the project_finance_lines ledger. The single source of
+ * the RULE is the rate row; the two callers apply it in different units.
+ *
+ * `cogsCenti` is the fair's fulfillment cost, used only for the GP gate. A null
+ * rate (no card for the brand) or non-positive revenue yields all-zero overhead.
+ */
+export function computeFairOverheads(input: { revenueCenti: number; cogsCenti: number; rate: FairCostRate | null }): FairOverheads {
+  const rev = n(input.revenueCenti);
+  const rate = input.rate;
+  if (!rate || rev <= 0) return emptyOverheads();
+
+  const cogs = n(input.cogsCenti);
+  const gpPct = ((rev - cogs) / rev) * 100;
+  // boost_min_sales is a whole-ringgit threshold; compare it to revenue in RM.
+  const revenueRm = rev / 100;
+  const gpGate = rate.boost_min_gp_pct == null || gpPct >= Number(rate.boost_min_gp_pct);
+  const salesGate = rate.boost_min_sales == null || revenueRm >= Number(rate.boost_min_sales);
+  const useBoost = rate.commission_boost_pct != null && gpGate && salesGate;
+  const commissionPct = useBoost ? Number(rate.commission_boost_pct) : Number(rate.commission_normal_pct);
+
+  const transport = Math.round((rev * Number(rate.transport_pct)) / 100);
+  const merchandise = Math.round((rev * Number(rate.merchandise_pct)) / 100);
+  const commission = Math.round((rev * commissionPct) / 100);
+  return {
+    transport_centi: transport,
+    merchandise_centi: merchandise,
+    commission_centi: commission,
+    commission_pct: commissionPct,
+    commission_is_boost: useBoost,
+    total_overhead_centi: transport + merchandise + commission,
+  };
+}
+
+export type PnlCostStage = 'so' | 'do' | 'invoice';
+
+export interface FairPnlLineInput {
+  amount_centi: number | null;       // revenue = product + service
+  so_cost_centi: number | null;      // SO category cost (header total_cost)
+  do_cost_centi: number | null;      // Σ linked DO cost, or null when no DO exists
+  si_cost_centi: number | null;      // Σ linked SI cost, or null when no SI exists
+}
+
+export interface FairPnlLineCost {
+  effective_cost_centi: number;
+  effective_cost_stage: PnlCostStage;   // which arm the COGS came from
+  gross_profit_centi: number;           // revenue − effective cost
+  margin_pct: number | null;
+}
+
+/**
+ * The COGS of one order: the most-PROGRESSED booked cost wins. A landed SI cost
+ * is the truest figure, then the DO ship-time cost, then the SO category cost as
+ * the always-present committed estimate. `null` do/si means that stage has not
+ * happened for this order — NOT a zero cost — so it is skipped, never treated as
+ * 0 (a 0 COGS would read as pure profit).
+ */
+export function fairPnlLineCost(i: FairPnlLineInput): FairPnlLineCost {
+  const chosen =
+    i.si_cost_centi != null ? { c: n(i.si_cost_centi), s: 'invoice' as const } :
+    i.do_cost_centi != null ? { c: n(i.do_cost_centi), s: 'do' as const } :
+                              { c: n(i.so_cost_centi), s: 'so' as const };
+  const revenue = n(i.amount_centi);
+  return {
+    effective_cost_centi: chosen.c,
+    effective_cost_stage: chosen.s,
+    gross_profit_centi: revenue - chosen.c,
+    margin_pct: marginPct(revenue, chosen.c),
+  };
+}
+
+export interface FairPnlSummaryRow {
+  amount_centi: number;
+  selling_centi: number;
+  service_rev_centi: number;
+  so_cost_centi: number;
+  do_cost_centi: number | null;
+  si_cost_centi: number | null;
+  effective_cost_centi: number;
+}
+
+export interface FairPnlSummary {
+  orders: number;
+  delivered_orders: number;    // orders that have at least one DO
+  invoiced_orders: number;     // orders that have at least one SI
+  total_revenue_centi: number;
+  total_product_rev_centi: number;
+  total_service_rev_centi: number;
+  total_so_cost_centi: number;
+  total_do_cost_centi: number;         // Σ over orders that have a DO
+  total_si_cost_centi: number;         // Σ over orders that have an SI
+  total_cogs_centi: number;            // Σ effective (most-progressed) cost
+  gross_profit_centi: number;          // revenue − COGS
+  gross_margin_pct: number | null;
+  overheads: FairOverheads;
+  net_profit_centi: number;            // gross − overhead
+  net_margin_pct: number | null;
+}
+
+/** Fold the per-order P&L rows into fair totals, then subtract the rate-card
+ *  overhead (computed on the fair's own revenue + COGS) to reach net profit. */
+export function summarizeFairPnl(rows: readonly FairPnlSummaryRow[], rate: FairCostRate | null): FairPnlSummary {
+  const s: FairPnlSummary = {
+    orders: rows.length,
+    delivered_orders: 0,
+    invoiced_orders: 0,
+    total_revenue_centi: 0,
+    total_product_rev_centi: 0,
+    total_service_rev_centi: 0,
+    total_so_cost_centi: 0,
+    total_do_cost_centi: 0,
+    total_si_cost_centi: 0,
+    total_cogs_centi: 0,
+    gross_profit_centi: 0,
+    gross_margin_pct: null,
+    overheads: emptyOverheads(),
+    net_profit_centi: 0,
+    net_margin_pct: null,
+  };
+  for (const r of rows) {
+    s.total_revenue_centi += n(r.amount_centi);
+    s.total_product_rev_centi += n(r.selling_centi);
+    s.total_service_rev_centi += n(r.service_rev_centi);
+    s.total_so_cost_centi += n(r.so_cost_centi);
+    if (r.do_cost_centi != null) { s.total_do_cost_centi += n(r.do_cost_centi); s.delivered_orders += 1; }
+    if (r.si_cost_centi != null) { s.total_si_cost_centi += n(r.si_cost_centi); s.invoiced_orders += 1; }
+    s.total_cogs_centi += n(r.effective_cost_centi);
+  }
+  s.gross_profit_centi = s.total_revenue_centi - s.total_cogs_centi;
+  s.gross_margin_pct = marginPct(s.total_revenue_centi, s.total_cogs_centi);
+  s.overheads = computeFairOverheads({ revenueCenti: s.total_revenue_centi, cogsCenti: s.total_cogs_centi, rate });
+  s.net_profit_centi = s.gross_profit_centi - s.overheads.total_overhead_centi;
+  s.net_margin_pct = s.total_revenue_centi === 0 ? null : (s.net_profit_centi / s.total_revenue_centi) * 100;
   return s;
 }
 

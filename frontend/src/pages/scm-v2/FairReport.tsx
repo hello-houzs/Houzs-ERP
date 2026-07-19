@@ -42,6 +42,8 @@ import {
   type FairSoResponse,
   type FairDoResponse,
   type FairInvoiceResponse,
+  type FairPnlRow,
+  type FairPnlResponse,
   type FairCostByCategory,
 } from '../../vendor/scm/lib/fair-report-queries';
 
@@ -81,7 +83,7 @@ const inputCls =
 const btnCls =
   'inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[12.5px] font-medium text-ink-secondary transition-colors hover:border-primary/40';
 
-const STAGE_LABELS: Record<FairStage, string> = { so: 'Sales Orders', do: 'Delivery Orders', invoice: 'Invoices' };
+const STAGE_LABELS: Record<FairStage, string> = { so: 'Sales Orders', do: 'Delivery Orders', invoice: 'Invoices', pnl: 'P&L' };
 
 // Optional column groups per stage — the "Columns" control toggles these off.
 const OPTIONAL_GROUPS: Record<FairStage, { key: string; label: string }[]> = {
@@ -91,6 +93,7 @@ const OPTIONAL_GROUPS: Record<FairStage, { key: string; label: string }[]> = {
   ],
   do: [{ key: 'drift', label: 'Margin drift' }],
   invoice: [{ key: 'progression', label: 'Cost progression (SO / DO)' }],
+  pnl: [{ key: 'threeway', label: 'Three-way cost (SO / DO / SI)' }],
 };
 
 type OptionMaps = {
@@ -368,10 +371,16 @@ export const FairReport = () => {
         )}
       </div>
 
-      <p className="text-[11px] text-ink-muted">
-        SO No = system doc number · Order Form = handwritten reference · Amount = product + service · Selling = product SKU revenue only.
-        The full Fair P&amp;L (rental / set-up / commission / transport → net profit) is a later dashboard, out of scope here.
-      </p>
+      {stage === 'pnl' ? (
+        <p className="text-[11px] text-ink-muted">
+          P&amp;L per fair: revenue (confirmed SO) − COGS (the most-progressed of the SO / DO / SI cost per order) − overhead (the project cost-rate card: transport + merchandise + commission on revenue) = net profit. Rental / set-up and other manual project-ledger lines are not folded in yet. Initial cut — final layout to be confirmed.
+        </p>
+      ) : (
+        <p className="text-[11px] text-ink-muted">
+          SO No = system doc number · Order Form = handwritten reference · Amount = product + service · Selling = product SKU revenue only.
+          The P&amp;L tab nets revenue against the three-way fulfillment cost and the project cost-rate overhead per fair.
+        </p>
+      )}
 
       {/* ── Quick-view drawer ───────────────────────────────────────────────── */}
       <FairDrawer docNo={selectedSo} onClose={() => setParam('so', null)} />
@@ -426,6 +435,17 @@ function KpiRow({ data, rows }: { data: FairReportData; rows: FairReportRows }) 
         <StatCard rail="bg-synced" label="Cost Drift" value={signedMoney(s.cost_delta_centi)}
           tone={s.cost_delta_centi > 0 ? 'error' : s.cost_delta_centi < 0 ? 'success' : 'default'}
           subtitle={s.legacy_count ? `${s.legacy_count} legacy (pre-FIFO)` : 'Delivery delay impact'} />
+      </div>
+    );
+  }
+  if (data.stage === 'pnl') {
+    const p = data.summary;
+    return (
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard rail="bg-primary" label="Fair Revenue" value={rm(p.total_revenue_centi)} subtitle={`${p.orders} confirmed orders`} />
+        <StatCard rail="bg-accent-bright" label="Gross Profit" value={rm(p.gross_profit_centi)} subtitle={`${pct(p.gross_margin_pct)} · COGS ${rm(p.total_cogs_centi)}`} />
+        <StatCard rail="bg-err" label="Overhead" value={rm(p.overheads.total_overhead_centi)} subtitle={`Transport + merchandise + commission${p.overheads.commission_is_boost ? ' · boost' : ''}`} />
+        <StatCard rail="bg-synced" label="Net Profit" value={rm(p.net_profit_centi)} tone={p.net_profit_centi >= 0 ? 'success' : 'error'} subtitle={`${pct(p.net_margin_pct)} net margin`} />
       </div>
     );
   }
@@ -587,6 +607,72 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
     );
   }
 
+  if (stage === 'pnl') {
+    const pnl = data?.stage === 'pnl' ? data : null;
+    if (pnl?.meta.needs_project) {
+      return (
+        <div className="px-3 py-10 text-center text-[13px] text-ink-muted">
+          Select a fair in the <b className="text-ink">Project / Fair</b> filter above to see its P&amp;L — the P&amp;L is computed per exhibition.
+        </div>
+      );
+    }
+    const rows = (pnl?.rows ?? []) as FairPnlRow[];
+    const sum = pnl?.summary ?? null;
+    const showThree = !hidden.has('threeway');
+    const cols = 4 + 1 + (showThree ? 3 : 0) + 3;
+    return (
+      <div className="overflow-x-auto">
+        {pnl && !pnl.meta.rate_present && (
+          <div className="border-b border-border bg-surface-2 px-3 py-2 text-[11.5px] text-ink-muted">
+            No cost-rate card for this fair's brand{pnl.meta.brand ? ` (${pnl.meta.brand})` : ''} — overhead shows as zero, so net profit equals gross profit until a rate card is set.
+          </div>
+        )}
+        <table className="w-full border-collapse">
+          <thead className="bg-primary-soft/30">
+            <tr>
+              <th className={th}>Date</th><th className={th}>Venue</th><th className={th}>SO No</th><th className={th}>Salesperson</th>
+              <th className={thR}>Revenue</th>
+              {showThree && <><th className={thR}>SO Cost</th><th className={thR}>DO Cost</th><th className={thR}>SI Cost</th></>}
+              <th className={thR}>COGS</th><th className={thR}>Gross Profit</th><th className={thR}>Margin %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.so_no} className="cursor-pointer border-t border-border/60 even:bg-surface-2 hover:bg-primary-soft/20" onClick={() => onOpen(r.so_no)}>
+                <td className={`${td} tabular-nums`}>{formatDate(r.so_date)}</td>
+                <td className={td}>{r.venue ?? '—'}</td>
+                <td className={td}><span className={`${mono} text-primary-ink`}>{r.so_no}</span></td>
+                <td className={td}>{r.salesperson ?? '—'}</td>
+                <td className={tdR}>{cell(r.revenue_centi)}</td>
+                {showThree && <>
+                  <td className={`${tdR} bg-surface-2`}>{cell(r.so_cost_centi)}</td>
+                  <td className={`${tdR} bg-surface-2`}>{r.do_cost_centi == null ? '—' : cell(r.do_cost_centi)}</td>
+                  <td className={`${tdR} bg-surface-2`}>{r.si_cost_centi == null ? '—' : cell(r.si_cost_centi)}</td>
+                </>}
+                <td className={`${tdR} font-semibold`}>{cell(r.effective_cost_centi)}<span className="ml-1 rounded bg-ink-muted/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-ink-muted">{r.effective_cost_stage}</span></td>
+                <td className={`${tdR} ${r.gross_profit_centi >= 0 ? 'text-synced' : 'text-err'} font-medium`}>{cell(r.gross_profit_centi)}</td>
+                <td className={`${tdR} ${(r.margin_pct ?? 0) >= 0 ? 'text-synced' : 'text-err'} font-medium`}>{pct(r.margin_pct)}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && empty(cols)}
+          </tbody>
+          {sum && rows.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-border bg-surface-2 font-semibold">
+                <td className={`${td} uppercase text-[10px] tracking-brand text-ink-muted`} colSpan={4}>Fair totals · {sum.orders} orders</td>
+                <td className={tdR}>{cell(sum.total_revenue_centi)}</td>
+                {showThree && <><td className={tdR}>{cell(sum.total_so_cost_centi)}</td><td className={tdR}>{cell(sum.total_do_cost_centi)}</td><td className={tdR}>{cell(sum.total_si_cost_centi)}</td></>}
+                <td className={tdR}>{cell(sum.total_cogs_centi)}</td>
+                <td className={`${tdR} ${sum.gross_profit_centi >= 0 ? 'text-synced' : 'text-err'}`}>{cell(sum.gross_profit_centi)}</td>
+                <td className={`${tdR} ${(sum.gross_margin_pct ?? 0) >= 0 ? 'text-synced' : 'text-err'}`}>{pct(sum.gross_margin_pct)}</td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    );
+  }
+
   // invoice
   const rows = (data?.stage === 'invoice' ? data.rows : []) as FairInvoiceRow[];
   const showProg = !hidden.has('progression');
@@ -689,6 +775,29 @@ function StageCards({ data, stage, loading, onOpen }: {
             <div className="mt-1.5 text-[12px] text-ink-secondary">{r.venue ?? '—'} · <span className="tabular-nums">{formatDate(r.delivery_date)}</span> · SO {r.so_no ?? '—'}</div>
             <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border/60 pt-3">
               {stat('SO Cost', cell(r.total_so_cost_centi))}{stat('DO Cost', cell(r.total_do_cost_centi))}{stat('Cost Δ', signedMoney(r.cost_delta_centi))}
+            </div>
+            <div className="mt-3 flex items-center text-[11.5px]"><span className="ml-auto inline-flex items-center gap-0.5 font-medium text-primary">Open <ChevronRight size={13} /></span></div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (stage === 'pnl') {
+    if (data.stage === 'pnl' && data.meta.needs_project) {
+      return <div className="px-3 py-6 text-[13px] text-ink-muted">Select a fair in the Project / Fair filter to see its P&amp;L.</div>;
+    }
+    const rows = data.stage === 'pnl' ? data.rows : [];
+    return (
+      <div className={wrap}>
+        {rows.map((r) => (
+          <div key={r.so_no} className={card} onClick={() => onOpen(r.so_no)}>
+            <div className="flex items-center gap-2">
+              <span className={`${mono} text-primary-ink`}>{r.so_no}</span>
+              <span className={`ml-auto text-[13px] font-bold tabular-nums ${(r.margin_pct ?? 0) >= 0 ? 'text-synced' : 'text-err'}`}>{pct(r.margin_pct)}</span>
+            </div>
+            <div className="mt-1.5 text-[12px] text-ink-secondary">{r.venue ?? '—'} · <span className="tabular-nums">{formatDate(r.so_date)}</span> · {r.salesperson ?? '—'}</div>
+            <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border/60 pt-3">
+              {stat('Revenue', cell(r.revenue_centi))}{stat(`COGS (${r.effective_cost_stage})`, cell(r.effective_cost_centi))}{stat('Gross', cell(r.gross_profit_centi))}
             </div>
             <div className="mt-3 flex items-center text-[11.5px]"><span className="ml-auto inline-flex items-center gap-0.5 font-medium text-primary">Open <ChevronRight size={13} /></span></div>
           </div>
@@ -906,6 +1015,17 @@ function buildExport(data: NonNullable<FairReportData>): { headers: string[]; bo
       ]),
     };
   }
+  if (data.stage === 'pnl') {
+    return {
+      name: 'fair-report-pnl.csv',
+      headers: ['Date', 'Venue', 'Project', 'SO No', 'Salesperson', 'Revenue', 'SO Cost', 'DO Cost', 'SI Cost', 'COGS', 'Cost Stage', 'Gross Profit', 'Margin %'],
+      body: data.rows.map((r) => [
+        formatDate(r.so_date), r.venue, r.project, r.so_no, r.salesperson,
+        c(r.revenue_centi), c(r.so_cost_centi), r.do_cost_centi == null ? '' : c(r.do_cost_centi), r.si_cost_centi == null ? '' : c(r.si_cost_centi),
+        c(r.effective_cost_centi), r.effective_cost_stage, c(r.gross_profit_centi), r.margin_pct == null ? '' : r.margin_pct.toFixed(1),
+      ]),
+    };
+  }
   return {
     name: 'fair-report-invoices.csv',
     headers: ['Invoice Date', 'Venue', 'Project', 'Invoice No', 'Linked SO', 'Invoiced', 'SO Cost', 'DO Cost', 'Landed (SI) Cost', 'Margin %'],
@@ -919,7 +1039,7 @@ function buildExport(data: NonNullable<FairReportData>): { headers: string[]; bo
 const c = (centi: number | null | undefined): string => (Number(centi ?? 0) / 100).toFixed(2);
 
 // Response type aliases used across the subcomponents.
-type FairReportData = FairSoResponse | FairDoResponse | FairInvoiceResponse | undefined;
-type FairReportRows = FairSoRow[] | FairDoRow[] | FairInvoiceRow[] | undefined;
+type FairReportData = FairSoResponse | FairDoResponse | FairInvoiceResponse | FairPnlResponse | undefined;
+type FairReportRows = FairSoRow[] | FairDoRow[] | FairInvoiceRow[] | FairPnlRow[] | undefined;
 
 export default FairReport;

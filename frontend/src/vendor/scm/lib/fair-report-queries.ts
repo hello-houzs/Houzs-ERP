@@ -17,7 +17,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 
-export type FairStage = 'so' | 'do' | 'invoice';
+export type FairStage = 'so' | 'do' | 'invoice' | 'pnl';
 
 /** The four Fair Report tender labels (mfg_sales_order_payments.method mapped:
  *  cash→Cash, merchant→Merchant, installment→Installment, transfer→Online). */
@@ -137,6 +137,52 @@ export type FairInvoiceSummary = {
   margin_pct: number | null;
 };
 
+// ── stage=pnl (exhibition P&L) ───────────────────────────────────────────────
+export type FairPnlCostStage = 'so' | 'do' | 'invoice';
+
+export type FairPnlRow = FairDims & {
+  so_date: string | null;
+  so_no: string;
+  order_form: string | null;
+  revenue_centi: number;             // product + service
+  product_rev_centi: number;
+  service_rev_centi: number;
+  so_cost_centi: number;             // SO category cost
+  do_cost_centi: number | null;      // null when no DO exists yet
+  si_cost_centi: number | null;      // null when no SI exists yet
+  effective_cost_centi: number;      // most-progressed booked cost (COGS)
+  effective_cost_stage: FairPnlCostStage;
+  gross_profit_centi: number;        // revenue − effective cost
+  margin_pct: number | null;
+};
+
+export type FairOverheads = {
+  transport_centi: number;
+  merchandise_centi: number;
+  commission_centi: number;
+  commission_pct: number;
+  commission_is_boost: boolean;
+  total_overhead_centi: number;
+};
+
+export type FairPnlSummary = {
+  orders: number;
+  delivered_orders: number;
+  invoiced_orders: number;
+  total_revenue_centi: number;
+  total_product_rev_centi: number;
+  total_service_rev_centi: number;
+  total_so_cost_centi: number;
+  total_do_cost_centi: number;
+  total_si_cost_centi: number;
+  total_cogs_centi: number;
+  gross_profit_centi: number;
+  gross_margin_pct: number | null;
+  overheads: FairOverheads;
+  net_profit_centi: number;
+  net_margin_pct: number | null;
+};
+
 export type FairFiltersEcho = {
   stage: FairStage;
   venue: string | null;
@@ -170,7 +216,19 @@ export type FairInvoiceResponse = {
   filters: FairFiltersEcho;
   meta: { access_tier: 'management' | 'sales_director' | 'none' };
 };
-export type FairReportResponse = FairSoResponse | FairDoResponse | FairInvoiceResponse;
+export type FairPnlResponse = {
+  stage: 'pnl';
+  rows: FairPnlRow[];
+  summary: FairPnlSummary;
+  filters: FairFiltersEcho;
+  meta: {
+    access_tier: 'management' | 'sales_director' | 'none';
+    needs_project: boolean;   // true when no fair (project) is selected yet
+    brand: string | null;     // the fair's brand (drives the rate card)
+    rate_present: boolean;    // false when the brand has no project_cost_rates card
+  };
+};
+export type FairReportResponse = FairSoResponse | FairDoResponse | FairInvoiceResponse | FairPnlResponse;
 
 function buildFairQs(stage: FairStage, f: FairFilters): string {
   const params = new URLSearchParams();
