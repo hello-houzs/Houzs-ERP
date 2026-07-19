@@ -19,6 +19,30 @@ import { installGlobalErrorReporting } from "./lib/errorReporter";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "./lib/queryClient";
 import { tokenStore } from "./api/client";
+import { canonicalRedirectUrl } from "./lib/canonicalHost";
+
+// Canonical-domain guard (owner 2026-07: "我要全部看到 .houzscentury.com").
+// Production also answers on the Cloudflare Pages default host
+// `houzs-erp.pages.dev`; bounce those hits to `erp.houzscentury.com`,
+// preserving path + query + hash. Every other origin — staging, previews,
+// erp.2990shome.com, localhost — is left alone. See lib/canonicalHost.ts for
+// why each exclusion is load-bearing.
+//
+// Runs FIRST, before registerPwa() and before React mounts, so we never
+// register a service worker or boot the app on an origin we're leaving.
+// `location.replace` (not `href`) keeps the dead origin out of session
+// history, so Back doesn't bounce the user straight back into it.
+//
+// This is the belt to the Pages Function's braces: `frontend/public/_redirects`
+// rewrites `/*` to the SPA shell, and per this project's field notes that rule
+// is evaluated BEFORE Pages Functions — so the Function's server-side 302 may
+// never run in normal operation. This client-side hop always does.
+//
+// NOTE the hash is carried across, so an owner "view as" link
+// (`…/#login-as=<token>`) pasted against the legacy host still hands its token
+// to the canonical origin — which is itself in LOGIN_AS_HOSTS below.
+const canonicalTarget = canonicalRedirectUrl(window.location.href);
+if (canonicalTarget) window.location.replace(canonicalTarget);
 
 // The public surfaces (survey, customer/supplier portal, password reset)
 // are split out of the staff bundle — staff never download them, and the
@@ -33,7 +57,12 @@ function PublicFallback() {
 
 // Register the service worker + capture installability events.
 // Safe on every page (survey/portal/supplier all benefit too).
-registerPwa();
+//
+// Skipped when we are mid-redirect to the canonical domain: `location.replace`
+// does not halt script execution, so without this guard we would install a
+// service worker on the very origin we are abandoning — leaving a cached shell
+// behind on `houzs-erp.pages.dev` for a host nobody should be using.
+if (!canonicalTarget) registerPwa();
 
 // Self-hosted client error reporting: window error + unhandledrejection
 // listeners, batched to POST /api/client-errors. Installed BEFORE React renders

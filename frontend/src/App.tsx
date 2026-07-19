@@ -6,6 +6,7 @@ import { canUseAssistant } from "./auth/assistantAccess";
 import { isSalesStaff, isDirectorUser, isSalesDirectorUser, canViewFairReport } from "./auth/salesAccess";
 import { capability, capabilitiesUnresolved } from "./auth/capabilities";
 import { PageGuard } from "./auth/PageGuard";
+import { ROUTE_ALIASES } from "./lib/routeAliases";
 import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
 import { NotificationsProvider } from "./hooks/useNotifications";
@@ -695,6 +696,15 @@ export default function App() {
           element={<Navigate to="/team?tab=roles" replace />}
         />
         <Route path="/profile" element={<Profile />} />
+        {/* URL standardisation, step 1 (owner 2026-07 "整個讓系統更加
+            standardise"): make reasonable-but-wrong path guesses resolve
+            instead of 404-ing — chiefly a missing or spurious `/scm` prefix.
+            Purely additive: nothing is renamed or removed, and each alias
+            grants no access of its own since the destination route's guard
+            still runs. See lib/routeAliases.ts for why no path is renamed. */}
+        {ROUTE_ALIASES.map((a) => (
+          <Route key={a.from} path={a.from} element={<Navigate to={a.to} replace />} />
+        ))}
         <Route path="*" element={<Forbidden kind="not-found" />} />
         </Routes>
         </Suspense>
