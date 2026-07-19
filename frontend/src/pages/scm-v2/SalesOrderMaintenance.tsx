@@ -64,11 +64,25 @@ import {
 import styles from './SalesOrderMaintenance.module.css';
 
 export const SalesOrderMaintenance = () => {
-  // Houzs-flavoured: gate on the flat permission key `scm.config.write` (the
-  // 2990 staff_role bridge always reports either super_admin or sales). Owner
-  // + IT Admin pass via `*`; grant to other positions via Team > Positions.
-  const { can } = useHouzsAuth();
-  const canEdit = can('scm.config.write');
+  /* The write gate. `scm_config_writer` is the BACKEND's own answer to
+     "may you write SCM master data" (services/positionPolicy.userCanWriteScmConfig),
+     which scm/lib/houzs-perms.canWriteScmConfig — the gate every write on this
+     page actually passes through — delegates to. It is the flat permission key
+     `scm.config.write` OR the position policy's canWriteConfig flag.
+
+     This page used to ask `can('scm.config.write')`, the FLAT HALF ONLY, so a
+     Procurement / Operation / Logistic Admin / Super Admin position whose ROLE
+     lacks the flat key was shown "Read-only view" over a page whose edits the API
+     would have accepted — the FE and BE disagreeing by exactly one rule, which is
+     the drift salesJdAccess.ts's header warns about.
+
+     The explicit `undefined` check (not `??` on a boolean) is deliberate: it
+     distinguishes "an older backend did not send the field" — fall back to the
+     flat key, i.e. exactly the old behaviour — from a real `false`. */
+  const { can, user } = useHouzsAuth();
+  const canEdit = user?.scm_config_writer === undefined
+    ? can('scm.config.write')
+    : user.scm_config_writer;
 
   return (
     <div>
@@ -110,6 +124,34 @@ export const SalesOrderMaintenance = () => {
     </div>
   );
 };
+
+/* ──────────────────────────────────────────────────────────────────────────
+   LoadError — a reference list that FAILED to load must say so.
+
+   This page reads seven lists and renders every one through `?? []`. That
+   fallback is fine for the render path (the mapper needs an array) but it is
+   NOT an answer to "did the load fail": a 403 on the warehouse list rendered as
+   an empty Warehouse dropdown, which reads as "there are no warehouses" — the
+   operator has no way to tell a refusal from an empty table, and the owner spent
+   a session believing the reference data was gone. So every section pairs its
+   `?? []` render with an explicit isError banner.
+
+   `err.message` is ALREADY plain language: authedFetch runs every non-ok
+   response through humanApiError (the house helper) before throwing, so a 403
+   arrives here as "You don't have permission to do that." and a 500 as "The
+   system hit a problem…". Nothing is re-mapped here — re-mapping it would be the
+   second copy of that rule.
+   ────────────────────────────────────────────────────────────────────────── */
+
+const LoadError = ({ what, error }: { what: string; error: unknown }) => (
+  <div
+    role="alert"
+    className="rounded-lg border border-err/40 bg-err-bg px-4 py-2.5 text-[12.5px] leading-relaxed text-ink-secondary"
+  >
+    <strong className="font-semibold text-ink">Couldn&apos;t load {what}.</strong>{' '}
+    {error instanceof Error ? error.message : 'Please try again.'}
+  </div>
+);
 
 /* ──────────────────────────────────────────────────────────────────────────
    Maintenance body — formerly LocalitiesTab in Settings.tsx.
@@ -400,11 +442,34 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
           L4  — Postcodes in city, columns: Postcode / delete
 
           Each level also has its own Add form at the bottom. */}
-      <div id="geo" style={{ scrollMarginTop: 96 }}>
+      <div id="geo" className={styles.anchor}>
         <div className="mb-2.5 flex items-center gap-2.5 border-l-[3px] border-primary pl-2.5 font-mono text-[11px] font-semibold uppercase tracking-[0.1em] text-ink">
           <span>Geo &amp; Warehouses</span>
         </div>
       </div>
+
+      {/* Warehouse master lives at Inventory → Warehouses — commander
+          2026-05-27 "这个 warehouse 是 inventory 那边 create 的 这边 create 不到
+          的". The note used to be a code comment nobody on the page could read,
+          so the operator was told nothing about WHERE to go; it is now a link,
+          for the same reason the Venues notice below is one. */}
+      <div className={styles.banner}>
+        Warehouses are maintained in{' '}
+        <Link to="/scm/warehouses" className="font-semibold text-primary underline underline-offset-2">
+          Inventory → Warehouses
+        </Link>
+        . The Warehouse column below only picks from that list; add, rename or
+        deactivate a warehouse there.
+      </div>
+
+      {/* A refused / failed reference read must not render as an empty picker —
+          see LoadError above. These three back the Warehouse and Region columns
+          of the state table. */}
+      {localities.isError  && <LoadError what="the geo list"        error={localities.error} />}
+      {warehouses.isError  && <LoadError what="the warehouse list"  error={warehouses.error} />}
+      {regionMasters.isError && <LoadError what="the delivery regions" error={regionMasters.error} />}
+      {stateRegions.isError && <LoadError what="the per-state delivery regions" error={stateRegions.error} />}
+      {mappings.isError    && <LoadError what="the state → warehouse mapping" error={mappings.error} />}
       <div className={styles.banner}>
         <strong>
           {geoView === 'country'  && 'Countries.'}
@@ -1026,7 +1091,7 @@ const DropdownsSection = ({ canEdit }: { canEdit: boolean }) => {
 
   return (
     <>
-      <div id="dropdowns" style={{ scrollMarginTop: 96 }}>
+      <div id="dropdowns" className={styles.anchor}>
         <div className="mb-2.5 flex items-center gap-2.5 border-l-[3px] border-primary pl-2.5 font-mono text-[11px] font-semibold uppercase tracking-[0.1em] text-ink">
           <span>Dropdowns</span>
         </div>
@@ -1039,7 +1104,9 @@ const DropdownsSection = ({ canEdit }: { canEdit: boolean }) => {
         SOs while keeping existing rows that reference it valid.
       </div>
 
-      {all.isLoading ? (
+      {all.isError ? (
+        <LoadError what="the dropdown options" error={all.error} />
+      ) : all.isLoading ? (
         <div className={styles.tableCard}>
           <div className={styles.empty}>Loading dropdowns…</div>
         </div>
@@ -1068,7 +1135,13 @@ const DropdownCategoryCard = ({
   rows:     SoDropdownOption[];
   canEdit:  boolean;
 }) => {
-  const [expanded, setExpanded] = useState(true);
+  /* Owner 2026-07-19: "可不可以把 default 关着". Every category card starts
+     COLLAPSED so the page opens as a short list of section headers instead of a
+     scroll-tower — PAYMENT METHOD was the odd one out only because this default
+     was `true` for all of them and it happened to be the card he landed on.
+     Expand/collapse is not persisted anywhere (no localStorage, no URL param),
+     so this is purely the initial default; a user's clicks behave as before. */
+  const [expanded, setExpanded] = useState(false);
   const notify = useNotify();
   const askConfirm = useConfirm();
 
@@ -1351,15 +1424,31 @@ const VenuesSection = (_props: { canEdit: boolean }) => {
   const venues = useVenues();
 
   return (
-    <section id="venues" style={{ scrollMarginTop: 96 }}>
+    <section id="venues" className={styles.anchor}>
       <div className="mb-2.5 flex items-center gap-2.5 border-l-[3px] border-primary pl-2.5 font-mono text-[11px] font-semibold uppercase tracking-[0.1em] text-ink">
         <MapPin size={12} strokeWidth={2} />
         <span>Venues · {venues.data?.length ?? 0}</span>
       </div>
+      {/* Venue mastering genuinely lives in Project Maintenance
+          (routes/projects.ts /venues; VenueManager in ProjectMaintenance.tsx) —
+          ONE source of truth, deliberately not duplicated here. But "maintained
+          in Project Maintenance" with no way to get there is a dead end: the
+          operator is told the control exists and not where. The link makes the
+          notice actionable. Project Maintenance is its own page-access gate
+          (projects.maintenance = full), so this may land a user on Forbidden —
+          that is the honest answer, and better than silence. */}
       <div className={styles.banner} style={{ marginBottom: 10 }}>
-        Venues are maintained in Project Maintenance. This list is read-only;
-        add, rename, or deactivate venues there.
+        Venues are maintained in{' '}
+        <Link
+          to="/projects?view=maintenance"
+          className="font-semibold text-primary underline underline-offset-2"
+        >
+          Project Maintenance
+        </Link>
+        . This list is read-only; add, rename, or deactivate venues there.
       </div>
+
+      {venues.isError && <LoadError what="the venue list" error={venues.error} />}
 
       <div className={styles.venuesCard}>
         <table className={styles.table}>

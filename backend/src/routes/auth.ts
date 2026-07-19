@@ -12,6 +12,7 @@ import {
 } from "../services/auth";
 import { bustUserSessions } from "../services/sessionCache";
 import { isFinanceViewer, isProductCostViewer } from "../services/pmsAccess";
+import { userCanWriteScmConfig } from "../services/positionPolicy";
 import { sendEmail, publicUrl, resetEmailHtml, inviteEmailHtml, erpProductName } from "../services/email";
 import { getBrandingForCompany } from "../services/branding";
 import { defaultCompanyCodeForHost } from "../middleware/companyContext";
@@ -547,6 +548,14 @@ app.get("/me", async (c) => {
       ...user,
       project_finance_viewer: isFinanceViewer(user),
       product_cost_viewer: isProductCostViewer(user),
+      // scm_config_writer: "may you WRITE SCM master data / config" — the SAME
+      // predicate the API gate uses (scm/lib/houzs-perms.canWriteScmConfig
+      // delegates to it), surfaced so a screen never re-derives it. SO
+      // Maintenance asked `can('scm.config.write')`, the FLAT half only, and so
+      // told every position-granted config writer the page was read-only while
+      // the API would have accepted their edits. Third flag on this response for
+      // the third time the FE and BE drifted by exactly one rule.
+      scm_config_writer: userCanWriteScmConfig(user),
     },
   });
 });

@@ -277,7 +277,22 @@ scm.route("/purchase-consignment-returns", purchaseConsignmentReturns);
 // on `scm.warehouse.inventory`.
 scm.use("/inventory/adjustments", scmAreaGuard("scm.warehouse.adjustments"));
 scm.route("/inventory/adjustments", inventoryAdjustments);
-scm.use("/inventory/*", scmAreaGuard("scm.warehouse.inventory"));
+// openReadPaths /inventory/warehouses (2026-07-19, fix/so-maintenance-403) —
+// GET /inventory/warehouses is the warehouse PICKLIST (id / code / name /
+// location / is_active / is_default; no cost, no quantities, no valuation) that
+// the PO Purchase-Location + per-line Ship-to dropdowns and the SO Maintenance
+// state→warehouse mapping read. It is the SAME class of cross-area reference
+// read as state-warehouse-mappings and localities, which sit on the coarse
+// umbrella two blocks below — leaving one open and its companion list gated made
+// the SO Maintenance page 403 on the warehouse names for the very mapping rows
+// it was already allowed to fetch. The rest of /inventory/* (stock levels, FIFO
+// lots, COGS, valuation) stays gated on scm.warehouse.inventory, and every write
+// still requires `edit` — this hatch is GET/HEAD on that one path only, which is
+// why it is openReadPaths and NOT openRead.
+scm.use(
+  "/inventory/*",
+  scmAreaGuard("scm.warehouse.inventory", { openReadPaths: ["/inventory/warehouses"] }),
+);
 scm.route("/inventory", inventory);
 scm.use("/warehouse/*", scmAreaGuard("scm.warehouse.inventory"));
 scm.route("/warehouse", warehouse);
@@ -396,7 +411,18 @@ scm.route("/drivers", drivers);
 // Finer per-route L2 keys (planning / fleet / trips) can be added later.
 scm.use("/delivery-planning/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/delivery-planning", deliveryPlanning);
-scm.use("/delivery-planning-regions/*", scmAreaGuard("scm.transportation.drivers"));
+// openRead (2026-07-19, fix/so-maintenance-403) — this router is pure REFERENCE
+// data: the region master (code / name / sortOrder / active) and the per-state →
+// region-code map. Both are read by the SO Maintenance Region multi-select, which
+// is not a Transportation page; gating the READ on scm.transportation.drivers
+// 403'd the SO Maintenance editor on GET / and GET /states while the sibling
+// state→warehouse map on the same screen loaded fine. Nothing here exposes a
+// driver, a trip, a job or a customer address, so the read is the same class as
+// the other cross-area picklists. Every WRITE (POST / PATCH / DELETE on the
+// master, PUT on a state's set) still requires `edit` on
+// scm.transportation.drivers — the region buckets are still Transportation's to
+// own, they are just not secret.
+scm.use("/delivery-planning-regions/*", scmAreaGuard("scm.transportation.drivers", { openRead: true }));
 scm.route("/delivery-planning-regions", deliveryPlanningRegions);
 scm.use("/trips/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/trips", trips);

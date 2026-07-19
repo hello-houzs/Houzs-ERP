@@ -20,7 +20,7 @@ import {
   isFinanceViewer,
   isProductCostViewer,
 } from '../../services/pmsAccess';
-import { resolvePositionPolicy } from '../../services/positionPolicy';
+import { userCanWriteScmConfig } from '../../services/positionPolicy';
 import type { AuthUser } from '../../services/auth';
 import type { Env, Variables } from '../env';
 
@@ -192,15 +192,14 @@ export function canViewScmProductCost(c: HouzsUserSource): boolean {
  * context is the pinned scm.staff system row (no position), so the REAL Houzs
  * caller is read from `houzsUser`, whose position_name + department_name
  * middleware/auth.ts mirrors there. Fails CLOSED (no houzsUser → no write).
+ *
+ * DELEGATES to positionPolicy.userCanWriteScmConfig (2026-07-19) rather than
+ * restating the two halves here — the frontend now reads the SAME answer off
+ * /auth/me as `scm_config_writer`, and a second copy of the rule is exactly how
+ * the screen and the wire came to disagree in the first place.
  */
 export function canWriteScmConfig(c: HouzsUserSource): boolean {
-  if (hasHouzsPerm(c, 'scm.config.write')) return true;
-  const hu = c.get('houzsUser');
-  if (!hu) return false;
-  return resolvePositionPolicy({
-    position_name: hu.position_name ?? null,
-    department_name: hu.department_name ?? null,
-  }).flags.canWriteConfig;
+  return userCanWriteScmConfig(c.get('houzsUser'));
 }
 
 /** Hono middleware — 403s when the caller lacks `perm`. Mirrors

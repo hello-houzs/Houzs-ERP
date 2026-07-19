@@ -17,6 +17,10 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+// Host retry policy — the vendor auth/transport boundary already reaches into
+// the host for readAuthToken (see authed-fetch.ts); retry semantics belong to
+// the host's QueryClient for the same reason.
+import { retryUnlessClientError } from '../../../lib/queryClient';
 
 export type Warehouse = {
   id: string;
@@ -128,7 +132,11 @@ export function useWarehouses(opts?: { includeInactive?: boolean }) {
       return authedFetch<{ warehouses: Warehouse[] }>(`/inventory/warehouses${qs}`).then((r) => r.warehouses);
     },
     staleTime: 5 * 60_000,
-    retry: 1,
+    /* HOUZS VENDOR — was a bare `retry: 1`, which re-sent a 403 that could only
+       403 again (the owner saw this endpoint refused twice per page load). The
+       host predicate keeps the single retry for network / 5xx and drops it for
+       an authorization or validation failure. */
+    retry: retryUnlessClientError,
   });
 }
 

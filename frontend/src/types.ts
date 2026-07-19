@@ -482,6 +482,16 @@ export interface AuthUser {
    *  is true here and false there. Older backends omit it → treated as false,
    *  which falls back to the director-only behaviour, not to open. */
   product_cost_viewer?: boolean;
+  /** True when this user may WRITE SCM master data / config — the ONE answer to
+   *  the `scm.config.write` question, computed by the backend
+   *  (services/positionPolicy.userCanWriteScmConfig) and used verbatim by the
+   *  API gate (scm/lib/houzs-perms.canWriteScmConfig). It is the flat permission
+   *  key OR the position policy's canWriteConfig flag; a screen must NOT ask
+   *  `can('scm.config.write')` instead, which is the flat half only and was
+   *  showing "Read-only view" to positions whose edits the API accepted.
+   *  Older backends omit it → treated as false by the helper, which then falls
+   *  back to the flat key, i.e. exactly today's behaviour. */
+  scm_config_writer?: boolean;
   /** Org POSITION name (positions.name) — e.g. "Sales Executive",
    *  "Super Admin". Sent by /auth/me (services/auth.ts → hydrateAuthUser).
    *  Drives the code-keyed Sales-access model (director / sales detection in

@@ -29,6 +29,30 @@ import { QueryClient, MutationCache } from "@tanstack/react-query";
 import { installCrossTabSync, broadcastDataChanged } from "./cross-tab-sync";
 import { installQueryPersist } from "./query-persist";
 
+/* Retry policy — one retry, EXCEPT for a 4xx (2026-07-19, fix/so-maintenance-403).
+   The bare `retry: 1` re-sent every failure once, including authorization
+   failures: the owner's DevTools showed /inventory/warehouses,
+   /delivery-planning-regions and .../states each 403 TWICE on one page load. A
+   403 is a decision, not a blip — the second call cannot succeed, so it is pure
+   latency for the operator (the error banner arrives a retry-delay late) and
+   double load on the Worker. On a bad day it is worse than pointless: an outage
+   that 4xxs broadly doubles its own request volume.
+
+   Both error shapes in this app carry `.status` — api/client.ts's HttpError and
+   the SCM authedFetch error — so ONE predicate covers every query. Anything
+   without a numeric status (network drop, timeout, thrown string) keeps the
+   single retry it has today; 5xx keeps it too, because that genuinely can
+   self-heal (Hyperdrive cold start). Only 400-499 is dropped, and 408/429 are
+   deliberately kept: a request timeout and a rate-limit are both "try again". */
+export function retryUnlessClientError(failureCount: number, error: unknown): boolean {
+  if (failureCount >= 1) return false;
+  const status = (error as { status?: unknown } | null)?.status;
+  if (typeof status === "number" && status >= 400 && status < 500) {
+    return status === 408 || status === 429;
+  }
+  return true;
+}
+
 export const queryClient = new QueryClient({
   // Cross-tab sync: every successful write tells other open tabs to refetch.
   // One central hook in the MutationCache, so no per-mutation wiring is needed.
@@ -42,7 +66,7 @@ export const queryClient = new QueryClient({
       staleTime: 30_000,
       gcTime: 30 * 60_000,
       refetchOnWindowFocus: false,
-      retry: 1,
+      retry: retryUnlessClientError,
     },
   },
 });
