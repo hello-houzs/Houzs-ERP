@@ -20,6 +20,7 @@ import { AndroidInstallGuide } from "../components/AndroidInstallGuide";
 // MODULE_CONFIGS / FORM_MEMBERS_EDIT are read synchronously by the routing +
 // form logic below, so it can't be deferred without splitting those out first.
 import { MobileModuleList, MODULE_CONFIGS, FORM_MEMBERS_EDIT } from "./MobileModuleList";
+import { resolveMobileRoute, type MobileRoute } from "./mobileRoute";
 import type { SearchNav } from "./MobileSearch";
 import type { MobileScanPrefill } from "./MobileScan";
 import type { ConvertTarget } from "./MobileConvertWizard";
@@ -74,7 +75,65 @@ type Screen =
   | { t: "mail" }
   | { t: "announcements" }
   | { t: "inbox" }
+  /* A real mobile destination this user's position may not open. Reached only
+     by URL — the menu never renders a row the user can't use. */
+  | { t: "locked"; label: string }
+  /* A URL with no mobile screen at all. NOT a stub ("building this next") and
+     NOT a silent redirect to Orders — see mobileRoute.ts for what used to
+     happen here. */
+  | { t: "desktop-only"; path: string }
   | { t: "stub"; title: string };
+
+/** Where a menu destination goes, as a PURE mapping. Shared by the menu tap
+ *  (`openRoute`) and by the URL resolution at mount, so a path can never open
+ *  one screen when tapped and a different one when typed. `orders-tab` is the
+ *  one destination that is a bottom tab rather than an overlay. */
+type DestinationTarget = Screen | { t: "orders-tab" };
+
+function destinationScreen(to: string, label: string): DestinationTarget {
+  const path = (to || "").split("?")[0];
+  if (path === "/scm/sales-orders") return { t: "orders-tab" };
+  if (path === "/scm/sales-orders/maintenance") return { t: "so-maintenance" };
+  if (path === "/scm/amendments") return { t: "amendments" };
+  if (path === "/assr") return { t: "service" };
+  if (path === "/projects") return { t: "pms" };
+  if (path === "/mail-center") return { t: "mail" };
+  if (path === "/announcements") return { t: "announcements" };
+  if (path === "/activity-inbox") return { t: "inbox" };
+  if (path === "/scm/delivery-planning") return { t: "delivery-planning" };
+  if (path === "/team") {
+    const tab = new URLSearchParams((to.split("?")[1] || "")).get("tab");
+    const teamKey = tab === "members" ? "members" : tab === "positions" ? "positions" : tab === "departments" ? "departments" : null;
+    if (teamKey && MODULE_CONFIGS[teamKey]) return { t: "module", key: teamKey, title: label };
+    return { t: "stub", title: label };
+  }
+  const key = ROUTE_TO_CONFIG[path];
+  if (key && MODULE_CONFIGS[key]) return { t: "module", key, title: label };
+  return { t: "stub", title: label };
+}
+
+/** The screen the app opens on, given what the URL resolved to. */
+function initialScreenFor(route: MobileRoute): Screen {
+  switch (route.t) {
+    case "home":
+    // A tab path opens the shell on that tab (selected via `initialRoute`
+    // where the tab state is created), so the screen is the plain tab view.
+    case "tab":
+      return { t: "tab" };
+    case "so-detail":
+      return { t: "so-detail", docNo: route.docNo };
+    case "locked":
+      return { t: "locked", label: route.label };
+    case "desktop-only":
+      return { t: "desktop-only", path: route.path };
+    case "menu": {
+      const target = destinationScreen(route.to, route.label);
+      // The Orders destination lands on the default tab, which is already
+      // "orders" for anyone the resolver would have shown this destination to.
+      return target.t === "orders-tab" ? { t: "tab" } : target;
+    }
+  }
+}
 
 // Doc modules whose "+ New" opens a convert wizard (create by converting a
 // source doc), matching desktop. Others with a `form` open MobileModuleForm.
@@ -287,9 +346,42 @@ function MobileAppInner() {
   // no one starts on a locked screen.
   const firstTab: Tab = canOrders ? "orders" : canService ? "service" : canCalendar ? "calendar" : "profile";
 
-  const [tab, setTab] = useState<Tab>(firstTab);
+  // Build the grouped mobile Menu from MOBILE_MENU_GROUPS (design mirror), keeping
+  // only items whose matching desktop nav tab is visible for this user's position
+  // (via the shared `allowed` above). Items with no nav match still show (backend
+  // gates). Computed HERE, above the state, because the initial screen is resolved
+  // from the URL against exactly this permission-filtered list.
+  const menuGroups = MOBILE_MENU_GROUPS
+    .map((g) => ({ group: g.group, items: g.items.filter((it) => (it.directorOnly ? isDirectorUser(user) : (it.alwaysShow || allowed(it.gateVia ?? it.to)))) }))
+    .filter((g) => g.items.length > 0);
+
+  // Organisation rows shown inside the Profile screen — gated by the SAME
+  // `allowed` check (+ Announcements' alwaysShow bypass) the menu used when
+  // these items lived in its Organisation group.
+  const profileOrgItems = PROFILE_ORG_ITEMS.filter((it) => it.alwaysShow || allowed(it.to));
+
+  // What this user may open, and what the mobile app implements at all. The
+  // difference between the two is the "your position can't open this" answer;
+  // absence from both is the "no mobile screen exists" answer.
+  const visibleDestinations = [...menuGroups.flatMap((g) => g.items), ...profileOrgItems];
+  const allKnownDestinations = [...MOBILE_MENU_GROUPS.flatMap((g) => g.items), ...PROFILE_ORG_ITEMS];
+
+  /* URL → screen, ONCE at mount. The mobile shell has no router and does not
+     write to the URL as the user moves, so this is deliberately an initial
+     resolution and not a two-way sync: adding history syncing would change what
+     every already-working mobile screen does, which this fix must not. What it
+     buys is that a typed, bookmarked, notification or shared link either lands
+     on the RIGHT screen or says so plainly — instead of silently rendering the
+     Sales Orders list under, say, /scm/purchase-orders. */
+  const initialRoute = resolveMobileRoute(
+    typeof window === "undefined" ? "/" : window.location.pathname,
+    visibleDestinations,
+    allKnownDestinations,
+  );
+
+  const [tab, setTab] = useState<Tab>(initialRoute.t === "tab" ? initialRoute.tab : firstTab);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [screen, setScreen] = useState<Screen>({ t: "tab" });
+  const [screen, setScreen] = useState<Screen>(() => initialScreenFor(initialRoute));
   const back = () => setScreen({ t: "tab" });
 
   // Search → calendar jump target. When a project search hit is tapped we route
@@ -356,40 +448,12 @@ function MobileAppInner() {
     });
   };
 
-  // Build the grouped mobile Menu from MOBILE_MENU_GROUPS (design mirror), keeping
-  // only items whose matching desktop nav tab is visible for this user's position
-  // (via the shared `allowed` above). Items with no nav match still show (backend
-  // gates).
-  const menuGroups = MOBILE_MENU_GROUPS
-    .map((g) => ({ group: g.group, items: g.items.filter((it) => (it.directorOnly ? isDirectorUser(user) : (it.alwaysShow || allowed(it.gateVia ?? it.to)))) }))
-    .filter((g) => g.items.length > 0);
-
-  // Organisation rows shown inside the Profile screen — gated by the SAME
-  // `allowed` check (+ Announcements' alwaysShow bypass) the menu used when
-  // these items lived in its Organisation group.
-  const profileOrgItems = PROFILE_ORG_ITEMS.filter((it) => it.alwaysShow || allowed(it.to));
-
   const openRoute = (to: string, label: string) => {
     setMenuOpen(false);
-    const path = (to || "").split("?")[0];
-    if (path === "/scm/sales-orders") { setTab("orders"); setScreen({ t: "tab" }); return; }
-    if (path === "/scm/sales-orders/maintenance") return setScreen({ t: "so-maintenance" });
-    if (path === "/scm/amendments") return setScreen({ t: "amendments" });
-    if (path === "/assr") return setScreen({ t: "service" });
-    if (path === "/projects") return setScreen({ t: "pms" });
-    if (path === "/mail-center") return setScreen({ t: "mail" });
-    if (path === "/announcements") return setScreen({ t: "announcements" });
-    if (path === "/activity-inbox") return setScreen({ t: "inbox" });
-    if (path === "/scm/delivery-planning") return setScreen({ t: "delivery-planning" });
-    if (path === "/team") {
-      const tab = new URLSearchParams((to.split("?")[1] || "")).get("tab");
-      const teamKey = tab === "members" ? "members" : tab === "positions" ? "positions" : tab === "departments" ? "departments" : null;
-      if (teamKey && MODULE_CONFIGS[teamKey]) return setScreen({ t: "module", key: teamKey, title: label });
-      return setScreen({ t: "stub", title: label });
-    }
-    const key = ROUTE_TO_CONFIG[path];
-    if (key && MODULE_CONFIGS[key]) return setScreen({ t: "module", key, title: label });
-    setScreen({ t: "stub", title: label });
+    const target = destinationScreen(to, label);
+    // The Orders destination is a bottom TAB, not an overlay screen.
+    if (target.t === "orders-tab") { setTab("orders"); setScreen({ t: "tab" }); return; }
+    setScreen(target);
   };
 
   // Overlay screens (pushed above the tab bar). These resolve to lazy-loaded
@@ -480,6 +544,8 @@ function MobileAppInner() {
   else if (screen.t === "mail") overlay = <MobileMailCenter onBack={back} />;
   else if (screen.t === "announcements") overlay = <MobileAnnouncements onBack={back} />;
   else if (screen.t === "inbox") overlay = <MobileInbox onBack={back} onOpen={(n) => { const doc = (n as { doc_no?: string }).doc_no; if (doc) setScreen({ t: "so-detail", docNo: doc }); }} />;
+  else if (screen.t === "locked") overlay = <UrlLocked label={screen.label} onHome={back} />;
+  else if (screen.t === "desktop-only") overlay = <DesktopOnly path={screen.path} onHome={back} />;
   else if (screen.t === "stub") overlay = <Stub title={screen.title} onBack={back} />;
   if (overlay !== null) return <Suspense fallback={<MobileScreenFallback />}>{overlay}</Suspense>;
 
@@ -606,6 +672,53 @@ function TabLocked({ title }: { title: string }) {
         Your position doesn't have access to this section.
       </div>
     </div>
+  );
+}
+
+/** Shared frame for the two honest URL dead ends below. Deliberately has no
+ *  "Back" — the user arrived by URL, so there is usually nothing behind them;
+ *  the way out is into the app. */
+function UrlDeadEnd({ title, body, onHome }: { title: string; body: string; onHome: () => void }) {
+  return (
+    <div className="hz-m" style={{ position: "fixed", inset: 0, display: "flex", flexDirection: "column", background: "var(--app-bg)" }}>
+      <header style={{ background: "#fff", borderBottom: "1px solid var(--line)", padding: "calc(env(safe-area-inset-top) + 16px) 16px 14px" }}>
+        <div style={{ fontSize: 19, fontWeight: 800, color: "var(--ink)" }}>{title}</div>
+      </header>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, padding: 24, textAlign: "center" }}>
+        <div style={{ color: "#9aa093", fontSize: 12.5, lineHeight: 1.6, maxWidth: 300 }}>{body}</div>
+        <button
+          onClick={onHome}
+          style={{ background: "var(--teal)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 20px", fontFamily: "inherit", fontSize: 13, fontWeight: 700 }}
+        >
+          Go to the app
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** A URL naming a real mobile screen this position may not open. Says so —
+ *  rather than dropping the user on whatever screen happens to be first. */
+function UrlLocked({ label, onHome }: { label: string; onHome: () => void }) {
+  return (
+    <UrlDeadEnd
+      title={label}
+      body="Your position doesn't have access to this section."
+      onHome={onHome}
+    />
+  );
+}
+
+/** A URL with no mobile screen at all. The page EXISTS on desktop, so the
+ *  honest answer is "open it on a computer" — not a 404, and above all not
+ *  another document type rendered under this URL. */
+function DesktopOnly({ path, onHome }: { path: string; onHome: () => void }) {
+  return (
+    <UrlDeadEnd
+      title="Not available on mobile"
+      body={`${path} hasn't been built for phones yet. Open it on a computer to use this page.`}
+      onHome={onHome}
+    />
   );
 }
 
