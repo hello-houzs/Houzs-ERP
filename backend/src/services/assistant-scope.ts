@@ -58,6 +58,66 @@ export const ASSISTANT_DENIED_POSITIONS: ReadonlySet<string> = new Set([
   'helper',
   'storekeeper',
   'storekeeper supervisor',
+  /* SALES — owner 2026-07-19: "我説的是吧assistant從sales 那邊移除先"
+   * ("remove the Assistant from Sales first"). All four Sales-Department
+   * positions on the live positions table, exact normalised names, listed for
+   * the owner to confirm the set.
+   *
+   * NOT about CS. There is no CS department and no CS position in this system;
+   * the only "CS" is an AI agent in the Agent Console (services/agents/
+   * cs-agent.ts), a different feature, untouched. */
+  'sales director',
+  'sales manager',
+  'sales executive',
+  'sales person',
+]);
+
+/**
+ * Every position name that exists on the live `positions` table, normalised.
+ *
+ * WHY THIS EXISTS — position access FAILS OPEN everywhere else. A position that
+ * matches no rule falls through positionPolicy's terminal branch into cohort
+ * "full" (positionPolicy.ts:602-618, "FAIL OPEN ... the anti-lockout
+ * invariant"), which carries canSeeMargin + canSeeCommission + orderScope
+ * "all". So creating a new position — say a Sales title that does not begin
+ * with the word "Sales" — silently granted its holders margin, commission and
+ * the whole Assistant from the moment the row was saved. That is the owner's
+ * concern and it is real.
+ *
+ * The Assistant now fails CLOSED on an unrecognised name: unknown -> denied.
+ * Deliberately scoped to THIS surface only. The global position default is NOT
+ * flipped here — doing that repo-wide is the anti-lockout invariant above and
+ * needs its own change with the owner's sign-off.
+ *
+ * CONSEQUENCE THE OWNER MUST KNOW: adding a position to the live table no
+ * longer grants the Assistant. The name has to be added here too. That is the
+ * trade — a new position starts with no Assistant instead of starting with
+ * everything.
+ *
+ * Provenance: services/positionAccessSnapshot.ts, the generated photograph of
+ * the owner's live rows (17 positions). Copied rather than imported because
+ * that file is explicitly NOT WIRED — nothing reads it yet, and making this the
+ * first consumer would couple a security gate to a file whose header says it is
+ * a reviewable draft. Regenerate that snapshot, then update this list.
+ */
+export const ASSISTANT_KNOWN_POSITIONS: ReadonlySet<string> = new Set([
+  'super admin',
+  'hr manager',
+  'finance manager',
+  'sales director',
+  'sales manager',
+  'sales executive',
+  'sales person',
+  'operation manager',
+  'operation executive',
+  'procurement/purchasing',
+  'logistic admin',
+  'storekeeper',
+  'driver',
+  'helper',
+  'service admin',
+  'storekeeper supervisor',
+  'calendar viewer',
 ]);
 
 const normalisePosition = (n: string | null | undefined): string =>
@@ -66,10 +126,20 @@ const normalisePosition = (n: string | null | undefined): string =>
 /**
  * May this user open the Assistant at all?
  *
- * A wildcard holder always may. Everyone else is allowed UNLESS their position is
- * on the deny list — allow-by-default, matching the surface being open to staff.
- * A user with no position is ALLOWED here (they simply get the money-hidden scope);
- * the deny list is about a named job, not about missing data.
+ * A wildcard holder always may. For everyone else the surface now fails CLOSED on a
+ * named position — the owner's concern was that a NEW position row silently inherits
+ * the Assistant (positionPolicy fails OPEN into cohort "full"), so the gate here is:
+ *
+ *   • wildcard                    → yes.
+ *   • NO position at all ("")     → yes, with the money-hidden scope. Not the
+ *                                   owner's concern — that is a missing-data
+ *                                   fallback, documented on scopeForUser, and the
+ *                                   numbers are already withheld downstream.
+ *   • on the deny list            → no (field crew + Sales).
+ *   • a NAMED position we do not  → no. It must be whitelisted in
+ *     recognise                     ASSISTANT_KNOWN_POSITIONS first. This is the
+ *                                   fail-closed the owner asked for; scoped to THIS
+ *                                   surface only, the global default is untouched.
  */
 export function canUseAssistant(
   user: { permissions?: unknown; position_name?: string | null } | null | undefined,
@@ -79,7 +149,10 @@ export function canUseAssistant(
     ? perms.includes('*')
     : typeof perms === 'string' && perms.trim() === '*';
   if (isWildcard) return true;
-  return !ASSISTANT_DENIED_POSITIONS.has(normalisePosition(user?.position_name));
+  const position = normalisePosition(user?.position_name);
+  if (position === '') return true;
+  if (ASSISTANT_DENIED_POSITIONS.has(position)) return false;
+  return ASSISTANT_KNOWN_POSITIONS.has(position);
 }
 
 /**
