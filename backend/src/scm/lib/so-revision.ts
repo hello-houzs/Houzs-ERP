@@ -34,7 +34,7 @@ import {
   recomputeOneLine,
   type MfgItemForRecompute,
 } from './mfg-pricing-recompute';
-import { recordSoAudit } from './so-audit';
+import { recordSoAudit, type FieldChange } from './so-audit';
 import { deriveMfgPoUnitCost } from './po-pricing';
 import {
   rederiveDeliveryFee,
@@ -244,6 +244,22 @@ export async function applySoAmendment(
      recompute so unit/cost/margin/breakdown columns stay authoritative. */
   const touched: Array<{ change: string; itemCode: string; qty: number }> = [];
 
+  /* Per-field from -> to for the SO's OWN audit trail (Owner 2026-07-19: every
+     edit anywhere in the system must show who, when, and what changed from ->
+     to, reachable from the document's own page).
+
+     Until now approving an amendment recorded only "lines_applied: 3" and a
+     coarse note like "SPEC SF-100; QTY SF-200" — no old value for anything. The
+     before values existed, but only inside so_amendment_lines.old_snapshot,
+     which the audit drawer does not read. So the one moment the SO's lines are
+     rewritten by somebody other than their owner was the one moment the trail
+     could not say what they had been. */
+  const lineChanges: FieldChange[] = [];
+  const noteChange = (field: string, from: unknown, to: unknown) => {
+    if (String(from ?? '') === String(to ?? '')) return;
+    lineChanges.push({ field, from: from ?? null, to: to ?? null });
+  };
+
   for (const diff of amendmentLines) {
     const change = String(diff.change_type ?? '').toUpperCase();
 
@@ -255,7 +271,12 @@ export async function applySoAmendment(
         .eq('id', diff.sales_order_item_id)
         .eq('doc_no', docNo);
       if (delErr) throw new Error(`applySoAmendment: REMOVE failed for line ${diff.sales_order_item_id}: ${delErr.message}`);
-      touched.push({ change, itemCode: String(diff.old_snapshot?.item_code ?? ''), qty: 0 });
+      {
+        const snap = (diff.old_snapshot ?? {}) as Record<string, unknown>;
+        const gone = String(snap.item_code ?? snap.itemCode ?? diff.sales_order_item_id);
+        lineChanges.push({ field: `line_removed_${gone}`, from: `qty ${snap.qty ?? '?'}`, to: 'removed' });
+        touched.push({ change, itemCode: String(snap.item_code ?? ''), qty: 0 });
+      }
       continue;
     }
 
@@ -307,6 +328,7 @@ export async function applySoAmendment(
         stock_status:           'PENDING',
       });
       if (insErr) throw new Error(`applySoAmendment: ADD insert failed: ${insErr.message}`);
+      lineChanges.push({ field: `line_added_${itemCode}`, from: null, to: `qty ${qty}` });
       touched.push({ change, itemCode, qty });
       continue;
     }
@@ -371,6 +393,23 @@ export async function applySoAmendment(
       custom_specials:         rec.custom_specials ?? null,
     }).eq('id', diff.sales_order_item_id);
     if (updErr) throw new Error(`applySoAmendment: ${change} update failed for line ${diff.sales_order_item_id}: ${updErr.message}`);
+    /* Keyed by the line's ORIGINAL item code so the drawer reads as one line's
+       history rather than a flat list of fields. `variants` is compared as its
+       rendered summary, built with the line's REAL item group — the same group
+       the amendment card now renders with, so the trail and the card agree on
+       what the spec said. */
+    {
+      const wasCode = String(row.item_code ?? '');
+      const key = wasCode || String(diff.sales_order_item_id);
+      noteChange(`line_${key}_item_code`, wasCode, itemCode);
+      noteChange(`line_${key}_qty`, row.qty, qty);
+      noteChange(`line_${key}_unit_price_sen`, row.unit_price_centi, unit);
+      noteChange(
+        `line_${key}_spec`,
+        buildVariantSummary(itemGroup, (row.variants as Record<string, unknown> | null) ?? null),
+        buildVariantSummary(itemGroup, variants ?? null),
+      );
+    }
     touched.push({ change, itemCode, qty });
   }
 
@@ -499,6 +538,10 @@ export async function applySoAmendment(
       { field: 'revision', from: nextRevision - 1, to: nextRevision },
       { field: 'lines_applied', to: touched.length },
       ...(headerApplied.length > 0 ? [{ field: 'header_applied', to: headerApplied.join(', ') }] : []),
+      /* The per-line from -> to the drawer needs to answer "what did this line
+         say before the amendment rewrote it". Appended AFTER the summary rows so
+         the existing header of the entry is unchanged for any reader used to it. */
+      ...lineChanges,
     ],
     note: `Amendment applied: ${[
       touched.map((t) => `${t.change} ${t.itemCode}`).join('; ') || null,
