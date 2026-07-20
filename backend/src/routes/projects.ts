@@ -47,7 +47,7 @@ import {
   canSeeProject,
   isScopedProjectUser,
 } from "../services/projectAcl";
-import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer, isSalesUser, isSalesDirectorUser } from "../services/pmsAccess";
+import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer, isSalesUser } from "../services/pmsAccess";
 import { scopeSalesReportsForUser } from "../services/orgScope";
 import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
@@ -1640,16 +1640,10 @@ app.post("/", requirePermission("projects.write"), async (c) => {
   if (!body.name || !body.name.trim()) {
     return c.json({ error: "name is required" }, 400);
   }
-  // Owner 2026-07-18: PIC assignment is open to EVERYONE holding projects.write
-  // EXCEPT the Sales Director — consistent with the PATCH pic_id + sales-attendees
-  // gates below. Enforced by EXACT normalised position name (isSalesDirectorUser),
-  // deliberately NOT a \b substring, so a free-text rename can't drift the block.
-  // Field-scoped like the PATCH rule: a Sales Director may still CREATE a project,
-  // they simply cannot set the PIC at creation. Fires only when a real pic_id is
-  // supplied — creating WITHOUT a PIC is a harmless no-op, not a 403.
-  if ((body.pic_id ?? null) !== null && isSalesDirectorUser(user)) {
-    return c.json({ error: "A Sales Director cannot assign the project PIC." }, 403);
-  }
+  // Owner 2026-07-20: reversed the 2026-07-18 block — a Sales Director may now
+  // assign the project PIC at create (as well as PATCH + Sales Attending below),
+  // like everyone else holding projects.write. The scope + brand gates below
+  // still apply to the picked user.
   // Scoped users (sales reps) can only create projects where they or
   // their manager is the PIC. Ignore any other pic_id they submit.
   let picId = body.pic_id ?? null;
@@ -1756,21 +1750,9 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
     }
   }
 
-  // Owner 2026-07-18: PIC assignment is open to EVERYONE holding projects.write
-  // EXCEPT the Sales Director. Enforced by EXACT normalised position name
-  // (isSalesDirectorUser), deliberately NOT a \b substring — a free-text rename
-  // ("Assistant to Sales Director") must not smuggle this block onto, or off,
-  // another position. Scoped to the pic_id FIELD only: a Sales Director keeps
-  // every other project edit in this same PATCH; they simply cannot (re)assign
-  // the PIC. Fires only on an actual change so a redundant same-value echo is a
-  // harmless no-op rather than a spurious 403.
-  if (
-    "pic_id" in body &&
-    (body.pic_id ?? null) !== (existing.pic_id ?? null) &&
-    isSalesDirectorUser(user)
-  ) {
-    return c.json({ error: "A Sales Director cannot assign the project PIC." }, 403);
-  }
+  // Owner 2026-07-20: reversed the 2026-07-18 block — a Sales Director may now
+  // (re)assign the PIC in this PATCH, like everyone else holding projects.write.
+  // The brand gate below still validates the picked user.
 
   // Brand gate for any PIC assignment (admin or scoped). Validates
   // against the post-patch brand, so changing brand + pic together is
@@ -3513,12 +3495,8 @@ app.post("/:id/sales-attendees", requirePermission("projects.write"), async (c) 
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
-  // Owner 2026-07-18: Sales-Attending assignment is open to EVERYONE with
-  // projects.write EXCEPT the Sales Director. Same exact-name gate as the PIC
-  // PATCH above (isSalesDirectorUser, not a \b substring).
-  if (isSalesDirectorUser(user)) {
-    return c.json({ error: "A Sales Director cannot change Sales Attending." }, 403);
-  }
+  // Owner 2026-07-20: reversed the 2026-07-18 block — a Sales Director may now
+  // change Sales Attending, like everyone else holding projects.write.
   const body = await c.req.json<{ sales_rep_id?: number }>();
   if (!body.sales_rep_id) return c.json({ error: "Please choose a sales attendee." }, 400);
   try {
@@ -3558,12 +3536,8 @@ app.delete(
     const repId = parseInt(c.req.param("repId"), 10);
     if (isNaN(id) || isNaN(repId)) return c.json({ error: "Invalid ID" }, 400);
     const user = c.get("user");
-    // Owner 2026-07-18: removing an attendee is part of the same "assign"
-    // capability — open to everyone with projects.write EXCEPT the Sales
-    // Director (exact-name gate, mirrors the POST above).
-    if (isSalesDirectorUser(user)) {
-      return c.json({ error: "A Sales Director cannot change Sales Attending." }, 403);
-    }
+    // Owner 2026-07-20: reversed the 2026-07-18 block — a Sales Director may now
+    // remove Sales Attending too, like everyone else holding projects.write.
     const rep = await c.env.DB.prepare(
       `SELECT code, name FROM sales_reps WHERE id = ?`
     )
