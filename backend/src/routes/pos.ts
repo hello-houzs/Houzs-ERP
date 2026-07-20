@@ -56,15 +56,32 @@ pos.post("/pin-login", async (c) => {
     }
   } catch { /* fail open */ }
 
-  // 2) look up the PIN hash + the linked Houzs user
+  // 2) look up the PIN hash + the linked Houzs user + the member's position slug
+  //    (for the sales-login gate below). scm.staff.role can't gate — the
+  //    sync_user_to_staff trigger stamps role='sales' on EVERY member (mig 0066),
+  //    so a member's SALES-ness comes from their position (public.positions).
   const row = await DB.prepare(
-    `SELECT p.pin_hash, s.user_id FROM scm.pos_pins p JOIN scm.staff s ON s.id = p.staff_id WHERE p.staff_id = ?`,
-  ).bind(staffId).first<{ pin_hash: string; user_id: number | null }>();
+    `SELECT p.pin_hash, s.user_id, pn.slug AS position_slug
+       FROM scm.pos_pins p
+       JOIN scm.staff s ON s.id = p.staff_id
+       LEFT JOIN public.users u ON u.id = s.user_id
+       LEFT JOIN public.positions pn ON pn.id = u.position_id
+      WHERE p.staff_id = ?`,
+  ).bind(staffId).first<{ pin_hash: string; user_id: number | null; position_slug: string | null }>();
 
   const ok = row && row.user_id != null && (await verifyPassword(pin, row.pin_hash));
   if (!ok) {
     try { await DB.prepare(`SELECT scm.pin_attempt_fail(?, ?)`).bind(staffId, WINDOW_SECONDS).run(); } catch {}
     return c.json({ error: "bad_pin" }, 401);
+  }
+
+  // 2.5) Sales-login gate (mirrors 2990's isPinLoginRole). Only a SALES-position
+  //      member may mint a POS session — defense-in-depth over PIN seeding, so a
+  //      non-sales member who somehow holds a PIN (or an admin's stray seed)
+  //      cannot get a tablet session. The picker (/sales-staff) already hides
+  //      non-sales, so a legitimate POS never sends such a staffId.
+  if (!row!.position_slug || !row!.position_slug.startsWith("sales")) {
+    return c.json({ error: "not_pos_role" }, 403);
   }
 
   // 3) success → clear the counter, mint a Houzs session for the linked user.
@@ -83,12 +100,27 @@ pos.post("/pin-login", async (c) => {
 
 // ── PRE-AUTH: salesperson picker for the PIN screen ─────────────────────────
 pos.get("/sales-staff", async (c) => {
+  // The POS sends X-Company-Id (queries.ts) — HONOUR it so a 2990 tablet's PIN
+  // picker shows ONLY company-2 SALES staff, never HOUZS's roster or non-sales
+  // members (the earlier unscoped query leaked both). scm.staff has no
+  // company_id (0083 — shared masters), so company comes from the member's
+  // public.user_companies; the sales filter from the position slug, because the
+  // sync_user_to_staff trigger stamps role='sales' on EVERY member (mig 0066) so
+  // scm.staff.role can't discriminate. A missing/invalid header → empty roster
+  // (fail closed) rather than a cross-company dump.
+  const companyId = Number(c.req.header("x-company-id"));
+  if (!Number.isInteger(companyId) || companyId <= 0) return c.json({ staff: [] });
   const rows = await c.env.DB.prepare(
     `SELECT s.id, s.staff_code, s.name, (p.staff_id IS NOT NULL) AS has_pin
-       FROM scm.staff s LEFT JOIN scm.pos_pins p ON p.staff_id = s.id
+       FROM scm.staff s
+       JOIN public.user_companies uc ON uc.user_id = s.user_id AND uc.company_id = ?
+       LEFT JOIN public.users u ON u.id = s.user_id
+       LEFT JOIN public.positions pn ON pn.id = u.position_id
+       LEFT JOIN scm.pos_pins p ON p.staff_id = s.id
       WHERE s.active = true AND s.user_id IS NOT NULL
+        AND pn.slug LIKE 'sales%'
       ORDER BY s.name`,
-  ).all<{ id: string; staff_code: string; name: string; has_pin: boolean }>();
+  ).bind(companyId).all<{ id: string; staff_code: string; name: string; has_pin: boolean }>();
   return c.json({ staff: rows.results ?? [] });
 });
 
