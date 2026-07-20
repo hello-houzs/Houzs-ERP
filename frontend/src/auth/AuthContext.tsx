@@ -18,6 +18,7 @@ import {
   clearBrowserStorageIdentity,
 } from "../lib/storageIdentity";
 import { clearAllScmHandoffs } from "../lib/scmHandoffStorage";
+import { writeRememberedEmail } from "../lib/rememberedEmail";
 import type { AccessLevel, AuthUser } from "../types";
 
 /**
@@ -203,8 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Remember the account (email ONLY, never the password) so the login screen
       // pre-fills it next time — or forget it when Remember me is unchecked.
       try {
-        if (remember) localStorage.setItem("auth:lastEmail", email.trim());
-        else localStorage.removeItem("auth:lastEmail");
+        writeRememberedEmail(remember ? email : null);
       } catch { /* storage disabled (private mode) — non-fatal */ }
       // 2FA accounts get a challenge instead of a token — the caller collects a
       // code and calls verifyTotpLogin. No token is stored yet.

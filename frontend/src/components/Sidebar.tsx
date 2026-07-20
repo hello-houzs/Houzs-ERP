@@ -51,7 +51,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
-import { useLocalStorage } from "../hooks/useLocalStorage";
+import { booleanRecordPreference, useIdentityPreference } from "../hooks/useIdentityPreference";
 import { useAuth } from "../auth/AuthContext";
 import { makeNavFilter } from "./navFilter";
 import { CompanyMark } from "./CompanyMark";
@@ -767,9 +767,10 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
 
   // Per-group expanded memory (accordion). undefined = auto (open iff the group
   // holds the current route); true/false = explicit after a click.
-  const [groupExpanded, setGroupExpanded] = useLocalStorage<Record<string, boolean>>(
+  const [groupExpanded, setGroupExpanded] = useIdentityPreference(
     "sidebar:groups:v2-accordion",
-    {}
+    {},
+    booleanRecordPreference,
   );
   function isGroupOpen(id: string, active: boolean): boolean {
     const v = groupExpanded[id];

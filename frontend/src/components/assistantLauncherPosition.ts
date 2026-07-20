@@ -1,4 +1,6 @@
 // ---------------------------------------------------------------------------
+
+import { identityStorageKey } from "../lib/storageIdentity";
 // Pure geometry + persistence for the draggable AssistantLauncher disc.
 //
 // Split out of the component so the drag maths is unit-testable WITHOUT pulling
@@ -8,6 +10,7 @@
 // ---------------------------------------------------------------------------
 
 export const STORAGE_KEY = "houzs:assistant-launcher-pos";
+export const assistantLauncherStorageKey = () => identityStorageKey(STORAGE_KEY);
 
 // Distance the pointer must travel before a grab counts as a DRAG rather than a
 // click. Small enough that a deliberate drag registers instantly, large enough
@@ -57,10 +60,17 @@ export function clampOffset(
 // hand-edited storage) by falling back to the bottom-right default.
 export function readStoredOffset(): Offset {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const key = assistantLauncherStorageKey();
+    if (!key) return DEFAULT_OFFSET;
+    const raw = localStorage.getItem(key);
     if (!raw) return DEFAULT_OFFSET;
     const parsed = JSON.parse(raw) as Partial<Offset>;
-    if (typeof parsed?.right === "number" && typeof parsed?.bottom === "number") {
+    if (
+      typeof parsed?.right === "number" &&
+      Number.isFinite(parsed.right) &&
+      typeof parsed?.bottom === "number" &&
+      Number.isFinite(parsed.bottom)
+    ) {
       return { right: parsed.right, bottom: parsed.bottom };
     }
   } catch {

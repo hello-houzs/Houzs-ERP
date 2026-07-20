@@ -39,6 +39,7 @@ import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
 import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
+import { SearchScopeHint } from "../../components/SearchScopeHint";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
@@ -1503,6 +1504,7 @@ export function DeliveryReturnsListV2() {
           placeholder="Search return, customer, reason…"
           className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
+        <SearchScopeHint scope="loaded" loadedLimit={500} resultCount={filtered.length} term={search} className="mt-1 px-1" />
       </div>
 
       {/* Mobile filter row */}
@@ -1574,6 +1576,7 @@ export function DeliveryReturnsListV2() {
                 value: search,
                 onChange: setSearch,
                 placeholder: "Search return, customer, reason, salesperson…",
+                loadedLimit: 500,
               }}
               resetFilters={{
                 active: filtersActive,
@@ -1593,6 +1596,7 @@ export function DeliveryReturnsListV2() {
                   placeholder="Search return, customer, reason, salesperson…"
                   className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
                 />
+                <SearchScopeHint scope="loaded" loadedLimit={500} resultCount={filtered.length} term={search} />
                 {filtersActive && (
                   <button
                     type="button"

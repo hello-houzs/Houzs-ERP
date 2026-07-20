@@ -19,6 +19,7 @@ import { validatePasswordStrength } from "../lib/passwordStrength";
 import { useIsMobile } from "../mobile/useIsMobile";
 import { AmbientSnow } from "../components/AmbientSnow";
 import { consumeCorrelated, correlatedFetch } from "../lib/requestCorrelation";
+import { readRememberedEmail } from "../lib/rememberedEmail";
 
 // Code-split the mobile app: desktop users never download it, and it stays out
 // of the initial JS bundle (keeps the bundle-budget CI gate green).
@@ -245,7 +246,7 @@ export function LoginScreen() {
   // (owner: "remember me remember 不到我的户口"). Only the email is stored, never
   // the password — so the operator doesn't retype their account every time.
   const [email, setEmail] = useState(() => {
-    try { return localStorage.getItem("auth:lastEmail") ?? ""; } catch { return ""; }
+    return readRememberedEmail();
   });
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);

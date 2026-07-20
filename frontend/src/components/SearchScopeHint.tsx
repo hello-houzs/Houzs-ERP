@@ -5,6 +5,7 @@ export function SearchScopeHint({
   searching = false,
   countPending = false,
   resultCount,
+  loadedLimit,
   term = "",
   className,
 }: {
@@ -12,6 +13,8 @@ export function SearchScopeHint({
   searching?: boolean;
   countPending?: boolean;
   resultCount?: number;
+  /** Known upstream cap for client-side search (for example latest 500 rows). */
+  loadedLimit?: number;
   term?: string;
   className?: string;
 }) {
@@ -19,7 +22,9 @@ export function SearchScopeHint({
     <div className={cn("text-[10px] text-ink-muted", className)} data-search-scope>
       {scope === "server"
         ? "Searches across all pages you can access"
-        : "Searches loaded rows only"}
+        : loadedLimit
+          ? `Searches up to ${loadedLimit.toLocaleString()} loaded rows only`
+          : "Searches loaded rows only"}
       {!searching && !countPending && resultCount != null && (
         <span>
           {" · "}

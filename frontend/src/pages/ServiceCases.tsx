@@ -69,7 +69,12 @@ import { useQuery } from "../hooks/useQuery";
 import { useSearchResultTransition } from "../hooks/useServerSearch";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
-import { useLocalStorage } from "../hooks/useLocalStorage";
+import {
+  booleanPreference,
+  enumPreference,
+  pageSizePreference,
+  useIdentityPreference,
+} from "../hooks/useIdentityPreference";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
@@ -286,9 +291,10 @@ export function ServiceCases() {
   // and a raw 403 toast on every write. Gate on the same permission the nav
   // uses so both agree.
   const canManageService = can("service_cases.manage");
-  const [storedView, setStoredView] = useLocalStorage<ServiceView>(
+  const [storedView, setStoredView] = useIdentityPreference<ServiceView>(
     "assr:view",
-    "cases"
+    "cases",
+    enumPreference(SERVICE_VIEWS),
   );
   const urlView = params.get("view") as ServiceView | null;
   // `assr:view` persists the last view rendered, so anyone who opened Service
@@ -389,12 +395,12 @@ function CasesView({
   const [stage, setStage] = useState<StageFilter>("ALL");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [perPage, setPerPage] = useLocalStorage<number>("pp:assr", 50);
-  const [showArchived, setShowArchived] = useLocalStorage<boolean>("assr:showArchived", false);
-  const [myCases, setMyCases] = useLocalStorage<boolean>("assr:myCases", false);
+  const [perPage, setPerPage] = useIdentityPreference("pp:assr", 50, pageSizePreference([10, 25, 50, 100, 200]));
+  const [showArchived, setShowArchived] = useIdentityPreference("assr:showArchived", false, booleanPreference);
+  const [myCases, setMyCases] = useIdentityPreference("assr:myCases", false, booleanPreference);
   // Hide completed cases from the working list — closed cases pile up
   // and ops mostly only cares about what's still open.
-  const [hideCompleted, setHideCompleted] = useLocalStorage<boolean>("assr:hideCompleted", false);
+  const [hideCompleted, setHideCompleted] = useIdentityPreference("assr:hideCompleted", false, booleanPreference);
   const [bulkSelected, setBulkSelected] = useState<Set<number>>(new Set());
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
   const [params, setParams] = useSearchParams();

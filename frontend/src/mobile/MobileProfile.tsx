@@ -15,7 +15,16 @@ function appFooterLabel(): string {
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+// useSystemNoticeUnread was renamed useAnnouncementUnread on main; the body
+// below already calls the new name.
 import { useAnnouncementUnread } from "./useAnnouncementUnread";
+import { useToast } from "../hooks/useToast";
+import {
+  requestBrowserNotificationPermission,
+  setBrowserNotificationPreference,
+  useBrowserNotificationPermission,
+  useBrowserNotificationPreference,
+} from "../lib/browserNotificationPreference";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { fmtCenti } from "../lib/scm";
 import {
@@ -72,9 +81,10 @@ import "./mobile.css";
  *                          self-service, mirrors the desktop Profile page.
  *  - My Team             : reuses GET /api/users to build the reporting
  *                          line (manager) + downline (direct reports).
- *  - Notifications       : NO backend endpoint exists — persisted to
- *                          localStorage as per-device preferences
- *                          (keys hz_notif_*).
+ *  - Notifications       : real browser banners share the desktop preference,
+ *                          scoped to the current user + company. Delivery
+ *                          categories remain unavailable without a backend
+ *                          preferences contract.
  *  - Language            : English-only ERP (no i18n layer) — informational.
  *  - Help & support      : static contact + guide rows.
  *
@@ -172,6 +182,8 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
   const [screen, setScreen] = useState<Screen>("home");
   const { user } = useAuth();
   const confirm = useConfirm();
+  const browserNotificationsEnabled = useBrowserNotificationPreference();
+  const browserNotificationPermission = useBrowserNotificationPermission();
   // Drives the "Language" row's right-hand value; re-renders on change.
   const activeLang = useMobileLang();
 
@@ -236,7 +248,13 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
     return <PersonalScreen onBack={() => setScreen("home")} myRow={myRow} />;
   }
   if (screen === "notif") {
-    return <NotificationsScreen onBack={() => setScreen("home")} />;
+    return (
+      <NotificationsScreen
+        onBack={() => setScreen("home")}
+        enabled={browserNotificationsEnabled}
+        permission={browserNotificationPermission}
+      />
+    );
   }
   if (screen === "language") {
     return <LanguageScreen onBack={() => setScreen("home")} />;
@@ -270,7 +288,8 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
   const staffCode = staffCodeOf(myRow as (MemberRow & Record<string, unknown>) | null);
   const showTeam = isSalesish(role) || !!myRow?.manager_id || hasDownline;
 
-  const notifOn = anyNotifOn();
+  const notifOn =
+    browserNotificationsEnabled && browserNotificationPermission === "granted";
 
   const doLogout = async () => {
     if (await confirm({ title: "Log out of Houzs ERP?", confirmLabel: "Log out", danger: true })) {
@@ -324,7 +343,12 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
         <div className="ey" style={{ color: "#767b6e", margin: "18px 2px 9px" }}>Account</div>
         <div className="card" style={{ overflow: "hidden" }}>
           <Item icon="users" label="Personal details" onClick={() => setScreen("personal")} first />
-          <Item icon="mega" label="Notifications" right={notifOn ? "On" : "Off"} onClick={() => setScreen("notif")} />
+          <Item
+            icon="mega"
+            label="Notifications"
+            right={browserNotificationPermission === "unsupported" ? "Unavailable" : notifOn ? "On" : "Off"}
+            onClick={() => setScreen("notif")}
+          />
           {/* Row label stays English (this screen is not translated yet — a
               half-translated screen reads as broken). The VALUE is the chosen
               language in its own script, which is the bit a Bengali reader
@@ -542,73 +566,66 @@ function PersonalScreen({ onBack, myRow }: { onBack: () => void; myRow: MemberRo
   );
 }
 
-// ── Notifications (device-local prefs) ──
-const NOTIF_KEY = "hz_notif_";
-type NotifPref = { key: string; label: string; sub: string; def: boolean };
-const NOTIF_PREFS: NotifPref[] = [
-  { key: "push", label: "Push notifications", sub: "Master switch for this device", def: true },
-  { key: "sla", label: "SLA breach alerts", sub: "Service cases nearing deadline", def: true },
-  { key: "so", label: "New SO assigned", sub: "When an order is routed to you", def: true },
-  { key: "pay", label: "Payments & invoices", sub: "Overdue + collection reminders", def: false },
-  { key: "mail", label: "Mail Center", sub: "New mail to your mailboxes", def: true },
-  { key: "ann", label: "Announcements", sub: "Company-wide notices", def: true },
-];
+// ── Notifications — one real browser capability, shared with desktop ──
+function NotificationsScreen({ onBack, enabled, permission }: {
+  onBack: () => void;
+  enabled: boolean;
+  permission: NotificationPermission | "unsupported";
+}) {
+  const toast = useToast();
+  const active = enabled && permission === "granted";
 
-const readNotif = (p: NotifPref): boolean => {
-  try {
-    const v = localStorage.getItem(NOTIF_KEY + p.key);
-    return v == null ? p.def : v === "1";
-  } catch {
-    return p.def;
-  }
-};
-
-// Right-hand "On" / "Off" state for the Account > Notifications row — reflects
-// the device's master push switch (the first pref), matching the prototype's
-// "On" affordance.
-const anyNotifOn = (): boolean => {
-  const master = NOTIF_PREFS.find((p) => p.key === "push");
-  return master ? readNotif(master) : true;
-};
-
-function NotificationsScreen({ onBack }: { onBack: () => void }) {
-  const [state, setState] = useState<Record<string, boolean>>(() => {
-    const o: Record<string, boolean> = {};
-    for (const p of NOTIF_PREFS) o[p.key] = readNotif(p);
-    return o;
-  });
-
-  const toggle = (key: string) => {
-    setState((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      try { localStorage.setItem(NOTIF_KEY + key, next[key] ? "1" : "0"); } catch {}
-      return next;
-    });
+  const toggle = async () => {
+    if (permission === "unsupported") {
+      toast.error("This browser doesn't support notifications");
+      return;
+    }
+    if (enabled) {
+      setBrowserNotificationPreference(false);
+      toast.success("Browser notifications off");
+      return;
+    }
+    if (permission === "default") {
+      const result = await requestBrowserNotificationPermission();
+      if (result !== "granted") {
+        toast.error("Permission denied");
+        return;
+      }
+    } else if (permission === "denied") {
+      toast.error("Notifications are blocked in your browser settings");
+      return;
+    }
+    setBrowserNotificationPreference(true);
+    toast.success("Browser notifications on");
   };
 
   return (
     <SubScreen title="Notifications" onBack={onBack}>
       <div style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 14, overflow: "hidden" }}>
-        {NOTIF_PREFS.map((p, i) => (
-          <label
-            key={p.key}
-            style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 14px", cursor: "pointer", borderTop: i === 0 ? "none" : "1px solid #e3e6e0" }}
-          >
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>{p.label}</div>
-              <div style={{ fontSize: 11, color: "var(--muted)" }}>{p.sub}</div>
+        <label style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 14px", cursor: permission === "unsupported" ? "default" : "pointer" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>Browser notifications</div>
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>
+              {permission === "unsupported"
+                ? "Not supported in this browser"
+                : permission === "denied"
+                  ? "Blocked in browser settings"
+                  : active
+                    ? "OS banners for new project activity"
+                    : "Off — the in-app Inbox still updates"}
             </div>
-            <input
-              type="checkbox"
-              checked={state[p.key]}
-              onChange={() => toggle(p.key)}
-              style={{ width: 20, height: 20, accentColor: "var(--teal)" }}
-            />
-          </label>
-        ))}
+          </div>
+          <input
+            type="checkbox"
+            checked={active}
+            disabled={permission === "unsupported"}
+            onChange={() => void toggle()}
+            style={{ width: 20, height: 20, accentColor: "var(--teal)" }}
+          />
+        </label>
       </div>
       <div style={{ fontSize: 11, color: "#9aa093", marginTop: 11, textAlign: "center", lineHeight: 1.5 }}>
-        Notification preferences are saved on this device.
+        This is the same browser-banner switch shown on desktop. Notification categories are not configurable yet.
       </div>
     </SubScreen>
   );

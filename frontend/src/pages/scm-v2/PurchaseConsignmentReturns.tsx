@@ -302,6 +302,7 @@ export const PurchaseConsignmentReturns = () => {
         exportName="Purchase Consignment Returns"
         rowKey={(r) => r.id}
         searchPlaceholder="Search returns…"
+        loadedSearchLimit={300}
         groupBanner={false}
         onRowDoubleClick={(r) => navigate(`/scm/purchase-consignment-returns/${r.id}`)}
         rowStyle={(r) => r.status === 'COMPLETED' || r.status === 'CANCELLED'

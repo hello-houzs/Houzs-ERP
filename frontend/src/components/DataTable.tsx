@@ -133,6 +133,8 @@ interface Props<T> {
     scope?: "server" | "loaded";
     /** Settled result count. Hidden while a replacement search is pending. */
     totalRecords?: number;
+    /** Known backend cap when scope is loaded rather than server-wide. */
+    loadedLimit?: number;
     /**
      * Milliseconds to wait after the last keystroke before calling `onChange`.
      * Default 250. Pass 0 to propagate on every keystroke (only correct when
@@ -1272,6 +1274,7 @@ export function DataTable<T>({
                 searching={searchBusy}
                 countPending={search.countPending}
                 resultCount={search.totalRecords}
+                loadedLimit={search.loadedLimit}
                 term={search.value}
                 className="mt-1 px-1"
               />

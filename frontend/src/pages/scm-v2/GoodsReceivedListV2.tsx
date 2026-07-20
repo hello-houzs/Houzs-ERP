@@ -764,7 +764,7 @@ export function GoodsReceivedListV2() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search GRN, supplier, PO…"
+            placeholder="Search GRN no, delivery note or notes…"
             className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
           <SearchProgress active={searchTransition.isSearching} label={searchTransition.statusText} className="mt-1.5" />
@@ -833,7 +833,7 @@ export function GoodsReceivedListV2() {
                 serverSort
                 onSortChange={setSortAndReset}
                 emptyLabel={filtersActive ? "No GRNs match — try Reset layout to clear filters." : "No GRNs yet."}
-                search={{ value: search, onChange: setSearch, placeholder: "Search GRN no, supplier, PO, delivery note…", debounceMs: 0, searching: searchTransition.isSearching, countPending: isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale, scope: "server", totalRecords: total }}
+                search={{ value: search, onChange: setSearch, placeholder: "Search GRN no, delivery note or notes…", debounceMs: 0, searching: searchTransition.isSearching, countPending: isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale, scope: "server", totalRecords: total }}
                 resetFilters={{ active: filtersActive, onReset: resetLayout, label: "Reset layout" }}
               />
               {!searchTransition.resultsAreStale && <PaginationFooter
@@ -852,7 +852,7 @@ export function GoodsReceivedListV2() {
                     type="search"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search GRN no, supplier, PO, delivery note…"
+                    placeholder="Search GRN no, delivery note or notes…"
                     className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
                   <SearchProgress active={searchTransition.isSearching} />

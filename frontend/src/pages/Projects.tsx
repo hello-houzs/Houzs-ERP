@@ -88,7 +88,12 @@ import {
   type SalesEntry,
   type EntryStatus as SalesEntryStatus,
 } from "./Sales";
-import { useLocalStorage } from "../hooks/useLocalStorage";
+import {
+  booleanPreference,
+  enumPreference,
+  pageSizePreference,
+  useIdentityPreference,
+} from "../hooks/useIdentityPreference";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useStickyFilters } from "../hooks/useStickyFilters";
@@ -795,9 +800,10 @@ export function Projects() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [storedView, setStoredView] = useLocalStorage<ProjectsView>(
+  const [storedView, setStoredView] = useIdentityPreference<ProjectsView>(
     "projects:view",
-    "list"
+    "list",
+    enumPreference(PROJECTS_VIEWS),
   );
   // Finances sub-page is DIRECTOR-level only (Super Admin, Sales Director,
   // Finance Manager, owner). Backed by the finance-viewer flag on /auth/me;
@@ -985,9 +991,9 @@ function ProjectsListView() {
   const setPhase = (v: string) => patchParams({ phase: v, page: "1" });
   const setPage = (n: number) => patchParams({ page: String(n) });
 
-  const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
+  const [perPage, setPerPage] = useIdentityPreference("pp:projects", 50, pageSizePreference([10, 25, 50, 100, 200]));
   // List render mode — cards (P2 design) vs the full data table. Default cards.
-  const [listMode, setListMode] = useLocalStorage<"cards" | "table">("projects:listMode", "cards");
+  const [listMode, setListMode] = useIdentityPreference("projects:listMode", "cards", enumPreference(["cards", "table"] as const));
   const [showCreate, setShowCreate] = useState(false);
   // Deep-link: the global "+" quick-action FAB opens the New Project modal via
   // /projects?new=1. Consume the flag once and strip it so refresh/back don't reopen.
@@ -1000,16 +1006,16 @@ function ProjectsListView() {
     }
   }, [params, setParams]);
   const [showImport, setShowImport] = useState(false);
-  const [showArchived, setShowArchived] = useLocalStorage<boolean>("projects:showArchived", false);
+  const [showArchived, setShowArchived] = useIdentityPreference("projects:showArchived", false, booleanPreference);
   // Hide projects whose every tasklist section is complete — same
   // predicate as the section=__done filter, just inverted. Disabled
   // automatically when the user picks the Completed pill so the
   // controls don't fight each other.
-  const [hideCompleted, setHideCompleted] = useLocalStorage<boolean>("projects:hideCompleted", false);
+  const [hideCompleted, setHideCompleted] = useIdentityPreference("projects:hideCompleted", false, booleanPreference);
   // "My pending tasks" -- when on, the list shows only projects that have
   // a pending checklist item belonging to the caller's role (mapped to a
   // chip label / document title server-side). Export is unaffected.
-  const [myPending, setMyPending] = useLocalStorage<boolean>("projects:myPending", false);
+  const [myPending, setMyPending] = useIdentityPreference("projects:myPending", false, booleanPreference);
 
   // Owner 2026-07-21: field/sales roles (Sales Exec/Mgr except Sales Director,
   // plus Driver/Helper/Storekeeper) get the SAME slimmed filter bar as mobile —
@@ -2146,9 +2152,10 @@ function FinanceListView() {
     patchParams({ include_archived: v ? "1" : "0", page: "1" });
   const setPage = (n: number) => patchParams({ page: String(n) });
 
-  const [perPage, setPerPage] = useLocalStorage<number>(
+  const [perPage, setPerPage] = useIdentityPreference(
     "pp:project-finance-by-project",
-    50
+    50,
+    pageSizePreference([10, 25, 50, 100, 200]),
   );
   const { sort, sortParams, handleSortChange } = useServerSort(() =>
     setPage(1)
@@ -3336,17 +3343,20 @@ function ProjectsCalendarView() {
   // showTasks / showHolidays are personal display prefs (checkbox toggles
   // on the legend, not data filters), so they stay in localStorage per
   // CLAUDE.md's URL-state convention.
-  const [showTasks, setShowTasks] = useLocalStorage<boolean>(
+  const [showTasks, setShowTasks] = useIdentityPreference(
     "projects:cal:showTasks",
-    false
+    false,
+    booleanPreference,
   );
-  const [showHolidays, setShowHolidays] = useLocalStorage<boolean>(
+  const [showHolidays, setShowHolidays] = useIdentityPreference(
     "projects:cal:showHolidays",
-    true
+    true,
+    booleanPreference,
   );
-  const [expandAll, setExpandAll] = useLocalStorage<boolean>(
+  const [expandAll, setExpandAll] = useIdentityPreference(
     "projects:cal:expandAll",
-    false
+    false,
+    booleanPreference,
   );
   const brandsQ = useQuery<{ data: string[] }>("/api/projects/brands", () =>
     api.get("/api/projects/brands")

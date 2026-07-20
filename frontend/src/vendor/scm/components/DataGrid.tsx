@@ -124,6 +124,8 @@ export type DataGridProps<T> = {
   /** Optional exact loaded-set count for the client search hint. Defaults to
       rows.length; pass a pre-filter count when the caller already narrowed rows. */
   loadedSearchCount?: number;
+  /** Known upstream cap; makes client-only search scope explicit to operators. */
+  loadedSearchLimit?: number;
   /** Human filename stem for the "Export Excel" button, e.g. "Purchase Orders".
       Falls back to a cleaned storageKey when omitted. A YYYY-MM-DD date is
       appended automatically. (Wei Siang 2026-06-20 — storageKey filenames like
@@ -285,6 +287,7 @@ function DataGridInner<T>({
   selectable,
   embedded = false,
   hideSearch = false,
+  loadedSearchLimit,
 }: DataGridProps<T>) {
   /* HOUZS-style inline expansion (PR so-list-houzs-port). Tracks the set of
      expanded row ids; rendering inserts a colSpan sub-<tr> directly under
@@ -1147,7 +1150,9 @@ function DataGridInner<T>({
               />
             </div>
             <div className={styles.searchScope} data-search-scope>
-              Searches {(loadedSearchCount ?? rows.length).toLocaleString()} loaded rows only
+              {loadedSearchLimit
+                ? `Searches up to ${loadedSearchLimit.toLocaleString()} loaded rows only`
+                : `Searches ${(loadedSearchCount ?? rows.length).toLocaleString()} loaded rows only`}
             </div>
           </div>
         )}

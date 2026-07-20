@@ -988,7 +988,7 @@ export function PurchaseOrdersListV2() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search PO, supplier…"
+            placeholder="Search PO no or notes…"
             className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
           <SearchProgress active={searchTransition.isSearching} label={searchTransition.statusText} className="mt-1.5" />
@@ -1079,7 +1079,7 @@ export function PurchaseOrdersListV2() {
                 search={{
                   value: search,
                   onChange: setSearch,
-                  placeholder: "Search PO no, supplier…",
+                  placeholder: "Search PO no or notes…",
                   debounceMs: 0,
                   searching: searchTransition.isSearching,
                   countPending: isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale,
@@ -1108,7 +1108,7 @@ export function PurchaseOrdersListV2() {
                     type="search"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search PO no, supplier…"
+                    placeholder="Search PO no or notes…"
                     className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
                   <SearchProgress active={searchTransition.isSearching} />

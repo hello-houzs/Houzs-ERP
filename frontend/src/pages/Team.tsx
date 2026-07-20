@@ -17,7 +17,7 @@ import { StatCard } from "../components/StatCard";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { useStickyFilters } from "../hooks/useStickyFilters";
-import { useLocalStorage } from "../hooks/useLocalStorage";
+import { enumPreference, useIdentityPreference } from "../hooks/useIdentityPreference";
 import { api, tokenStore } from "../api/client";
 import { prepareImageForUpload } from "../lib/imagePipeline";
 import { useAuth } from "../auth/AuthContext";
@@ -669,11 +669,12 @@ function MembersTab({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   // Card grid (reference look) vs. dense table. Grid is the default.
-  const [view, setView] = useLocalStorage<"grid" | "list">("team:view", "grid");
+  const [view, setView] = useIdentityPreference("team:view", "grid", enumPreference(["grid", "list"] as const));
   // Grid ordering (the table view has its own column sort).
-  const [gridSort, setGridSort] = useLocalStorage<"name" | "recent" | "status">(
+  const [gridSort, setGridSort] = useIdentityPreference(
     "team:gridSort",
     "name",
+    enumPreference(["name", "recent", "status"] as const),
   );
 
   // Per-user brand picker — opens a small modal scoped to one member.
