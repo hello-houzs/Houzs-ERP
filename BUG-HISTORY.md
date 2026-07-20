@@ -370,6 +370,12 @@ Six mobile screens diverged from their desktop twins — three touching stock, m
   - `MobileStockTransferNew.tsx`: `addSku` now appends a fresh line every time (drops the dedup), so a split-bucket SKU takes one line per bucket inside a SINGLE transfer; each line's own bucket picker + `_key` keep duplicate codes from colliding, and the items payload already sends per-line `variantKey`.
 - **Ref:** `fix/mparity-stock`, 2026-07-21. Frontend only, no migration, no backend change. UI — owner to eyeball the Stock Card (FIFO value/lots, warehouse pills, variant rows) + a split-bucket transfer on a phone. NOT merged.
 
+### [CRITICAL] Production document and HTTP dependencies carried known XSS, injection, path traversal, open-redirect, and CORS advisories
+- **Symptom.** A production-only audit reported one critical, two high, and three moderate frontend dependency chains plus a high-risk Hono chain. The affected packages sit on PDF generation, spreadsheet import/export, routing, CORS and Worker request handling, so treating them as build-only warnings would be incorrect.
+- **Root cause (traced).** The lockfiles held Hono 4.12.14, React Router 6.30.3, jsPDF 2.5.x, AutoTable 3.8.x and the abandoned npm `xlsx` 0.18.5 release. `drizzle-kit` was also incorrectly classified as a production dependency, pulling development-server advisories into the production tree.
+- **Fix.** Upgraded Hono to 4.12.31, React Router to the patched 6.30.4 line, jsPDF/AutoTable to 4.2.1/5.0.8 and DOMPurify 3.4.12, and replaced the stale npm SheetJS package with the official 0.20.3 tarball. Moved `drizzle-kit` to devDependencies. Both production dependency audits now report zero vulnerabilities; document smoke tests execute real PDF table generation and XLSX write/read round trips.
+- **Ref:** `fix/dependency-security-upgrades`, 2026-07-21. Dependency/runtime hardening only; no migration.
+
 ## 2026-07-20
 
 ### [POLICY] Position => '*' wildcard — a "Super Admin" / "Owner" POSITION now confers full super admin (owner 2026-07-20; Phase 1 of the role -> position merge)

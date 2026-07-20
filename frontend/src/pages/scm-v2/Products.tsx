@@ -5039,7 +5039,7 @@ function exportSkusCsv(rows: MfgProductRow[], sofaSizes: string[], tier: SofaPri
  *  string cells, so an exported CSV that Excel re-saved as a workbook still
  *  imports. CSV stays on parseSkuCsv below. */
 async function readXlsxGrid(file: File): Promise<string[][]> {
-  const XLSX = await import('xlsx');
+  const XLSX = await import('../../lib/xlsx-runtime');
   const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
   const first = wb.SheetNames[0];
   const sheet = first ? wb.Sheets[first] : undefined;
