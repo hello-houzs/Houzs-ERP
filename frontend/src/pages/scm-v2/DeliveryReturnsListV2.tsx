@@ -18,7 +18,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { lineIdentity } from "@2990s/shared";
+import { fmtCenti, lineIdentity } from "@2990s/shared";
 import {
   Plus,
   ChevronDown,
@@ -112,11 +112,7 @@ type StatusTab = "all" | "open" | "inspected" | "refunded" | "cancelled";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const fmtRm = (centi: number): string =>
-  `RM ${(centi / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+const fmtRm = (centi: number): string => fmtCenti(centi);
 
 // margin_pct_basis is basis points (margin/total x 10000) → percent string.
 const fmtPctBasis = (basis: number | null | undefined): string =>

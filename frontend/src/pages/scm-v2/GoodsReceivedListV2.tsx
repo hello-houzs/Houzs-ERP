@@ -4,7 +4,7 @@
 // outstanding/owed.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { lineIdentity } from "@2990s/shared";
+import { fmtCenti, lineIdentity } from "@2990s/shared";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -74,8 +74,7 @@ type GrnItem = {
 
 type StatusTab = "all" | "draft" | "posted" | "cancelled";
 
-const fmtRm = (centi: number): string =>
-  `RM ${(centi / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtRm = (centi: number): string => fmtCenti(centi);
 
 const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";

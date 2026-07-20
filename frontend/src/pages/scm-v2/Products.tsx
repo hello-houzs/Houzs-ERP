@@ -4583,7 +4583,7 @@ const SpecialsMaintenancePanel = ({
       historyQ.refetch();
       cancelEdit();
     } catch (e) {
-      setError(String((e as Error).message ?? e));
+      setError(e instanceof Error ? e.message : "Something went wrong. Please try again.");
     }
   };
 

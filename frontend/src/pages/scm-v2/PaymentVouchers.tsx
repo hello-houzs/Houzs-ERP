@@ -24,7 +24,7 @@ import { statusLabel } from '../../vendor/scm/lib/status-pill';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
-import { fmtDateOrDash } from '@2990s/shared';
+import { fmtDateOrDash, fmtMoneyCenti } from '@2990s/shared';
 import styles from './Suppliers.module.css';
 import { PageHeader } from '../../components/Layout';
 
@@ -33,8 +33,7 @@ const ICON = { size: 16, strokeWidth: 1.75 } as const;
 // payment_voucher_status enum: DRAFT / POSTED / CANCELLED.
 const STATUS_CHIPS = ['all', 'DRAFT', 'POSTED', 'CANCELLED'] as const;
 
-const fmtMoney = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtMoney = (centi: number, currency = 'MYR'): string => fmtMoneyCenti(centi, currency);
 
 const PV_LIST_STORAGE_KEY = 'pv-list.layout.v1';
 

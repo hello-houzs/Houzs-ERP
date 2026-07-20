@@ -89,6 +89,16 @@ async function fetchWithTimeout(url: string, init: RequestInit, path: string): P
       }
       throw new Error('The request took too long — please check your connection and try again.');
     }
+    /* A genuine network failure — offline, DNS, CORS, the server unreachable —
+       surfaces as a TypeError ("Failed to fetch"), NOT a DOMException abort.
+       Left raw it reaches ~90 err.message sinks across the SCM + mobile-SCM
+       tree as machine text, so humanize it here in the one inner catch (mirrors
+       api/client.ts's request() network message). A caller-initiated abort is a
+       DOMException, never a TypeError, so it never matches this and is re-thrown
+       verbatim below — real aborts/timeouts keep today's behaviour. */
+    if (e instanceof TypeError) {
+      throw new Error('Network error — please check your connection and try again.');
+    }
     throw e;
   }
 }

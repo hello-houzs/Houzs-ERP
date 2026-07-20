@@ -304,7 +304,9 @@ export function ComposeDialog({
         },
       );
       if (!payload?.ok) {
-        toast.error(payload?.error || "Failed to send email. Please try again.");
+        // payload.error can be a raw provider string (Resend/Brevo) — never show
+        // it to the user; a single plain sentence covers every send failure.
+        toast.error("Failed to send email. Please try again.");
         return;
       }
       toast.success("Email sent.");

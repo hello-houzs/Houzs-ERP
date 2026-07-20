@@ -3,7 +3,7 @@
 // Received value + qty landed, tinted green once posted.
 
 import { lazy, Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
-import { lineIdentity } from "@2990s/shared";
+import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -90,8 +90,7 @@ type GrnItem = {
 /* Landed-cost allocation (Phase 1-A) — human labels for the freight basis. */
 const ALLOC_LABEL: Record<string, string> = { QTY: 'By quantity', VALUE: 'By value', CBM: 'By volume (CBM)' };
 
-const fmtMoney = (centi: number, currency = "MYR"): string =>
-  `${currency} ${(centi / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtMoney = (centi: number, currency = "MYR"): string => fmtMoneyCenti(centi, currency);
 
 const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";

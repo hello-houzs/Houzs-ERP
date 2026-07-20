@@ -60,7 +60,7 @@ import { resolveSoLocation } from "../../lib/soLocation";
 import { useAuth } from "../../auth/AuthContext";
 import { canViewScmCosting, canOperateDeliveryOrders } from "../../auth/salesAccess";
 import { capability } from "../../auth/capabilities";
-import { buildVariantSummary, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Minimal row shape the listing needs. The full SoRow (in MfgSalesOrdersList
@@ -141,11 +141,7 @@ type StatusTab = "all" | "draft" | "confirmed" | "cancelled";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const fmtRm = (centi: number): string =>
-  `RM ${(centi / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+const fmtRm = (centi: number): string => fmtCenti(centi);
 
 // margin_pct_basis is basis points (margin/total x 10000) → percent string.
 const fmtPctBasis = (basis: number | null | undefined): string =>

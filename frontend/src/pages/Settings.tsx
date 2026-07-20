@@ -132,7 +132,7 @@ function ConnectionTab() {
       const res = await fetch(`${api.baseUrl}/health`);
       if (!res.ok) {
         setConnectionOk(false);
-        toast.error(`Server reachable but unhealthy (HTTP ${res.status}). Please try again shortly.`);
+        toast.error("Server reachable but unhealthy. Please try again shortly.");
         return;
       }
       setConnectionOk(true);
@@ -326,9 +326,27 @@ function EmailTab() {
         "/api/settings/email/test",
         { to: testAddr.trim() }
       );
-      if (res.status === "sent") toast.success("Test email sent");
-      else if (res.status === "skipped") toast.error(`Skipped: ${res.reason}`);
-      else toast.error(`Error: ${res.reason}`);
+      if (res.status === "sent") {
+        toast.success("Test email sent");
+      } else {
+        // Map the handful of known machine reasons to plain words; anything else
+        // (including a raw provider / exception string on status "error") falls
+        // back to one generic sentence, so no code or internals reaches the admin.
+        const REASON_TEXT: Record<string, string> = {
+          "missing or invalid recipient":
+            "That email address doesn't look right. Please check it and try again.",
+          "channel disabled":
+            "Email sending is switched off. Turn the master switch on under Email, then try again.",
+          "channel disabled at drain":
+            "Email sending is switched off. Turn the master switch on under Email, then try again.",
+          "RESEND_API_KEY not configured":
+            "Email sending isn't set up on the server yet. Ask IT to add the email service key.",
+        };
+        toast.error(
+          (res.reason && REASON_TEXT[res.reason]) ||
+            "The test email couldn't be sent. Please check the email settings and try again.",
+        );
+      }
     } catch (e: any) {
       toast.error(e?.message || "Something went wrong. Please try again.");
     } finally {
