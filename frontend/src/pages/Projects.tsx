@@ -3298,18 +3298,20 @@ function ProjectsCalendarView() {
         segs.push({ project: p, startCol, endCol, clipLeft, clipRight, lane: 0 });
       }
     }
-    // Longer + earlier first → better greedy packing. Then order by STATE
-    // (fixed geographic sequence) and group events that share a venue +
-    // organizer (different brands) so a fair's brands stack together instead
-    // of being split apart, and states stop scattering across the cell.
+    // Group by FAIR first — state (fixed geographic order, PENANG->JOHOR) ->
+    // venue -> organizer -> brand, shared with the mobile calendar so both
+    // surfaces order a day's fairs identically. startCol + length only break
+    // ties WITHIN a fair. Owner 2026-07-20: with the packing keys (startCol,
+    // length) ahead of the grouping, a fair's multi-day bars of differing
+    // lengths got split — JOHOR REX's two brands were separated by a KL bar
+    // because length outranked the grouping. Grouping first places a fair's
+    // bars consecutively, so the greedy lane packer below stacks them in
+    // adjacent lanes (the packer still guarantees valid, non-overlapping rows).
     segs.sort(
       (a, b) =>
+        compareCalendarEvents(a.project, b.project) ||
         a.startCol - b.startCol ||
-        b.endCol - b.startCol - (a.endCol - a.startCol) ||
-        // State (fixed geographic order, PENANG->JOHOR) -> venue -> organizer
-        // -> brand, shared with the mobile calendar (owner 2026-07-20) so both
-        // surfaces order a day's fairs identically.
-        compareCalendarEvents(a.project, b.project)
+        b.endCol - b.startCol - (a.endCol - a.startCol)
     );
     const lanes: WeekSeg[][] = [];
     for (const seg of segs) {
