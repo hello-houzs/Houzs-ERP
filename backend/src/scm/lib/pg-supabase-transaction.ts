@@ -299,10 +299,11 @@ class PgPostgrestQuery implements PromiseLike<QueryResult<any>> {
       }
     });
     if (outcome.error) {
-      // Voucher minting deliberately retries a random code after a UNIQUE
-      // collision. It is the one expected statement error inside these
-      // commands; the savepoint keeps the transaction usable for that retry.
-      if (this.table === 'pwp_codes'
+      // Voucher minting retries a random code, while mirrored amendment
+      // dispatch resolves a duplicate idempotency key by reading the existing
+      // command. These are the two expected statement errors inside commands;
+      // the savepoint keeps the transaction usable for their retry/read path.
+      if ((this.table === 'pwp_codes' || this.table === 'sync_command')
           && (this.operation === 'insert' || this.operation === 'upsert')
           && /duplicate key|unique constraint/i.test(outcome.error.message)) {
         return { data: null, error: outcome.error, count: 0 };
@@ -368,6 +369,7 @@ export async function lockSoCommandLease(
   sql: Sql,
   docNo: string,
   leaseToken: string | null | undefined,
+  companyId?: number,
 ): Promise<SoCommandLeaseCheck> {
   const locked = await sql.unsafe<Array<{
     version: number;
@@ -377,8 +379,9 @@ export async function lockSoCommandLease(
     `SELECT version, edit_lease_token, edit_lease_expires_at
        FROM scm.mfg_sales_orders
       WHERE doc_no = $1
+        AND ($2::bigint IS NULL OR company_id = $2::bigint)
       FOR UPDATE`,
-    [docNo] as never[],
+    [docNo, companyId ?? null] as never[],
   );
   const row = locked[0];
   if (!row) return { ok: false, reason: 'not_found' };
@@ -404,7 +407,7 @@ export async function lockSoCommandLease(
 export async function runScmPgCommand(
   c: any,
   command: (sb: ReturnType<typeof pgTransactionSupabase>) => Promise<Response>,
-  options?: { docNo?: string; leaseToken?: string | null },
+  options?: { docNo?: string; leaseToken?: string | null; companyId?: number },
 ): Promise<Response> {
   const url = resolveDatabaseUrl(c.env);
   if (!url) {
@@ -418,7 +421,12 @@ export async function runScmPgCommand(
     (c as any)[AFTER_COMMIT] = [];
     const response = await sql.begin(async (tx) => {
       if (options?.docNo) {
-        const lease = await lockSoCommandLease(tx as unknown as Sql, options.docNo, options.leaseToken);
+        const lease = await lockSoCommandLease(
+          tx as unknown as Sql,
+          options.docNo,
+          options.leaseToken,
+          options.companyId,
+        );
         if (!lease.ok && lease.reason === 'not_found') {
           throw new CommandRollback(c.json({ error: 'not_found' }, 404));
         }

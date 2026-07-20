@@ -9,6 +9,7 @@ const LEASE_MS = 4 * 60_000;
 
 type QueueRow = {
   job_key: string;
+  request_token: string;
   requested_at: string;
   attempts: number;
 };
@@ -24,6 +25,7 @@ export type AllocationDrainResult = {
 export async function enqueueStockAllocationRecompute(sb: any, reason: string): Promise<void> {
   const { error } = await sb.from('stock_allocation_recompute_queue').upsert({
     job_key: JOB_KEY,
+    request_token: crypto.randomUUID(),
     requested_at: new Date().toISOString(),
     reason,
     attempts: 0,
@@ -33,13 +35,14 @@ export async function enqueueStockAllocationRecompute(sb: any, reason: string): 
 }
 
 /**
- * Claim and drain the singleton projection job. The requested_at equality on
- * delete is the outbox fence: a mutation arriving during recompute updates that
- * timestamp, so the old worker may unlock but can never delete the new work.
+ * Claim and drain the singleton projection job. The random request_token
+ * equality on claim/delete is the generation fence: a mutation arriving during
+ * recompute gets a new token, so the old worker can never delete the new work,
+ * even when two enqueues share one clock millisecond.
  */
 export async function drainStockAllocationRecomputeWithClient(sb: any): Promise<AllocationDrainResult> {
   const { data: pending, error: loadError } = await sb.from('stock_allocation_recompute_queue')
-    .select('job_key, requested_at, attempts')
+    .select('job_key, request_token, requested_at, attempts')
     .eq('job_key', JOB_KEY)
     .maybeSingle();
   if (loadError) return { processed: false, completed: false, reason: loadError.message };
@@ -52,7 +55,7 @@ export async function drainStockAllocationRecomputeWithClient(sb: any): Promise<
   const { data: claimed, error: claimError } = await sb.from('stock_allocation_recompute_queue')
     .update({ locked_by: token, locked_until: lockedUntil })
     .eq('job_key', JOB_KEY)
-    .eq('requested_at', row.requested_at)
+    .eq('request_token', row.request_token)
     .or(`locked_by.is.null,locked_until.lt.${now}`)
     .select('job_key')
     .maybeSingle();
@@ -87,7 +90,7 @@ export async function drainStockAllocationRecomputeWithClient(sb: any): Promise<
     .delete()
     .eq('job_key', JOB_KEY)
     .eq('locked_by', token)
-    .eq('requested_at', row.requested_at)
+    .eq('request_token', row.request_token)
     .select('job_key')
     .maybeSingle();
   if (deleteError) return { processed: true, completed: false, reason: deleteError.message };

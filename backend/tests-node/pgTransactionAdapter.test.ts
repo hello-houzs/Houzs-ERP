@@ -59,4 +59,26 @@ describe('SCM PostgreSQL transaction adapter', () => {
     const result = await sb.from('pwp_codes').insert({ code: 'DUPLICATE' });
     expect(result.error?.message).toMatch(/duplicate key/);
   });
+
+  test('duplicate mirrored-command idempotency keys remain readable in the transaction', async () => {
+    const unsafe = vi.fn(async (text: string) => {
+      if (text.startsWith('INSERT')) throw new Error('duplicate key value violates unique constraint sync_command_idempotency_key_key');
+      if (text.startsWith('SELECT')) return [{ id: 'existing-command', status: 'PENDING' }];
+      return [];
+    });
+    const json = vi.fn((value: unknown) => ({ value, type: 3802 }));
+    const sb = pgTransactionSupabase({ unsafe, json } as unknown as Sql);
+
+    const inserted = await sb.from('sync_command').insert({
+      idempotency_key: 'same-decision',
+      payload: { action: 'approve-po' },
+    }).select('*').single();
+    expect(inserted.error?.message).toMatch(/duplicate key/);
+
+    const existing = await sb.from('sync_command')
+      .select('id, status')
+      .eq('idempotency_key', 'same-decision')
+      .maybeSingle();
+    expect(existing.data).toEqual({ id: 'existing-command', status: 'PENDING' });
+  });
 });

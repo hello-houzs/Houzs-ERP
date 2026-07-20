@@ -31,6 +31,34 @@ describe('SCM atomic command wiring', () => {
     expect(amendmentSource.slice(routeAt, routeAt + 250)).toContain('runScmPgCommand');
   });
 
+  test('approve-po revises every bound PO and finalizes through one PG transaction', () => {
+    const handlerAt = amendmentSource.indexOf('export async function approvePoCommandHandler');
+    const routeAt = amendmentSource.indexOf("soAmendments.patch('/:id/approve-po'");
+    expect(handlerAt).toBeGreaterThanOrEqual(0);
+    expect(routeAt).toBeGreaterThan(handlerAt);
+    const handler = amendmentSource.slice(handlerAt, routeAt);
+    expect(handler).toContain('reviseBoundPo(sb');
+    expect(handler).toContain("sb.from('so_amendments').update");
+    expect(handler).toContain(".eq('version', applyVersion)");
+    expect(amendmentSource.slice(routeAt, routeAt + 250)).toContain('runScmPgCommand');
+  });
+
+  test('every terminal amendment action advances the row generation by CAS', () => {
+    for (const [path, nextPath] of [
+      ["patch('/:id/send'", "patch('/:id/reject'"],
+      ["patch('/:id/reject'", "patch('/:id/withdraw'"],
+      ["patch('/:id/withdraw'", null],
+    ] as const) {
+      const start = amendmentSource.indexOf(`soAmendments.${path}`);
+      const end = nextPath ? amendmentSource.indexOf(`soAmendments.${nextPath}`, start) : amendmentSource.length;
+      expect(start).toBeGreaterThanOrEqual(0);
+      const handler = amendmentSource.slice(start, end);
+      expect(handler).toContain(".eq('status', amendment.status)");
+      expect(handler).toContain(".eq('version', Number(amendment.version ?? 1))");
+      expect(handler).toContain("error: 'amendment_version_conflict'");
+    }
+  });
+
   test('mirrored amendment dispatch waits until the local command transaction commits', () => {
     const dispatchAt = amendmentSource.indexOf('async function dispatchMirroredCommand');
     const dispatch = amendmentSource.slice(dispatchAt, dispatchAt + 5000);

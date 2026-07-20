@@ -54,31 +54,44 @@ export type AllocationResult = {
  * full sweep when creating a single order — but still respects older orders'
  * claims because we deduct ALL outstanding qty from the bucket first).
  */
-// Postgres advisory-lock key for the global recompute mutex. Arbitrary stable
-// int — exclusive across all connections at the DB level. Edge #F.
-const ALLOCATION_LOCK_KEY = 42_990_001;
+const ALLOCATION_LOCK_ROW = 'GLOBAL';
+const ALLOCATION_LOCK_MS = 15 * 60_000;
 
 export async function recomputeSoStockAllocation(
   sb: any,
   scopeToDocNo?: string,
 ): Promise<AllocationResult> {
-  /* Edge #F — single-flight guard. pg_try_advisory_lock returns true if we
-     grabbed it, false if another connection already holds it. When false we
-     no-op (the other recompute will produce the same result against the same
-     inventory snapshot). Best-effort: if the RPC isn't wired we proceed
-     anyway — the algorithm is deterministic + idempotent so interleaving is
-     mostly benign. */
+  /* Edge #F — single-flight guard. PostgREST does not retain one PostgreSQL
+     session across the recompute's reads/writes, so a session advisory lock is
+     not a lock here. Claim the durable singleton lease row instead. Missing
+     migration or a lock read failure fails closed before projection writes. */
   let lockHeld = false;
+  const lockToken = crypto.randomUUID();
   try {
-    const { data: gotLock, error: lockError } = await sb.rpc('pg_try_advisory_lock', { key: ALLOCATION_LOCK_KEY });
-    if (lockError) console.warn('[so-allocation] advisory lock unavailable:', lockError.message); // eslint-disable-line no-console
-    if (gotLock === false) {
+    const now = new Date().toISOString();
+    const lockedUntil = new Date(Date.now() + ALLOCATION_LOCK_MS).toISOString();
+    const { data: claimed, error: lockError } = await sb
+      .from('stock_allocation_recompute_lock')
+      .update({ locked_by: lockToken, locked_until: lockedUntil })
+      .eq('lock_key', ALLOCATION_LOCK_ROW)
+      .or(`locked_by.is.null,locked_until.lt.${now}`)
+      .select('lock_key')
+      .maybeSingle();
+    if (lockError) {
+      return {
+        ok: false, linesFlipped: 0, ordersAdvanced: 0, ordersRegressed: 0,
+        reason: `allocation lock unavailable: ${lockError.message}`,
+      };
+    }
+    if (!claimed) {
       return { ok: true, linesFlipped: 0, ordersAdvanced: 0, ordersRegressed: 0, reason: 'another_recompute_in_progress' };
     }
-    if (gotLock === true) lockHeld = true;
+    lockHeld = true;
   } catch (error) {
-    console.warn('[so-allocation] advisory lock unavailable:', error); // eslint-disable-line no-console
-    /* RPC not configured — proceed without the lock. */
+    return {
+      ok: false, linesFlipped: 0, ordersAdvanced: 0, ordersRegressed: 0,
+      reason: `allocation lock unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
   try {
     /* 1. All non-cancelled, non-completed SOs. Allocation priority:
@@ -595,10 +608,13 @@ export async function recomputeSoStockAllocation(
   } finally {
     if (lockHeld) {
       try {
-        const { error } = await sb.rpc('pg_advisory_unlock', { key: ALLOCATION_LOCK_KEY });
-        if (error) console.warn('[so-allocation] advisory unlock failed:', error.message); // eslint-disable-line no-console
+        const { error } = await sb.from('stock_allocation_recompute_lock')
+          .update({ locked_by: null, locked_until: null })
+          .eq('lock_key', ALLOCATION_LOCK_ROW)
+          .eq('locked_by', lockToken);
+        if (error) console.warn('[so-allocation] durable lock release failed:', error.message); // eslint-disable-line no-console
       } catch (error) {
-        console.warn('[so-allocation] advisory unlock failed:', error); // eslint-disable-line no-console
+        console.warn('[so-allocation] durable lock release failed:', error); // eslint-disable-line no-console
       }
     }
   }

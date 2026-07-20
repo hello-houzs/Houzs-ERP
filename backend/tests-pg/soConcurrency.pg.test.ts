@@ -251,6 +251,21 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
     }
   });
 
+  test('the command row lock cannot cross the active company boundary', async () => {
+    await admin`TRUNCATE scm.mfg_sales_orders`;
+    await admin`
+      INSERT INTO scm.mfg_sales_orders
+        (doc_no, company_id, edit_lease_token, edit_lease_expires_at)
+      VALUES ('SO-PG-1', 7, 'lease-company', now() + interval '5 minutes')
+    `;
+    await admin.begin(async (tx) => {
+      expect(await lockSoCommandLease(tx as unknown as Sql, 'SO-PG-1', 'lease-company', 8))
+        .toEqual({ ok: false, reason: 'not_found' });
+      expect(await lockSoCommandLease(tx as unknown as Sql, 'SO-PG-1', 'lease-company', 7))
+        .toMatchObject({ ok: true, version: 1 });
+    });
+  });
+
   test('amendment version claim and all applied lines share one transaction', async () => {
     await admin`TRUNCATE scm.so_amendments, scm.mfg_sales_order_items, scm.mfg_sales_orders`;
     await admin`INSERT INTO scm.mfg_sales_orders (doc_no) VALUES ('SO-PG-1')`;
@@ -340,9 +355,10 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
       );
     });
     const [job] = await admin`
-      SELECT job_key, reason, attempts, last_error
+      SELECT job_key, request_token, reason, attempts, last_error
       FROM scm.stock_allocation_recompute_queue
     `;
     expect(job).toMatchObject({ job_key: 'GLOBAL', reason: 'pg-integration', attempts: 0, last_error: null });
+    expect(job?.request_token).toMatch(/^[0-9a-f-]{36}$/i);
   });
 });

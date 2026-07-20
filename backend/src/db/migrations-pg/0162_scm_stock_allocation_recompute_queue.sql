@@ -7,6 +7,7 @@
 
 CREATE TABLE IF NOT EXISTS scm.stock_allocation_recompute_queue (
   job_key       text PRIMARY KEY DEFAULT 'GLOBAL' CHECK (job_key = 'GLOBAL'),
+  request_token uuid NOT NULL DEFAULT gen_random_uuid(),
   requested_at  timestamptz NOT NULL DEFAULT now(),
   reason        text,
   attempts      integer NOT NULL DEFAULT 0,
@@ -22,5 +23,22 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE scm.stock_allocation_recompute_que
 
 CREATE INDEX IF NOT EXISTS idx_stock_allocation_queue_lease
   ON scm.stock_allocation_recompute_queue (locked_until);
+
+-- PostgREST calls do not share one PostgreSQL session, so a session advisory
+-- lock acquired by one RPC cannot protect the reads/writes sent by later RPCs.
+-- Every allocation entry point contends on this durable lease instead.
+CREATE TABLE IF NOT EXISTS scm.stock_allocation_recompute_lock (
+  lock_key     text PRIMARY KEY DEFAULT 'GLOBAL' CHECK (lock_key = 'GLOBAL'),
+  locked_by    uuid,
+  locked_until timestamptz
+);
+
+INSERT INTO scm.stock_allocation_recompute_lock (lock_key)
+VALUES ('GLOBAL')
+ON CONFLICT (lock_key) DO NOTHING;
+
+ALTER TABLE scm.stock_allocation_recompute_lock ENABLE ROW LEVEL SECURITY;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE scm.stock_allocation_recompute_lock TO service_role;
 
 NOTIFY pgrst, 'reload schema';

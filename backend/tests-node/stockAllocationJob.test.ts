@@ -12,6 +12,7 @@ import {
 
 type Row = {
   job_key: string;
+  request_token: string;
   requested_at: string;
   attempts: number;
   last_error: string | null;
@@ -65,7 +66,8 @@ function queueClient(initial?: Row) {
 }
 
 const pending = (): Row => ({
-  job_key: 'GLOBAL', requested_at: '2026-07-21T00:00:00.000Z', attempts: 0,
+  job_key: 'GLOBAL', request_token: '00000000-0000-4000-8000-000000000001',
+  requested_at: '2026-07-21T00:00:00.000Z', attempts: 0,
   last_error: null, locked_by: null, locked_until: null,
 });
 
@@ -83,12 +85,22 @@ describe('durable stock-allocation recompute queue', () => {
   test('the timestamp fence preserves work enqueued while recompute is running', async () => {
     const state = queueClient(pending());
     recompute.mockImplementation(async () => {
-      state.replace({ ...state.row!, requested_at: '2026-07-21T00:01:00.000Z', reason: 'new mutation' });
+      state.replace({
+        ...state.row!,
+        request_token: '00000000-0000-4000-8000-000000000002',
+        requested_at: '2026-07-21T00:01:00.000Z',
+        reason: 'new mutation',
+      });
       return { ok: true };
     });
     const result = await drainStockAllocationRecomputeWithClient(state.client);
     expect(result).toMatchObject({ processed: true, completed: false, deferred: true, reason: 'new_work_arrived' });
-    expect(state.row).toMatchObject({ requested_at: '2026-07-21T00:01:00.000Z', locked_by: null, locked_until: null });
+    expect(state.row).toMatchObject({
+      request_token: '00000000-0000-4000-8000-000000000002',
+      requested_at: '2026-07-21T00:01:00.000Z',
+      locked_by: null,
+      locked_until: null,
+    });
   });
 
   test('successful recompute deletes only the claimed generation', async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import migration0161 from '../src/db/migrations-pg/0161_scm_so_concurrency_domain_closure.sql?raw';
+import migration0162 from '../src/db/migrations-pg/0162_scm_stock_allocation_recompute_queue.sql?raw';
 
 describe('SO concurrency domain migration', () => {
   test('ships the transactional header CAS and payment/amendment row generations together', () => {
@@ -10,5 +11,12 @@ describe('SO concurrency domain migration', () => {
     expect(migration0161).toContain('ADD COLUMN IF NOT EXISTS version integer NOT NULL DEFAULT 1');
     expect(migration0161).toContain('ALTER TABLE scm.so_amendments');
     expect(migration0161).toContain('REVOKE ALL ON FUNCTION scm.apply_so_header_cas');
+  });
+
+  test('allocation retries use a collision-proof generation fence and durable cross-request mutex', () => {
+    expect(migration0162).toContain('request_token uuid NOT NULL DEFAULT gen_random_uuid()');
+    expect(migration0162).toContain('CREATE TABLE IF NOT EXISTS scm.stock_allocation_recompute_lock');
+    expect(migration0162).toContain("VALUES ('GLOBAL')");
+    expect(migration0162).toContain('ENABLE ROW LEVEL SECURITY');
   });
 });

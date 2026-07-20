@@ -8007,11 +8007,15 @@ export async function tbcUpdateCommandHandler(c: any, sb: any): Promise<Response
   await scheduleStockAllocationAfterCommand(c, sb, `tbc-update:${docNo}`);
   return c.json({ ok: true, unitPriceCenti: newUnit, deltaCenti: sellingDeltaCenti, totalCenti: newTotal });
 }
-mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', (c) =>
-  runScmPgCommand(c, (sb) => tbcUpdateCommandHandler(c, sb), {
+mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', (c) => {
+  const company = requireActiveCompanyId(c);
+  if (!company.ok) return c.json(company.refusal, 409);
+  return runScmPgCommand(c, (sb) => tbcUpdateCommandHandler(c, sb), {
     docNo: c.req.param('docNo'),
     leaseToken: c.req.header('X-SO-Edit-Lease')?.trim() ?? null,
-  }));
+    companyId: company.companyId,
+  });
+});
 
 /* TBC product swap (Loo 2026-06-11) — exchange a line for a DIFFERENT product
    from My orders. Non-sofa ↔ non-sofa only (a sofa is a multi-line build).
@@ -8456,11 +8460,15 @@ export async function tbcSwapCommandHandler(c: any, sb: any): Promise<Response> 
     },
   });
 }
-mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', (c) =>
-  runScmPgCommand(c, (sb) => tbcSwapCommandHandler(c, sb), {
+mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', (c) => {
+  const company = requireActiveCompanyId(c);
+  if (!company.ok) return c.json(company.refusal, 409);
+  return runScmPgCommand(c, (sb) => tbcSwapCommandHandler(c, sb), {
     docNo: c.req.param('docNo'),
     leaseToken: c.req.header('X-SO-Edit-Lease')?.trim() ?? null,
-  }));
+    companyId: company.companyId,
+  });
+});
 
 /* ── Sofa-reward revert plan (Loo 2026-06-12) ──
    When a TRIGGER swap strands a SOFA reward on the same SO, the reward must
@@ -9211,11 +9219,15 @@ export async function tbcSwapSofaCommandHandler(c: any, sb: any): Promise<Respon
     },
   });
 }
-mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', (c) =>
-  runScmPgCommand(c, (sb) => tbcSwapSofaCommandHandler(c, sb), {
+mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', (c) => {
+  const company = requireActiveCompanyId(c);
+  if (!company.ok) return c.json(company.refusal, 409);
+  return runScmPgCommand(c, (sb) => tbcSwapSofaCommandHandler(c, sb), {
     docNo: c.req.param('docNo'),
     leaseToken: c.req.header('X-SO-Edit-Lease')?.trim() ?? null,
-  }));
+    companyId: company.companyId,
+  });
+});
 
 // ── Per-line photos — PR-F (migration 0076) ──────────────────────────
 //
