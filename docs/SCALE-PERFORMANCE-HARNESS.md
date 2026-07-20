@@ -19,18 +19,30 @@ its own transaction:
 
 - The hostname must be `localhost`, `127.0.0.1` or `::1`.
 - The database name must be exactly `houzs_scale_test`.
+- The database must carry the exact out-of-band comment
+  `HOUZS_DISPOSABLE_LOCAL_SCALE_V1`. A localhost tunnel cannot be proven local
+  from its URL, so the harness refuses even an empty same-named database unless
+  the operator provisioned this disposable marker first.
 - `PERF_LOCAL_ACK` must exactly match the acknowledgement below.
-- Before `BEGIN`, a server-authoritative catalogue check refuses any database
+- Before any DDL, a server-authoritative catalogue check refuses any database
   that already has a user relation/custom schema, an `scm` schema, Houzs core
   tables or migration history.
   This also blocks a live database hidden behind a localhost tunnel.
-- Schema, fixture and measurements run in a `SERIALIZABLE` transaction under
-  an advisory transaction lock. `ROLLBACK` runs in `finally`, then the clean
+- Peer harnesses are excluded with a non-blocking advisory session lock before
+  the catalogue probe. Schema, fixture and measurements then run in a
+  `SERIALIZABLE` transaction. `ROLLBACK` runs in `finally`, then the clean
   catalogue is checked again. A failed benchmark therefore tears down too.
-- Every remote target is rejected. There is no staging or production override.
+- Every directly addressed remote target is rejected. A localhost tunnel still
+  has to satisfy the independently provisioned marker and empty-catalogue
+  checks. There is no staging or production override.
 
 The operator must provision an empty, disposable local PostgreSQL database
-named `houzs_scale_test`; the harness never creates or drops a database.
+named `houzs_scale_test` and mark it once; the harness never creates, drops or
+marks a database:
+
+```sql
+COMMENT ON DATABASE houzs_scale_test IS 'HOUZS_DISPOSABLE_LOCAL_SCALE_V1';
+```
 
 ## Run
 
@@ -47,6 +59,11 @@ Run the schema/query contract and route-drift checks before measuring:
 ```powershell
 npm run test:scale-contract
 ```
+
+Pull-request CI also executes a small fixture against an ephemeral PostgreSQL
+service. That smoke job proves the DDL, seed SQL, correctness checks, queries,
+rollback and post-rollback catalogue assertion are executable. It is not the
+100k-row acceptance measurement.
 
 Then run the required scale and retain its report as a CI/local artifact:
 
@@ -68,8 +85,11 @@ gross query-shape regressions but is not acceptance evidence for HZ-P0-04.
 The PostgreSQL report records:
 
 - exact per-tenant and total fixture cardinalities;
-- adjacent-page uniqueness, search narrowing, tenant isolation and payment-view
-  correctness assertions that fail the process on mismatch;
+- adjacent-page uniqueness, search narrowing, SCM tenant isolation and
+  payment-view correctness assertions that fail the process on mismatch;
+- an explicit two-tenant assertion for Team's current cross-tenant typeahead
+  and unbounded full-directory paths (it is reported as observed behavior, not
+  mislabeled as tenant isolation);
 - returned row counts and p50/p95/max for each measured query;
 - JSON query plans for the principal Sales Order, product and Team searches;
 - the schema-contract version and isolation mode.

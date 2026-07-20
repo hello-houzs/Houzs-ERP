@@ -105,6 +105,45 @@ jobs:
           [ "${{ needs.backend-typecheck.result }}" = "success" ] || exit 1
           [ "${{ needs.backend-tests.result }}" = "success" ] || exit 1
 
+  scale-postgres-contract:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: houzs_scale_test
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d houzs_scale_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      PERF_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/houzs_scale_test
+      PERF_LOCAL_ACK: I_UNDERSTAND_THIS_IS_A_DISPOSABLE_LOCAL_DATABASE
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Mark the ephemeral database as disposable
+        run: >-
+          node --input-type=module -e
+          "import postgres from 'postgres';
+          const sql = postgres(process.env.PERF_DATABASE_URL, { max: 1 });
+          try { await sql.unsafe(\"COMMENT ON DATABASE houzs_scale_test IS 'HOUZS_DISPOSABLE_LOCAL_SCALE_V1'\"); }
+          finally { await sql.end(); }"
+      - name: Execute the real-schema PostgreSQL smoke fixture
+        run: npm run perf:scale -- --engine=pg --orders=1000 --lines=1000 --skus=500 --users=500 --runs=1
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

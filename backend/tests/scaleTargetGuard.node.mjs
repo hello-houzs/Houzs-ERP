@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   LOCAL_SCALE_ACK,
   LOCAL_SCALE_DATABASE,
+  LOCAL_SCALE_DATABASE_MARKER,
   assertDisposableCatalog,
   assertPgTarget,
   readCatalogSnapshot,
@@ -10,6 +11,7 @@ import {
 
 const emptyCatalog = () => ({
   database_name: LOCAL_SCALE_DATABASE,
+  database_marker: LOCAL_SCALE_DATABASE_MARKER,
   scm_schema_exists: false,
   user_relation_count: 0,
   custom_schema_count: 0,
@@ -58,6 +60,8 @@ test("rejects malformed and non-PostgreSQL URLs", () => {
 test("accepts an empty catalogue and rejects migrated/live-looking state", () => {
   assert.doesNotThrow(() => assertDisposableCatalog(emptyCatalog()));
   assert.throws(() => assertDisposableCatalog({ ...emptyCatalog(), database_name: "postgres" }), /Connected database/);
+  assert.throws(() => assertDisposableCatalog({ ...emptyCatalog(), database_marker: "" }), /disposable-local marker/);
+  assert.throws(() => assertDisposableCatalog({ ...emptyCatalog(), database_marker: "copied-production" }), /disposable-local marker/);
   assert.throws(() => assertDisposableCatalog({ ...emptyCatalog(), scm_schema_exists: true }), /live-looking/);
   assert.throws(() => assertDisposableCatalog({ ...emptyCatalog(), user_relation_count: 1 }), /non-empty/);
   assert.throws(() => assertDisposableCatalog({ ...emptyCatalog(), custom_schema_count: 1 }), /non-empty/);
@@ -71,6 +75,7 @@ test("normalizes the server-authoritative catalogue probe", async () => {
   const sql = {
     unsafe: async () => [{
       database_name: LOCAL_SCALE_DATABASE,
+      database_marker: LOCAL_SCALE_DATABASE_MARKER,
       scm_schema_exists: false,
       user_relation_count: 1,
       custom_schema_count: 0,
@@ -89,6 +94,7 @@ test("normalizes the server-authoritative catalogue probe", async () => {
   };
   const snapshot = await readCatalogSnapshot(sql);
   assert.equal(snapshot.database_name, LOCAL_SCALE_DATABASE);
+  assert.equal(snapshot.database_marker, LOCAL_SCALE_DATABASE_MARKER);
   assert.equal(snapshot.user_relation_count, 1);
   assert.equal(snapshot.relations["public.users"], true);
   assert.throws(() => assertDisposableCatalog(snapshot), /public\.users/);

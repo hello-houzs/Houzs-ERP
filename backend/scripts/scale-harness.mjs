@@ -65,6 +65,22 @@ const validateTenant = (companyId) => (rows) => {
   }
 };
 
+const validateTeamDirectoryAcrossTenants = (expectedPerTenant) => (rows) => {
+  const counts = new Map([[1, 0], [2, 0]]);
+  for (const row of rows) {
+    const grants = Array.isArray(row.company_ids_arr) ? row.company_ids_arr.map(Number) : [];
+    if (grants.length !== 1 || !counts.has(grants[0])) {
+      throw new Error("Team directory row did not carry exactly one expected tenant grant");
+    }
+    counts.set(grants[0], counts.get(grants[0]) + 1);
+  }
+  for (const [companyId, count] of counts) {
+    if (count !== expectedPerTenant) {
+      throw new Error(`Team directory tenant ${companyId} returned ${count}; expected ${expectedPerTenant}`);
+    }
+  }
+};
+
 function validatePagination(first, second) {
   const firstIds = new Set(first.map((row) => String(row.id)));
   if (second.some((row) => firstIds.has(String(row.id)))) {
@@ -268,16 +284,27 @@ async function postgresHarness() {
   assertPgTarget(url);
   const sql = postgres(url, { ssl: false, max: 1, prepare: false, connect_timeout: 10 });
   let transactionOpen = false;
+  let sessionLockHeld = false;
   try {
-    // URL checks are not sufficient: a production tunnel can still appear as
-    // localhost. Refuse any migrated/live-looking catalogue before BEGIN/DDL.
-    assertDisposableCatalog(await readCatalogSnapshot(sql));
+    // Serialize peer harnesses before inspecting the catalogue. A session lock
+    // is used here (rather than an xact lock after the probe) so two processes
+    // cannot both approve the same empty database and race into DDL.
+    const lock = await sql.unsafe(
+      "SELECT pg_try_advisory_lock(hashtext('houzs-real-schema-scale-v1')) AS acquired",
+    );
+    if (lock[0]?.acquired !== true) {
+      throw new Error("Another Houzs scale harness already owns this database.");
+    }
+    sessionLockHeld = true;
     await sql.unsafe("BEGIN ISOLATION LEVEL SERIALIZABLE");
     transactionOpen = true;
     await sql.unsafe("SET LOCAL lock_timeout = '5s'");
     await sql.unsafe("SET LOCAL statement_timeout = '15min'");
     await sql.unsafe("SET LOCAL idle_in_transaction_session_timeout = '20min'");
-    await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext('houzs-real-schema-scale-v1'))");
+    // URL checks alone cannot distinguish a local server from a localhost
+    // tunnel. The database comment is provisioned out of band and the live
+    // catalogue must still be empty before this transaction performs any DDL.
+    assertDisposableCatalog(await readCatalogSnapshot(sql));
     await sql.unsafe(PG_REAL_SCHEMA_DDL);
     await sql.unsafe(pgSeedSql(config));
 
@@ -329,7 +356,8 @@ async function postgresHarness() {
       search_narrowing: true,
       exact_per_tenant_cardinality: true,
       payment_view_totals: true,
-      tenant_scope: true,
+      scm_tenant_scope: true,
+      team_directory_cross_tenant_observed: true,
     };
 
     const expectedDetailRows = Math.floor((config.lines - 1) / config.orders) + 1;
@@ -347,10 +375,10 @@ async function postgresHarness() {
       ["so:detail-lines", () => run("so_detail_lines", [1, "C1-SO-2607-000001"]), expectedDetailRows, validateTenant(1)],
       ["products:first-page", () => run("products_page", [1, 0]), Math.min(1000, config.skus), validateTenant(1)],
       ["products:one-char-search", () => run("products_search", [1, "%C%"]), Math.min(1000, config.skus), validateTenant(1)],
-      ["users:typeahead", () => run("users_typeahead", ["%User 00001%"]), 2, undefined],
+      ["users:typeahead", () => run("users_typeahead", ["%User 00001%"]), 2, validateTeamDirectoryAcrossTenants(1)],
       // Deliberately mirrors GET /api/users with no q: the production route is
       // unbounded and not company-scoped, so this measures the full directory.
-      ["users:full-list", () => run("users_full_list"), config.users * 2, undefined],
+      ["users:full-list", () => run("users_full_list"), config.users * 2, validateTeamDirectoryAcrossTenants(config.users)],
     ];
     const benchmarks = [];
     for (const [name, query, expectedRows, validate] of cases) {
@@ -376,14 +404,30 @@ async function postgresHarness() {
       benchmarks,
     };
   } finally {
-    if (transactionOpen) await sql.unsafe("ROLLBACK").catch(() => undefined);
-    // Deterministic teardown is part of the evidence, not an assumption.
-    // The same protected-catalog assertion must pass again after rollback.
+    let cleanupError;
     try {
-      assertDisposableCatalog(await readCatalogSnapshot(sql));
+      if (transactionOpen) {
+        try {
+          await sql.unsafe("ROLLBACK");
+          transactionOpen = false;
+        } catch (error) {
+          cleanupError = error;
+        }
+      }
+      // Deterministic teardown is part of the evidence, not an assumption.
+      // Keep the peer lock until the clean-catalog assertion has completed.
+      if (!cleanupError && sessionLockHeld) {
+        assertDisposableCatalog(await readCatalogSnapshot(sql));
+      }
     } finally {
-      await sql.end();
+      if (sessionLockHeld) {
+        await sql.unsafe(
+          "SELECT pg_advisory_unlock(hashtext('houzs-real-schema-scale-v1'))",
+        ).catch(() => undefined);
+      }
+      await sql.end().catch(() => undefined);
     }
+    if (cleanupError) throw cleanupError;
   }
 }
 

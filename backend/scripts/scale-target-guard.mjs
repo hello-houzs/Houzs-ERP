@@ -1,5 +1,6 @@
 export const LOCAL_SCALE_ACK = "I_UNDERSTAND_THIS_IS_A_DISPOSABLE_LOCAL_DATABASE";
 export const LOCAL_SCALE_DATABASE = "houzs_scale_test";
+export const LOCAL_SCALE_DATABASE_MARKER = "HOUZS_DISPOSABLE_LOCAL_SCALE_V1";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 const PROTECTED_RELATIONS = [
@@ -59,6 +60,11 @@ export function assertDisposableCatalog(snapshot) {
   if (snapshot.database_name !== LOCAL_SCALE_DATABASE) {
     throw new Error(`Connected database is ${snapshot.database_name}, not ${LOCAL_SCALE_DATABASE}.`);
   }
+  if (snapshot.database_marker !== LOCAL_SCALE_DATABASE_MARKER) {
+    throw new Error(
+      `Database ${LOCAL_SCALE_DATABASE} is missing the required disposable-local marker.`,
+    );
+  }
   const present = PROTECTED_RELATIONS.filter((name) => snapshot.relations[name] === true);
   if (
     snapshot.scm_schema_exists || present.length > 0 ||
@@ -73,6 +79,9 @@ export function assertDisposableCatalog(snapshot) {
 export async function readCatalogSnapshot(sql) {
   const rows = await sql.unsafe(`
     SELECT current_database() AS database_name,
+           (SELECT shobj_description(d.oid, 'pg_database')
+              FROM pg_database d
+             WHERE d.datname = current_database()) AS database_marker,
            EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'scm') AS scm_schema_exists,
            (SELECT count(*)::integer
               FROM pg_class c
@@ -99,6 +108,7 @@ export async function readCatalogSnapshot(sql) {
   const row = rows[0] ?? {};
   return {
     database_name: String(row.database_name ?? ""),
+    database_marker: String(row.database_marker ?? ""),
     scm_schema_exists: row.scm_schema_exists === true,
     user_relation_count: Number(row.user_relation_count ?? 0),
     custom_schema_count: Number(row.custom_schema_count ?? 0),

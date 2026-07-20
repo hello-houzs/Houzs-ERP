@@ -47,6 +47,7 @@ test("pins heavy route query shapes and wide SO list projection", () => {
   assert.match(PG_QUERY_SHAPES.products_page, /scm\.mfg_products[\s\S]*product_models[\s\S]*LIMIT 1000 OFFSET \$2/);
   assert.match(PG_QUERY_SHAPES.users_typeahead, /FROM public\.users u/);
   assert.match(PG_QUERY_SHAPES.users_typeahead, /string_agg[\s\S]*array_agg[\s\S]*LIMIT 50/);
+  assert.match(PG_QUERY_SHAPES.users_typeahead, /company_ids_arr/);
   assert.doesNotMatch(PG_QUERY_SHAPES.users_full_list, /LIMIT|WHERE EXISTS/);
   assert.match(PG_QUERY_SHAPES.users_full_list, /LEFT JOIN public\.users m[\s\S]*LEFT JOIN public\.users ib/);
 });
