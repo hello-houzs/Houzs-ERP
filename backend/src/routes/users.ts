@@ -131,7 +131,7 @@ export async function changePersonalMailboxAliasAtomically(
     // CTE is gated by ready_user, so collision or concurrent alias drift writes
     // nothing. d1Compat.batch is intentionally not used on the PG path.
     const result = await env.DB.prepare(
-      `WITH current_user AS (
+      `WITH target_user AS (
          SELECT id, email_alias
            FROM users
           WHERE id = ? AND lower(COALESCE(email_alias, '')) = ?
@@ -143,7 +143,7 @@ export async function changePersonalMailboxAliasAtomically(
           FOR UPDATE
        ), can_commit AS (
          SELECT cu.id
-           FROM current_user cu
+           FROM target_user cu
           WHERE ? = 0
              OR NOT EXISTS (
                SELECT 1 FROM existing_new en
@@ -207,7 +207,7 @@ export async function changePersonalMailboxAliasAtomically(
           WHERE u.id = ru.id
           RETURNING u.id
        )
-       SELECT (SELECT id FROM current_user LIMIT 1) AS current_user_id,
+       SELECT (SELECT id FROM target_user LIMIT 1) AS current_user_id,
               (SELECT id FROM can_commit LIMIT 1) AS eligible_user_id,
               (SELECT id FROM updated_user LIMIT 1) AS user_id,
               (SELECT id FROM old_mailbox LIMIT 1) AS old_mailbox_id,

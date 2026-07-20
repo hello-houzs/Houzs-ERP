@@ -135,6 +135,11 @@ afterAll(async () => {
 });
 
 describe("personal Mail Center alias revocation", () => {
+  it("does not use PostgreSQL reserved current_user as an unquoted CTE name", () => {
+    expect(usersRouteSource).not.toMatch(/\bWITH\s+current_user\s+AS\s*\(/i);
+    expect(usersRouteSource).toMatch(/\bWITH\s+target_user\s+AS\s*\(/i);
+  });
+
   test("the production users PATCH commits mailbox reconciliation before remaining user fields", () => {
     const start = usersRouteSource.indexOf('app.patch("/:id"');
     expect(start).toBeGreaterThan(-1);
