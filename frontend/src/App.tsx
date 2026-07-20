@@ -3,7 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { useAuth } from "./auth/AuthContext";
 import { canUseAssistant } from "./auth/assistantAccess";
-import { isSalesStaff, isDirectorUser, isSalesDirectorUser, canViewFairReport } from "./auth/salesAccess";
+import { isSalesStaff, isDirectorUser, isSalesDirectorUser, canViewFairReport, hasAnyScmPageAccess } from "./auth/salesAccess";
 import { capability, capabilitiesUnresolved } from "./auth/capabilities";
 import { PageGuard } from "./auth/PageGuard";
 import { ROUTE_ALIASES } from "./lib/routeAliases";
@@ -251,6 +251,14 @@ function ScmGuard({
   const { user } = useAuth();
   if (allowSales && isSalesStaff(user)) return <>{children}</>;
   if (allowDirector && isDirectorUser(user)) return <>{children}</>;
+  // SCM hub landing pages (area === "scm": /scm and the six sub-group hubs) are a
+  // navigation INDEX, not a data surface — every tile is permission-filtered and
+  // each real page still gates on its own area key. Admit any caller who holds ANY
+  // scm.* page grant (mirrors the backend requireScmAccess umbrella), even without
+  // the broad scm.access permission or a bare `scm` row: a Sales Director has
+  // scm.sales=full but scm=none, so opens the hub and sees only their own modules
+  // (owner 2026-07-20). Real pages stay individually gated, so this widens no data.
+  if (area === "scm" && hasAnyScmPageAccess(user)) return <>{children}</>;
   return (
     <Guard perm="scm.access" anyAccess={[area]}>
       {children}
