@@ -208,7 +208,8 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
       );
     });
     const [saved] = await admin`SELECT note, company_id, version FROM scm.mfg_sales_orders WHERE doc_no = 'SO-PG-1'`;
-    expect(saved).toMatchObject({ note: null, company_id: 7, version: 2 });
+    // postgres.js intentionally returns int8 as text to avoid precision loss.
+    expect(saved).toMatchObject({ note: null, company_id: '7', version: 2 });
   });
 
   test('a follower exception rolls back the already-attempted header update', async () => {
