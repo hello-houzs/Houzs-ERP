@@ -262,9 +262,22 @@ async function renderPurchaseOrderInto(
 
   /* "Your Ref No." = the source S/O No.; falls back to the per-line so_doc_no roll-up. */
   const lineSoDocs = [...new Set(items.map((it) => (it.so_doc_no ?? '').trim()).filter(Boolean))];
+  // MRP / bulk-convert POs record their source SO(s) only in the free-text
+  // "From SOs: ..." note (they carry no per-line so_item_id), so the structured
+  // refs above and the per-line roll-up are both empty — fall back to that note
+  // so the source SO still prints. Owner 2026-07-20.
+  const noteSoDocs = (() => {
+    const m = /^\s*From SOs?:\s*(.+)$/i.exec((header.notes ?? '').trim());
+    return m ? m[1].trim() : '';
+  })();
   const yourRef = header.your_ref_no
     ?? header.source_so_doc_no
-    ?? (lineSoDocs.length > 0 ? lineSoDocs.join(', ') : '');
+    ?? (lineSoDocs.length > 0 ? lineSoDocs.join(', ') : noteSoDocs);
+  // When the whole PO traces to exactly ONE source SO (the note lists a single
+  // doc, no comma) a line with no per-line link falls back to it, so the
+  // "Transf. SO" column reads that SO instead of a dash. Multi-SO POs keep the
+  // dash per line (all SOs are already listed in Your Ref No above).
+  const singleSourceSo = (!lineSoDocs.length && noteSoDocs && !noteSoDocs.includes(',')) ? noteSoDocs : '';
 
   y = drawInfoColumns(doc, y,
     {
@@ -369,7 +382,7 @@ async function renderPurchaseOrderInto(
       lineEff ? `Delivery: ${fmtDocDate(lineEff)}` : null,
     ].filter(Boolean) as string[];
     return [
-      it.so_doc_no ?? '—',
+      (it.so_doc_no ?? '').trim() || singleSourceSo || '—',
       supplierCodeFor(it, skuMap),
       // Dedupe consecutive identical segments (description2 often equals the
       // live specs line) so the cell doesn't read the same string twice.

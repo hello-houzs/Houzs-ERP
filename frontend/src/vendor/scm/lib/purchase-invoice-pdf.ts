@@ -21,6 +21,12 @@ type PiHeader = {
   paid_centi: number; notes: string | null;
   supplier_id?: string | null;
   supplier?: { code: string; name: string };
+  // Source PO / GRN this invoice was raised from — the detail endpoint already
+  // embeds them (purchase_order:purchase_orders(po_number), grn:grns(grn_number)).
+  // Optional so older call sites compile; printed as PO Ref / GRN Ref so the
+  // invoice shows which PO/GRN it came from. Owner 2026-07-20.
+  purchase_order?: { po_number: string } | null;
+  grn?: { grn_number: string } | null;
 };
 type PiItem = {
   material_code: string; material_name: string;
@@ -75,6 +81,8 @@ export async function renderPurchaseInvoiceInto(
       title: 'INVOICE DETAILS',
       rows: [
         ['Our PI No', header.invoice_number],
+        ['PO Ref', header.purchase_order?.po_number ?? null],
+        ['GRN Ref', header.grn?.grn_number ?? null],
         ['Supplier Ref', header.supplier_invoice_ref],
         ['Date', fmtDocDate(header.invoice_date)],
         ['Due', header.due_date ? fmtDocDate(header.due_date) : null],

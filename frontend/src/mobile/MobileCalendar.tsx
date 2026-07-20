@@ -5,6 +5,7 @@ import { useAuth } from "../auth/AuthContext";
 import { getHolidaysOn } from "../lib/holidays";
 import { useBranding } from "../hooks/useBranding";
 import { HOUZS_COMPANY_CODE, shortCompanyName } from "../lib/branding";
+import { compareCalendarEvents } from "../lib/calendarSort";
 import "./mobile.css";
 
 /**
@@ -85,6 +86,10 @@ type CalEvent = {
   organizer: string | null;
   status: string | null;
   sub: string | null;
+  // State + venue carried for the shared day-cell sort (compareCalendarEvents);
+  // null on tasks/holidays so they fall after the state-ordered project bars.
+  state: string | null;
+  venue: string | null;
   // Task-only presentation extras, mirroring the desktop task chip: is_overdue
   // reds the bar, project_status colours a status dot, owner_name -> initials.
   overdue?: boolean;
@@ -306,6 +311,8 @@ export function MobileCalendar({
         organizer: p.organizer,
         status: p.status,
         sub: p.venue || p.state || null,
+        state: p.state,
+        venue: p.venue,
       });
     }
     if (showTasks) {
@@ -323,6 +330,8 @@ export function MobileCalendar({
           organizer: t.organizer,
           status: t.status,
           sub: t.project_code || t.project_name || null,
+          state: null,
+          venue: null,
           overdue: t.is_overdue === 1,
           dot: statusColor(t.project_status),
           initials: ownerInitials(t.owner_name),
@@ -356,6 +365,8 @@ export function MobileCalendar({
             organizer: null,
             status: null,
             sub: "Public holiday",
+            state: null,
+            venue: null,
           });
         }
       }
@@ -368,6 +379,17 @@ export function MobileCalendar({
     for (const e of events) {
       const d = dayOf(e.date);
       (map[d] = map[d] || []).push(e);
+    }
+    // Order each day: holidays first (day context), then project fairs by the
+    // shared STATE-first rule (compareCalendarEvents — byte-identical to the
+    // desktop calendar), then tasks. Owner 2026-07-20 mobile/desktop parity:
+    // before this the mobile day cell rendered events in raw API order while
+    // desktop already grouped them, so the two surfaces read differently.
+    const kindRank = (k: CalEvent["kind"]) => (k === "holiday" ? 0 : k === "project" ? 1 : 2);
+    for (const key of Object.keys(map)) {
+      map[Number(key)].sort(
+        (a, b) => kindRank(a.kind) - kindRank(b.kind) || compareCalendarEvents(a, b),
+      );
     }
     return map;
   }, [events]);

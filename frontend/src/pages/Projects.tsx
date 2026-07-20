@@ -54,6 +54,7 @@ import { FilterPills } from "../components/FilterPills";
 import { ProjectMaintenanceView } from "./ProjectMaintenance";
 import { TabStrip } from "../components/TabStrip";
 import { getHolidaysOn } from "../lib/holidays";
+import { compareCalendarEvents } from "../lib/calendarSort";
 import { toCSV, downloadCSV } from "../lib/csv";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
@@ -3297,16 +3298,18 @@ function ProjectsCalendarView() {
         segs.push({ project: p, startCol, endCol, clipLeft, clipRight, lane: 0 });
       }
     }
-    // Longer + earlier first → better greedy packing. Then group events that
-    // share a venue + organizer (different brands) so they stack together
-    // instead of being split apart by another brand's event.
+    // Longer + earlier first → better greedy packing. Then order by STATE
+    // (fixed geographic sequence) and group events that share a venue +
+    // organizer (different brands) so a fair's brands stack together instead
+    // of being split apart, and states stop scattering across the cell.
     segs.sort(
       (a, b) =>
         a.startCol - b.startCol ||
         b.endCol - b.startCol - (a.endCol - a.startCol) ||
-        (a.project.venue || "").localeCompare(b.project.venue || "") ||
-        (a.project.organizer || "").localeCompare(b.project.organizer || "") ||
-        (a.project.brand || "").localeCompare(b.project.brand || "")
+        // State (fixed geographic order, PENANG->JOHOR) -> venue -> organizer
+        // -> brand, shared with the mobile calendar (owner 2026-07-20) so both
+        // surfaces order a day's fairs identically.
+        compareCalendarEvents(a.project, b.project)
     );
     const lanes: WeekSeg[][] = [];
     for (const seg of segs) {
