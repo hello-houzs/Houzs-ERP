@@ -32,8 +32,27 @@ beforeAll(async () => {
   await env.DB.exec(
     env.TEST_BASELINE_SQL.replace(/--.*$/gm, "").replace(/\s+/g, " ").trim(),
   );
+  // Production's D1 runner creates this tracker before applying files. Phase 2
+  // deliberately requires Phase 1 to have soaked for 24 hours, so the clean
+  // test database models that precondition instead of bypassing the SQL gate.
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS _migrations (
+      name TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+  ).run();
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO _migrations (name, applied_at)
+     VALUES ('127_idempotency_principal_company_hash.sql', datetime('now', '-26 hours'))`,
+  ).run();
   // Per-query loop so we can tolerate baseline overlaps mid-file.
   for (const mig of env.TEST_MIGRATIONS) {
+    if (mig.name === "128_idempotency_phase2_constraints.sql") {
+      await env.DB.prepare(
+        `INSERT OR REPLACE INTO app_settings (key, value, updated_at)
+         VALUES ('rollout.idempotency_phase1_worker_live', '{"deployed":true}', datetime('now', '-25 hours'))`,
+      ).run();
+    }
     for (const q of mig.queries) {
       const sql = q.trim();
       if (!sql) continue;
