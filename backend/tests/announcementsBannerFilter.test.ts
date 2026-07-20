@@ -26,11 +26,11 @@ app.route("/api/announcements", announcementRoutes);
 
 const USER = { id: 505, department_id: null, position_id: null, permissions: [] as string[], permissions_set: new Set<string>() };
 
-async function getBanner(includeSystem: boolean) {
+async function getBanner(scope: "" | "human" | "system") {
   state.user = USER;
-  const path = includeSystem
-    ? "/api/announcements/banner"
-    : "/api/announcements/banner?includeSystem=false";
+  const path = scope
+    ? `/api/announcements/banner?scope=${scope}`
+    : "/api/announcements/banner";
   const res = await app.request(path, {}, env as never);
   expect(res.status).toBe(200);
   const body = (await res.json()) as { data?: Array<{ id: string; source?: string | null }> };
@@ -41,7 +41,7 @@ async function getBanner(includeSystem: boolean) {
   };
 }
 
-describe("/api/announcements/banner — includeSystem filter", () => {
+describe("/api/announcements/banner — scope filter", () => {
   beforeAll(async () => {
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS announcements (
@@ -59,7 +59,7 @@ describe("/api/announcements/banner — includeSystem filter", () => {
     ).run();
   });
 
-  test("default feed includes the system notice; includeSystem=false excludes it and bypasses cache", async () => {
+  test("default = all; scope=human is the list (source NULL); scope=system is the bell (source NOT NULL); both bypass cache", async () => {
     const future = new Date(Date.now() + 86_400_000).toISOString();
     // A human post (source NULL) and a system scan notice, both targeting USER.
     await env.DB.prepare(
@@ -71,13 +71,17 @@ describe("/api/announcements/banner — includeSystem filter", () => {
        VALUES ('ann-scan', 'Sales order saved', 'b', 1, ?, ?, 'USER_IDS', '[505]', 'GENERAL', 'scan')`,
     ).bind(future, new Date().toISOString()).run();
 
-    const full = await getBanner(true);
+    const full = await getBanner("");
     expect(full.ids.sort()).toEqual(["ann-human", "ann-scan"]);
 
-    const humanOnly = await getBanner(false);
+    const humanOnly = await getBanner("human");
     expect(humanOnly.ids).toEqual(["ann-human"]);
     expect(humanOnly.sources).toEqual([null]);
-    // The human-only variant is never served from (or written to) the snapshot.
     expect(humanOnly.cache).toBe("bypass");
+
+    const systemOnly = await getBanner("system");
+    expect(systemOnly.ids).toEqual(["ann-scan"]);
+    expect(systemOnly.sources).toEqual(["scan"]);
+    expect(systemOnly.cache).toBe("bypass");
   });
 });

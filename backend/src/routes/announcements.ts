@@ -567,13 +567,15 @@ app.get("/banner", async (c) => {
     return c.json({ success: false, error: "Your session has expired. Please sign in again." }, 401);
   }
 
-  // Mobile's PERSISTENT Announcements list asks for human-authored posts only
-  // (source IS NULL), matching the desktop Announcements page — the system
-  // per-user notices (scan / service_case) do not belong in that list (owner
-  // 2026-07-20). Absent/true keeps the FULL feed so the desktop top-banner
-  // popup and every existing caller are unchanged.
-  const q = (c.req.query("includeSystem") ?? "").toLowerCase();
-  const includeSystem = !(q === "false" || q === "0");
+  // The mobile app splits this feed into two surfaces (owner 2026-07-20): the
+  // PERSISTENT Announcements list asks scope=human (source IS NULL — human posts
+  // only, matching the desktop Announcements page), the notification BELL asks
+  // scope=system (source NOT NULL — the actionable scan / service-case per-user
+  // notices). Absent/other keeps the FULL feed, so the desktop top-banner popup
+  // and every existing caller are unchanged.
+  const scope = (c.req.query("scope") ?? "").toLowerCase();
+  const humanOnly = scope === "human";
+  const systemOnly = scope === "system";
 
   // PER-USER KV snapshot (inbox.ts pattern) — this payload is per-user three
   // times over (own ackedIds, dept/position/user-id targeting, the reader's
@@ -584,10 +586,10 @@ app.get("/banner", async (c) => {
   // 60s TTL matches the frontend's poll and sessionCache's freshness window
   // for role/dept edits. Best-effort: any KV trouble serves the live build.
   const bannerVersion = await configCacheVersion(c.env, "banner");
-  // The human-only variant bypasses the snapshot (the cache key is not keyed on
-  // it) — a cheap live read + in-memory filter; the mobile list polls at 30s.
+  // The filtered variants bypass the snapshot (the cache key is not keyed on the
+  // scope) — a cheap live read + in-memory filter; the mobile surfaces poll at 30s.
   const cacheKey =
-    bannerVersion == null || !includeSystem
+    bannerVersion == null || humanOnly || systemOnly
       ? null
       : bannerCacheKey(bannerVersion, user.id);
   if (cacheKey) {
@@ -608,7 +610,7 @@ app.get("/banner", async (c) => {
     .all<AnnouncementRow>();
   const active = (res.results ?? []).filter(
     (r) =>
-      (includeSystem || !r.source) &&
+      (humanOnly ? !r.source : systemOnly ? !!r.source : true) &&
       isActiveFlag(r.isActive ?? r.is_active ?? null) &&
       notExpired(r.expiresAt ?? r.expires_at ?? null) &&
       companyCanSee(r, allowed) &&

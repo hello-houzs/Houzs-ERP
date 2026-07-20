@@ -399,15 +399,25 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
   const salesDirOnly = isSalesDir && !can("announcements.write");
   const qc = useQueryClient();
 
-  const [view, setView] = useState<"list" | "detail" | "compose">("list");
+  const [view, setView] = useState<"list" | "detail" | "compose" | "notifications">("list");
   const [openId, setOpenId] = useState<string | null>(null);
+  // Which surface the open notice was tapped from, so Detail's back returns there.
+  const [openFrom, setOpenFrom] = useState<"list" | "notifications">("list");
 
   const { data, isLoading, error } = useQuery({
     // Human-authored posts only — the persistent list mirrors the desktop
     // Announcements page (source IS NULL). System scan / service-case notices
     // are excluded here (owner 2026-07-20).
-    queryKey: ["mobile-announcements", "human-only"],
-    queryFn: () => api.get<BannerResponse>("/api/announcements/banner?includeSystem=false"),
+    queryKey: ["mobile-announcements", "human"],
+    queryFn: () => api.get<BannerResponse>("/api/announcements/banner?scope=human"),
+    staleTime: 30_000,
+  });
+  // System notices (scan / service-case) — the ACTIONABLE per-user notices the
+  // list above excludes. Surfaced via the header bell so they still reach phone
+  // users (owner 2026-07-20 B2). Same /banner shape + ack model as the list.
+  const systemQ = useQuery({
+    queryKey: ["mobile-announcements", "system"],
+    queryFn: () => api.get<BannerResponse>("/api/announcements/banner?scope=system"),
     staleTime: 30_000,
   });
 
@@ -453,15 +463,18 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
   };
 
   const list = data?.data ?? [];
-  // acked ids from the banner; locally-acked ids clear the dot without a refetch.
+  const systemList = systemQ.data?.data ?? [];
+  // acked ids from BOTH banners; locally-acked ids clear the dot without a refetch.
   const [localAcked, setLocalAcked] = useState<Set<string>>(new Set());
   const ackedIds = useMemo(() => {
-    const s = new Set<string>(data?.ackedIds ?? []);
+    const s = new Set<string>([...(data?.ackedIds ?? []), ...(systemQ.data?.ackedIds ?? [])]);
     for (const id of localAcked) s.add(id);
     return s;
-  }, [data?.ackedIds, localAcked]);
+  }, [data?.ackedIds, systemQ.data?.ackedIds, localAcked]);
+  // Unread system notices drive the header bell badge.
+  const systemUnread = systemList.reduce((n, a) => (ackedIds.has(a.id) ? n : n + 1), 0);
 
-  const open = list.find((a) => a.id === openId) ?? null;
+  const open = [...list, ...systemList].find((a) => a.id === openId) ?? null;
 
   const markAcked = (id: string) => {
     setLocalAcked((prev) => new Set(prev).add(id));
@@ -489,15 +502,67 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
         companies={companies}
         // Read-receipts for any human notice this user can compose (matches the
         // desktop: a dept/person-targeted notice has a meaningful roster too). A
-        // source='scan' per-user notice is excluded — it's meant for one person,
-        // so "who read it" is meaningless. The Receipts panel hides itself when
-        // the roster can't be loaded (e.g. a Sales Director opening a notice they
-        // didn't author — the backend 404s /:id/acks for non-owners).
-        canReceipts={canCreate && open.source !== "scan"}
+        // system per-user notice (any source — scan / service-case) is excluded:
+        // it targets one person, so "who read it" is meaningless. The Receipts
+        // panel hides itself when the roster can't be loaded (e.g. a Sales
+        // Director opening a notice they didn't author — the backend 404s).
+        canReceipts={canCreate && !open.source}
         acked={ackedIds.has(open.id)}
         onAcked={() => markAcked(open.id)}
-        onBack={() => setView("list")}
+        onBack={() => setView(openFrom)}
       />
+    );
+  }
+
+  // Notification bell surface — the system scan / service-case notices the list
+  // excludes (owner B2). Reuses the same NoticeCard + Detail + ack as the list,
+  // so nothing new is styled; only the source differs (scope=system feed).
+  if (view === "notifications") {
+    return (
+      <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
+        <header className="hdr">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
+            <span onClick={() => setView("list")} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: "#16695f", cursor: "pointer" }}>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+              Announcements
+            </span>
+            <span />
+          </div>
+          <div className="scr-title">Notifications</div>
+        </header>
+        <div className="scroll hz-scroll" style={{ padding: 12, paddingBottom: 120 }}>
+          {systemQ.isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
+          {systemQ.error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load notifications. Pull to retry.</div>}
+          {!systemQ.isLoading && !systemQ.error && (
+            systemList.length > 0 ? (
+              <MobileVirtualList
+                items={systemList}
+                getKey={(a) => a.id}
+                estimateHeight={72}
+                gap={9}
+                renderItem={(a) => (
+                  <NoticeCard
+                    a={a}
+                    unread={!ackedIds.has(a.id)}
+                    lang={lang}
+                    companies={companies}
+                    onOpen={() => {
+                      setOpenId(a.id);
+                      setOpenFrom("notifications");
+                      setView("detail");
+                    }}
+                  />
+                )}
+              />
+            ) : (
+              <div className="empty">
+                <div className="empty-t">You're all caught up</div>
+                <div className="empty-s">New service cases and scan results appear here.</div>
+              </div>
+            )
+          )}
+        </div>
+      </div>
     );
   }
 
@@ -517,12 +582,29 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
               Menu
             </span>
           ) : <span />}
-          {canCreate && (
-            <button onClick={() => setView("compose")} className="tinybtn" style={{ background: "var(--brand)", borderColor: "var(--brand)", color: "#fff", display: "flex", alignItems: "center", gap: 5 }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-              New
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {/* Notification bell — the system scan / service-case notices the list
+                excludes live here so they still reach phone users (owner B2). */}
+            <button
+              onClick={() => setView("notifications")}
+              aria-label={systemUnread > 0 ? `Notifications, ${systemUnread} unread` : "Notifications"}
+              className="tinybtn"
+              style={{ position: "relative", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", padding: "6px 9px" }}
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.7 21a2 2 0 0 1-3.4 0" /></svg>
+              {systemUnread > 0 && (
+                <span style={{ position: "absolute", top: -5, right: -5, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 9, background: "var(--red)", color: "#fff", fontSize: 10, fontWeight: 800, lineHeight: "16px", textAlign: "center", boxSizing: "border-box" }}>
+                  {systemUnread > 9 ? "9+" : systemUnread}
+                </span>
+              )}
             </button>
-          )}
+            {canCreate && (
+              <button onClick={() => setView("compose")} className="tinybtn" style={{ background: "var(--brand)", borderColor: "var(--brand)", color: "#fff", display: "flex", alignItems: "center", gap: 5 }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
+                New
+              </button>
+            )}
+          </div>
         </div>
         <div className="scr-title">Announcements</div>
       </header>
@@ -538,42 +620,19 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
                 getKey={(a) => a.id}
                 estimateHeight={72}
                 gap={9}
-                renderItem={(a) => {
-              const unread = !ackedIds.has(a.id);
-              const na = (a.attachments ?? []).length;
-              const col = catColor(a);
-              return (
-                <button
-                  key={a.id}
-                  onClick={() => {
-                    setOpenId(a.id);
-                    setView("detail");
-                  }}
-                  style={{ display: "flex", alignItems: "flex-start", gap: 11, width: "100%", textAlign: "left", background: "#fff", border: `1px solid ${unread ? "#bcdcd7" : "#e3e6e0"}`, borderRadius: 13, padding: "12px 13px", cursor: "pointer", fontFamily: "inherit" }}
-                >
-                  <span style={{ width: 36, height: 36, flex: "none", borderRadius: 10, background: `${col}1f`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={col} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" /><path d="M16 8a4 4 0 0 1 0 8" /></svg>
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span className="ann-row-title" style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: unread ? 800 : 700, color: "#11140f", lineHeight: 1.25 }}>{localizeAnnouncement(a, lang).title}</span>
-                      {unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "#16695f" }} />}
-                    </span>
-                    <span style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5, flexWrap: "wrap" }}>
-                      <CatChip ann={a} />
-                      <CompanyChip ann={a} companies={companies} />
-                      <span style={{ fontSize: 11, color: "#767b6e" }}>{byLine(a)} · {dm(a.createdAt)}</span>
-                    </span>
-                    {na > 0 && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6, fontSize: 10.5, color: "#9aa093" }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8 12 17a4 4 0 0 1-6-6l9-9a3 3 0 0 1 4 4l-9 9" /></svg>
-                        {na} attachment{na > 1 ? "s" : ""}
-                      </span>
-                    )}
-                  </span>
-                </button>
-              );
-                }}
+                renderItem={(a) => (
+                  <NoticeCard
+                    a={a}
+                    unread={!ackedIds.has(a.id)}
+                    lang={lang}
+                    companies={companies}
+                    onOpen={() => {
+                      setOpenId(a.id);
+                      setOpenFrom("list");
+                      setView("detail");
+                    }}
+                  />
+                )}
               />
             )}
             {!list.length && (
@@ -586,6 +645,54 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
         )}
       </div>
     </div>
+  );
+}
+
+// One notice row — shared by the human LIST and the system-notice bell view so
+// both render identically (owner B2). Lifted verbatim from the list's row: a
+// category-tinted speaker tile, the title + green unread dot, category +
+// company chips + byline, and an attachment count.
+function NoticeCard({
+  a,
+  unread,
+  lang,
+  companies,
+  onOpen,
+}: {
+  a: Announcement;
+  unread: boolean;
+  lang: Parameters<typeof localizeAnnouncement>[1];
+  companies: Company[];
+  onOpen: () => void;
+}) {
+  const na = (a.attachments ?? []).length;
+  const col = catColor(a);
+  return (
+    <button
+      onClick={onOpen}
+      style={{ display: "flex", alignItems: "flex-start", gap: 11, width: "100%", textAlign: "left", background: "#fff", border: `1px solid ${unread ? "#bcdcd7" : "#e3e6e0"}`, borderRadius: 13, padding: "12px 13px", cursor: "pointer", fontFamily: "inherit" }}
+    >
+      <span style={{ width: 36, height: 36, flex: "none", borderRadius: 10, background: `${col}1f`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={col} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" /><path d="M16 8a4 4 0 0 1 0 8" /></svg>
+      </span>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span className="ann-row-title" style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: unread ? 800 : 700, color: "#11140f", lineHeight: 1.25 }}>{localizeAnnouncement(a, lang).title}</span>
+          {unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "#16695f" }} />}
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5, flexWrap: "wrap" }}>
+          <CatChip ann={a} />
+          <CompanyChip ann={a} companies={companies} />
+          <span style={{ fontSize: 11, color: "#767b6e" }}>{byLine(a)} · {dm(a.createdAt)}</span>
+        </span>
+        {na > 0 && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6, fontSize: 10.5, color: "#9aa093" }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8 12 17a4 4 0 0 1-6-6l9-9a3 3 0 0 1 4 4l-9 9" /></svg>
+            {na} attachment{na > 1 ? "s" : ""}
+          </span>
+        )}
+      </span>
+    </button>
   );
 }
 
