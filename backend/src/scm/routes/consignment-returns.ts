@@ -34,7 +34,8 @@ import { warehouseLabel } from '../lib/warehouse-label';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { canViewScmFinance } from '../lib/houzs-perms';
 import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { sourceUnitCostByItemId } from '../lib/source-cost';
@@ -588,7 +589,7 @@ consignmentReturns.get('/returnable-note-lines', async (c) => {
 consignmentReturns.get('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   const [h, i] = await Promise.all([
-    sb.from('consignment_delivery_returns').select(HEADER).eq('id', id).maybeSingle(),
+    scopeToCompany(sb.from('consignment_delivery_returns').select(HEADER).eq('id', id), c).maybeSingle(),
     sb.from('consignment_delivery_return_items').select(ITEM).eq('consignment_delivery_return_id', id).order('created_at'),
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
@@ -707,6 +708,8 @@ consignmentReturns.post('/', async (c) => {
 // ── Header PATCH (editable fields) ─────────────────────────────────────────
 consignmentReturns.patch('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
@@ -739,9 +742,9 @@ consignmentReturns.patch('/:id', async (c) => {
   }
   if (Object.keys(updates).length === 1) return c.json({ ok: true, changed: 0 });
 
-  const { data, error } = await sb.from('consignment_delivery_returns').update(updates).eq('id', id).select('id').maybeSingle();
+  const { data, error } = await scopeToCompanyId(sb.from('consignment_delivery_returns').update(updates).eq('id', id), co.companyId).select('id').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true, id });
 });
 
@@ -761,6 +764,8 @@ async function returnLineLock(sb: any, id: string): Promise<{ error: string; mes
 
 consignmentReturns.post('/:id/items', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!it.itemCode) return c.json({ error: 'item_code_required' }, 400);
@@ -774,8 +779,8 @@ consignmentReturns.post('/:id/items', async (c) => {
     if (!codeCheck.ok) return c.json(unknownItemCodeResponse(codeCheck.unknown), 409);
   }
 
-  const { data: header } = await sb.from('consignment_delivery_returns').select('id').eq('id', id).maybeSingle();
-  if (!header) return c.json({ error: 'not_found' }, 404);
+  const { data: header } = await scopeToCompanyId(sb.from('consignment_delivery_returns').select('id').eq('id', id), co.companyId).maybeSingle();
+  if (!header) return c.json(NOT_THIS_COMPANY, 404);
 
   const row = buildItemRow(id, it, await sourceUnitCostByItemId(
     sb, 'consignment_delivery_order_items', [(it.doItemId ?? it.consignmentDoItemId) as string | undefined],
@@ -793,6 +798,8 @@ consignmentReturns.post('/:id/items', async (c) => {
 
 consignmentReturns.patch('/:id/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const itemId = c.req.param('itemId');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   { const lock = await returnLineLock(sb, id); if (lock) return c.json(lock, 409); }
@@ -803,10 +810,10 @@ consignmentReturns.patch('/:id/items/:itemId', async (c) => {
     if (!codeCheck.ok) return c.json(unknownItemCodeResponse(codeCheck.unknown), 409);
   }
 
-  const { data: prev } = await sb.from('consignment_delivery_return_items')
+  const { data: prev } = await scopeToCompanyId(sb.from('consignment_delivery_return_items')
     .select('qty_returned, unit_price_centi, discount_centi, unit_cost_centi, item_code, item_group, description, uom, variants, notes, condition')
-    .eq('id', itemId).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+    .eq('id', itemId), co.companyId).maybeSingle();
+  if (!prev) return c.json(NOT_THIS_COMPANY, 404);
 
   const qty = (it.qtyReturned ?? it.qty) !== undefined ? Number(it.qtyReturned ?? it.qty) : Number(prev.qty_returned);
   const unitPrice = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
@@ -845,7 +852,7 @@ consignmentReturns.patch('/:id/items/:itemId', async (c) => {
     updates['description2'] = buildVariantSummary(String(effGroup ?? ''), effVariants ?? null) || null;
   }
 
-  const { error } = await sb.from('consignment_delivery_return_items').update(updates).eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('consignment_delivery_return_items').update(updates).eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   await recomputeTotals(sb, id);
   /* Adjust inventory by the qty/variant delta (self-healing resync). Best-effort. */
@@ -855,9 +862,12 @@ consignmentReturns.patch('/:id/items/:itemId', async (c) => {
 
 consignmentReturns.delete('/:id/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const itemId = c.req.param('itemId');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   { const lock = await returnLineLock(sb, id); if (lock) return c.json(lock, 409); }
-  const { error } = await sb.from('consignment_delivery_return_items').delete().eq('id', itemId);
+  const { data: del, error } = await scopeToCompanyId(sb.from('consignment_delivery_return_items').delete().eq('id', itemId), co.companyId).select('id').maybeSingle();
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  if (!del) return c.json(NOT_THIS_COMPANY, 404);
   await recomputeTotals(sb, id);
   /* Give the deleted line's stock back OUT (self-healing resync). Best-effort. */
   try { await resyncReturnInventory(sb, id, c.get('user')?.id ?? null); } catch { /* best-effort */ }
@@ -868,14 +878,16 @@ consignmentReturns.delete('/:id/items/:itemId', async (c) => {
 // A return is RECEIVED on create (the loaner was transferred back already);
 // CANCELLED reverses that transfer (shipping warehouse → consignment warehouse).
 // Other statuses (INSPECTED / REFUNDED / …) stamp their timestamp.
-consignmentReturns.patch('/:id/status', async (c) => {
+export const patchConsignmentReturnStatusHandler = async (c: any) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: { status?: string; inspectionNotes?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
 
-  const { data: cur } = await sb.from('consignment_delivery_returns').select('status').eq('id', id).maybeSingle();
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  const { data: cur } = await scopeToCompanyId(sb.from('consignment_delivery_returns').select('status').eq('id', id), co.companyId).maybeSingle();
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const prevStatus = (cur as { status: string }).status;
   if (body.status === 'CANCELLED' && prevStatus === 'CANCELLED') {
     return c.json({ consignmentReturn: { id, status: 'CANCELLED' } });
@@ -899,15 +911,15 @@ consignmentReturns.patch('/:id/status', async (c) => {
      being non-cancelled so two concurrent cancels can't double-reverse. */
   let data: { id: string; status: string } | null;
   if (body.status === 'CANCELLED') {
-    const { data: updated, error } = await sb.from('consignment_delivery_returns')
-      .update(ts).eq('id', id).neq('status', 'CANCELLED')
+    const { data: updated, error } = await scopeToCompanyId(sb.from('consignment_delivery_returns')
+      .update(ts).eq('id', id).neq('status', 'CANCELLED'), co.companyId)
       .select('id, status').maybeSingle();
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
     if (!updated) return c.json({ consignmentReturn: { id, status: 'CANCELLED' } });
     data = updated as { id: string; status: string };
   } else {
-    const { data: updated, error } = await sb.from('consignment_delivery_returns')
-      .update(ts).eq('id', id).select('id, status').single();
+    const { data: updated, error } = await scopeToCompanyId(sb.from('consignment_delivery_returns')
+      .update(ts).eq('id', id), co.companyId).select('id, status').single();
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
     data = updated as { id: string; status: string };
   }
@@ -919,4 +931,5 @@ consignmentReturns.patch('/:id/status', async (c) => {
   }
 
   return c.json({ consignmentReturn: data });
-});
+};
+consignmentReturns.patch('/:id/status', patchConsignmentReturnStatusHandler);

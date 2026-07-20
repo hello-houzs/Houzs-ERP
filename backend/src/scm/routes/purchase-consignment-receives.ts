@@ -33,7 +33,8 @@ import {
 import { writeMovements, defaultWarehouseId, resolveWarehouseLotCosts } from '../lib/inventory-movements';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { mintMonthlyDocNo } from '../lib/doc-no';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 
 export const purchaseConsignmentReceives = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -582,7 +583,7 @@ purchaseConsignmentReceives.get('/outstanding-order-lines', async (c) => {
 purchaseConsignmentReceives.get('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   const [h, i] = await Promise.all([
-    sb.from('purchase_consignment_receives').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_consignment_order:purchase_consignment_orders(id, pc_number)`).eq('id', id).maybeSingle(),
+    scopeToCompany(sb.from('purchase_consignment_receives').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_consignment_order:purchase_consignment_orders(id, pc_number)`).eq('id', id), c).maybeSingle(),
     sb.from('purchase_consignment_receive_items').select(ITEM).eq('pc_receive_id', id).order('created_at'),
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
@@ -896,8 +897,10 @@ purchaseConsignmentReceives.post('/from-pcos', async (c) => {
 purchaseConsignmentReceives.patch('/:id/post', async (c) => {
   // Kept as a no-op endpoint for backward compat — receives are created POSTED.
   const sb = c.get('supabase'); const id = c.req.param('id');
-  const { data: cur } = await sb.from('purchase_consignment_receives').select('id, status, posted_at').eq('id', id).maybeSingle();
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: cur } = await scopeToCompanyId(sb.from('purchase_consignment_receives').select('id, status, posted_at').eq('id', id), co.companyId).maybeSingle();
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const row = cur as { id: string; status: string; posted_at: string | null };
   if (row.status === 'POSTED') {
     return c.json({ receive: row });
@@ -910,7 +913,7 @@ purchaseConsignmentReceives.patch('/:id/post', async (c) => {
   }
   const res = await postPcReceiveAndRollup(sb, id);
   if (!res.ok) return c.json({ error: 'post_failed', reason: res.reason }, 500);
-  const { data } = await sb.from('purchase_consignment_receives').select('id, status, posted_at').eq('id', id).single();
+  const { data } = await scopeToCompanyId(sb.from('purchase_consignment_receives').select('id, status, posted_at').eq('id', id), co.companyId).single();
   return c.json({ receive: data });
 });
 
@@ -919,18 +922,20 @@ purchaseConsignmentReceives.patch('/:id/post', async (c) => {
    the parent PC Order lines (so this receive's lines drop out and the PC Order
    re-opens). Inventory is reversed too (on-ledger since 2026-06-05): the resync
    drives the booked IN back to zero. */
-purchaseConsignmentReceives.patch('/:id/cancel', async (c) => {
+export const cancelPurchaseConsignmentReceiveHandler = async (c: any) => {
   const id = c.req.param('id');
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: cur, error: readErr } = await sb.from('purchase_consignment_receives')
+  const { data: cur, error: readErr } = await scopeToCompanyId(sb.from('purchase_consignment_receives')
     .select('id, status, receive_number')
-    .eq('id', id).maybeSingle();
+    .eq('id', id), co.companyId).maybeSingle();
   if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const head = cur as { id: string; status: string; receive_number: string };
   if (head.status === 'CANCELLED') {
-    const { data } = await sb.from('purchase_consignment_receives').select(HEADER).eq('id', id).maybeSingle();
+    const { data } = await scopeToCompanyId(sb.from('purchase_consignment_receives').select(HEADER).eq('id', id), co.companyId).maybeSingle();
     return c.json({ receive: data ?? { id, status: 'CANCELLED' } });
   }
 
@@ -948,12 +953,12 @@ purchaseConsignmentReceives.patch('/:id/cancel', async (c) => {
   /* ATOMIC single ACTIVE→CANCELLED transition — two concurrent cancels race on
      the row and only ONE flips it (the other gets no row back → idempotent
      no-op), so the PC Order recount below runs exactly once. */
-  const { data: updRow, error: updErr } = await sb.from('purchase_consignment_receives')
+  const { data: updRow, error: updErr } = await scopeToCompanyId(sb.from('purchase_consignment_receives')
     .update({ status: 'CANCELLED', updated_at: new Date().toISOString() })
-    .eq('id', id).neq('status', 'CANCELLED').select('id').maybeSingle();
+    .eq('id', id), co.companyId).neq('status', 'CANCELLED').select('id').maybeSingle();
   if (updErr) return c.json({ error: 'cancel_failed', reason: updErr.message }, 500);
   if (!updRow) {
-    const { data } = await sb.from('purchase_consignment_receives').select(HEADER).eq('id', id).maybeSingle();
+    const { data } = await scopeToCompanyId(sb.from('purchase_consignment_receives').select(HEADER).eq('id', id), co.companyId).maybeSingle();
     return c.json({ receive: data ?? { id, status: 'CANCELLED' } });
   }
 
@@ -970,9 +975,10 @@ purchaseConsignmentReceives.patch('/:id/cancel', async (c) => {
     await resyncReceiveInventory(sb, id, c.get('user')?.id ?? null);
   } catch (e) { /* eslint-disable-next-line no-console */ console.error('[pc-receive] cancel reversal failed:', e); }
 
-  const { data } = await sb.from('purchase_consignment_receives').select(HEADER).eq('id', id).maybeSingle();
+  const { data } = await scopeToCompanyId(sb.from('purchase_consignment_receives').select(HEADER).eq('id', id), co.companyId).maybeSingle();
   return c.json({ receive: data ?? { id, status: 'CANCELLED' } });
-});
+};
+purchaseConsignmentReceives.patch('/:id/cancel', cancelPurchaseConsignmentReceiveHandler);
 
 /* ════════════════════════════════════════════════════════════════════════
    PC Receive CRUD (PATCH header + line add / edit / delete) — mirrors the GRN
@@ -988,6 +994,8 @@ purchaseConsignmentReceives.patch('/:id', async (c) => {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
   for (const [from, to] of [
@@ -997,8 +1005,9 @@ purchaseConsignmentReceives.patch('/:id', async (c) => {
   ] as const) {
     if (body[from] !== undefined) updates[to] = body[from];
   }
-  const { data, error } = await sb.from('purchase_consignment_receives').update(updates).eq('id', id).select(HEADER).single();
+  const { data, error } = await scopeToCompanyId(sb.from('purchase_consignment_receives').update(updates).eq('id', id), co.companyId).select(HEADER).maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ receive: data });
 });
 
@@ -1011,6 +1020,12 @@ purchaseConsignmentReceives.post('/:id/items', async (c) => {
   if (!it.materialName) return c.json({ error: 'material_name_required' }, 400);
 
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  /* The child is stamped with the active company; the parent it hangs off must
+     be this company's too, or a line lands on another company's PC Receive. */
+  const { data: parent } = await scopeToCompanyId(sb.from('purchase_consignment_receives').select('id').eq('id', receiveId), co.companyId).maybeSingle();
+  if (!parent) return c.json(NOT_THIS_COMPANY, 404);
   // Child-lock: a receive with any downstream PC Return is read-only.
   const childLock = await pcReceiveHasDownstream(sb, receiveId);
   if (childLock) return c.json(childLock, 409);
@@ -1113,15 +1128,17 @@ purchaseConsignmentReceives.patch('/:id/items/:itemId', async (c) => {
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   // Child-lock: a receive with any downstream PC Return is read-only.
   const childLock = await pcReceiveHasDownstream(sb, receiveId);
   if (childLock) return c.json(childLock, 409);
 
-  const { data: prev } = await sb.from('purchase_consignment_receive_items')
+  const { data: prev } = await scopeToCompanyId(sb.from('purchase_consignment_receive_items')
     .select('qty_received, qty_accepted, unit_price_centi, discount_centi, item_group, variants, pc_order_item_id, material_code, material_name')
-    .eq('id', itemId).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+    .eq('id', itemId), co.companyId).maybeSingle();
+  if (!prev) return c.json(NOT_THIS_COMPANY, 404);
 
   const qtyReceived = it.qty !== undefined ? Number(it.qty) : (prev as { qty_received: number }).qty_received;
 
@@ -1175,7 +1192,7 @@ purchaseConsignmentReceives.patch('/:id/items/:itemId', async (c) => {
     updates['description2'] = buildVariantSummary(String(effGroup ?? ''), effVariants ?? null) || null;
   }
 
-  const { error } = await sb.from('purchase_consignment_receive_items').update(updates).eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('purchase_consignment_receive_items').update(updates).eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
 
   await recomputePcReceiveTotals(sb, receiveId);
@@ -1194,23 +1211,22 @@ purchaseConsignmentReceives.patch('/:id/items/:itemId', async (c) => {
 purchaseConsignmentReceives.delete('/:id/items/:itemId', async (c) => {
   const receiveId = c.req.param('id'); const itemId = c.req.param('itemId');
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   // Child-lock: a receive with any downstream PC Return is read-only.
   const childLock = await pcReceiveHasDownstream(sb, receiveId);
   if (childLock) return c.json(childLock, 409);
 
-  const { data: line } = await sb.from('purchase_consignment_receive_items')
-    .select('pc_order_item_id')
-    .eq('id', itemId).maybeSingle();
-
-  const { error } = await sb.from('purchase_consignment_receive_items').delete().eq('id', itemId);
+  /* Scoped delete doubles as the tenancy gate and hands back the line's
+     pc_order_item_id for the PC Order recount below. */
+  const { data: del, error } = await scopeToCompanyId(sb.from('purchase_consignment_receive_items').delete().eq('id', itemId), co.companyId).select('pc_order_item_id').maybeSingle();
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  if (!del) return c.json(NOT_THIS_COMPANY, 404);
 
-  if (line) {
-    const l = line as { pc_order_item_id: string | null };
-    // Recount the PC Order receipt for the removed line's source (best-effort).
-    try { await recomputePcoReceived(sb, [l.pc_order_item_id]); } catch { /* best-effort */ }
-  }
+  const l = del as { pc_order_item_id: string | null };
+  // Recount the PC Order receipt for the removed line's source (best-effort).
+  try { await recomputePcoReceived(sb, [l.pc_order_item_id]); } catch { /* best-effort */ }
 
   await recomputePcReceiveTotals(sb, receiveId);
   // Give the deleted line's stock back OUT (self-healing resync). Best-effort.

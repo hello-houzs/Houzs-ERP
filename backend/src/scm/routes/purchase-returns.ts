@@ -26,7 +26,8 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { recomputePoReceived, resolvePoBatchByItem } from './grns';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import {
   checkStockAvailability,
   shortStockResponse,
@@ -149,9 +150,9 @@ purchaseReturns.get('/', async (c) => {
 purchaseReturns.get('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   const [h, i] = await Promise.all([
-    sb.from('purchase_returns')
+    scopeToCompany(sb.from('purchase_returns')
       .select(`${HEADER}, supplier:suppliers(id, code, name, contact_person, phone, email, address), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number)`)
-      .eq('id', id).maybeSingle(),
+      .eq('id', id), c).maybeSingle(),
     sb.from('purchase_return_items').select(ITEM).eq('purchase_return_id', id).order('created_at'),
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
@@ -889,8 +890,10 @@ purchaseReturns.patch('/:id/post', async (c) => {
      row is already POSTED we 200 without re-writing movements (would
      double-debit inventory). */
   const sb = c.get('supabase'); const id = c.req.param('id');
-  const { data: cur } = await sb.from('purchase_returns').select('id, status, posted_at, return_number, grn_id').eq('id', id).maybeSingle();
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: cur } = await scopeToCompanyId(sb.from('purchase_returns').select('id, status, posted_at, return_number, grn_id').eq('id', id), co.companyId).maybeSingle();
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const row = cur as { id: string; status: string; posted_at: string | null; return_number: string; grn_id: string | null };
   if (row.status === 'POSTED' || row.status === 'COMPLETED') {
     return c.json({ purchaseReturn: row });
@@ -900,8 +903,15 @@ purchaseReturns.patch('/:id/post', async (c) => {
 
 purchaseReturns.patch('/:id/complete', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: { creditNoteRef?: string };
   try { body = (await c.req.json()) as typeof body; } catch { body = {}; }
+
+  /* Tenancy gate BEFORE the state-guarded update, so a same-company return that
+     just isn't POSTED still gets the "not posted" message, not a company miss. */
+  const { data: owned } = await scopeToCompanyId(sb.from('purchase_returns').select('id').eq('id', id), co.companyId).maybeSingle();
+  if (!owned) return c.json(NOT_THIS_COMPANY, 404);
 
   const updates: Record<string, unknown> = {
     status: 'COMPLETED',
@@ -910,8 +920,8 @@ purchaseReturns.patch('/:id/complete', async (c) => {
   };
   if (body.creditNoteRef) updates.credit_note_ref = body.creditNoteRef;
 
-  const { data, error } = await sb.from('purchase_returns').update(updates)
-    .eq('id', id).eq('status', 'POSTED').select('id, status, completed_at').single();
+  const { data, error } = await scopeToCompanyId(sb.from('purchase_returns').update(updates)
+    .eq('id', id), co.companyId).eq('status', 'POSTED').select('id, status, completed_at').single();
   if (error) return c.json({ error: 'complete_failed', reason: error.message }, 500);
   if (!data) return c.json({ error: 'not_posted' }, 409);
   return c.json({ purchaseReturn: data });
@@ -929,16 +939,18 @@ purchaseReturns.patch('/:id/complete', async (c) => {
         create path debited (GRN's warehouse_id, else default).
    Step 2 is best-effort (mirrors writePurchaseReturnMovements / the GRN cancel
    in grns.ts) — a movement failure does not un-cancel the PR. */
-purchaseReturns.patch('/:id/cancel', async (c) => {
+export const cancelPurchaseReturnHandler = async (c: any) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   const user = c.get('user');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   // Read → guard → update → reverse (mirrors the GRN cancel's split).
-  const { data: cur, error: readErr } = await sb.from('purchase_returns')
+  const { data: cur, error: readErr } = await scopeToCompanyId(sb.from('purchase_returns')
     .select('id, status, return_number, grn_id')
-    .eq('id', id).maybeSingle();
+    .eq('id', id), co.companyId).maybeSingle();
   if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
-  if (!cur) return c.json({ error: 'not_found' }, 404);
+  if (!cur) return c.json(NOT_THIS_COMPANY, 404);
   const head = cur as { id: string; status: string; return_number: string; grn_id: string | null };
   if (head.status === 'COMPLETED') return c.json({ error: 'cannot_cancel', message: 'Already completed' }, 409);
   // Idempotent — already cancelled, echo back without re-reversing (would
@@ -950,13 +962,13 @@ purchaseReturns.patch('/:id/cancel', async (c) => {
      the row and only ONE flips it (the other gets no row back → idempotent
      no-op), so the inventory IN reversal + returned_qty release below run
      exactly once, never double-crediting stock. */
-  const { data: updRow, error: updErr } = await sb.from('purchase_returns').update({
+  const { data: updRow, error: updErr } = await scopeToCompanyId(sb.from('purchase_returns').update({
     status: 'CANCELLED', updated_at: new Date().toISOString(),
-  }).eq('id', id).neq('status', 'CANCELLED').neq('status', 'COMPLETED').select('id').maybeSingle();
+  }).eq('id', id), co.companyId).neq('status', 'CANCELLED').neq('status', 'COMPLETED').select('id').maybeSingle();
   if (updErr) return c.json({ error: 'cancel_failed', reason: updErr.message }, 500);
   if (!updRow) {
     // Lost the race (already cancelled) or it became COMPLETED meanwhile.
-    const { data: now } = await sb.from('purchase_returns').select('id, status').eq('id', id).maybeSingle();
+    const { data: now } = await scopeToCompanyId(sb.from('purchase_returns').select('id, status').eq('id', id), co.companyId).maybeSingle();
     const st = (now as { status: string } | null)?.status;
     if (st === 'CANCELLED') return c.json({ purchaseReturn: { id, status: 'CANCELLED' } });
     if (st === 'COMPLETED') return c.json({ error: 'cannot_cancel', message: 'Already completed' }, 409);
@@ -992,7 +1004,8 @@ purchaseReturns.patch('/:id/cancel', async (c) => {
   } catch { /* best-effort */ }
 
   return c.json({ purchaseReturn: { id, status: 'CANCELLED' } });
-});
+};
+purchaseReturns.patch('/:id/cancel', cancelPurchaseReturnHandler);
 
 /* ════════════════════════════════════════════════════════════════════════
    PR PO-clone CRUD (PATCH header + line add / edit / delete) — mirrors the
@@ -1016,8 +1029,11 @@ purchaseReturns.patch('/:id', async (c) => {
     if (body[from] !== undefined) updates[to] = body[from];
   }
   const sb = c.get('supabase');
-  const { data, error } = await sb.from('purchase_returns').update(updates).eq('id', id).select(HEADER).single();
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(sb.from('purchase_returns').update(updates).eq('id', id), co.companyId).select(HEADER).maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ purchaseReturn: data });
 });
 
@@ -1042,6 +1058,12 @@ purchaseReturns.post('/:id/items', async (c) => {
   if (!it.materialName) return c.json({ error: 'material_name_required' }, 400);
 
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  /* The child is stamped with the active company; the parent it hangs off must
+     be this company's too, or a line lands on another company's return. */
+  const { data: parent } = await scopeToCompanyId(sb.from('purchase_returns').select('id').eq('id', prId), co.companyId).maybeSingle();
+  if (!parent) return c.json(NOT_THIS_COMPANY, 404);
   { const lock = await prLineLock(sb, prId); if (lock) return c.json(lock, 409); }
   const qtyReturned = Number(it.qty ?? 1);
   const unitPriceCenti = Number(it.unitPriceCenti ?? 0);
@@ -1160,15 +1182,17 @@ purchaseReturns.patch('/:id/items/:itemId', async (c) => {
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   { const lock = await prLineLock(sb, prId); if (lock) return c.json(lock, 409); }
 
   /* Audit 2026-06-11 M10 — scope the line to THIS PR: a mismatched itemId
      must 404, not edit another PR's line while the GRN release / stock
      movement / recompute run against this one. */
-  const { data: prev } = await sb.from('purchase_return_items')
+  const { data: prev } = await scopeToCompanyId(sb.from('purchase_return_items')
     .select('qty_returned, unit_price_centi, item_group, variants, grn_item_id, material_code, material_name')
-    .eq('id', itemId).eq('purchase_return_id', prId).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+    .eq('id', itemId).eq('purchase_return_id', prId), co.companyId).maybeSingle();
+  if (!prev) return c.json(NOT_THIS_COMPANY, 404);
 
   // The editable quantity is qty_returned.
   const prevQty = (prev as { qty_returned: number }).qty_returned;
@@ -1215,7 +1239,7 @@ purchaseReturns.patch('/:id/items/:itemId', async (c) => {
     }
   }
 
-  const { error } = await sb.from('purchase_return_items').update(updates).eq('id', itemId);
+  const { error } = await scopeToCompanyId(sb.from('purchase_return_items').update(updates).eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   // Apply the consumption delta to the source GRN line (helper clamps to
   // [0, qty_accepted]).
@@ -1255,16 +1279,18 @@ purchaseReturns.patch('/:id/items/:itemId', async (c) => {
 purchaseReturns.delete('/:id/items/:itemId', async (c) => {
   const prId = c.req.param('id'); const itemId = c.req.param('itemId');
   const sb = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   { const lock = await prLineLock(sb, prId); if (lock) return c.json(lock, 409); }
   // Read the line first so we can release its GRN-line consumption on delete.
   // Audit 2026-06-11 M10 — scoped to THIS PR: a mismatched itemId must 404,
   // not delete another PR's line while the GRN release / stock compensation
   // run against this one.
-  const { data: line } = await sb.from('purchase_return_items')
+  const { data: line } = await scopeToCompanyId(sb.from('purchase_return_items')
     .select('qty_returned, grn_item_id, material_code, material_name, item_group, variants')
-    .eq('id', itemId).eq('purchase_return_id', prId).maybeSingle();
-  if (!line) return c.json({ error: 'not_found' }, 404);
-  const { error } = await sb.from('purchase_return_items').delete().eq('id', itemId);
+    .eq('id', itemId).eq('purchase_return_id', prId), co.companyId).maybeSingle();
+  if (!line) return c.json(NOT_THIS_COMPANY, 404);
+  const { error } = await scopeToCompanyId(sb.from('purchase_return_items').delete().eq('id', itemId), co.companyId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   if (line) {
     const l = line as { qty_returned: number; grn_item_id: string | null; material_code: string; material_name: string | null; item_group: string | null; variants: VariantAttrs | null };
