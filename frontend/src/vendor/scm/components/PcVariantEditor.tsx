@@ -1,54 +1,29 @@
 // PcVariantEditor — the single, shared line-item variant editor for the whole
 // Purchase Consignment family (Order / Receive / Return). Built to match the
 // Purchase Order editor exactly: Fabrics + Gaps/Divan/Leg dropdowns for
-// bedframes, Fabrics + Seat Size/Leg for sofas, plus the Special Orders
-// checkbox row. Keeping all three forms on this one component is the whole
-// point — they must never drift apart again.
+// bedframes, Fabrics + Seat Size/Leg for sofas, plus the Special Orders block.
+// Keeping all three forms on this one component is the whole point — they must
+// never drift apart again.
+//
+// Owner 2026-07-20 unification: the Special Orders block is now the ONE shared
+// SpecialOrders editor (checkbox add-ons + per-option choices + Custom / other
+// free text), the SAME component the SO / PO / DO / GRN adopted in #896. It
+// reads + writes the canonical variants.specials ARRAY (+ specialChoices /
+// specialLabels / extraAddonNote), shows the human LABEL (not the raw code),
+// and — on a doc that inherits from a parent — renders read-only with an
+// explicit Override. This replaced the old checkbox-only `SpecialsCheckboxes`
+// that wrote the same array but showed codes and had no choices / custom text.
 //
 // HOUZS VENDOR: only the SalesOrderDetail.module.css import path changed (the
 // CSS is colocated in pages/scm/); the lib + @2990s/shared imports are
 // verbatim (those modules are vendored under vendor/scm/lib + vendor/shared).
 import { useMemo } from 'react';
 import { activeOptions, maintPickerValues, restrictPricedToPool, restrictStringsToPool } from '@2990s/shared';
-import { useSpecialAddons, useModelAllowedOptionsByCode, type MaintenanceConfig } from '../lib/mfg-products-queries';
+import { useSpecialAddons, useModelAllowedOptionsByCode, type MaintenanceConfig, type SpecialAddonRow } from '../lib/mfg-products-queries';
 import { fabricOptionLabel, type FabricTrackingRow } from '../lib/fabric-queries';
 import { sortByNumeric, byText } from '../lib/sort-options';
+import { SpecialOrders } from './SpecialOrders';
 import styles from '../../../pages/scm-v2/SalesOrderDetail.module.css';
-
-const SpecialsCheckboxes = ({
-  pool, picked, onChange,
-}: {
-  pool: Array<{ value: string }> | undefined;
-  picked: string[];
-  onChange: (arr: string[]) => void;
-}) => {
-  if (!pool || pool.length === 0) return null;
-  return (
-    <div style={{ marginTop: 'var(--space-2)' }}>
-      <div style={{
-        fontSize: 'var(--fs-11)', fontWeight: 700, letterSpacing: '0.08em',
-        textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 4,
-      }}>
-        Special Orders
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px' }}>
-        {pool.map((o) => {
-          const on = picked.includes(o.value);
-          return (
-            <label key={o.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-12)', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={on}
-                onChange={() => onChange(on ? picked.filter((x) => x !== o.value) : [...picked, o.value])}
-              />
-              {o.value}
-            </label>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
 
 /* ACTIVE fabrics only (owner spec 2026-06-12, fabric_trackings.is_active) —
  * a line whose saved fabric was later deactivated still shows it. */
@@ -57,6 +32,7 @@ const pickableFabrics = (fabrics: FabricTrackingRow[], current: string): FabricT
 
 export const PcVariantEditor = ({
   category, variants, onChange, fabrics, maint, itemCode,
+  disabled = false, sourceLinked = false, sourceLabel,
 }: {
   category: string;
   variants: Record<string, unknown>;
@@ -67,24 +43,61 @@ export const PcVariantEditor = ({
      variant dropdowns offer ONLY what the Model permits (owner 2026-07-15,
      parity with SoLineCard). Optional: absent/unknown ⇒ no restriction. */
   itemCode?: string;
+  /* Hard lock — the whole document is locked / read-only. Freezes both the
+     variant dropdowns and the Special Orders block. */
+  disabled?: boolean;
+  /* This line inherits from a parent doc (e.g. a receive / return sourced from
+     a Purchase Consignment Order). The dropdowns stay frozen and the Special
+     Orders block renders read-only with an explicit Override, so the parent's
+     special order is carried through, not silently re-entered. A manual line
+     passes false and is directly editable. */
+  sourceLinked?: boolean;
+  /* Parent-doc name for the source-linked banner, e.g. "Purchase Consignment
+     Order". */
+  sourceLabel?: string;
 }) => {
-  const specials = Array.isArray(variants.specials) ? (variants.specials as string[]) : [];
   const allowOpts = useModelAllowedOptionsByCode(itemCode || undefined).data ?? null;
 
   // Specials pool now comes from special_addons (Backend↔POS parity, Loo
   // 2026-06-08), filtered by this line's category — replacing the legacy
-  // maint.specials / maint.sofaSpecials string pools. `code` shares the old
-  // value namespace so saved picks keep matching.
+  // maint.specials / maint.sofaSpecials string pools. The FULL rows feed the
+  // shared SpecialOrders block (owner 2026-07-20) so the label + per-option
+  // choices render; `code` shares the old value namespace so saved picks match.
   const specialAddonsQ = useSpecialAddons();
-  const specialsPool = useMemo(() => {
+  const specialsPool = useMemo<SpecialAddonRow[]>(() => {
     const cat = category === 'bedframe' ? 'BEDFRAME' : category === 'sofa' ? 'SOFA' : null;
     if (!cat) return [];
     return (specialAddonsQ.data ?? [])
       .filter((r) => r.active && r.categories.includes(cat))
       .slice()
-      .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''))
-      .map((r) => ({ value: r.code }));
+      .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''));
   }, [specialAddonsQ.data, category]);
+
+  // SpecialOrders owns the specials / specialChoices / specialLabels / extra*
+  // derive logic and emits ONE patch per action; fan it out onto the line's
+  // variant bag through the existing per-key setter (each parent's setVariant is
+  // a functional setState updater, so sequential writes accumulate safely).
+  const applySpecialsPatch = (patch: Record<string, unknown>) => {
+    for (const [k, v] of Object.entries(patch)) onChange(k, v);
+  };
+
+  // Sourced/locked lines freeze the variant dropdowns (the Special Orders block
+  // manages its own read-only + Override below).
+  const locked = disabled || sourceLinked;
+
+  const specialsBlock = (
+    <SpecialOrders
+      options={specialsPool}
+      variants={variants}
+      onPatch={applySpecialsPatch}
+      /* Consignment is a procurement / cost document (like PO / GRN) — the
+         selling surcharge is not shown or set here. */
+      showPrices={false}
+      disabled={disabled}
+      sourceLinked={sourceLinked}
+      sourceLabel={sourceLabel}
+    />
+  );
 
   if (category === 'bedframe') {
     return (
@@ -95,6 +108,7 @@ export const PcVariantEditor = ({
             <select
               className={styles.fieldSelect}
               value={String(variants.fabricCode ?? '')}
+              disabled={locked}
               onChange={(e) => onChange('fabricCode', e.target.value)}
             >
               <option value="" disabled>Select…</option>
@@ -110,6 +124,7 @@ export const PcVariantEditor = ({
             <select
               className={styles.fieldSelect}
               value={String(variants.gap ?? '')}
+              disabled={locked}
               onChange={(e) => onChange('gap', e.target.value)}
             >
               <option value="" disabled>Select…</option>
@@ -121,6 +136,7 @@ export const PcVariantEditor = ({
             <select
               className={styles.fieldSelect}
               value={String(variants.divanHeight ?? '')}
+              disabled={locked}
               onChange={(e) => onChange('divanHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
@@ -132,6 +148,7 @@ export const PcVariantEditor = ({
             <select
               className={styles.fieldSelect}
               value={String(variants.legHeight ?? '')}
+              disabled={locked}
               onChange={(e) => onChange('legHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
@@ -139,11 +156,7 @@ export const PcVariantEditor = ({
             </select>
           </label>
         </div>
-        <SpecialsCheckboxes
-          pool={specialsPool}
-          picked={specials}
-          onChange={(arr) => onChange('specials', arr)}
-        />
+        {specialsBlock}
       </>
     );
   }
@@ -157,6 +170,7 @@ export const PcVariantEditor = ({
             <select
               className={styles.fieldSelect}
               value={String(variants.fabricCode ?? '')}
+              disabled={locked}
               onChange={(e) => onChange('fabricCode', e.target.value)}
             >
               <option value="" disabled>Select…</option>
@@ -172,6 +186,7 @@ export const PcVariantEditor = ({
             <select
               className={styles.fieldSelect}
               value={String(variants.seatHeight ?? '')}
+              disabled={locked}
               onChange={(e) => onChange('seatHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
@@ -183,6 +198,7 @@ export const PcVariantEditor = ({
             <select
               className={styles.fieldSelect}
               value={String(variants.legHeight ?? '')}
+              disabled={locked}
               onChange={(e) => onChange('legHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
@@ -191,11 +207,7 @@ export const PcVariantEditor = ({
           </label>
           <span />
         </div>
-        <SpecialsCheckboxes
-          pool={specialsPool}
-          picked={specials}
-          onChange={(arr) => onChange('specials', arr)}
-        />
+        {specialsBlock}
       </>
     );
   }

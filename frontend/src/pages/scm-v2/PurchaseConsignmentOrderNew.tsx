@@ -83,43 +83,6 @@ const newLine = (): DraftLine => ({
   variants: {},
 });
 
-/* Special Orders multi-select, mirroring New PO. Writes variants.specials as a
-   string[] so it flows into Description 2 like SO does. */
-const SpecialsCheckboxes = ({
-  pool, picked, onChange,
-}: {
-  pool: Array<{ value: string }> | undefined;
-  picked: string[];
-  onChange: (arr: string[]) => void;
-}) => {
-  if (!pool || pool.length === 0) return null;
-  return (
-    <div style={{ marginTop: 'var(--space-2)' }}>
-      <div style={{
-        fontSize: 'var(--fs-11)', fontWeight: 700, letterSpacing: '0.08em',
-        textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 4,
-      }}>
-        Special Orders
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px' }}>
-        {pool.map((o) => {
-          const on = picked.includes(o.value);
-          return (
-            <label key={o.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-12)', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={on}
-                onChange={() => onChange(on ? picked.filter((x) => x !== o.value) : [...picked, o.value])}
-              />
-              {o.value}
-            </label>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
 export const PurchaseConsignmentOrderNew = () => {
   const navigate = useNavigate();
   const create   = useCreatePurchaseConsignmentOrder();
