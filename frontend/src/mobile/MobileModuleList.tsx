@@ -120,6 +120,11 @@ export type ModuleConfig = {
   variant?: "doc" | "product" | "inventory" | "warehouse" | "mrp" | "person";
   /** Muted `.tnum` sub-line under the card name (spec: "{{doc_no}} · {{date}}"). */
   subline?: (row: any) => string;
+  /** Optional brand chip trailing the doc sub-line. Reuses the neutral status
+   *  pill (`.badge .b-grey`) and sits flex:none so the sub-line text truncates
+   *  before the brand does — the brand stays readable at phone width. Blank →
+   *  no chip. */
+  brand?: (row: any) => string;
   /** Optional third line in --ink2 (items summary / reason). Hidden when blank. */
   note?: (row: any) => string;
   /** Footer-row left meta as [label, value] — value bolded. Hidden when blank. */
@@ -651,6 +656,7 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
   const cancelled = eq(pillStatus, "Cancelled");
   const name = safe(config.primary, row) || "—";
   const sub = config.subline ? safe(config.subline, row) : safe(config.secondary, row);
+  const brandText = config.brand ? safe(config.brand, row) : "";
   const noteLine = config.note ? safe(config.note, row) : "";
 
   // ── person: avatar + name/sub + status badge (drivers / members) ────────────
@@ -742,7 +748,14 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
             <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", flex: 1, minWidth: 0, whiteSpace: "normal" }}>{name}</span>
             {status ? <span style={{ flex: "none" }}><Badge label={status} tone={statusTone} /></span> : null}
           </div>
-          {sub && <div className="tnum" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5 }}>{sub}</div>}
+          {(sub || brandText) && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5 }}>
+              {sub && (
+                <span className="tnum" style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, color: "var(--mut)" }}>{sub}</span>
+              )}
+              {brandText && <span style={{ flex: "none" }}><Badge label={brandText} tone="neutral" /></span>}
+            </div>
+          )}
           {noteLine && <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 6, lineHeight: 1.4 }}>{noteLine}</div>}
           {hasFooter && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: fl ? "space-between" : "flex-end", marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
@@ -1065,7 +1078,11 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     // line, footer "Driver {{name}}" + RM {{total_centi}}. items_summary has no
     // list column → line-count shown in the footer left instead.
     variant: "doc",
-    subline: (r) => join(pick(r, "doNumber", "do_number"), dm(pick(r, "doDate", "do_date"))),
+    subline: (r) => {
+      const so = pick(r, "soDocNo", "so_doc_no");
+      return join(pick(r, "doNumber", "do_number"), dm(pick(r, "doDate", "do_date")), so ? `SO ${so}` : "");
+    },
+    brand: (r) => pick(r, "branding") ?? "",
     footL: (r) => ["Driver", pick(r, "driverName", "driver_name") ?? "—"],
     footR: (r) => pick(r, "localTotalCenti", "local_total_centi"),
     footMoney: true,
@@ -1110,6 +1127,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     // "Balance RM {{balance_centi}}" + RM {{total_centi}} (balance computed).
     variant: "doc",
     subline: (r) => join(pick(r, "invoiceNumber", "invoice_number"), dm(pick(r, "dueDate", "due_date")) !== "—" ? `due ${dm(pick(r, "dueDate", "due_date"))}` : ""),
+    brand: (r) => pick(r, "branding") ?? "",
     footL: (r) => ["Balance", rmField(balanceCenti(r))],
     footR: (r) => pick(r, "totalCenti", "total_centi", "localTotalCenti", "local_total_centi"),
     footMoney: true,
@@ -1156,7 +1174,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     variant: "doc",
     subline: (r) => {
       const po = r.purchase_order?.po_number ?? r.purchaseOrder?.poNumber;
-      return join(pick(r, "grnNumber", "grn_number"), dm(pick(r, "receivedAt", "received_at")), po ? `PO ${po}` : "");
+      const dn = pick(r, "deliveryNoteRef", "delivery_note_ref");
+      return join(pick(r, "grnNumber", "grn_number"), dm(pick(r, "receivedAt", "received_at")), po ? `PO ${po}` : "", dn ? `DN ${dn}` : "");
     },
     fields: [
       [(r) => pick(r, "grnNumber", "grn_number") ?? "—", "GR No"],
@@ -1512,7 +1531,17 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     // Spec #pi-list: name + status, "{{doc_no}} · due {{due_date}}" sub-line,
     // footer "Balance RM {{balance_centi}}" + RM {{total_centi}}.
     variant: "doc",
-    subline: (r) => join(pick(r, "invoiceNumber", "invoice_number"), dm(pick(r, "dueDate", "due_date")) !== "—" ? `due ${dm(pick(r, "dueDate", "due_date"))}` : ""),
+    // PI can carry due + a GRN + a PO — showing all three crams the sub-line at
+    // phone width, so surface the single most-useful source: the GRN it invoices
+    // (the direct 3-way-match basis) when present, else the PO. Both remain on
+    // the detail screen.
+    subline: (r) => {
+      const due = dm(pick(r, "dueDate", "due_date"));
+      const grn = r.grn?.grn_number ?? r.grn?.grnNumber;
+      const po = r.purchase_order?.po_number ?? r.purchaseOrder?.poNumber;
+      const src = grn ? `GRN ${grn}` : po ? `PO ${po}` : "";
+      return join(pick(r, "invoiceNumber", "invoice_number"), due !== "—" ? `due ${due}` : "", src);
+    },
     footL: (r) => ["Balance", rmField(balanceCenti(r))],
     footR: (r) => pick(r, "totalCenti", "total_centi"),
     footMoney: true,
