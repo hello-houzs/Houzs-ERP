@@ -183,7 +183,12 @@
 .hz-m .sheet-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 9px 16px calc(env(safe-area-inset-bottom) + 12px); border-top: 1px solid #e3e6e0; }
 
 /* ---- calendar ---- */
-.hz-m .cal-bar { margin: 2px 5px; padding: 3px 8px; border-radius: 0 4px 4px 0; font-size: 10px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background-color: color-mix(in srgb,var(--bar) 14%,white); color: #111810; box-shadow: inset 3px 0 0 var(--bar); cursor: pointer; }
+.hz-m .cal-bar { display: flex; align-items: center; gap: 5px; margin: 2px 5px; padding: 3px 8px; border-radius: 0 4px 4px 0; font-size: 10px; font-weight: 600; overflow: hidden; background-color: color-mix(in srgb,var(--bar) 14%,white); color: #111810; box-shadow: inset 3px 0 0 var(--bar); cursor: pointer; }
+.hz-m .cal-bar .cal-bar-lbl { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Task project-status dot — the same legend colours used at the top of the screen. */
+.hz-m .cal-bar .cal-bar-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+/* Overdue task — the "cancelled / late" red family (--bar is set to --red in JS). */
+.hz-m .cal-bar.overdue { color: var(--red); }
 /* Search → calendar jump: the tapped project's bar is ring-highlighted so the
    operator can spot it after the jump. */
 .hz-m .cal-bar-focus { background-color: color-mix(in srgb,var(--bar) 28%,white); outline: 2px solid var(--bar); outline-offset: 1px; box-shadow: inset 3px 0 0 var(--bar); animation: cal-bar-pulse 1.1s ease-in-out 2; }
@@ -199,6 +204,10 @@
 /* Today marker — brass filled disc around the day number, mirroring the
    desktop Projects calendar's bg-accent (#a16a2e) today badge. */
 .hz-m .wk .nums div .cal-today-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 4px; margin: -2px 0 0 -3px; border-radius: 999px; background: #a16a2e; color: #fff; font-size: 11px; font-weight: 800; line-height: 1; }
+/* Public-holiday day — reuse the mobile day-sheet holiday palette (#ecedf6
+   surface / #474d79 ink) so the grid marker is the same family as the sheet. */
+.hz-m .wk .nums div.holiday { background: #ecedf6; }
+.hz-m .wk .nums div .cal-hol { display: block; margin: 1px 5px 0 0; font-size: 9px; font-weight: 700; line-height: 1.25; color: #474d79; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hz-m .cal-navbtn { width: 34px; height: 34px; border-radius: 9px; border: 1px solid #d6d9d2; background: #f4f6f3; color: #16695f; font-size: 18px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; }
 .hz-m .cal-today { height: 34px; padding: 0 14px; border-radius: 9px; border: 1px solid #d6d9d2; background: #f4f6f3; color: #414539; font-family: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
 .hz-m .cal-seg { flex: 1; border: none; background: none; font-family: inherit; font-size: 12.5px; font-weight: 700; color: #767b6e; padding: 7px 0; border-radius: 8px; cursor: pointer; }
