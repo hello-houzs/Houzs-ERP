@@ -8546,8 +8546,10 @@ async function planSofaRewardRevert(
    specials); the server reprices it on the SAME authoritative path as SO
    create (per-Model module sell prices + combos + fabric-tier Δ + special
    add-ons, drift-gated for POS callers), splits it into per-module lines
-   (P3) under the OLD buildKey, inserts the new set, then removes the old —
-   so a failure can roll the inserts back without ever losing the build.
+   (P3) under the OLD buildKey, inserts the new set, then removes the old.
+   The edit lease prevents another SO writer from interleaving, but these
+   PostgREST statements are not a database transaction: a mid-command failure
+   may require retry/reconciliation and must never be described as rollback.
    Floor rule: the new build total may not sit below the old one (sales).
    PWP reward sofa builds stay coordinator-only (the reward is combo-bound). */
 mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
@@ -9791,7 +9793,7 @@ mfgSalesOrders.post('/:docNo/payments', async (c) => {
    payment view sum amount_centi) — exactly as the DELETE path relies on — so no
    header recompute is needed here; the amended amount flows straight through. */
 const paymentPatchSchema = z.object({
-  version:           z.number().int().min(1),
+  version:           z.number().int().min(1).optional(),
   paidAt:            z.string().min(1).optional(),
   method:            z.enum(['merchant', 'transfer', 'cash', 'installment']).optional(),
   merchantProvider:  z.string().trim().min(1).optional().nullable(),
@@ -9802,6 +9804,30 @@ const paymentPatchSchema = z.object({
   accountSheet:      z.string().optional().nullable(),
   collectedBy:       z.string().uuid().optional().nullable(),
 });
+
+export type PaymentVersionGuard =
+  | { ok: true; version: number }
+  | { ok: false; status: 409 | 428; body: { error: string; currentVersion: number } };
+
+/** Shared PATCH/DELETE payment CAS contract. Missing is 428, stale is 409. */
+export function paymentVersionGuard(candidate: unknown, currentVersion: number): PaymentVersionGuard {
+  const version = Number(candidate);
+  if (!Number.isInteger(version) || version < 1) {
+    return {
+      ok: false,
+      status: 428,
+      body: { error: 'payment_version_required', currentVersion },
+    };
+  }
+  if (version !== currentVersion) {
+    return {
+      ok: false,
+      status: 409,
+      body: { error: 'payment_version_conflict', currentVersion },
+    };
+  }
+  return { ok: true, version };
+}
 
 mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
@@ -9859,9 +9885,9 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   const parsed = paymentPatchSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400);
   const p = parsed.data;
-  if (p.version !== Number(before.version ?? 1)) {
-    return c.json({ error: 'payment_version_conflict', currentVersion: Number(before.version ?? 1) }, 409);
-  }
+  const versionCheck = paymentVersionGuard(p.version, Number(before.version ?? 1));
+  if (!versionCheck.ok) return c.json(versionCheck.body, versionCheck.status);
+  const expectedPaymentVersion = versionCheck.version;
 
   // Effective (post-edit) method + its scoped sub-fields — mirror recordSoPaymentRow.
   const nextMethod = p.method ?? before.method;
@@ -9966,18 +9992,18 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
       amount_centi:       nextAmount,
       account_sheet:      nextAccountSheet,
       collected_by:       nextCollectedBy,
-      version:             p.version + 1,
+      version:             expectedPaymentVersion + 1,
       updated_at:          new Date().toISOString(),
     })
     .eq('id', id)
     .eq('so_doc_no', docNo)
-    .eq('version', p.version)
+    .eq('version', expectedPaymentVersion)
     .select(`${PAYMENT_COLS}, staff:collected_by ( name )`)
     .maybeSingle();
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
   if (!updated) {
     const { data: latest } = await sb.from('mfg_sales_order_payments').select('version').eq('id', id).maybeSingle();
-    return c.json({ error: 'payment_version_conflict', currentVersion: Number(latest?.version ?? p.version) }, 409);
+    return c.json({ error: 'payment_version_conflict', currentVersion: Number(latest?.version ?? expectedPaymentVersion) }, 409);
   }
 
   /* UPDATE_PAYMENT audit — same ledger + shape as ADD/DELETE, listing only the
@@ -10016,14 +10042,10 @@ mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
   if (!row) return c.json({ error: 'not_found' }, 404);
   const rowTyped = row as { so_doc_no: string; paid_at: string; method: string; amount_centi: number; approval_code: string | null; version: number };
   if (rowTyped.so_doc_no !== docNo) return c.json({ error: 'payment_doc_mismatch' }, 400);
-  const expectedVersion = Number(c.req.query('version'));
   const currentVersion = Number(rowTyped.version ?? 1);
-  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
-    return c.json({ error: 'payment_version_required', currentVersion }, 428);
-  }
-  if (expectedVersion !== currentVersion) {
-    return c.json({ error: 'payment_version_conflict', currentVersion }, 409);
-  }
+  const versionCheck = paymentVersionGuard(c.req.query('version'), currentVersion);
+  if (!versionCheck.ok) return c.json(versionCheck.body, versionCheck.status);
+  const expectedVersion = versionCheck.version;
 
   /* SAME-DAY WINDOW (Owner 2026-07-19) — "删除只有在当天才行。正常情况下，他当天
      key in 的时候，因为还没有 lock 下来，所以当天都可以任意更改." A payment row may

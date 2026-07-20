@@ -7,6 +7,7 @@ import { quickActionAccess } from "../auth/salesAccess";
 import { normalizeJobs, type ScanJobsResp } from "./MobileScan";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { invalidateSoShared } from "./sharedInvalidate";
+import { confirmSoWithFreshVersion } from "./mobile-so-concurrency";
 import { fmtCenti } from "../lib/scm";
 import { resolveSoLocation } from "../lib/soLocation";
 import { formatDate } from "../lib/utils";
@@ -402,10 +403,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
     const failures: string[] = [];
     for (const docNo of docs) {
       try {
-        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/status`, {
-          method: "PATCH",
-          body: JSON.stringify({ status: "CONFIRMED" }),
-        });
+        await confirmSoWithFreshVersion(docNo);
         ok += 1;
       } catch {
         failures.push(docNo);

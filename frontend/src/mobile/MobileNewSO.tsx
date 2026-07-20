@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { authedFetch, parseSaveProblems } from "../vendor/scm/lib/authed-fetch";
+import { runSoVersionedMutation } from "../vendor/scm/lib/so-versioned-mutation";
 import { SaveProblemsList, saveProblemsTitle } from "../vendor/scm/components/SaveProblemsList";
 import { uploadSlipFull } from "../vendor/scm/lib/slip";
 import { useStaff, usePickableStaff } from "../vendor/scm/lib/admin-queries";
@@ -43,6 +44,7 @@ import { useCreateAmendment, type CreateAmendmentLine } from "../vendor/scm/lib/
 import { useCreateMfgSalesOrder } from "../vendor/scm/lib/sales-order-queries";
 import { invalidateSoShared } from "./sharedInvalidate";
 import { mobileLineAddHeaders } from "./mobile-so-line-save";
+import { uploadSoItemPhotoWithLease } from "./mobile-so-concurrency";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import type { MobileScanPrefill } from "./MobileScan";
 import { MobileSkuPicker, type PickedSku } from "./MobileSkuPicker";
@@ -1427,7 +1429,7 @@ export function MobileNewSO({
      itemId (mirrors the desktop pendingPhotoFiles drain). On CREATE we re-fetch
      the items to pair each line's staged files with its minted id (matched by
      item_code + description in order). */
-  async function uploadStagedPhotos(soDocNo: string) {
+  async function uploadStagedPhotos(soDocNo: string, existingLeaseToken?: string | null) {
     const withFiles = lines.filter((l) => l.photoFiles.length > 0);
     if (withFiles.length === 0) return;
     // Resolve each staged line to a saved itemId. In edit mode a persisted line
@@ -1452,18 +1454,22 @@ export function MobileNewSO({
       return null;
     };
     let failed = 0;
-    for (const l of withFiles) {
-      const itemId = resolveId(l);
-      if (!itemId) { failed += l.photoFiles.length; continue; }
-      for (const file of l.photoFiles) {
-        try {
-          const fd = new FormData();
-          fd.append("file", file);
-          await authedFetch(`/mfg-sales-orders/${encodeURIComponent(soDocNo)}/items/${encodeURIComponent(itemId)}/photos`, {
-            method: "POST", body: fd,
-          });
-        } catch { failed += 1; }
+    const uploadUnderLease = async (lease: string) => {
+      for (const l of withFiles) {
+        const itemId = resolveId(l);
+        if (!itemId) { failed += l.photoFiles.length; continue; }
+        for (const file of l.photoFiles) {
+          try {
+            await uploadSoItemPhotoWithLease(soDocNo, itemId, file, lease);
+          } catch { failed += 1; }
+        }
       }
+    };
+    if (existingLeaseToken) {
+      await uploadUnderLease(existingLeaseToken);
+    } else {
+      await runSoVersionedMutation(qc, soDocNo, "mobile-new-so-photo-upload", ({ leaseToken }) =>
+        uploadUnderLease(leaseToken));
     }
     if (failed > 0) {
       void notify({ title: "Some photos didn't upload", body: `${failed} line photo(s) failed to upload. Add them again from the SO detail screen.`, tone: "error" });
@@ -1843,9 +1849,11 @@ export function MobileNewSO({
 
         const liveIds = new Set(lines.map((l) => l.itemId).filter(Boolean));
         const snapById = new Map(origItems.map((s) => [s.id, s]));
+        const hasStagedPhotos = lines.some((line) => line.photoFiles.length > 0);
         const hasDirectLineChanges = !lineEditingBlocked && (
           origItems.some((snap) => !liveIds.has(snap.id))
           || lines.some((l) => !l.itemId || (snapById.get(l.itemId) ? lineChanged(l, snapById.get(l.itemId)!) : true))
+          || hasStagedPhotos
         );
         let leaseToken: string | null = null;
         if (hasDirectLineChanges) {
@@ -1871,7 +1879,7 @@ export function MobileNewSO({
               throw new Error(`${failed} line change(s) did not save. Your edits are still here; try Save again.`);
             }
           }
-          await uploadStagedPhotos(docNo);
+          await uploadStagedPhotos(docNo, leaseToken);
         }
 
         if (hasHeaderChanges(dirtyPatch) || leaseToken) {

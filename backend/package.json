@@ -8,6 +8,7 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit -p .",
     "test": "vitest run",
+    "test:pg": "vitest run --config vitest.pg.config.ts",
     "test:watch": "vitest",
     "db:reset": "wrangler d1 execute autocount-sync --file=./src/db/schema.sql --remote",
     "db:reset:local": "wrangler d1 execute autocount-sync --local --file=./src/db/schema.sql",
