@@ -4,6 +4,7 @@ import { MobileVirtualList } from "./MobileVirtualList";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
+import { useDebouncedValue } from "../vendor/scm/lib/hooks";
 import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
@@ -66,6 +67,14 @@ type Attachment = {
 };
 
 type MailLabel = { id: string; name: string; color: string };
+
+type ThreadsPage = {
+  threads: Thread[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+};
 
 type Message = {
   id: string;
@@ -189,36 +198,131 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
     return m;
   }, [labelCatalog]);
 
-  // Folder -> query params. Drafts have no backend; we short-circuit to [].
-  const params = new URLSearchParams();
-  if (folder === "inbox") params.set("status", "open");
-  else if (folder === "archive") params.set("status", "closed");
-  else if (folder === "starred") params.set("starred", "1");
-  else if (folder === "trash") params.set("status", "trashed");
-  // "sent" and "drafts" fetch status=all (drafts is then rendered empty).
-  if (mailbox !== "all") params.set("mailbox", mailbox);
-  const listUrl = `/api/mail-center/threads${params.toString() ? `?${params.toString()}` : ""}`;
+  // Mobile uses the backend's existing paginated search contract, just like
+  // desktop. The previous bare-array request was capped at 300 rows and then
+  // filtered locally, so mail #301 could never be found from this screen.
+  const LIST_PAGE_SIZE = 50;
+  const debouncedQ = useDebouncedValue(q, 300);
+  const listQuery = useMemo(() => {
+    const params = new URLSearchParams();
+    if (folder === "inbox") params.set("status", "open");
+    else if (folder === "archive") params.set("status", "closed");
+    else if (folder === "starred") params.set("starred", "1");
+    else if (folder === "sent") params.set("sent", "1");
+    else if (folder === "trash") params.set("status", "trashed");
+    if (mailbox !== "all") params.set("mailbox", mailbox);
+    const needle = debouncedQ.trim();
+    if (needle) params.set("q", needle);
+    return params.toString();
+  }, [folder, mailbox, debouncedQ]);
 
-  const {
-    data: threadsRaw,
-    loading,
-    error,
-    reload,
-  } = useQuery<Thread[]>("mail-center-list", () => (folder === "drafts" ? Promise.resolve([]) : api.get(listUrl)), [listUrl, folder]);
+  const [threads, setThreads] = useState<Thread[]>([]);
+  const [threadsQuery, setThreadsQuery] = useState("");
+  const [listTotal, setListTotal] = useState(0);
+  const [listPage, setListPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const listGenerationRef = useRef(0);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
+  const reload = () => setReloadKey((key) => key + 1);
 
-  const threads = useMemo(() => {
-    let rows = threadsRaw ?? [];
-    if (folder === "sent") rows = rows.filter((t) => t.hasOutbound);
-    const needle = q.trim().toLowerCase();
-    if (needle) {
-      rows = rows.filter((t) =>
-        `${t.subject} ${t.counterpartyName} ${t.counterpartyEmail} ${t.lastSnippet}`
-          .toLowerCase()
-          .includes(needle),
-      );
+  useEffect(() => {
+    const generation = ++listGenerationRef.current;
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    setLoadingMore(false);
+    setLoadMoreError(null);
+    if (folder === "drafts") {
+      setThreads([]);
+      setListTotal(0);
+      setHasMore(false);
+      setLoading(false);
+      setError(null);
+      return;
     }
-    return rows;
-  }, [threadsRaw, folder, q]);
+
+    const ctrl = new AbortController();
+    setLoading(true);
+    setError(null);
+    const params = new URLSearchParams(listQuery);
+    params.set("page", "1");
+    params.set("pageSize", String(LIST_PAGE_SIZE));
+    void api
+      .get<ThreadsPage>(`/api/mail-center/threads?${params.toString()}`, {
+        signal: ctrl.signal,
+      })
+      .then((data) => {
+        if (ctrl.signal.aborted || generation !== listGenerationRef.current) return;
+        setThreads(Array.isArray(data.threads) ? data.threads : []);
+        setThreadsQuery(listQuery);
+        setListTotal(Number(data.total ?? 0));
+        setListPage(1);
+        setHasMore(!!data.hasMore);
+      })
+      .catch((reason) => {
+        if (ctrl.signal.aborted || generation !== listGenerationRef.current) return;
+        setThreads([]);
+        setThreadsQuery(listQuery);
+        setListTotal(0);
+        setHasMore(false);
+        setError(reason instanceof Error ? reason.message : "Couldn't load mail.");
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted && generation === listGenerationRef.current) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      ctrl.abort();
+      loadMoreAbortRef.current?.abort();
+    };
+  }, [folder, listQuery, reloadKey]);
+
+  const loadMore = async () => {
+    if (loadingMore || loadMoreAbortRef.current || !hasMore || folder === "drafts") return;
+    const generation = listGenerationRef.current;
+    const ctrl = new AbortController();
+    loadMoreAbortRef.current = ctrl;
+    setLoadingMore(true);
+    setLoadMoreError(null);
+    try {
+      const nextPage = listPage + 1;
+      const params = new URLSearchParams(listQuery);
+      params.set("page", String(nextPage));
+      params.set("pageSize", String(LIST_PAGE_SIZE));
+      const data = await api.get<ThreadsPage>(
+        `/api/mail-center/threads?${params.toString()}`,
+        { signal: ctrl.signal },
+      );
+      if (ctrl.signal.aborted || generation !== listGenerationRef.current) return;
+      setThreads((previous) => [
+        ...previous,
+        ...(Array.isArray(data.threads) ? data.threads : []),
+      ]);
+      setListTotal(Number(data.total ?? 0));
+      setListPage(nextPage);
+      setHasMore(!!data.hasMore);
+    } catch (reason) {
+      if (ctrl.signal.aborted || generation !== listGenerationRef.current) return;
+      setLoadMoreError(reason instanceof Error ? reason.message : "Couldn't load more mail.");
+    } finally {
+      if (loadMoreAbortRef.current === ctrl) {
+        loadMoreAbortRef.current = null;
+        setLoadingMore(false);
+      }
+    }
+  };
+
+  const searching =
+    folder !== "drafts" && q.trim().length > 0 &&
+    (q.trim() !== debouncedQ.trim() || loading);
+  const listBusy =
+    folder !== "drafts" && (loading || searching || threadsQuery !== listQuery);
 
   if (openId) {
     return (
@@ -306,7 +410,13 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search mail &middot; sender &middot; subject"
+            aria-label="Search all mail"
           />
+          {searching && (
+            <span role="status" aria-live="polite" style={{ marginLeft: "auto", fontSize: 10.5, fontWeight: 700, color: "#16695f", whiteSpace: "nowrap" }}>
+              Searching…
+            </span>
+          )}
         </div>
 
         <div className="chips" style={{ display: "flex", gap: 7, overflowX: "auto" }}>
@@ -319,30 +429,50 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
       </header>
 
       <div className="scroll hz-scroll" style={{ padding: "11px 12px" }}>
-        {loading && <Muted>Loading&#8230;</Muted>}
-        {!loading && error && <Muted tone="error">Couldn't load mail. {error}</Muted>}
-        {!loading && !error && folder === "drafts" && (
+        {listBusy && <Muted>{searching ? `Searching for “${q.trim()}”…` : "Loading…"}</Muted>}
+        {!listBusy && error && <Muted tone="error">Couldn't load mail. {error}</Muted>}
+        {!listBusy && !error && folder === "drafts" && (
           <div className="empty">
             <div className="empty-t">No drafts here</div>
             <div className="empty-s">Drafts are kept on the desktop app only.</div>
           </div>
         )}
-        {!loading && !error && folder !== "drafts" && threads.length === 0 && (
+        {!listBusy && !error && folder !== "drafts" && threads.length === 0 && (
           <div className="empty">
             <div className="empty-t">No messages</div>
             <div className="empty-s">{folder === "trash" ? "Trash is empty." : `Nothing in ${folder}.`}</div>
           </div>
         )}
-        {!loading && !error && folder !== "drafts" && threads.length > 0 && (
-          <MobileVirtualList
-            items={threads}
-            getKey={(t) => t.id}
-            estimateHeight={74}
-            gap={8}
-            renderItem={(t) => (
-              <ThreadRow key={t.id} t={t} colorMap={colorMap} onOpen={() => setOpenId(t.id)} />
+        {!listBusy && !error && folder !== "drafts" && threads.length > 0 && (
+          <>
+            <MobileVirtualList
+              items={threads}
+              getKey={(t) => t.id}
+              estimateHeight={74}
+              gap={8}
+              renderItem={(t) => (
+                <ThreadRow key={t.id} t={t} colorMap={colorMap} onOpen={() => setOpenId(t.id)} />
+              )}
+            />
+            {hasMore && (
+              <div style={{ padding: "14px 0 4px", textAlign: "center" }}>
+                <button
+                  type="button"
+                  className="tinybtn"
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                  aria-label={`Load more mail. ${threads.length} of ${listTotal} loaded.`}
+                >
+                  {loadingMore ? "Loading…" : `Load more (${threads.length} of ${listTotal})`}
+                </button>
+              </div>
             )}
-          />
+            {loadMoreError && (
+              <div role="alert" style={{ padding: "10px 12px", textAlign: "center", fontSize: 11.5, color: "var(--red)" }}>
+                Couldn't load more mail. Please try again.
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

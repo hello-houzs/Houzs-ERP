@@ -248,6 +248,32 @@ const DEFAULT_COL_WIDTH = 160;
 const VIRTUAL_ROW_THRESHOLD = 30;
 const VIRTUAL_OVERSCAN = 12;
 const ROW_HEIGHT_ESTIMATE = 33; // px; corrected at runtime by measuring a real row
+const SMALL_VIEWPORT_QUERY = "(max-width: 639px)";
+
+function readSmallViewport(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia?.(SMALL_VIEWPORT_QUERY).matches ?? window.innerWidth < 640;
+}
+
+function useSmallViewport(): boolean {
+  const [small, setSmall] = useState(readSmallViewport);
+
+  useEffect(() => {
+    const media = window.matchMedia?.(SMALL_VIEWPORT_QUERY);
+    const update = () => setSmall(media?.matches ?? window.innerWidth < 640);
+    update();
+
+    if (media?.addEventListener) {
+      media.addEventListener("change", update);
+      return () => media.removeEventListener("change", update);
+    }
+
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  return small;
+}
 
 /**
  * The toolbar search box. Types instantly, tells the page 250ms later.
@@ -370,6 +396,7 @@ export function DataTable<T>({
   groupBy,
   selection,
 }: Props<T>) {
+  const isSmallViewport = useSmallViewport();
   const idKey = tableId || "_";
   const [hiddenList, setHiddenList] = useLocalStorage<string[]>(`dt:hidden:${idKey}`, []);
   // `shownList` lets the user opt-IN to a column that's defaultHidden=true.
@@ -386,6 +413,8 @@ export function DataTable<T>({
     `dt:mview:${idKey}`,
     "cards",
   );
+  const showTable = !isSmallViewport || mobileView === "table";
+  const showMobileCards = isSmallViewport && mobileView === "cards";
   // Per-column user widths (px). Overrides the column's `width` default.
   // Keyed by column key; absent = use the column default. Desktop-only —
   // the mobile card branch ignores widths entirely.
@@ -557,6 +586,30 @@ export function DataTable<T>({
     () => allColumns.filter((c) => c.alwaysVisible || !effectiveHidden.has(c.key)),
     [allColumns, effectiveHidden]
   );
+
+  const mobileColumns = useMemo(() => {
+    const byKey = new Map(visibleColumns.map((column) => [column.key, column]));
+    let primary = visibleColumns[0];
+    if (mobileCard?.primary) primary = byKey.get(mobileCard.primary) ?? primary;
+
+    const cells = mobileCard?.cells
+      ? mobileCard.cells
+          .map((key) => byKey.get(key))
+          .filter((column): column is Column<T> => !!column)
+      : visibleColumns.filter((column) => column.key !== primary?.key);
+
+    const layout = mobileCard?.layout ?? "stack";
+    return {
+      primary,
+      cells,
+      layout,
+      hideLabels: mobileCard?.hideLabels ?? layout === "grid-2",
+      estimateHeight:
+        layout === "grid-2"
+          ? Math.max(88, 58 + Math.ceil(cells.length / 2) * 24)
+          : Math.max(88, 58 + cells.length * 24),
+    };
+  }, [mobileCard, visibleColumns]);
 
   // Render order with pinned columns hoisted to the front. alwaysVisible
   // columns keep their existing front position; pinned-but-not-always
@@ -980,7 +1033,7 @@ export function DataTable<T>({
   // and sticky header behave exactly as before. Row height is measured from a
   // real row so the spacers can't drift (avoids the HOOKKA getTotalSize lag).
   const canVirtualize =
-    !loading && !error && !groupBy && !expandable &&
+    showTable && !loading && !error && !groupBy && !expandable &&
     renderList.length > VIRTUAL_ROW_THRESHOLD;
   const tbodyRef = useRef<HTMLTableSectionElement>(null);
   const rowHeightRef = useRef(ROW_HEIGHT_ESTIMATE);
@@ -1145,13 +1198,9 @@ export function DataTable<T>({
             outer wrapper drops `overflow-hidden` when forced on mobile
             so the rounded corners don't clip the horizontal scroll
             shadow at the right edge. */}
-      <div
-        className={cn(
-          "rounded-lg border border-border bg-surface shadow-stone sm:block sm:overflow-hidden",
-          mobileView === "table" ? "block" : "hidden",
-        )}
-      >
-        <div className="thin-scroll overflow-x-auto">
+      {showTable && (
+        <div className="rounded-lg border border-border bg-surface shadow-stone sm:block sm:overflow-hidden">
+          <div className="thin-scroll overflow-x-auto">
           <table className="w-full border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-10">
               <tr>
@@ -1567,20 +1616,17 @@ export function DataTable<T>({
               )}
             </tbody>
           </table>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── Mobile card list (<sm) ─────────────────────────────
           Same data, stacked-card layout. The first visible column
           becomes the card title; subsequent columns render as
           label/value rows. Skips the row entirely if the user
           intentionally hid the first column. */}
-      <div
-        className={cn(
-          "space-y-2 sm:hidden",
-          mobileView === "table" && "hidden",
-        )}
-      >
+      {showMobileCards && (
+        <div className="space-y-2 sm:hidden">
         {loading && (
           <>
             {[0, 1, 2, 3, 4].map((i) => (
@@ -1612,54 +1658,41 @@ export function DataTable<T>({
           !error &&
           sortedRows &&
           sortedRows.map((row) => {
-            const customClass = getRowClassName?.(row);
-            // Resolve title + cells. When `mobileCard` is unset, fall
-            // back to the legacy shape (first visible column = title,
-            // remainder as labelled rows). When set, honour the
-            // explicit `primary` / `cells` keys.
-            const colByKey = new Map(visibleColumns.map((c) => [c.key, c]));
-            let primaryCol = visibleColumns[0];
-            let cellCols = visibleColumns.slice(1);
-            if (mobileCard) {
-              if (mobileCard.primary) {
-                primaryCol =
-                  colByKey.get(mobileCard.primary) ?? primaryCol;
-              }
-              if (mobileCard.cells) {
-                cellCols = mobileCard.cells
-                  .map((k) => colByKey.get(k))
-                  .filter((c): c is Column<T> => !!c);
-              } else {
-                cellCols = visibleColumns.filter(
-                  (c) => c.key !== primaryCol?.key,
-                );
-              }
-            }
-            const layout = mobileCard?.layout ?? "stack";
-            const hideLabels = mobileCard?.hideLabels ?? layout === "grid-2";
-            return (
-              <div
-                key={getRowKey(row)}
-                onClick={onRowClick ? () => onRowClick(row) : undefined}
-                role={onRowClick ? "button" : undefined}
-                tabIndex={onRowClick ? 0 : undefined}
-                onKeyDown={
-                  onRowClick
-                    ? (e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          onRowClick(row);
+              const customClass = getRowClassName?.(row);
+              const {
+                primary: primaryCol,
+                cells: cellCols,
+                layout,
+                hideLabels,
+              } = mobileColumns;
+              return (
+                <div
+                  key={getRowKey(row)}
+                  data-mobile-card=""
+                  style={{
+                    contentVisibility: "auto",
+                    containIntrinsicSize: `auto ${mobileColumns.estimateHeight}px`,
+                  }}
+                  onClick={onRowClick ? () => onRowClick(row) : undefined}
+                  role={onRowClick ? "button" : undefined}
+                  tabIndex={onRowClick ? 0 : undefined}
+                  onKeyDown={
+                    onRowClick
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onRowClick(row);
+                          }
                         }
-                      }
-                    : undefined
-                }
-                className={cn(
-                  "relative overflow-hidden rounded-lg border border-border bg-surface shadow-stone transition-colors",
-                  onRowClick &&
-                    "cursor-pointer active:bg-primary/15 hover:border-primary/40",
-                  customClass,
-                )}
-              >
+                      : undefined
+                  }
+                  className={cn(
+                    "relative overflow-hidden rounded-lg border border-border bg-surface shadow-stone transition-colors",
+                    onRowClick &&
+                      "cursor-pointer active:bg-primary/15 hover:border-primary/40",
+                    customClass,
+                  )}
+                >
                 {/* Petrol accent rail — subtle anchor on the left edge of a
                     clickable row card, matches the IdeaList card pattern. */}
                 <span className="pointer-events-none absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-primary/0 via-primary/55 to-primary/0" />
@@ -1734,10 +1767,11 @@ export function DataTable<T>({
                     </dl>
                   )}
                 </div>
-              </div>
-            );
-          })}
-      </div>
+                </div>
+              );
+            })}
+        </div>
+      )}
 
       {/* ── Header right-click context menu ──────────────────────
           Portalled to <body> so it escapes the table's overflow clip
