@@ -66,12 +66,6 @@ POST,/api/assr-form-intake/attachments,NO_STATIC_AUTH_GATE,NO_GLOBAL_COMPANY_CON
 POST,/api/assr-form-intake/attachments-by-so,NO_STATIC_AUTH_GATE,NO_GLOBAL_COMPANY_CONTEXT,,,,,YES,MUTATION_INHERITED_ONLY,backend/src/routes/assrFormIntake.ts:242
 GET,/api/assr-form-intake/status-export,NO_STATIC_AUTH_GATE,NO_GLOBAL_COMPANY_CONTEXT,,,,,NO,INHERITED_ONLY,backend/src/routes/assrFormIntake.ts:370
 GET,/api/assr-print/:id,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.read"")",,NO,DECLARED_GATE,backend/src/routes/assr_print.ts:140
-GET,/api/assr/:id{[0-9]+},AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,requireServiceCaseAccess(),,NO,INHERITED_ONLY,backend/src/routes/assr.ts:1396
-PATCH,/api/assr/:id{[0-9]+},AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:1654
-POST,/api/assr/:id{[0-9]+}/mark-opened,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:1741
-POST,/api/assr/:id{[0-9]+}/sales-comment,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,requireServiceCaseAccess(),,YES,MUTATION_INHERITED_ONLY,backend/src/routes/assr.ts:1331
-POST,/api/assr/:id{[0-9]+}/sales-nudge,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,requireServiceCaseAccess(),,YES,MUTATION_INHERITED_ONLY,backend/src/routes/assr.ts:1357
-POST,/api/assr/:id{[0-9]+}/set-creditor,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:931
 POST,/api/assr/:id/approve,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.approve"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:2501
 POST,/api/assr/:id/archive,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.manage"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:1924
 PUT,/api/assr/:id/attachments,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:2813
@@ -97,6 +91,12 @@ DELETE,/api/assr/:id/track-link,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"
 POST,/api/assr/:id/track-link,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:1762
 POST,/api/assr/:id/transition,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:2548
 POST,/api/assr/:id/unarchive,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.manage"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:1934
+GET,/api/assr/:id{[0-9]+},AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,requireServiceCaseAccess(),,NO,INHERITED_ONLY,backend/src/routes/assr.ts:1396
+PATCH,/api/assr/:id{[0-9]+},AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:1654
+POST,/api/assr/:id{[0-9]+}/mark-opened,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:1741
+POST,/api/assr/:id{[0-9]+}/sales-comment,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,requireServiceCaseAccess(),,YES,MUTATION_INHERITED_ONLY,backend/src/routes/assr.ts:1331
+POST,/api/assr/:id{[0-9]+}/sales-nudge,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,requireServiceCaseAccess(),,YES,MUTATION_INHERITED_ONLY,backend/src/routes/assr.ts:1357
+POST,/api/assr/:id{[0-9]+}/set-creditor,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:931
 POST,/api/assr/activity/:actId/archive,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:1985
 POST,/api/assr/attachments/:attId/archive,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:1963
 PATCH,/api/assr/attachments/:attId/visibility,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermission(""service_cases.write"")",,YES,DECLARED_GATE,backend/src/routes/assr.ts:2015

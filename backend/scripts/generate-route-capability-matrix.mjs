@@ -52,6 +52,10 @@ function pathHasPrefix(value, prefix) {
   return value === normalizedPrefix || value.startsWith(`${normalizedPrefix}/`);
 }
 
+function compareCodePoints(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function csv(value) {
   const text = String(value ?? "");
   return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
@@ -500,7 +504,14 @@ if (staleDuplicateAllowlist.length > 0) {
   throw new Error(`Duplicate route allowlist is stale; remove resolved entries:\n${staleDuplicateAllowlist.join("\n")}`);
 }
 
-rows.sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method) || a.source.localeCompare(b.source));
+// Never use localeCompare for a checked-in artifact: Node's ICU locale can
+// differ between Windows development and Ubuntu Actions. JS relational string
+// comparison is defined by UTF-16 code units and is stable across runtimes.
+rows.sort((a, b) =>
+  compareCodePoints(a.path, b.path)
+  || compareCodePoints(a.method, b.method)
+  || compareCodePoints(a.source, b.source)
+);
 const headers = [
   "method",
   "path",
