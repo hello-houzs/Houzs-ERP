@@ -33,6 +33,7 @@ import { fairAllowedStages } from '../../auth/salesAccess';
 import {
   useFairReport,
   useFairReportDetail,
+  fairReportErrorInfo,
   type FairStage,
   type FairFilters,
   type FairDims,
@@ -200,6 +201,9 @@ export const FairReport = () => {
 
   const q = useFairReport(stage, filters, allowed.includes(stage));
   const data = q.data;
+  // A 403 (not in the report's cohort) must not read as a transient "please
+  // retry" — distinguish the permission denial from a load failure.
+  const errorInfo = q.isError ? fairReportErrorInfo(q.error) : null;
 
   // ── accumulate filter options from whatever rows we've loaded ───────────────
   const [opts, setOpts] = useState<OptionMaps>(EMPTY_OPTS);
@@ -353,9 +357,9 @@ export const FairReport = () => {
         </div>
       </div>
 
-      {q.isError && (
+      {errorInfo && (
         <div className="rounded-lg border border-err/40 bg-err/5 px-3 py-2 text-[13px] text-err">
-          Could not load the Sales Report. Please retry.
+          {errorInfo.message}
         </div>
       )}
 

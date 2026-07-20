@@ -260,6 +260,28 @@ export const useFairReport = (stage: FairStage, filters: FairFilters, enabled = 
   });
 };
 
+/**
+ * Interpret a useFairReport / useFairReportDetail failure for display. A 403 is a
+ * PERMISSION denial — the caller is not in the report's cohort (management + Sales
+ * Director), so retrying can never succeed and the operator must be told they lack
+ * access, NOT that a transient load failed. Every other failure (5xx, network,
+ * timeout) IS retryable and keeps the "please retry" wording + a Retry control.
+ *
+ * The HTTP status rides the thrown error as `.status` (authed-fetch stamps it on
+ * every non-OK response). ONE source for both the desktop (FairReport.tsx) and the
+ * mobile (MobileFairReport.tsx) banners so their copy cannot drift.
+ */
+export function fairReportErrorInfo(error: unknown): { denied: boolean; message: string } {
+  const status = (error as { status?: number } | null | undefined)?.status;
+  if (status === 403) {
+    return {
+      denied: true,
+      message: 'You do not have access to the Sales Report. Ask an administrator if you need it.',
+    };
+  }
+  return { denied: false, message: 'Could not load the Sales Report. Please retry.' };
+}
+
 // ── per-order detail (quick-view drawer) ─────────────────────────────────────
 export type FairDetailLine = {
   item_code: string | null;
