@@ -237,8 +237,17 @@ export function canOperateSalesInvoices(
  * FOLDED: the PERMISSION half (was `project_finance_viewer`) now reads the
  * server-resolved `scm.finance.view` capability (backend isFinanceViewer — the
  * same function `project_finance_viewer` was computed from, so same cohort), which
- * fails CLOSED on an unresolved capability set. The display switch stays here on
- * the FE because it is a build-time toggle, not a per-user permission.
+ * fails CLOSED on an unresolved capability set.
+ *
+ * THE DISPLAY SWITCH IS NOW BACKEND-AUTHORITATIVE (fix/cost-display-backend-gate).
+ * The env var COSTING_DISPLAY_ENABLED (backend scm/lib/costing-enabled) is ANDed
+ * into BOTH canViewScmFinance (which strips cost/margin from the wire) AND the
+ * `scm.finance.view` capability this reads — so when it is off the capability is
+ * already false here and the columns vanish, in lock-step with the server omitting
+ * the fields. The FE `COSTING_DISPLAY_ENABLED` const stays as a build-time
+ * defence-in-depth term: it can only hide MORE, never re-show cost the server
+ * withheld. One switch, both sides — that is what closed the two-rule split where
+ * this const blanked the column while the backend still shipped the numbers.
  *
  * Callers must make the element ABSENT, not blank it ("off, not hide").
  */

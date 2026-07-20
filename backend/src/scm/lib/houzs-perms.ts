@@ -21,6 +21,7 @@ import {
   isProductCostViewer,
 } from '../../services/pmsAccess';
 import { userCanWriteScmConfig } from '../../services/positionPolicy';
+import { isCostingDisplayEnabled, type CostingDisplayEnv } from './costing-enabled';
 import type { AuthUser } from '../../services/auth';
 import type { Env, Variables } from '../env';
 
@@ -29,6 +30,14 @@ import type { Env, Variables } from '../env';
    core runs headless for the background scan job with a synthetic context).
    Only `get('houzsUser')` is required; nothing else on the context is read. */
 type HouzsUserSource = { get(key: 'houzsUser'): Variables['houzsUser'] };
+
+/* canViewScmFinance ALSO reads the cost/margin DISPLAY switch off the worker
+   env, so its source is HouzsUserSource PLUS `env`. Kept as its own type rather
+   than widening HouzsUserSource — the headless SoCreateContext satisfies that
+   base type and reads nothing but get('houzsUser'), and only this one gate takes
+   on the env dependency. Every canViewScmFinance call site passes the real Hono
+   context, which carries both `get` and `env`. */
+type FinanceViewSource = HouzsUserSource & { env: CostingDisplayEnv };
 
 /** Read the REAL Houzs caller's granted permissions (Set fast path, array
  *  fallback). Returns an empty array when the bridge has not stashed them
@@ -118,8 +127,20 @@ export function isSalesCaller(c: HouzsUserSource): boolean {
  * Houzs caller stashed on `houzsUser`. isFinanceViewer only reads position_name
  * + permissions_set (its ProjectLike is pic_id:null, so sales resolve to SALES,
  * never DIRECTOR), which are exactly the fields middleware/auth.ts mirrors here.
+ *
+ * GLOBAL DISPLAY SWITCH (added fix/cost-display-backend-gate). The cost/margin
+ * DISPLAY toggle (env COSTING_DISPLAY_ENABLED, via lib/costing-enabled) is ANDed
+ * in AHEAD of the position check: when it is OFF this returns false for EVERYONE
+ * — finance viewers included — so every finance-gated response strips cost/margin
+ * for all roles. This is the missing backend half of the FE's build-time
+ * COSTING_DISPLAY_ENABLED (frontend salesAccess.canViewScmCosting), which until
+ * now hid only the FE column while the wire still shipped the numbers. It does
+ * NOT touch WHO is a finance viewer (isFinanceViewer is unchanged) — it is a
+ * global on/off layered on top. ON (the current prod state) is a no-op: the
+ * behaviour below is exactly what it was.
  */
-export function canViewScmFinance(c: HouzsUserSource): boolean {
+export function canViewScmFinance(c: FinanceViewSource): boolean {
+  if (!isCostingDisplayEnabled(c.env)) return false;
   const hu = c.get('houzsUser');
   if (!hu) return false;
   return isFinanceViewer({

@@ -21,6 +21,17 @@ AUTOCOUNT_API_URL = "https://it-houzs.dev/"
 # outbound writes stay OFF (AUTOCOUNT_WRITES_DISABLED, autocount.ts) — this
 # only re-opens reads from AutoCount, not writes back to it.
 AUTOCOUNT_SYNC_DISABLED = "false"
+# Cost/margin DISPLAY switch. "true" (or absent) = ON — the current prod state,
+# cost/margin reach finance viewers on SCM sales documents exactly as before.
+# "false" = OFF: canViewScmFinance returns false for EVERYONE, so every
+# sales-document response STRIPS cost/margin, and the scm.finance.view capability
+# is dropped so the frontend hides the columns too (no "RM undefined"). This is
+# the AUTHORITATIVE switch — it mirrors the frontend build-time
+# COSTING_DISPLAY_ENABLED and, unlike it, actually withholds cost from the wire.
+# Does NOT gate SKU product cost (cost_price_sen — its own scm.productCost.view
+# path), by design. Flip to "false" + redeploy to hide; parsed by
+# scm/lib/costing-enabled.isCostingDisplayEnabled.
+COSTING_DISPLAY_ENABLED = "true"
 # Public origin used to build email links (survey, portal, supplier invite,
 # member invitations, password resets). The canonical user-facing domain —
 # pages.dev still serves, but every link we hand out reads this.
@@ -183,6 +194,10 @@ compatibility_flags = ["nodejs_compat"]
 [env.staging.vars]
 AUTOCOUNT_API_URL = "https://it-houzs.dev/"
 AUTOCOUNT_SYNC_DISABLED = "true"
+# Cost/margin DISPLAY switch — ON in staging too (mirrors prod). See the prod
+# [vars] block for what "false" does. Set "false" here to rehearse the hidden
+# state before flipping prod.
+COSTING_DISPLAY_ENABLED = "true"
 PUBLIC_APP_URL = "https://houzs-erp-staging.pages.dev"
 EMAIL_FROM = "Houzs ERP Staging <no-reply@houzscentury.com>"
 EMAIL_REPLY_TO = "Houzs Century <hello@houzscentury.com>"

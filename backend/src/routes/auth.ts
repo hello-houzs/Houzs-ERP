@@ -14,6 +14,7 @@ import { bustUserSessions } from "../services/sessionCache";
 import { isFinanceViewer, isProductCostViewer } from "../services/pmsAccess";
 import { userCanWriteScmConfig } from "../services/positionPolicy";
 import { resolveCapabilities } from "../services/capabilities";
+import { isCostingDisplayEnabled } from "../scm/lib/costing-enabled";
 import { sendEmail, publicUrl, resetEmailHtml, inviteEmailHtml, erpProductName } from "../services/email";
 import { getBrandingForCompany } from "../services/branding";
 import { defaultCompanyCodeForHost } from "../middleware/companyContext";
@@ -570,8 +571,13 @@ app.get("/me", async (c) => {
         // The service identity is a wildcard holder, so it resolves through the
         // SAME registry rather than being handed a hand-written answer — a
         // second, hand-maintained capability map for one caller is the drift
-        // this file exists to stop.
-        capabilities: resolveCapabilities({ permissions: ["*"] }),
+        // this file exists to stop. The cost/margin DISPLAY switch is applied to
+        // this caller too — it is GLOBAL, so even the wildcard service loses
+        // scm.finance.view when costing display is turned off.
+        capabilities: resolveCapabilities(
+          { permissions: ["*"] },
+          { costingDisplayEnabled: isCostingDisplayEnabled(c.env) },
+        ),
       },
     });
   }
@@ -619,7 +625,14 @@ app.get("/me", async (c) => {
       // the API would have accepted their edits. Third flag on this response for
       // the third time the FE and BE drifted by exactly one rule.
       scm_config_writer: userCanWriteScmConfig(user),
-      capabilities: resolveCapabilities(user),
+      // costingDisplayEnabled: the GLOBAL cost/margin DISPLAY switch (env
+      // COSTING_DISPLAY_ENABLED). Passed here so scm.finance.view is dropped for
+      // EVERYONE when display is off — the FE reads that capability and hides the
+      // cost/margin columns, matching canViewScmFinance stripping the fields from
+      // every SCM sales-document response. One switch, both sides of the wire.
+      capabilities: resolveCapabilities(user, {
+        costingDisplayEnabled: isCostingDisplayEnabled(c.env),
+      }),
     },
   });
 });
