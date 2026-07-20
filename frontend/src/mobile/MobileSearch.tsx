@@ -147,7 +147,7 @@ export function MobileSearch({
       <div className="scroll" style={{ padding: 12, paddingBottom: 40 }}>
         {term.length === 0 && (
           <div style={{ padding: "40px 16px", textAlign: "center", color: "var(--mut2)", fontSize: 12.5 }}>
-            Type at least 2 characters to search across sales orders, projects, service cases, products and people.
+            Start typing to search across sales orders, projects, service cases, products and people.
           </div>
         )}
         {term.length > 0 && term.length < GLOBAL_SEARCH_MIN_LENGTH && (

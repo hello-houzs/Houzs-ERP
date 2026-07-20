@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 
-export const GLOBAL_SEARCH_MIN_LENGTH = 2;
+// Owner UX contract: the first character starts a real server search. The UI
+// enters the searching state immediately; the short debounce only coalesces
+// network traffic and never asks the operator to type a second character.
+export const GLOBAL_SEARCH_MIN_LENGTH = 1;
 export const GLOBAL_SEARCH_DEBOUNCE_MS = 250;
 
 export type SearchHitType =

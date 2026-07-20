@@ -47,7 +47,7 @@ describe("GlobalSearch", () => {
     vi.useRealTimers();
   });
 
-  it("keeps one-character UX honest and follows visual order for keyboard navigation", async () => {
+  it("searches from the first character and follows visual order for keyboard navigation", async () => {
     apiGet.mockResolvedValue({
       hits: [
         { type: "project", id: 1, title: "A1 Project", link: "/projects/1" },
@@ -65,13 +65,14 @@ describe("GlobalSearch", () => {
     expect(document.activeElement).toBe(input);
 
     fireEvent.change(input, { target: { value: "A" } });
-    expect(screen.getByRole("status").textContent).toContain("Type 1 more character");
-    await act(async () => vi.advanceTimersByTime(500));
-    expect(apiGet).not.toHaveBeenCalled();
+    expect(screen.getByRole("status").textContent).toContain("Searching for");
+    await finishDebounce();
+    expect(apiGet).toHaveBeenCalledWith("/api/search?q=A", expect.any(Object));
 
     fireEvent.change(input, { target: { value: "A1" } });
     expect(screen.getByRole("status").textContent).toContain("Searching for “A1”");
     await finishDebounce();
+    expect(apiGet).toHaveBeenLastCalledWith("/api/search?q=A1", expect.any(Object));
 
     const listbox = screen.getByRole("listbox", { name: "Search results" });
     const options = within(listbox).getAllByRole("option");
