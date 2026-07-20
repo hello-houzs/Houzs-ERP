@@ -450,9 +450,36 @@ export function DataTable<T>({
   // Per-column user widths (px). Overrides the column's `width` default.
   // Keyed by column key; absent = use the column default. Desktop-only —
   // the mobile card branch ignores widths entirely.
-  const [widths, setWidths] = useLocalStorage<Record<string, number>>(
-    `dt:widths:${idKey}`,
+  const widthStorageKey = `dt:widths:${idKey}`;
+  const [storedWidths, setStoredWidths] = useLocalStorage<Record<string, number>>(
+    widthStorageKey,
     {},
+  );
+  // Column resizing needs live state for immediate visual feedback, but
+  // localStorage is synchronous. Keep the drag width in memory and commit the
+  // final layout only when the gesture ends (matching DataGrid's behaviour).
+  const [widths, setWidths] = useState<Record<string, number>>(storedWidths);
+  const widthsRef = useRef(widths);
+  useEffect(() => {
+    widthsRef.current = storedWidths;
+    setWidths(storedWidths);
+  }, [storedWidths]);
+  const updateWidths = useCallback(
+    (
+      nextOrUpdater:
+        | Record<string, number>
+        | ((prev: Record<string, number>) => Record<string, number>),
+      persist: boolean,
+    ) => {
+      const next =
+        typeof nextOrUpdater === "function"
+          ? nextOrUpdater(widthsRef.current)
+          : nextOrUpdater;
+      widthsRef.current = next;
+      setWidths(next);
+      if (persist) setStoredWidths(next);
+    },
+    [setStoredWidths],
   );
   // Pinned (frozen-left) column keys. Pinned columns render at the front
   // (after any alwaysVisible columns) and stick during horizontal scroll.
@@ -738,7 +765,7 @@ export function DataTable<T>({
     // clean default layout (no orphaned per-column sizes or frozen columns
     // left pointing at a now-rearranged set).
     setOrder([]);
-    setWidths({});
+    updateWidths({}, true);
     setPinned([]);
   }
 
@@ -751,40 +778,71 @@ export function DataTable<T>({
   const resizeRef = useRef<{ key: string; startX: number; startW: number } | null>(
     null
   );
+  const endResizeRef = useRef<((persistDirectly?: boolean) => void) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      // A route change can unmount the table before mouseup. React state
+      // updates made from an unmount cleanup do not reach useLocalStorage's
+      // persistence effect, so write the last in-memory width directly.
+      endResizeRef.current?.(true);
+    };
+  }, [widthStorageKey]);
 
   function onResizeStart(e: React.MouseEvent, col: Column<T>) {
     e.preventDefault();
     e.stopPropagation();
-    resizeRef.current = {
+    // End an interrupted gesture before replacing its listener closures.
+    endResizeRef.current?.();
+    const gesture = {
       key: col.key,
       startX: e.clientX,
       startW: resolveWidth(col),
     };
+    resizeRef.current = gesture;
     const onMove = (ev: MouseEvent) => {
       const r = resizeRef.current;
-      if (!r) return;
+      if (r !== gesture) return;
       const next = Math.max(MIN_COL_WIDTH, r.startW + (ev.clientX - r.startX));
-      setWidths((prev) => ({ ...prev, [r.key]: next }));
+      updateWidths((prev) => ({ ...prev, [r.key]: next }), false);
     };
-    const onUp = () => {
+    const onUp = () => finish();
+    const onBlur = () => finish();
+    const finish = (persistDirectly = false) => {
+      if (resizeRef.current !== gesture) return;
+      // Persist once, after the last visual update. Never write synchronous
+      // storage from mousemove: that path runs at pointer-frame frequency.
       resizeRef.current = null;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onBlur);
+      if (endResizeRef.current === finish) endResizeRef.current = null;
+      if (persistDirectly) {
+        try {
+          localStorage.setItem(widthStorageKey, JSON.stringify(widthsRef.current));
+        } catch {
+          // quota / privacy mode — match useLocalStorage's best-effort policy
+        }
+      } else {
+        setStoredWidths(widthsRef.current);
+      }
     };
+    endResizeRef.current = finish;
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onBlur);
   }
 
   // Auto-fit = clear the stored width so the column falls back to its
   // natural / default size. (We don't measure the DOM; clearing is the
   // predictable, persistence-friendly behaviour.)
   function autoFitColumn(key: string) {
-    setWidths((prev) => {
+    updateWidths((prev) => {
       if (!(key in prev)) return prev;
       const next = { ...prev };
       delete next[key];
       return next;
-    });
+    }, true);
   }
 
   // ── Pin / freeze (left) ────────────────────────────────────

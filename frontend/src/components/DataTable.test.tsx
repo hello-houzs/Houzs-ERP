@@ -112,6 +112,10 @@ describe("DataTable responsive rendering", () => {
   it("keeps the DOM bounded and reaches the final row in a 10,000-row dataset", () => {
     setViewport(1280);
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    const rowHeight = 33;
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.matches("tr[data-vrow]") ? rowHeight : 0;
+    });
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       frames.push(callback);
@@ -131,19 +135,28 @@ describe("DataTable responsive rendering", () => {
     expect(screen.queryByText("Order 10000")).toBeNull();
 
     const body = container.querySelector("tbody")!;
+    const virtualContentHeight = () =>
+      [...body.children].reduce((total, child) => {
+        const row = child as HTMLTableRowElement;
+        if (row.hasAttribute("data-vrow")) return total + row.offsetHeight;
+        return total + Number.parseFloat(row.querySelector<HTMLElement>("td")?.style.height || "0");
+      }, 0);
+    expect(virtualContentHeight()).toBe(largeRows.length * rowHeight);
     let top = 0;
     vi.spyOn(body, "getBoundingClientRect").mockImplementation(() => ({
       top,
-      bottom: top + 330_000,
+      bottom: top + virtualContentHeight(),
       left: 0,
       right: 1000,
       width: 1000,
-      height: 330_000,
+      height: virtualContentHeight(),
       x: 0,
       y: top,
       toJSON: () => ({}),
     }));
-    top = -329_200;
+    const maxScrollTop = virtualContentHeight() - window.innerHeight;
+    expect(maxScrollTop).toBeGreaterThan(0);
+    top = -maxScrollTop;
     act(() => {
       window.dispatchEvent(new Event("scroll"));
       frames.splice(0).forEach((frame) => frame(0));
@@ -152,6 +165,121 @@ describe("DataTable responsive rendering", () => {
     expect(screen.getByText("Order 10000")).toBeTruthy();
     expect(screen.queryByText("Order 1")).toBeNull();
     expect(container.querySelectorAll("tr[data-vrow]").length).toBeLessThanOrEqual(60);
+    expect(virtualContentHeight()).toBe(largeRows.length * rowHeight);
+  });
+});
+
+describe("DataTable column width persistence", () => {
+  it("updates the drag width live without writing storage, then persists once on mouseup", () => {
+    setViewport(1280);
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    render(
+      <DataTable
+        tableId="resize-persistence"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+      />,
+    );
+
+    // Ignore the preference hooks' initial mount writes; this assertion is
+    // specifically about writes caused by the resize gesture.
+    setItem.mockClear();
+    const handle = screen.getAllByRole("separator", { name: "Resize column" })[0];
+
+    fireEvent.mouseDown(handle, { clientX: 100 });
+    fireEvent.mouseMove(window, { clientX: 140 });
+
+    expect(handle.parentElement?.style.width).toBe("200px");
+    expect(setItem.mock.calls.filter(([key]) => key === "dt:widths:resize-persistence")).toHaveLength(0);
+
+    fireEvent.mouseUp(window);
+
+    const widthWrites = setItem.mock.calls.filter(
+      ([key]) => key === "dt:widths:resize-persistence",
+    );
+    expect(widthWrites).toHaveLength(1);
+    expect(JSON.parse(String(widthWrites[0]?.[1]))).toEqual({ name: 200 });
+  });
+
+  it("persists the final width and detaches drag listeners when the window blurs", () => {
+    setViewport(1280);
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const removeEventListener = vi.spyOn(window, "removeEventListener");
+
+    render(
+      <DataTable
+        tableId="resize-blur"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+      />,
+    );
+
+    setItem.mockClear();
+    removeEventListener.mockClear();
+    const handle = screen.getAllByRole("separator", { name: "Resize column" })[0];
+
+    fireEvent.mouseDown(handle, { clientX: 100 });
+    fireEvent.mouseMove(window, { clientX: 130 });
+    fireEvent(window, new Event("blur"));
+
+    const widthWrites = setItem.mock.calls.filter(([key]) => key === "dt:widths:resize-blur");
+    expect(widthWrites).toHaveLength(1);
+    expect(JSON.parse(String(widthWrites[0]?.[1]))).toEqual({ name: 190 });
+    expect(removeEventListener.mock.calls.some(([type]) => type === "mousemove")).toBe(true);
+    expect(removeEventListener.mock.calls.some(([type]) => type === "mouseup")).toBe(true);
+    expect(removeEventListener.mock.calls.some(([type]) => type === "blur")).toBe(true);
+
+    fireEvent.mouseMove(window, { clientX: 180 });
+    fireEvent.mouseUp(window);
+    expect(handle.parentElement?.style.width).toBe("190px");
+    expect(setItem.mock.calls.filter(([key]) => key === "dt:widths:resize-blur")).toHaveLength(1);
+  });
+
+  it("cleans up an active drag on unmount and directly persists its last width", () => {
+    setViewport(1280);
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const addEventListener = vi.spyOn(window, "addEventListener");
+    const removeEventListener = vi.spyOn(window, "removeEventListener");
+
+    const { unmount } = render(
+      <DataTable
+        tableId="resize-unmount"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+      />,
+    );
+
+    setItem.mockClear();
+    addEventListener.mockClear();
+    removeEventListener.mockClear();
+    const handle = screen.getAllByRole("separator", { name: "Resize column" })[0];
+    fireEvent.mouseDown(handle, { clientX: 100 });
+    fireEvent.mouseMove(window, { clientX: 150 });
+
+    const dragListeners = new Map(
+      addEventListener.mock.calls
+        .filter(([type]) => type === "mousemove" || type === "mouseup" || type === "blur")
+        .map(([type, listener]) => [type, listener]),
+    );
+    expect([...dragListeners.keys()].sort()).toEqual(["blur", "mousemove", "mouseup"]);
+
+    unmount();
+
+    for (const [type, listener] of dragListeners) {
+      expect(removeEventListener).toHaveBeenCalledWith(type, listener);
+    }
+    const widthWrites = setItem.mock.calls.filter(([key]) => key === "dt:widths:resize-unmount");
+    expect(widthWrites).toHaveLength(1);
+    expect(JSON.parse(String(widthWrites[0]?.[1]))).toEqual({ name: 210 });
+
+    fireEvent.mouseMove(window, { clientX: 200 });
+    fireEvent.mouseUp(window);
+    fireEvent(window, new Event("blur"));
+    expect(setItem.mock.calls.filter(([key]) => key === "dt:widths:resize-unmount")).toHaveLength(1);
   });
 });
 

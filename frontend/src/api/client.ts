@@ -14,7 +14,10 @@ import {
 import { companyHeader } from "../lib/activeCompany";
 // The token's storage key + the read that knows about BOTH backing stores.
 // Shared with the vendored SCM fetch layer — see lib/authToken.
-import { AUTH_TOKEN_KEY as TOKEN_KEY, readAuthToken } from "../lib/authToken";
+// AUTH_TOKEN_KEY is no longer imported here: tokenStore below now delegates to
+// writeAuthToken/clearAuthToken instead of poking both stores itself, so the
+// session-only-logout suppression rule lives in exactly one place.
+import { clearAuthToken, readAuthToken, writeAuthToken } from "../lib/authToken";
 import {
   consumeCorrelated,
   correlateError,
@@ -45,21 +48,10 @@ export const tokenStore = {
   /** persistent = true (Remember me) → localStorage, survives browser close.
    *  persistent = false → sessionStorage, cleared when the tab/app closes. */
   set(token: string, persistent = true) {
-    try {
-      if (persistent) {
-        localStorage.setItem(TOKEN_KEY, token);
-        sessionStorage.removeItem(TOKEN_KEY);
-      } else {
-        sessionStorage.setItem(TOKEN_KEY, token);
-        localStorage.removeItem(TOKEN_KEY);
-      }
-    } catch {}
+    writeAuthToken(token, persistent);
   },
   clear() {
-    try {
-      localStorage.removeItem(TOKEN_KEY);
-      sessionStorage.removeItem(TOKEN_KEY);
-    } catch {}
+    clearAuthToken();
   },
 };
 
