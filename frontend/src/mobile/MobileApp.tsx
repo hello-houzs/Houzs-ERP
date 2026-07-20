@@ -12,6 +12,7 @@ import { ChoiceProvider } from "../vendor/scm/components/ChoiceDialog";
 import { registerDialogService } from "../vendor/scm/lib/dialog-service";
 import { invalidateSoShared } from "./sharedInvalidate";
 import { useApplyHtmlLang } from "./mobileI18n";
+import { useSystemNoticeUnread } from "./useSystemNoticeUnread";
 import { IosInstallGuide } from "../components/IosInstallGuide";
 import { AndroidInstallGuide } from "../components/AndroidInstallGuide";
 // Heavy mobile screens are lazy-loaded so the initial mobile chunk stays small
@@ -427,6 +428,10 @@ function MobileAppInner() {
   const { user, can, pageAccess, logout } = useAuth();
   const notify = useNotify();
   const qc = useQueryClient();
+  // App-wide unread badge for the actionable system notices (scan / service
+  // case) — shown on the Profile tab (below) + the Profile > Announcements row,
+  // so a phone user sees a new service case without opening the screen (B2).
+  const annUnread = useSystemNoticeUnread();
 
   // Single-source the mobile gating on the SHARED per-node predicate the desktop
   // Sidebar + MobileTabBar filter with (components/navFilter.makeNavVisible), so
@@ -758,8 +763,19 @@ function MobileAppInner() {
             <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3.5" y="5" width="17" height="15.5" rx="3" /><path d="M8 3v4M16 3v4M3.5 10h17" /></svg>
             <span className="tl">Calendar</span>
           </button>
-          <button className={`tab${tab === "profile" ? " on" : ""}`} onClick={() => setTab("profile")}>
+          <button
+            className={`tab${tab === "profile" ? " on" : ""}`}
+            onClick={() => setTab("profile")}
+            aria-label={annUnread > 0 ? `Profile, ${annUnread} unread notification${annUnread > 1 ? "s" : ""}` : "Profile"}
+          >
             <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="3.7" /><path d="M4.8 20a7.2 7.2 0 0 1 14.4 0" /></svg>
+            {/* App-wide unread badge — same red count pill as the Profile >
+                Announcements row (owner B2); the un-acked system-notice count. */}
+            {annUnread > 0 && (
+              <span aria-hidden style={{ position: "absolute", top: 4, left: "calc(50% + 5px)", minWidth: 16, height: 16, padding: "0 4px", borderRadius: 8, background: "#c0392b", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1, boxSizing: "border-box" }}>
+                {annUnread > 9 ? "9+" : annUnread}
+              </span>
+            )}
             <span className="tl">Profile</span>
           </button>
         </nav>
