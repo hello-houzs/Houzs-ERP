@@ -246,6 +246,12 @@
 - **Testing.** Cannot log into production from here, and the isolated worktree has no `node_modules` (installing in a worktree nukes MAIN deps), so this is NOT tsc-verified locally — it relies on CI (`tsc -b` + build). Verified by reading the code paths: the single desktop mount point, the mobile shell's lack of one, the backend scope split, and every consumer of the renamed badge hook (`MobileApp.tsx` tab badge + `MobileProfile.tsx:198` row pill) reading a plain number as before.
 - **Ref:** `feat/mobile-announcement-popup`, 2026-07-21. Frontend only; no backend, no migration, no permission change. NOT merged.
 
+### [HIGH] Atomic mailbox-alias updates used PostgreSQL's reserved `current_user` token as an unquoted CTE name
+- **Symptom.** The new PostgreSQL mailbox-alias transition could fail at parse time before changing any row, blocking the whole `PATCH /api/users/:id` request in production even though D1-based tests passed.
+- **Root cause.** The data-modifying statement declared `WITH current_user AS (...)`. PostgreSQL reserves `CURRENT_USER`; using it as an unquoted CTE identifier is invalid. The existing suite exercised the D1 compatibility path and therefore could not parse this PostgreSQL-only statement.
+- **Fix.** Renamed the CTE to `target_user` at every reference and added a regression assertion that rejects any future unquoted `WITH current_user AS (` form. The full disposable-PostgreSQL execution fixture remains a separate release-evidence gate.
+- **Ref:** `fix/session-revocation-consistency`, Draft PR #918, 2026-07-21. Backend only, no migration.
+
 ### [CRITICAL] Idempotency keys were globally scoped and payload-blind, so one user/company could collide with or replay another mutation and a changed retry could receive the wrong success
 - **Symptom.** The same opaque key was unique only by route; it did not bind the authenticated principal, company, query, content type, or body. A collision could replay another operation's response, while a retry whose payload changed could be reported as the earlier success. Bookkeeping errors also failed open to the business write.
 - **Root cause.** The middleware treated `(key, scope)` as the complete intent identity and stored no request hash. It ran before company context, released claims from HTTP status alone, and had no deployment proof for safely tightening the legacy primary key after old Workers drained.
