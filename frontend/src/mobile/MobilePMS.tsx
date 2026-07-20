@@ -2349,10 +2349,13 @@ const SALES_DOC_TILES: ReadonlyArray<{
   fullWidth?: boolean;
   /** Media area height in px (default 80). */
   mediaH?: number;
+  /** Owner 2026-07-17: BD-owned items — sales VIEW + DOWNLOAD only, no
+   *  edit/upload/remove from this card. */
+  readOnly?: boolean;
 }> = [
-  { label: "Weekend Activity", match: /^weekend/i, remarkTile: true, fullWidth: true },
-  { label: "Permit", match: /permit/i },
-  { label: "Deco / Coffee Table", match: /^deco/i },
+  { label: "Weekend Activity", match: /^weekend/i, remarkTile: true, fullWidth: true, readOnly: true },
+  { label: "Permit", match: /permit/i, readOnly: true },
+  { label: "Deco / Coffee Table", match: /^deco/i, readOnly: true },
   { label: "Setup Image", match: /^setup image/i, salesPicOnly: true },
   { label: "Defect List", match: /^defect list/i, requirePhotoRemark: true },
   { label: "Event Complete Image", match: /^event complete image/i, fullWidth: true, mediaH: 108 },
@@ -2399,7 +2402,7 @@ function SalesDocsCard({
   ).length;
 
   const startUpload = async (t: (typeof tiles)[number]) => {
-    if (!t.item) return;
+    if (!t.item || t.readOnly) return;
     let caption: string | undefined;
     if (t.requirePhotoRemark) {
       const remark = await prompt({
@@ -2465,9 +2468,20 @@ function SalesDocsCard({
   };
 
   const openTile = async (t: (typeof tiles)[number]) => {
-    if (t.remarkTile) { await editRemark(t); return; }
+    if (t.remarkTile) {
+      if (t.readOnly) {
+        // View-only: surface the full remark (the tile truncates long text).
+        const txt = (t.item?.notes ?? "").trim();
+        await notify(txt
+          ? { title: t.label, body: txt }
+          : { title: t.label, body: "No remark has been written yet.", tone: "info" });
+        return;
+      }
+      await editRemark(t);
+      return;
+    }
     if (t.files.length > 0) { setView({ items: t.files, idx: t.files.length - 1 }); return; }
-    if (canTick) { await startUpload(t); return; }
+    if (canTick && !t.readOnly) { await startUpload(t); return; }
     await notify({ title: `${t.label} not uploaded`, body: "Nothing has been uploaded here yet.", tone: "info" });
   };
 
@@ -2495,7 +2509,7 @@ function SalesDocsCard({
                 >
                   {t.remarkTile ? (
                     <div style={{ height: mediaH, padding: "8px 10px", fontSize: 11, lineHeight: 1.45, color: (t.item?.notes ?? "").trim() ? "#414539" : "#9aa093", overflow: "hidden", background: "#faf9f5" }}>
-                      {(t.item?.notes ?? "").trim() || (canTick ? "Tap to write the remark…" : "No remark yet.")}
+                      {(t.item?.notes ?? "").trim() || (canTick && !t.readOnly ? "Tap to write the remark…" : "No remark yet.")}
                     </div>
                   ) : latest && /^image\//.test(latest.content_type ?? "") ? (
                     <R2Thumb r2Key={latest.r2_key} style={{ width: "100%", height: mediaH }} />
@@ -2511,7 +2525,7 @@ function SalesDocsCard({
                     </span>
                   </div>
                 </div>
-                {!t.remarkTile && canTick && (
+                {!t.remarkTile && canTick && !t.readOnly && (
                   <div style={{ padding: "0 9px 8px" }}>
                     <button className="tinybtn" style={{ width: "100%" }} disabled={busy} onClick={() => void startUpload(t)}>
                       {t.files.length ? "+ Add more" : "Upload"}
