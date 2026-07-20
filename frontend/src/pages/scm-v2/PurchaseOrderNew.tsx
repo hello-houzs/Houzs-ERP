@@ -44,6 +44,7 @@ import {
   type PoPriceMatrix,
 } from '@2990s/shared/mfg-pricing';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
+import { SpecialOrders } from '../../vendor/scm/components/SpecialOrders';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './SalesOrderDetail.module.css';
@@ -114,44 +115,6 @@ const newLine = (): DraftLine => ({
   variants: {},
 });
 
-/* Commander 2026-05-28 — Special Orders multi-select, mirroring the Sales
-   Order variant editor (PO previously had none). Writes variants.specials as
-   a string[] so it flows into Description 2 like SO does. */
-const SpecialsCheckboxes = ({
-  pool, picked, onChange,
-}: {
-  pool: Array<{ value: string }> | undefined;
-  picked: string[];
-  onChange: (arr: string[]) => void;
-}) => {
-  if (!pool || pool.length === 0) return null;
-  return (
-    <div style={{ marginTop: 'var(--space-2)' }}>
-      <div style={{
-        fontSize: 'var(--fs-11)', fontWeight: 700, letterSpacing: '0.08em',
-        textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 4,
-      }}>
-        Special Orders
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px' }}>
-        {pool.map((o) => {
-          const on = picked.includes(o.value);
-          return (
-            <label key={o.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-12)', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={on}
-                onChange={() => onChange(on ? picked.filter((x) => x !== o.value) : [...picked, o.value])}
-              />
-              {o.value}
-            </label>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
 export const PurchaseOrderNew = () => {
   const navigate = useNavigate();
   const create   = useCreatePurchaseOrder();
@@ -220,15 +183,17 @@ export const PurchaseOrderNew = () => {
   const fabrics = useFabricTrackings().data ?? [];
 
   // Special Orders pool from special_addons (Backend↔POS parity, Loo
-  // 2026-06-08), filtered by category — replaces legacy maint.specials /
-  // maint.sofaSpecials. `code` shares the old value namespace.
+  // 2026-06-08), filtered by category. The FULL rows feed the shared
+  // SpecialOrders block (owner 2026-07-20 unification) so the PO renders the
+  // SAME checkbox + choices + Custom/other editor as the SO and shows the human
+  // label, not the raw code.
   const specialAddonsQ = useSpecialAddons();
   const specialsPools = useMemo(() => {
     const rows = (specialAddonsQ.data ?? [])
       .filter((r) => r.active)
       .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''));
-    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat));
     return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
   }, [specialAddonsQ.data]);
 
@@ -1232,10 +1197,13 @@ export const PurchaseOrderNew = () => {
                               Divan + Leg + Gap (see setVariant), so there's
                               nothing to choose here. */}
                         </div>
-                        <SpecialsCheckboxes
-                          pool={specialsPools.bedframe}
-                          picked={Array.isArray(l.variants.specials) ? (l.variants.specials as string[]) : []}
-                          onChange={(arr) => setVariant(l.rid, 'specials', arr)}
+                        <SpecialOrders
+                          options={specialsPools.bedframe}
+                          variants={l.variants}
+                          onPatch={(patch) => setLine(l.rid, { variants: { ...l.variants, ...patch } })}
+                          showPrices={false}
+                          sourceLinked={Boolean(l.soItemId)}
+                          sourceLabel="Sales Order"
                         />
                       </>
                     )}
@@ -1285,10 +1253,13 @@ export const PurchaseOrderNew = () => {
                           </label>
                           <span />
                         </div>
-                        <SpecialsCheckboxes
-                          pool={specialsPools.sofa}
-                          picked={Array.isArray(l.variants.specials) ? (l.variants.specials as string[]) : []}
-                          onChange={(arr) => setVariant(l.rid, 'specials', arr)}
+                        <SpecialOrders
+                          options={specialsPools.sofa}
+                          variants={l.variants}
+                          onPatch={(patch) => setLine(l.rid, { variants: { ...l.variants, ...patch } })}
+                          showPrices={false}
+                          sourceLinked={Boolean(l.soItemId)}
+                          sourceLabel="Sales Order"
                         />
                       </>
                     )}
