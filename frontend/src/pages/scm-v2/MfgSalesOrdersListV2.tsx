@@ -44,6 +44,8 @@ import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
+import { useBranding } from "../../hooks/useBranding";
+import { shortCompanyName } from "../../lib/branding";
 import {
   useMfgSalesOrdersPaged,
   useUpdateMfgSalesOrderStatus,
@@ -944,6 +946,9 @@ export function MfgSalesOrdersListV2() {
   const askChoice = useChoice();
   const askConfirm = useConfirm();
   const { nameOf: salespersonNameOf } = useStaffLookup();
+  // Active company (top-bar switcher) — the header subtitle reflects it so a
+  // per-company list is never mislabelled as another company's (e.g. Houzs).
+  const branding = useBranding();
   // Finance-viewer gate — same signal the PMS finance sections use
   // (auth/me = isFinanceViewer). The cost/margin/subtotal columns below are
   // only DECLARED for a finance-viewer, so the column chooser never lists an
@@ -1842,7 +1847,7 @@ export function MfgSalesOrdersListV2() {
           <PageHeader
             eyebrow="Supply Chain"
             title="Sales Orders"
-            description="Every Houzs sales order — Draft to Delivered. Click any row for the quick view; open the full page to edit."
+            description={`Every ${shortCompanyName(branding.companyName)} sales order — Draft to Delivered. Click any row for the quick view; open the full page to edit.`}
             primaryAction={
               <div className="flex items-stretch">
                 <Button
