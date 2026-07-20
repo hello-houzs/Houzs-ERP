@@ -39,7 +39,7 @@ This file is the interruption-safe continuation record. The completion ledger co
 
 | Worktree | Branch / current head | Verified work | Blocking item / exact continuation |
 |---|---|---|---|
-| `C:\Users\User\Desktop\hz-d3-control-plane` | `fix/control-plane-privilege-boundary` / `5c42bf0c` before active correction | Position last-admin protection, scoped/atomic department changes, service principals, re-invite and invitation deletion guards, control-plane real-actor provenance, PG 0163 + D1 127/128 parity | Final review found P0=1/P1=4: wildcard invitation account takeover, impersonator revocation, scoped-invite TOCTOU, audit-claim scope and D1 service-invite atomicity. Corrections are active; never publish `5c42bf0c`. |
+| `C:\Users\User\Desktop\hz-d3-control-plane` | `fix/control-plane-privilege-boundary` / `ef1e06b5` | Position last-admin protection, scoped/atomic department changes, service principals, invitation credential redaction, impersonator revocation and control-plane real-actor provenance; PG 0163/0164 + D1 127/128/129 parity | Remediation complete; backend 111 files/1,556 tests, frontend 31 files/415 tests, both typechecks/build and leak scan pass. Must receive a fresh independent review before publish; never publish the superseded `5c42bf0c`. |
 | `C:\Users\User\Desktop\hz-so-cas-mandatory` | `fix/so-cas-mandatory` / `3c03f4fb` | Mandatory SO CAS, explicit JSONB/text[] codecs, durable allocation invalidation queue and retry worker | Remediation tests pass, including 16/16 transaction/outbox and 14/14 worker/migration tests. Requires independent re-review and real PostgreSQL CI before publish. Stack after #912; PG migrations 0160-0162 precede D3 0163. |
 | `C:\Users\User\Desktop\hz-company-scope-rollout` | `fix/company-scope-rollout` / `c4aa28be` before second active correction | Company grant resolution, fail-closed mutation guards, readiness audit and bounded rollout telemetry | First P0 set is repaired, but re-review found native/non-SCM fail-open reads and writes in Sales, POS, Finance, Projects and Events when no active company exists. Corrections are active; never publish `c4aa28be`. |
 | `C:\Users\User\Desktop\hz-request-correlation` | `fix/request-correlation-hardening` / `5d337ef8`; Draft PR #922 | Browser→Worker request ID correlation, Reset Password coverage and precise raw-fetch inventory gate | Independent review P0/P1/P2=0 in branch scope; focused 29/29, inventory 8/8, typechecks/build/bundle and all GitHub checks pass. Await Claude Code review. |
@@ -56,10 +56,11 @@ These conditions override branch readiness and green CI:
 2. **#914:** do not delete the 17 verified tracker rows and do not restore their SQL into the live migration directory. The exact retirement manifest is the audit-preserving release gate; stage checksum verify/apply/deploy and require any unknown orphan, checksum mismatch or filename reuse to abort.
 3. **#906:** #910 must land first. Because #906 changes 214 files, staging verification of all search scopes, cross-page results, first-character refinement and responsiveness is mandatory.
 4. **#918:** the reserved-keyword fix in `dd7f381d` (current branch head `576b8a21`) must be green in GitHub and staging must measure authoritative-auth database latency and outage behavior. Preserve fail-closed revocation unless an explicit security architecture decision changes it.
+5. **Claude Code review:** `claude auth status` reported logged in on 2026-07-21, but both `claude ultrareview` and the direct print reviewer failed because the OAuth access token is expired. Re-authenticate Claude Code before satisfying the mandatory cross-model merge gate; this blocks merge, not continued implementation or local/GitHub CI.
 
 ## Active local branch corrections
 
-- D3 head `5c42bf0c` is not publishable. Independent review found a wildcard pending-invite account takeover plus four P1s; the remediation pass is active and must receive another independent review after its full suite.
+- D3 head `ef1e06b5` closes the wildcard invitation takeover, token/link exposure, impersonator-session revocation, locked-invite race and service-invite atomicity gaps. Full backend/frontend suites pass, but the 6,962-line security diff remains unpublished until a different agent independently re-reviews it. Never publish superseded `5c42bf0c`.
 - SO head `3c03f4fb` repairs JSONB/text-array codecs and makes allocation invalidation durable with lease/retry behavior. Its focused transaction/outbox and worker/migration tests pass; independent re-review plus real PostgreSQL CI remain mandatory. Never publish the earlier `8baa8226`, `e2b781bc` or `62caced2` heads.
 - Company scope head `c4aa28be` is not publishable. Re-review found fail-open native/non-SCM handlers in Sales, POS, Finance, Projects and Events; the next remediation must prove every real handler fails closed, not only the helper layer.
 - Request correlation head `5d337ef8` is published as Draft PR #922. Branch-scope independent review is clean; GitHub CI and Claude Code review remain gates.
@@ -69,9 +70,9 @@ These conditions override branch readiness and green CI:
 
 The current migration chain is:
 
-`0158 idempotency phase 1 → deploy → 24-hour soak/telemetry → 0159 phase 2 constraints → 0160/0161/0162 SO CAS/outbox → 0163 D3 privilege boundary → application code`
+`0158 idempotency phase 1 → deploy → 24-hour soak/telemetry → 0159 phase 2 constraints → 0160/0161/0162 SO CAS/outbox → 0163/0164 D3 privilege boundary → application code`
 
-Session consistency required no migration. D1 D3 parity additionally requires migrations `127` and `128` together; never deploy D3 code with only one of them. Before applying any migration, re-read the branch against current `legacy/main`, run checksum/drift validation, take the documented restore point, and record the exact deployed commit.
+Session consistency required no migration. D1 D3 parity additionally requires migrations `127`, `128` and `129` together; never deploy D3 code with only part of that set. Before applying any migration, re-read the branch against current `legacy/main`, run checksum/drift validation, take the documented restore point, and record the exact deployed commit.
 
 ## Merge conflict order
 
