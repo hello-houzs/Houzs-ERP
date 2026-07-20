@@ -25,7 +25,7 @@ Change classes: `FE` frontend-only; `INFRA` CI/deploy/testing; `AUDIT` read-only
 
 | ID | Status | Class | Batch | Completion acceptance |
 |---|---|---|---|---|
-| HZ-A-01 List rendering | STALE | FE | B02 | Inventory existing windowing first; only measured DOM/long-task offenders get fixed. Mobile cards, grouped/expanded/editor paths, print/export completeness and a11y are explicitly tested. |
+| HZ-A-01 List rendering | PARTIAL | FE | B02 | Inventory existing windowing first; only measured DOM/long-task offenders get fixed. Mobile cards, grouped/expanded/editor paths, print/export completeness and a11y are explicitly tested. |
 | HZ-A-02 Stable row props | PARTIAL | FE | B02 | Profiler evidence on actual hotspots; single-row edits rerender only the changed row/summary, with render-count regression tests. |
 | HZ-A-03 localStorage truth | PARTIAL | AUDIT→HYBRID★ | B02 | Every key classified auth/UI/cache/draft/business truth; zero business records exist only in browser; cache isolated by user+company+build with size cap; no >50ms hot-path sync write. |
 | HZ-A-04 Search responsiveness | PARTIAL | FE | B01 | Every server search: first-key feedback, A cannot masquerade as A1, clear/reset consistency, stale actions blocked, keystroke within one frame. |
@@ -80,7 +80,7 @@ Change classes: `FE` frontend-only; `INFRA` CI/deploy/testing; `AUDIT` read-only
 |---|---|---|---|---|
 | HZ-F-01 API integration | PARTIAL | INFRA+BE★ | Per batch | Risk-driven auth/scope/search/page/CAS/idempotency/malformed/atomic-failure coverage recorded in route matrix. |
 | HZ-F-02 Frontend data hooks | PARTIAL | FE | B01/B04 | Rollback, placeholder stale, A→A1, cancellation/generation, offline, duplicate click and conflict input preservation tests; Mobile Mail stale append covered. |
-| HZ-F-03 Performance budgets | OPEN | INFRA | B02/B07 | Stable CI budgets for mounted DOM/window rows, bundle/request bytes and repeatable API/long-task lab; no flaky shared-CI wall-clock assertion. |
+| HZ-F-03 Performance budgets | PARTIAL | INFRA | B02/B07 | Stable CI budgets for mounted DOM/window rows, bundle/request bytes and repeatable API/long-task lab; no flaky shared-CI wall-clock assertion. |
 | HZ-F-04 Core e2e | PARTIAL | INFRA | B07 | Login→SO search/create/edit/save/refresh; delivery/return/payment; company isolation; field/mobile; rebuildable fixtures; stable subset required. |
 | HZ-F-05 Regression rule | PARTIAL | INFRA | B07 | Bug fix links test or written waiver; BUG-HISTORY maps test ID; high-risk untested diffs cannot merge. |
 
@@ -99,6 +99,7 @@ Change classes: `FE` frontend-only; `INFRA` CI/deploy/testing; `AUDIT` read-only
 | 2026-07-20 | B01 search scope/cancellation/windowing | `92a0949c`; 39 files / 430 tests; build + bundle | Server-vs-loaded scope rendered; A→A1 cancellation reaches network/retry; 10k tail tests. Backend diff: 0. |
 | 2026-07-20 | B07 frontend release gates | `48171872`; CI source/build/bundle/SW/E2E discovery; exact-build deploy smoke | Frontend release consistency is executable. Merge still requires owner confirmation because existing deploy workflows may redeploy unchanged backend. Backend code/schema diff: 0. |
 | 2026-07-20 | B02 frontend hot paths/cache isolation | `e9a0c858`; 42 files / 447 tests; build 2,475 modules; initial 160.3/165.0 KB gzip; total 1,781.0/1,800.0 KB gzip; SW + smoke pass | Independent review P0=0/P1=0. Idle snapshot, tenant/session isolation, DataTable resize lifecycle, Projects Calendar memo/RAF/date boundaries and 10k structural tests. Backend diff: 0. |
+| 2026-07-20 | B02 mobile list/route/browser gate | `7f8c0013`; 42 files / 485 tests; build 2,475 modules; initial 160.4/165.0 KB gzip; total 1,781.4/1,800.0 KB gzip; SW + smoke; Chromium 5/5 | DataTable/DataGrid/mobile variable-height 10k geometry, A→A1 pending presentation, query-aware mobile route permissions and all 31 aliases. Independent review P0=0/P2=0; deploy-workflow integration remains owner-approval pending. Backend code/schema/runtime diff: 0. |
 
 ## Mandatory close-out rules
 
