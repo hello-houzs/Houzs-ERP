@@ -3365,41 +3365,69 @@ function DetailContent({
               <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-ink-muted">
                 Photos / Videos ({attachments.length})
               </div>
-            {attachments.length > 0 && (
-              <div className="mb-2 grid grid-cols-3 gap-2">
-                {attachments.map((att: any, i: number) => (
-                  <AttachmentThumb
-                    key={att.id}
-                    att={att}
-                    onClick={() => {
-                      const t = att.content_type || "";
-                      if (t.startsWith("image/") || t.startsWith("video/")) {
-                        setLightboxIndex(i);
-                      }
-                    }}
-                    onVisibilityChange={async (visible) => {
-                      try {
-                        await api.patch(`/api/assr/attachments/${att.id}/visibility`, { visible_to_customer: visible });
-                        toast.success(visible ? "Now visible to customer" : "Hidden from customer");
-                        detail.reload();
-                      } catch (e: any) {
-                        toast.error(e?.message || "Something went wrong. Please try again.");
-                      }
-                    }}
-                    onArchive={c.archived_at ? undefined : async () => {
-                      if (!await dialog.confirm("Archive this attachment? It'll be hidden everywhere.")) return;
-                      try {
-                        await api.post(`/api/assr/attachments/${att.id}/archive`);
-                        toast.success("Archived");
-                        detail.reload();
-                      } catch (e: any) {
-                        toast.error(e?.message || "Something went wrong. Please try again.");
-                      }
-                    }}
-                  />
-                ))}
-              </div>
-            )}
+            {attachments.length > 0 && (() => {
+              // Issue evidence (what the service form / staff reported)
+              // and QC-result shots read very differently — split the
+              // grid by category instead of one mixed wall. Lightbox
+              // indices stay against the full attachments array.
+              const groupOf = (cat: string): { key: string; label: string; order: number } => {
+                if (cat === "complaint" || cat === "evidence")
+                  return { key: "issue", label: "Issue photos", order: 0 };
+                if (cat === "inspection_report" || cat === "receipt_evidence")
+                  return { key: "qc", label: "QC result", order: 1 };
+                if (cat === "completion" || cat === "delivery_pod" || cat === "sign_off" || cat === "signature")
+                  return { key: "done", label: "Completion & sign-off", order: 2 };
+                return { key: "other", label: "Other documents", order: 3 };
+              };
+              const groups = new Map<string, { label: string; order: number; items: Array<{ att: any; index: number }> }>();
+              attachments.forEach((att: any, index: number) => {
+                const g = groupOf(String(att.category || ""));
+                if (!groups.has(g.key)) groups.set(g.key, { label: g.label, order: g.order, items: [] });
+                groups.get(g.key)!.items.push({ att, index });
+              });
+              return [...groups.values()]
+                .sort((x, y) => x.order - y.order)
+                .map((g) => (
+                  <div key={g.label} className="mb-2">
+                    <div className="mb-1 text-[9.5px] font-semibold uppercase tracking-wide text-ink-muted/80">
+                      {g.label} ({g.items.length})
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {g.items.map(({ att, index }) => (
+                        <AttachmentThumb
+                          key={att.id}
+                          att={att}
+                          onClick={() => {
+                            const t = att.content_type || "";
+                            if (t.startsWith("image/") || t.startsWith("video/")) {
+                              setLightboxIndex(index);
+                            }
+                          }}
+                          onVisibilityChange={async (visible) => {
+                            try {
+                              await api.patch(`/api/assr/attachments/${att.id}/visibility`, { visible_to_customer: visible });
+                              toast.success(visible ? "Now visible to customer" : "Hidden from customer");
+                              detail.reload();
+                            } catch (e: any) {
+                              toast.error(e?.message || "Something went wrong. Please try again.");
+                            }
+                          }}
+                          onArchive={c.archived_at ? undefined : async () => {
+                            if (!await dialog.confirm("Archive this attachment? It'll be hidden everywhere.")) return;
+                            try {
+                              await api.post(`/api/assr/attachments/${att.id}/archive`);
+                              toast.success("Archived");
+                              detail.reload();
+                            } catch (e: any) {
+                              toast.error(e?.message || "Something went wrong. Please try again.");
+                            }
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ));
+            })()}
             <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink hover:border-accent/40">
               <Upload size={12} />
               {uploading ? "Uploading..." : "Upload"}
@@ -4467,10 +4495,33 @@ function DetailContent({
                 if (ch === "supplier_portal") return "supplier";
                 return "service";
               };
-              const rows = activity.filter((a: any) => {
+              const filtered = activity.filter((a: any) => {
                 if (activityFilter === "all") return true;
                 return roleOf(a) === activityFilter;
               });
+              // Service-form photo relay notes carry a long provenance
+              // string ending in the [gdrive:...] dedup marker (which
+              // must stay in the DB — the relay dedups on it). Collapse
+              // consecutive ones into a single compact entry and strip
+              // the marker for display.
+              const photoImportFile = (a: any): string | null => {
+                const m = /^Photo migrated from Google Form history(?::\s*(.*?))?\s*\[gdrive:[^\]]+\]$/.exec(
+                  String(a.note || "").trim()
+                );
+                return m ? (m[1] || "photo") : null;
+              };
+              const rows: any[] = [];
+              for (const a of filtered) {
+                const file = photoImportFile(a);
+                const prev = rows[rows.length - 1];
+                if (file !== null && prev?.__photoImports) {
+                  prev.__photoImports.push(file);
+                } else if (file !== null) {
+                  rows.push({ ...a, __photoImports: [file] });
+                } else {
+                  rows.push(a);
+                }
+              }
               if (rows.length === 0) {
                 return (
                   <div className="text-[12px] text-ink-muted">
@@ -4492,10 +4543,15 @@ function DetailContent({
                     const isCustomer = a.source === "customer";
                     const archivable =
                       !c.archived_at &&
+                      !a.__photoImports &&
                       (a.action === "note" || a.action === "customer_comment" || a.action === "sales_comment");
                     let title: React.ReactNode = a.action;
                     let body: React.ReactNode = null;
-                    switch (a.action) {
+                    if (a.__photoImports) {
+                      const n = a.__photoImports.length;
+                      title = n > 1 ? `${n} photos imported from service form` : "Photo imported from service form";
+                      body = a.__photoImports.join("\n");
+                    } else switch (a.action) {
                       case "stage_change":
                         title = (
                           <>
