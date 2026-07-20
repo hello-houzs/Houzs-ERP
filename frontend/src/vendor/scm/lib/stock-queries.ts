@@ -270,6 +270,10 @@ export function useStockTransferDetail(id: string | null) {
 export type StockTransferItemInput = {
   productCode: string;
   productName?: string;
+  // Variant bucket at the source warehouse this line moves. Keeps stock + MRP
+  // accurate (the OUT/IN movements consume + re-open the matching FIFO bucket,
+  // which is keyed on variant_key). '' = unclassified (legacy). Owner 2026-07-20.
+  variantKey?: string;
   qty: number;
   notes?: string;
 };
