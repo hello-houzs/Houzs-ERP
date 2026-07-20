@@ -1,5 +1,11 @@
 ## 2026-07-20
 
+### [LOW] Calendar still split a fair's multi-day bars — the day-cell packing keys outranked the fair grouping, so JOHOR REX's two brands were separated by a KL bar
+- **Symptom (owner).** Even after #905's state-first ordering, a fair's brand bars weren't adjacent — on the 7th, JOHOR REX [AKEMI] and [ZANOTTI] had a KL HOMELOVE bar between them.
+- **Root cause.** #905 put the greedy lane-packing keys (`startCol`, then length) AHEAD of the fair grouping (`compareCalendarEvents`), so it only grouped events of the SAME start + length. A fair whose brand bars span different day-lengths got ordered by length first, letting another fair's same-length bar slot between them.
+- **Fix.** Lead the desktop `segs.sort` with `compareCalendarEvents` (state -> venue -> organizer -> brand); `startCol` + length now only break ties WITHIN a fair, so a fair's bars are placed consecutively -> adjacent lanes. The greedy lane packer still guarantees non-overlapping rows. Mobile was already fair-first (flat list, no packing keys). NOTE: the owner was also viewing a STALE build via the old `houzs-erp.pages.dev` URL + Service-Worker cache — a hard refresh on `erp.houzscentury.com` is needed to pick up this (and #905 / #909).
+- **Ref:** `feat/calendar-fair-grouping`, 2026-07-20. Frontend only, no migration.
+
 ### [POLICY] Sales Director un-blocked from assigning project PIC + Sales Attending (reverses the deliberate 2026-07-18 block, owner 2026-07-20)
 - **Symptom (owner).** A Sales Director hit "A Sales Director cannot assign the project PIC" on a project (and the sibling Sales-Attending block) and wanted it gone — Sales Directors should be able to assign.
 - **Root cause.** Not a bug — a deliberate **2026-07-18 owner rule** blocked Sales Directors from PIC / attendee assignment in FOUR places in `projects.ts`: `POST /` (set pic_id at create), `PATCH /:id` (reassign pic_id), `POST /:id/sales-attendees` (add attendee), `DELETE /:id/sales-attendees/:repId` (remove attendee). Owner reversed the decision on 2026-07-20.
