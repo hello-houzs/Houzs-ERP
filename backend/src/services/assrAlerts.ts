@@ -108,7 +108,7 @@ export async function runAssrAlerts(
       WHERE u.status = 'active'
         AND u.email IS NOT NULL AND u.email != ''
         AND COALESCE(u.assr_email_muted, 0) = 0
-        AND (r.permissions LIKE '%"*"%' OR r.permissions LIKE '%"service_cases.manage"%')`
+        AND r.permissions LIKE '%"service_cases.manage"%'`
   ).all<{ email: string }>();
   const managerEmails = (managers.results ?? []).map((m) => m.email);
 
@@ -235,7 +235,7 @@ export async function runAssrDailyDigest(
       WHERE u.status = 'active'
         AND u.email IS NOT NULL AND u.email != ''
         AND COALESCE(u.assr_email_muted, 0) = 0
-        AND (r.permissions LIKE '%"*"%' OR r.permissions LIKE '%"service_cases.manage"%')`
+        AND r.permissions LIKE '%"service_cases.manage"%'`
   ).all<{ email: string }>();
   const managerEmails = (managers.results ?? []).map((m) => m.email).filter(Boolean);
 
