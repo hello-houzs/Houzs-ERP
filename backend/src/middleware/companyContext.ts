@@ -33,10 +33,16 @@ import type { Env } from "../types";
  * The pick may be a company id (preferred) OR a company code — both are matched
  * so the frontend can send whichever it holds.
  *
- * DEGRADES SAFELY: when the companies master isn't resolvable (migration 0061
- * not applied yet, or a DB cold-start), companyId is left undefined. The
- * query-scoping helpers (scm/lib/companyScope.ts) then NO-OP, so single-company
- * Houzs keeps serving unchanged.
+ * DEGRADES SAFELY, WITHOUT LEAKING: the companies master is cached
+ * last-known-good, so a transient read failure keeps serving the real master
+ * rather than collapsing into an unresolved fail-open. If we truly have no
+ * master yet (a brand-new isolate whose first read failed), the active company
+ * is resolved from the caller's OWN user_companies grants — a single grant
+ * resolves even with no header; a multi-grant caller with no header is left with
+ * an allow-list but NO active company, which the per-company scoping helpers now
+ * treat as FAIL CLOSED (empty), never as "all companies". Only a genuinely
+ * single-company / pre-migration state (no master, no grants) keeps the legacy
+ * no-op, so single-company Houzs still serves unchanged.
  *
  * MOUNTING: mounted once on the whole authenticated /api/* surface (after auth +
  * idempotency, before every route — see index.ts). This covers both the SCM
@@ -83,21 +89,27 @@ export function defaultCompanyCodeForHost(host: string): string {
 
 // Module-level cache — companies is a static 2-row master, so a DB read per
 // request would be pure waste. Cached for the isolate lifetime with a short TTL
-// so a rare edit still propagates.
-let cache: { at: number; rows: CompanyRow[] } | null = null;
+// so a rare edit still propagates. `degraded` marks an entry that is serving
+// LAST-KNOWN-GOOD after a failed read, so it re-checks on the short TTL.
+let cache: { at: number; rows: CompanyRow[]; degraded: boolean } | null = null;
+// LAST-KNOWN-GOOD: the most recent NON-EMPTY master this isolate has loaded.
+// Served in place of a blank `[]` during a transient master-read failure so the
+// per-request resolution keeps working — a momentary blip must NOT collapse a
+// live multi-company context into the "unresolved" read fail-open that would let
+// one company's list show the other's rows. Only ever set from a real
+// successful read, so it can never invent a company.
+let lastGood: CompanyRow[] | null = null;
 const TTL_MS = 5 * 60 * 1000;
-// Shorter re-check when the companies master is absent/unreadable (migration
-// 0077 not applied yet, or a DB cold-start). WITHOUT a negative cache, every
-// /api/* request pre-migration would re-run a guaranteed-failing SELECT — real
-// latency + Postgres error-log noise + a Hyperdrive connection per request on a
-// pool-sensitive app. Negative-caching an empty result bounds that to ~one
-// failed query per isolate per 30s, and the short TTL means multi-company
-// self-activates within 30s of 0077 being applied — no code redeploy needed.
+// Shorter re-check when the master is absent/unreadable or we are serving
+// last-known-good, so recovery (or first activation after migration 0077) lands
+// within 30s without a redeploy, while still bounding a failing SELECT to ~once
+// per isolate per 30s (real latency + Postgres error-log noise + a Hyperdrive
+// connection per request on a pool-sensitive app).
 const EMPTY_TTL_MS = 30 * 1000;
 
 async function loadCompanies(env: Env): Promise<CompanyRow[]> {
   if (cache) {
-    const ttl = cache.rows.length > 0 ? TTL_MS : EMPTY_TTL_MS;
+    const ttl = cache.degraded || cache.rows.length === 0 ? EMPTY_TTL_MS : TTL_MS;
     if (Date.now() - cache.at < ttl) return cache.rows;
   }
   // public.companies (default search_path) via the Postgres-backed env.DB shim.
@@ -110,15 +122,45 @@ async function loadCompanies(env: Env): Promise<CompanyRow[]> {
       code: String(r.code),
       name: String(r.name),
     }));
-    cache = { at: Date.now(), rows };
+    cache = { at: Date.now(), rows, degraded: false };
+    if (rows.length > 0) lastGood = rows; // remember the last real master
     return rows;
   } catch {
-    // Table absent (pre-migration) or a transient DB error — negative-cache an
-    // empty result (short TTL) so we don't hammer a failing query per request.
-    // Callers degrade to single-company (companyId undefined → helpers no-op).
-    cache = { at: Date.now(), rows: [] };
-    return [];
+    // Master read failed (a DB cold-start / transient error, or the table is
+    // absent pre-migration). Prefer LAST-KNOWN-GOOD over a blank so a live
+    // multi-company context does NOT momentarily degrade to the cross-company
+    // fail-open; short-TTL "degraded" so we retry the real read soon. Only a
+    // brand-new isolate that has never loaded a master falls through to `[]`,
+    // where the caller resolves from its own grants (the cold-start branch
+    // below) or, failing that, the legacy no-op.
+    const rows = lastGood ?? [];
+    cache = { at: Date.now(), rows, degraded: true };
+    return rows;
   }
+}
+
+// The caller's granted companies from `user_companies`, as validated positive
+// company ids. Shared by the normal path (narrow `allowed` to the grants) and
+// the cold-start branch (resolve directly from the grants when the master is
+// momentarily unreadable). Throws on a DB error so each caller picks its own
+// fallback.
+async function queryUserGrants(env: Env, uid: number): Promise<number[]> {
+  const res = await env.DB.prepare(
+    "SELECT company_id FROM user_companies WHERE user_id = ?",
+  )
+    .bind(uid)
+    .all<{ company_id: number | string }>();
+  return (res.results ?? [])
+    .map((r) => Number(r.company_id))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+/** TEST-ONLY. Reset the module-level company-master cache + last-known-good so a
+ *  middleware test can start from a genuinely cold isolate. Never called in
+ *  production code. */
+export function __resetCompanyContextCacheForTest(): void {
+  cache = null;
+  lastGood = null;
 }
 
 export const companyContext = createMiddleware<{ Bindings: Env }>(async (c, next) => {
@@ -148,14 +190,7 @@ export const companyContext = createMiddleware<{ Bindings: Env }>(async (c, next
           (c.get("user") as { id?: number | string } | undefined)?.id,
         );
         if (Number.isFinite(uid) && uid > 0) {
-          const res = await c.env.DB.prepare(
-            "SELECT company_id FROM user_companies WHERE user_id = ?",
-          )
-            .bind(uid)
-            .all<{ company_id: number | string }>();
-          const granted = (res.results ?? [])
-            .map((r) => Number(r.company_id))
-            .filter((n) => Number.isFinite(n));
+          const granted = await queryUserGrants(c.env, uid);
           // FAIL OPEN: restrict ONLY when the user actually HAS >=1 grant row.
           // No rows (or the table is absent — caught below) falls back to ALL
           // active companies, so a user is never locked out by the mere
@@ -226,6 +261,51 @@ export const companyContext = createMiddleware<{ Bindings: Env }>(async (c, next
     if (active) {
       c.set("companyId", active.id);
       c.set("companyCode", active.code);
+    }
+  } else {
+    // COMPANIES MASTER UNREADABLE with NO last-known-good — a brand-new isolate
+    // whose first master read hit a DB blip. Falling straight through to the
+    // legacy no-op is, now that a second company's data lives in this same
+    // database, a cross-company READ fail-open. Resolve what we safely can from
+    // the caller's OWN grants instead:
+    //   • exactly ONE grant  -> unambiguous; resolve it even with no header, so
+    //     a single-company user (the common case, e.g. a HOUZS-only salesperson)
+    //     is never blanked and never sees the other company.
+    //   • a valid header pick among the grants -> honour it.
+    //   • >1 grant, no usable header -> we cannot pick; set the allow-list but
+    //     leave the active company unset, so the per-company reads FAIL CLOSED
+    //     (empty, self-heals) rather than showing every company. Cross-company
+    //     views still widen to the caller's own grants.
+    // NO readable grants (table also unreadable, or a 0-grant admin) leaves
+    // everything unset -> legacy no-op: we cannot prove multi-company from here,
+    // so a genuine single-company install is preserved. This one narrow window
+    // self-heals the moment the master read succeeds.
+    const uid = Number(
+      (c.get("user") as { id?: number | string } | undefined)?.id,
+    );
+    if (Number.isFinite(uid) && uid > 0) {
+      try {
+        const granted = await queryUserGrants(c.env, uid);
+        if (granted.length > 0) {
+          c.set("allowedCompanyIds", granted);
+          const rawPick = (
+            c.req.header("X-Company-Id") ?? c.req.query("companyId") ?? ""
+          ).trim();
+          const pickId = Number(rawPick);
+          let active: number | undefined;
+          if (Number.isFinite(pickId) && granted.includes(pickId)) active = pickId;
+          else if (granted.length === 1) active = granted[0];
+          if (active != null) c.set("companyId", active);
+          // companyCode is intentionally left unset: without the master we
+          // cannot map id -> code. Scoping keys on companyId, so reads are
+          // correct; companyCode's only consumer (the doc-number prefix)
+          // already falls back to bare numbering when it is absent — the same
+          // reconstructed-context shape the headless scan job runs under.
+        }
+      } catch {
+        // user_companies unreadable too (the DB is genuinely down) — leave
+        // everything unset (legacy no-op). Reads self-heal on the next request.
+      }
     }
   }
 

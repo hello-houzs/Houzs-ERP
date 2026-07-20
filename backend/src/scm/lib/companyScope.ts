@@ -192,10 +192,15 @@ export function allowedCompaniesSql(c: CompanyScopeCtx, col = "company_id"): str
 export function activeCompanySql(c: CompanyScopeCtx, col = "company_id"): string {
   const id = Number(activeCompanyId(c));
   if (Number.isInteger(id) && id > 0) return ` AND ${col} = ${id}`;
-  // No active company. Two very different reasons — see the sentinel doc on
-  // allowedCompanyIds. Restricted-to-nothing must match nothing; unresolved
-  // must degrade to no predicate.
-  if (isRestrictedToNoCompany(c)) return ` AND 1=0`;
+  // No active company. FAIL CLOSED whenever the context is RESOLVED
+  // (allowedCompanyIds is set) but no single active company could be picked —
+  // the RESTRICTED-TO-NOTHING `[]` state AND a multi-company caller with no
+  // usable switcher header during a companies-master blip (allowedCompanyIds
+  // set, companyId unset). Kept in lock-step with scopeToCompany; if the two
+  // ever disagree that is the same bug class again. Only the genuinely
+  // UNRESOLVED / legacy state (allowedCompanyIds === undefined) degrades to no
+  // predicate, so a single-company install is never blanked.
+  if (allowedCompanyIds(c) !== undefined) return ` AND 1=0`;
   return "";
 }
 
@@ -271,9 +276,17 @@ export function scopeToCompany<Q>(query: Q, c: CompanyScopeCtx): Q {
   if (id != null) {
     return (query as unknown as { eq(col: string, val: unknown): Q }).eq("company_id", id);
   }
-  // No active company. RESTRICTED TO NOTHING → match nothing (an empty `in`
-  // list). UNRESOLVED → no filter, exactly as before.
-  if (isRestrictedToNoCompany(c)) {
+  // No active company resolved. FAIL CLOSED whenever the company context is
+  // RESOLVED (allowedCompanyIds is set) but no single active company could be
+  // picked — both the RESTRICTED-TO-NOTHING `[]` state and a multi-company
+  // caller whose switcher header didn't arrive during a companies-master blip
+  // (allowedCompanyIds set, companyId unset). Serving every company's rows here
+  // is the cross-company READ leak this guard exists to prevent; an empty list
+  // self-heals within one request. FAIL OPEN only in the genuinely UNRESOLVED /
+  // legacy state (allowedCompanyIds === undefined: pre-migration, or a brand-new
+  // isolate that has never read the master), so a single-company install is
+  // never blanked.
+  if (allowedCompanyIds(c) !== undefined) {
     return (query as unknown as { in(col: string, vals: number[]): Q }).in("company_id", []);
   }
   return query;
