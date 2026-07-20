@@ -58,3 +58,11 @@ test("pagination correctness uses the real SO doc_no key when the list has no id
   assert.match(harness, /row\.id \?\? row\.doc_no/);
   assert.match(harness, /pagination row has no id or doc_no identity/);
 });
+
+test("PR CI executes and retains the full 100k PostgreSQL evidence run", async () => {
+  const workflow = await readFile(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.match(workflow, /scale-postgres-contract:[\s\S]*if: github\.event_name == 'pull_request'/);
+  assert.match(workflow, /--orders=100000 --lines=100000 --skus=10000 --users=10000 --runs=20/);
+  assert.match(workflow, /--json=artifacts\/scale-pg-100k\.json/);
+  assert.match(workflow, /uses: actions\/upload-artifact@v4[\s\S]*if-no-files-found: error/);
+});

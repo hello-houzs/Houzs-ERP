@@ -106,7 +106,12 @@ jobs:
           [ "${{ needs.backend-tests.result }}" = "success" ] || exit 1
 
   scale-postgres-contract:
+    # The full 100k evidence run is deliberately PR-only. GitHub emits both a
+    # push and pull_request event for an open branch; running this job twice
+    # would spend twice the time without adding an independent environment.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
@@ -141,8 +146,18 @@ jobs:
           const sql = postgres(process.env.PERF_DATABASE_URL, { max: 1 });
           try { await sql.unsafe(\"COMMENT ON DATABASE houzs_scale_test IS 'HOUZS_DISPOSABLE_LOCAL_SCALE_V1'\"); }
           finally { await sql.end(); }"
-      - name: Execute the real-schema PostgreSQL smoke fixture
-        run: npm run perf:scale -- --engine=pg --orders=1000 --lines=1000 --skus=500 --users=500 --runs=1
+      - name: Execute the full real-schema PostgreSQL scale fixture
+        run: |
+          mkdir -p artifacts
+          npm run perf:scale -- --engine=pg --orders=100000 --lines=100000 --skus=10000 --users=10000 --runs=20 --json=artifacts/scale-pg-100k.json
+      - name: Upload immutable scale evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-pg-100k-${{ github.sha }}
+          path: backend/artifacts/scale-pg-100k.json
+          if-no-files-found: error
+          retention-days: 30
 
   frontend:
     runs-on: ubuntu-latest
