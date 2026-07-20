@@ -18,10 +18,9 @@ import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Save, X, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { Button } from '@2990s/design-system';
-import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
-import { useInventoryBalances } from '../../vendor/scm/lib/stock-queries';
+import { useInventoryBuckets } from '../../vendor/scm/lib/stock-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
 import { useMfgProducts } from '../../vendor/scm/lib/mfg-products-queries';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
@@ -52,6 +51,131 @@ const todayISO = () => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
+// Humanise a variant_key ("fabriccode=bf-16|gap=16|legheight=2") into a compact
+// bucket label for the picker. '' = the unclassified / plain-SKU bucket.
+const humanizeVariantKey = (k: string): string =>
+  k ? k.split('|').map((s) => s.replace('=', ' ')).join(' · ') : '(unclassified)';
+
+// Sentinel for the "no bucket picked yet" option — distinct from '' (which is a
+// real, pickable unclassified bucket).
+const UNPICKED = '__UNPICKED__';
+
+// One transfer line. Owns its OWN inventory-bucket query so each line offers only
+// its SKU's real variant buckets (with on-hand qty) at the From warehouse — the
+// operator moves the exact bucket, keeping stock + MRP accurate (owner 2026-07-20).
+function TransferLineRow({
+  line, fromWarehouseId, skus, onPickCode, setLine, removeLine, canRemove,
+}: {
+  line: LineDraft;
+  fromWarehouseId: string;
+  skus: Array<{ id: string | number; code: string; name: string }>;
+  onPickCode: (key: string, code: string) => void;
+  setLine: (key: string, patch: Partial<LineDraft>) => void;
+  removeLine: (key: string) => void;
+  canRemove: boolean;
+}) {
+  const bucketsQ = useInventoryBuckets(line.productCode || null, fromWarehouseId || null);
+  // The line stores only variant_key (the backend picks the batch FIFO), so sum
+  // the (variant_key, batch) buckets up to one row per variant_key.
+  const variantBuckets = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const b of (bucketsQ.data ?? [])) {
+      m.set(b.variant_key ?? '', (m.get(b.variant_key ?? '') ?? 0) + b.qty);
+    }
+    return [...m.entries()]
+      .map(([variantKey, qty]) => ({ variantKey, qty }))
+      .sort((a, b) => b.qty - a.qty);
+  }, [bucketsQ.data]);
+
+  const avail = line.variantKey === undefined
+    ? undefined
+    : variantBuckets.find((v) => v.variantKey === line.variantKey)?.qty;
+  const isOverdrawn = avail != null && line.qty > avail;
+  const ready = Boolean(line.productCode && fromWarehouseId);
+
+  return (
+    <tr>
+      <td>
+        <input
+          type="text"
+          list={`xfer-skus-${line._key}`}
+          value={line.productCode}
+          onChange={(e) => onPickCode(line._key, e.target.value)}
+          placeholder="Type code…"
+          className={styles.fieldInput}
+          style={{ fontFamily: 'var(--font-mono)' }}
+        />
+        <datalist id={`xfer-skus-${line._key}`}>
+          {sortByText(skus).map((p) => (
+            <option key={p.id} value={p.code}>{p.name}</option>
+          ))}
+        </datalist>
+      </td>
+      <td>
+        <select
+          value={line.variantKey === undefined ? UNPICKED : line.variantKey}
+          onChange={(e) => setLine(line._key, {
+            variantKey: e.target.value === UNPICKED ? undefined : e.target.value,
+          })}
+          className={styles.fieldInput}
+          disabled={!ready}
+          style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-12)' }}
+        >
+          <option value={UNPICKED} disabled>
+            {!fromWarehouseId ? 'Pick From warehouse first'
+              : !line.productCode ? 'Pick SKU first'
+              : bucketsQ.isLoading ? 'Loading…'
+              : variantBuckets.length === 0 ? 'No stock at source'
+              : 'Pick variant / bucket…'}
+          </option>
+          {variantBuckets.map((v) => (
+            <option key={v.variantKey || '__plain__'} value={v.variantKey}>
+              {humanizeVariantKey(v.variantKey)} — {v.qty.toLocaleString('en-MY')} avail
+            </option>
+          ))}
+        </select>
+      </td>
+      <td className={styles.tableRight}
+          style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-13)' }}>
+        {!ready ? <span className={styles.muted}>—</span>
+          : bucketsQ.isLoading ? <span className={styles.muted}>…</span>
+          : avail == null ? <span className={styles.muted}>—</span>
+          : <span style={{ color: avail > 0 ? 'var(--c-ink)' : 'var(--fg-muted)' }}>
+              {avail.toLocaleString('en-MY')}
+            </span>}
+      </td>
+      <td className={styles.tableRight}>
+        <input
+          type="number"
+          min={1}
+          step={1}
+          value={line.qty}
+          onChange={(e) => setLine(line._key, {
+            qty: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+          })}
+          className={styles.fieldInput}
+          style={{
+            textAlign: 'right',
+            fontFamily: 'var(--font-mono)',
+            color: isOverdrawn ? 'var(--c-festive-b, #B8331F)' : 'var(--c-ink)',
+          }}
+        />
+      </td>
+      <td className={styles.actionsCell}>
+        <button
+          type="button"
+          onClick={() => removeLine(line._key)}
+          className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
+          disabled={!canRemove}
+          title="Remove line"
+        >
+          <Trash2 size={14} strokeWidth={1.75} />
+        </button>
+      </td>
+    </tr>
+  );
+}
+
 export const StockTransferNew = () => {
   const navigate = useNavigate();
   const create   = useCreateStockTransfer();
@@ -61,7 +185,6 @@ export const StockTransferNew = () => {
      own — same document, both sides, one PR. */
   const idemKey  = useIdempotencyKey();
 
-  const askConfirm = useConfirm();
   const notify = useNotify();
 
   // ── Header state ─────────────────────────────────────────────────────
@@ -76,18 +199,8 @@ export const StockTransferNew = () => {
   // ── Data ─────────────────────────────────────────────────────────────
   const warehouses = useWarehouses();
   const allSkus    = useMfgProducts();
-  // Pull balances for the From warehouse so we can show "available" inline.
-  const balances   = useInventoryBalances({
-    warehouseId: fromWarehouseId || undefined,
-    showAll:     true,
-  });
-  const balanceMap = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const b of (balances.data?.balances ?? [])) {
-      m.set(b.product_code, b.qty);
-    }
-    return m;
-  }, [balances.data]);
+  // Per-line variant buckets (available stock at the From warehouse) are pulled
+  // inside <TransferLineRow> so each line offers only its own SKU's real buckets.
 
   // ── Helpers ──────────────────────────────────────────────────────────
   const skuByCode = useMemo(
@@ -104,6 +217,8 @@ export const StockTransferNew = () => {
     setLine(key, {
       productCode: code,
       productName: sku?.name ?? '',
+      // A new SKU invalidates any previously picked variant bucket.
+      variantKey: undefined,
     });
   };
 
@@ -115,37 +230,33 @@ export const StockTransferNew = () => {
   const sameWarehouse = Boolean(
     fromWarehouseId && toWarehouseId && fromWarehouseId === toWarehouseId,
   );
-  const validLines = lines.filter((l) => l.productCode.trim() && l.qty > 0);
-  const overdrawn = validLines.filter((l) => {
-    const avail = balanceMap.get(l.productCode);
-    if (avail == null) return false; // unknown — don't block
-    return l.qty > avail;
-  });
+  // A line is valid only once its variant BUCKET is picked (variantKey set).
+  // Transferring without it would move the unclassified bucket and desync stock.
+  const validLines = lines.filter((l) => l.productCode.trim() && l.qty > 0 && l.variantKey !== undefined);
+  const needsBucket = lines.some((l) => l.productCode.trim() && l.qty > 0 && l.variantKey === undefined);
 
   const canSave = Boolean(
     fromWarehouseId &&
     toWarehouseId &&
     !sameWarehouse &&
     transferDate &&
-    validLines.length > 0,
+    validLines.length > 0 &&
+    !needsBucket,
   );
 
   const onSave = async () => {
     if (!canSave) {
-      notify({ title: 'Pick From + To warehouses (must differ), date, and at least one valid line.', tone: 'error' });
+      notify({
+        title: needsBucket
+          ? 'Pick the variant bucket for every line — that is the exact stock the transfer moves.'
+          : 'Pick From + To warehouses (must differ), date, and at least one valid line.',
+        tone: 'error',
+      });
       return;
     }
-    if (overdrawn.length > 0) {
-      const proceed = await askConfirm({
-        title: 'Some lines exceed available stock at the source warehouse',
-        body:
-          overdrawn.map((l) => `  ${l.productCode}: want ${l.qty}, have ${balanceMap.get(l.productCode) ?? 0}`).join('\n') +
-          `\n\nSaving will post immediately and push the source balance negative. Continue?`,
-        confirmLabel: 'Post anyway',
-        danger: true,
-      });
-      if (!proceed) return;
-    }
+    // Over-quantity is enforced server-side per (product, variant_key) bucket —
+    // the OUT movement rejects taking more than that bucket holds — so the client
+    // no longer pre-checks an aggregate balance it no longer fetches.
 
     create.mutate(
       {
@@ -282,94 +393,26 @@ export const StockTransferNew = () => {
           <table className={styles.table}>
             <thead>
               <tr>
-                <th style={{ width: '20%' }}>SKU *</th>
-                <th>Description</th>
+                <th style={{ width: '22%' }}>SKU *</th>
+                <th>Variant bucket *</th>
                 <th style={{ width: 110, textAlign: 'right' }}>Available</th>
                 <th style={{ width: 110, textAlign: 'right' }}>Qty *</th>
                 <th style={{ width: 40 }} />
               </tr>
             </thead>
             <tbody>
-              {lines.map((ln) => {
-                const avail = ln.productCode ? balanceMap.get(ln.productCode) : undefined;
-                const isOverdrawn = avail != null && ln.qty > avail;
-                return (
-                  <tr key={ln._key}>
-                    <td>
-                      <input
-                        type="text"
-                        list={`xfer-skus-${ln._key}`}
-                        value={ln.productCode}
-                        onChange={(e) => onPickCode(ln._key, e.target.value)}
-                        placeholder="Type code…"
-                        className={styles.fieldInput}
-                        style={{ fontFamily: 'var(--font-mono)' }}
-                      />
-                      <datalist id={`xfer-skus-${ln._key}`}>
-                        {sortByText(allSkus.data ?? []).map((p) => (
-                          <option key={p.id} value={p.code}>{p.name}</option>
-                        ))}
-                      </datalist>
-                    </td>
-                    <td>
-                      <input
-                        type="text"
-                        value={ln.productName ?? ''}
-                        onChange={(e) => setLine(ln._key, { productName: e.target.value })}
-                        placeholder="(auto-filled when SKU picked)"
-                        className={styles.fieldInput}
-                        style={{ background: 'var(--c-cream)' }}
-                      />
-                    </td>
-                    <td className={styles.tableRight}
-                        style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-13)' }}>
-                      {!fromWarehouseId
-                        ? <span className={styles.muted}>—</span>
-                        : !ln.productCode
-                          ? <span className={styles.muted}>—</span>
-                          : balances.isLoading
-                            ? <span className={styles.muted}>…</span>
-                            : (
-                              <span style={{
-                                color: (avail ?? 0) > 0 ? 'var(--c-ink)' : 'var(--fg-muted)',
-                              }}>
-                                {(avail ?? 0).toLocaleString('en-MY')}
-                              </span>
-                            )
-                      }
-                    </td>
-                    <td className={styles.tableRight}>
-                      <input
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={ln.qty}
-                        onChange={(e) => {
-                          const n = Math.max(0, Math.floor(Number(e.target.value) || 0));
-                          setLine(ln._key, { qty: n });
-                        }}
-                        className={styles.fieldInput}
-                        style={{
-                          textAlign: 'right',
-                          fontFamily: 'var(--font-mono)',
-                          color: isOverdrawn ? 'var(--c-festive-b, #B8331F)' : 'var(--c-ink)',
-                        }}
-                      />
-                    </td>
-                    <td className={styles.actionsCell}>
-                      <button
-                        type="button"
-                        onClick={() => removeLine(ln._key)}
-                        className={`${styles.iconBtn} ${styles.iconBtnDanger}`}
-                        disabled={lines.length <= 1}
-                        title="Remove line"
-                      >
-                        <Trash2 size={14} strokeWidth={1.75} />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {lines.map((ln) => (
+                <TransferLineRow
+                  key={ln._key}
+                  line={ln}
+                  fromWarehouseId={fromWarehouseId}
+                  skus={allSkus.data ?? []}
+                  onPickCode={onPickCode}
+                  setLine={setLine}
+                  removeLine={removeLine}
+                  canRemove={lines.length > 1}
+                />
+              ))}
             </tbody>
           </table>
 
@@ -379,7 +422,7 @@ export const StockTransferNew = () => {
             </Button>
           </div>
 
-          {overdrawn.length > 0 && (
+          {needsBucket && (
             <div style={{
               marginTop: 'var(--space-3)',
               padding: 'var(--space-3) var(--space-4)',
@@ -392,9 +435,9 @@ export const StockTransferNew = () => {
             }}>
               <AlertTriangle size={16} strokeWidth={1.75} style={{ flexShrink: 0, marginTop: 2 }} />
               <span>
-                <strong>{overdrawn.length} line{overdrawn.length === 1 ? '' : 's'} exceed available stock.</strong>
-                {' '}Saving will post immediately and push the source balance negative.
-                You'll be asked to confirm on Save.
+                <strong>Pick the variant bucket on every line.</strong>
+                {' '}That is the exact stock (fabric / height / special) the transfer moves —
+                a transfer with no bucket would desync stock and MRP.
               </span>
             </div>
           )}
