@@ -22,13 +22,13 @@ This file is the interruption-safe continuation record. The completion ledger co
 |---|---|---|---|
 | #906 | `hardening/frontend-search-scope-performance-gates` / `06b411ee` | Frontend search scope, first-codepoint search, responsiveness and performance gates | GitHub CI green. Hard dependency on #910. The 214-file frontend diff must pass staging search, pagination and responsiveness tests before merge. Await Claude Code review; no backend diff. |
 | #907 | `docs/hardening-p0-coverage` / this branch | A–Z completion ledger and interruption-safe handoff | Keep current as batches land. Documentation is not proof that runtime work is complete. |
-| #910 | `fix/global-search-first-character` / `24920d38` | Backend global search accepts first Unicode codepoint | GitHub CI green. Await Claude Code review. |
-| #911 | `fix/idempotency-tenant-scope` / `0edd8878` | Idempotency phase 1 tenant scoping | GitHub CI green. Merge/deploy before #912, then soak 24 hours. |
-| #912 | `fix/idempotency-phase2-constraints` / `ba91fca7` | Idempotency phase 2 constraints | GitHub CI green. Stacked on #911; never merge/deploy before phase 1 soak. |
+| #910 | `fix/global-search-first-character` / `42fa86d6` | Backend global search accepts first Unicode codepoint | Rebased onto `afd56500`; 9/9 focused tests, typecheck and all GitHub checks pass. Await Claude Code review. |
+| #911 | `fix/idempotency-tenant-scope` / `c920fa74` | Idempotency phase 1 tenant scoping | Rebased onto `afd56500`; 19/19 backend and 11/11 frontend focused tests plus typechecks pass; GitHub checks green. Merge/deploy before #912, then soak 24 hours. |
+| #912 | `fix/idempotency-phase2-constraints` / `b7960444` | Idempotency phase 2 constraints | Restacked on #911 `c920fa74`; 25/25 focused tests and typecheck pass. Never merge/deploy before the measured phase-1 soak. |
 | #913 | `hardening/scale-performance-harness` / `25487ab2` | Deterministic scale/performance harness | GitHub CI green. Full backend run reached 1,328 passing assertions before a Vitest worker transport timeout; isolated scope suite passed 7/7. |
-| #914 | `fix/migration-checksum-gate` / `ce9a09a5` | Migration checksum/drift gate | GitHub CI green, but production currently has 17 exact orphan `_pg_migrations` rows. Deployment is blocked until a transactional, backed-up, exact-set reconciliation clears them and the postcheck is clean. Await Claude Code review and deployment-runbook verification. |
+| #914 | `fix/migration-checksum-gate` / `46ef32b8` | Migration checksum/drift gate | Rebased onto `afd56500`. The 17 historical rows are preserved through an exact retirement manifest with SHA-256/Git-blob provenance; unknown orphan, checksum mismatch or filename reuse hard-fails. Full backend 109 files/1,514 tests and 35 focused tests pass. GitHub checks are rerunning; await Claude Code review and staging runner verification. |
 | #917 | `docs/p0-route-matrices` / `ffe6df46` | 929-row executable route-capability inventory and CI/prod/staging drift gates | Rebased onto `c0e8d44d`; independent review P0=0/P1=0; all GitHub backend/frontend checks green. Duplicate impersonation route is pinned until D3 removes it. Await Claude Code review. |
-| #918 | `fix/session-revocation-consistency` / `170c83fc` | Authoritative next-request session/authz validation and atomic collision-safe mail-alias transition | PostgreSQL-reserved `current_user` CTE was renamed and regression-tested. Mail-alias tests 6/6, typecheck and diff check pass locally; GitHub checks are rerunning. Staging auth latency/outage evidence + Claude Code review pending. Fail-closed revocation must not silently fall back to stale cache. |
+| #918 | `fix/session-revocation-consistency` / `576b8a21` | Authoritative next-request session/authz validation and atomic collision-safe mail-alias transition | Rebased onto `afd56500`. PostgreSQL-reserved `current_user` CTE was renamed, regression-tested and recorded in BUG-HISTORY. Session tests 11/11, reserved-token regression 1/1, typecheck and prior full GitHub checks pass; docs-only rerun is active. Staging auth latency/outage evidence + Claude Code review pending. Fail-closed revocation must not silently fall back to stale cache. |
 
 ## Local branches not yet publishable
 
@@ -42,14 +42,14 @@ This file is the interruption-safe continuation record. The completion ledger co
 These conditions override branch readiness and green CI:
 
 1. **#912:** #911 must be merged and deployed first, then complete a measured 24-hour production soak. The soak clock starts only after the #911 deployment is confirmed. Do not merge or deploy #912 early.
-2. **#914:** reconcile only the 17 verified production orphan migration rows. Take a recoverable backup, require exact-set equality before deletion, run in one transaction, and require a zero-orphan postcheck. Any mismatch aborts the operation.
+2. **#914:** do not delete the 17 verified tracker rows and do not restore their SQL into the live migration directory. The exact retirement manifest is the audit-preserving release gate; stage checksum verify/apply/deploy and require any unknown orphan, checksum mismatch or filename reuse to abort.
 3. **#906:** #910 must land first. Because #906 changes 214 files, staging verification of all search scopes, cross-page results, first-character refinement and responsiveness is mandatory.
-4. **#918:** the reserved-keyword fix in `170c83fc` must be green in GitHub and staging must measure authoritative-auth database latency and outage behavior. Preserve fail-closed revocation unless an explicit security architecture decision changes it.
+4. **#918:** the reserved-keyword fix in `dd7f381d` (current branch head `576b8a21`) must be green in GitHub and staging must measure authoritative-auth database latency and outage behavior. Preserve fail-closed revocation unless an explicit security architecture decision changes it.
 
 ## Active local branch corrections
 
-- D3 head `a88883c8` closes the user/role/impersonation transaction recheck findings and passed 110 backend files / 1,533 tests, typecheck and diff check. It must now rebase onto #918 head `170c83fc` and pass independent review before publishing.
-- SO head `e2b781bc` repaired the compile regression, duplicate supplier lease, mobile version/photo lease and payment 428/409 findings and added disposable PostgreSQL CI. Amendment and TBC/sofa multi-write paths still require true command transactions before publishing; never publish `8baa8226` or `e2b781bc` as final.
+- D3 head `a88883c8` closes the user/role/impersonation transaction recheck findings and passed 110 backend files / 1,533 tests, typecheck and diff check. Its rebase onto #918's latest code baseline is active; publish only after independent review.
+- SO head `62caced2` repairs the compile/mobile/payment findings and wraps amendment and TBC/sofa multi-write paths in PostgreSQL command transactions with real-PG CI. Independent review of the transaction adapter and full call surface is active; never publish the earlier `8baa8226` or `e2b781bc` heads.
 
 ## Database ordering and rollout
 
