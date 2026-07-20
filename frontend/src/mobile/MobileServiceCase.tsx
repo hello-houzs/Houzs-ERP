@@ -184,6 +184,25 @@ const slaStateOf = (r: Any): { tone: SlaTone; label: string } => {
   return { tone: "ok", label: `Due in ${Math.floor(h / 24)}d` };
 };
 
+// Dwell / staleness tier for the list card — desktop ServiceCases "Priority ·
+// Dwell" parity (thresholds/colours at ServiceCases.tsx:666-672): On track <7d
+// (green), Slow 7-29d (amber), Stuck >=30d (red, heavier). Skipped when the case
+// is completed / cancelled or days_in_stage is absent, so a closed row carries no
+// staleness marker. days_in_stage is computed by the shared /api/assr query and
+// can arrive camel- or snake-cased, so we dual-read.
+type DwellTier = { label: string; days: number; color: string; stuck: boolean };
+const dwellOf = (r: Any): DwellTier | null => {
+  if (stageOf(r) === "completed") return null;
+  if (statusOf(r).toLowerCase() === "cancelled") return null;
+  const v = get(r, "daysInStage", "days_in_stage");
+  if (v == null) return null;
+  const d = Number(v);
+  if (!isFinite(d)) return null;
+  if (d < 7) return { label: "On track", days: d, color: GREEN, stuck: false };
+  if (d < 30) return { label: "Slow", days: d, color: WARN, stuck: false };
+  return { label: "Stuck", days: d, color: RED, stuck: true };
+};
+
 // ── Lookup option hooks (mirror desktop) ──────────────────────────
 // The assr pickers live behind /api/assr/lookups/:kind, which returns
 // { data: [{ id, slug, name, sort_order, active }] }. Desktop reads
@@ -502,6 +521,14 @@ function CaseList({
               // shows N/5 (not N/7) and skips the supplier-only bars.
               const rowStages = activeMStages(get(r, "resolutionMethod", "resolution_method"), stageOf(r));
               const idx = rowStages.findIndex((s) => s.key === stageOf(r));
+              const dwell = dwellOf(r);
+              // Auto-escalated marker (desktop ServiceCases.tsx:577-590) — shown
+              // only while the case is open (sla.tone "done" === completed).
+              const escalated = !!get(r, "escalatedAt", "escalated_at") && sla.tone !== "done";
+              // Both responsible people, primary first (desktop join "Farra · Nancy").
+              const pic = [get(r, "assignedToName", "assigned_to_name"), get(r, "assignedTo2Name", "assigned_to_2_name")]
+                .filter(Boolean)
+                .join(" · ");
               return (
                 <div
                   key={id}
@@ -522,24 +549,42 @@ function CaseList({
                         <span style={{ fontSize: 11.5, fontWeight: 600, color: pr.color }}>{pr.label}</span>
                       </span>
                       <div style={{ flex: 1 }} />
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 999, background: tone.bg, color: tone.fg, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>
-                        {sla.label}
-                      </span>
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        {escalated && (
+                          <span style={{ padding: "2px 7px", borderRadius: 999, border: `1px solid ${RED}`, color: RED, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap", letterSpacing: 0.2 }}>
+                            Esc
+                          </span>
+                        )}
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 999, background: tone.bg, color: tone.fg, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>
+                          {sla.label}
+                        </span>
+                      </div>
                     </div>
                     <div style={{ display: "flex", gap: 11, alignItems: "flex-start" }}>
                       <Avatar name={String(customer(r))} />
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 15, fontWeight: 700, color: INK }}>{customer(r)}</div>
                         <div style={{ fontSize: 12.5, color: INK_SEC, marginTop: 1, ...cellEllipsis }}>{item ? String(item) : "—"}</div>
+                        {pic && (
+                          <div style={{ fontSize: 11, color: MUTED, marginTop: 3, ...cellEllipsis }}>PIC: {pic}</div>
+                        )}
                       </div>
                     </div>
                     <div style={{ marginTop: 12 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                        <span style={{ fontSize: 11.5, fontWeight: 600, color: TEAL_DK }}>{(() => {
-                          const sub = assrSubStatus(stageOf(r), String(get(r, "subStatus", "sub_status") ?? "") || null);
-                          return sub ? sub.label : prettyStage(stageOf(r));
-                        })()}</span>
-                        <span style={{ fontSize: 11, color: GREY }}>{Math.max(idx, 0) + 1}/{rowStages.length}</span>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                          <span style={{ fontSize: 11.5, fontWeight: 600, color: TEAL_DK, ...cellEllipsis }}>{(() => {
+                            const sub = assrSubStatus(stageOf(r), String(get(r, "subStatus", "sub_status") ?? "") || null);
+                            return sub ? sub.label : prettyStage(stageOf(r));
+                          })()}</span>
+                          {dwell && (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flex: "none" }}>
+                              <span style={{ width: 6, height: 6, borderRadius: "50%", background: dwell.color, flex: "none" }} />
+                              <span style={{ fontSize: 10.5, fontWeight: dwell.stuck ? 700 : 600, color: dwell.color, whiteSpace: "nowrap" }}>{dwell.label} {dwell.days}d</span>
+                            </span>
+                          )}
+                        </div>
+                        <span style={{ fontSize: 11, color: GREY, flex: "none" }}>{Math.max(idx, 0) + 1}/{rowStages.length}</span>
                       </div>
                       {/* mini progress bars (active pipeline for this case) */}
                       <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
