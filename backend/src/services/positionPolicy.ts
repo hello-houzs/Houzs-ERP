@@ -430,6 +430,33 @@ function positionCanWriteConfig(positionName: string | null): boolean {
   return name ? CONFIG_WRITE_POSITIONS.has(name) : false;
 }
 
+// ── The GOD positions — position ⇒ '*' wildcard (owner 2026-07-20) ────────────
+//
+// Owner-directed: merge role + position onto ONE position-driven controller. A
+// person in a god-tier POSITION is a full super admin — no roles.permissions
+// grant needed. auth.ts injects '*' into permissions_set for these positions, so
+// they flow through the SAME '*' machinery the Owner role already uses: the page
+// short-circuit to fullAccessMap, every requirePermission site, and the money /
+// config carve-outs (all of which already exempt '*'). Exact normalised-name
+// membership, NEVER substring — so "Logistic Admin" / "Service Admin" are NOT
+// caught, and a free-text rename can't inject god-mode (same anti-injection rule
+// as MONEY_WRITE_POSITIONS / CONFIG_WRITE_POSITIONS above). "Owner" is listed
+// ahead of the position existing so the owner + Test Admin (position=NULL today,
+// '*' role-only) can be migrated onto it and roles.permissions can eventually
+// retire. Additive only: it can only ever ADD '*', never remove a permission.
+const GOD_POSITIONS: ReadonlySet<string> = new Set(
+  ["Super Admin", "Owner"].map(normalisePosition),
+);
+
+/** True when this POSITION alone confers the '*' wildcard (full super admin).
+ *  Exact normalised-name membership; unknown/empty → false. Consumed by
+ *  services/auth.ts (hydrateAuthUser), which adds '*' to the caller's
+ *  permission set so position drives god-mode without a role grant. */
+export function positionGrantsWildcard(positionName: string | null): boolean {
+  const name = normalisePosition(positionName ?? "");
+  return name ? GOD_POSITIONS.has(name) : false;
+}
+
 /** Plain-language reason for the 403 body — a sentence a person can act on. */
 const MONEY_DENY_REASON =
   "Posting journal entries and payment vouchers is handled by Finance. You can view this page, but ask Finance to post it.";
