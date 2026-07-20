@@ -40,6 +40,39 @@ async function resolveUserIdsByName(env: Env, name: string): Promise<number[]> {
     .filter((id) => Number.isFinite(id) && id > 0);
 }
 
+/** Display names for the given user ids, input order preserved, blanks dropped.
+ *  Used to NAME the new responsible person in the reassigned notice title so two
+ *  reassignments of one case are distinguishable (owner 2026-07-20). */
+async function resolveUserNamesByIds(env: Env, ids: number[]): Promise<string[]> {
+  const clean = [...new Set(ids.filter((n) => Number.isFinite(n) && n > 0))];
+  if (clean.length === 0) return [];
+  const rows = await env.DB.prepare(
+    `SELECT id, name FROM users WHERE id IN (${clean.map(() => "?").join(",")})`,
+  )
+    .bind(...clean)
+    .all<{ id: number; name: string | null }>();
+  const byId = new Map<number, string>();
+  for (const r of rows.results ?? []) {
+    const nm = (r.name ?? "").trim();
+    if (nm) byId.set(Number(r.id), nm);
+  }
+  return clean.map((id) => byId.get(id)).filter((s): s is string => !!s);
+}
+
+// The notice is posted from a UTC Worker; this stamps the reassignment moment in
+// Malaysia time (UTC+8, no DST) so the body reads at the wall-clock the office
+// saw. Same +8h shift assr_print.ts's fmtDateTime uses.
+const MYT_OFFSET_MS = 8 * 60 * 60 * 1000;
+function fmtMytDateTime(d: Date): string {
+  const s = new Date(d.getTime() + MYT_OFFSET_MS);
+  const dd = String(s.getUTCDate()).padStart(2, "0");
+  const mm = String(s.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = s.getUTCFullYear();
+  const hh = String(s.getUTCHours()).padStart(2, "0");
+  const min = String(s.getUTCMinutes()).padStart(2, "0");
+  return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+}
+
 export async function notifyServiceCaseResponsible(
   env: Env,
   opts: {
@@ -79,14 +112,38 @@ export async function notifyServiceCaseResponsible(
     const assr = (opts.assrNo ?? "").trim() || "(new)";
     const customer = (opts.customerName ?? "").trim();
     const forWhom = customer ? ` for ${customer}` : "";
+    // NAME the new responsible person(s) so two reassignments of one case read
+    // differently (owner 2026-07-20 — identical "… reassigned" titles looked
+    // like an accidental double-post). The label is the CHANGED assignee(s):
+    // the free-text agent name(s) as given + the explicit assignee id(s)
+    // resolved to display names — never the upline audience.
+    const picLabel =
+      opts.reason === "reassigned"
+        ? [
+            ...(opts.agentNames ?? []).map((n) => (n ?? "").trim()).filter(Boolean),
+            ...(await resolveUserNamesByIds(
+              env,
+              (opts.userIds ?? []).map((v) => Number(v)),
+            )),
+          ]
+            .filter((v, i, a) => a.indexOf(v) === i)
+            .join(" · ")
+        : "";
+    // Timestamp lives in the BODY, not the title, so the title stays a stable
+    // dedup key (postPersonalNotice de-dupes an identical still-unacked notice).
+    const stamp = `${fmtMytDateTime(new Date())} MYT`;
     const title =
       opts.reason === "created"
         ? `New service case ${assr}`
-        : `Service case ${assr} reassigned`;
+        : picLabel
+          ? `Service case ${assr} reassigned to ${picLabel}`
+          : `Service case ${assr} reassigned`;
     const body =
       opts.reason === "created"
         ? `A new service case ${assr}${forWhom} has been created and assigned to your team.`
-        : `Service case ${assr}${forWhom} now has a new responsible person.`;
+        : picLabel
+          ? `Service case ${assr}${forWhom} was reassigned to ${picLabel} on ${stamp}.`
+          : `Service case ${assr}${forWhom} now has a new responsible person (as of ${stamp}).`;
 
     await postPersonalNotice(env, {
       userIds: [...targets],
