@@ -9,6 +9,7 @@ import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
+import { consumeCorrelated, correlatedFetch } from "../lib/requestCorrelation";
 
 /**
  * Public reset-password screen — lives at /reset/:token. Bypasses the
@@ -77,10 +78,13 @@ export function ResetPassword() {
       setState({ kind: "error", message: "Missing token." });
       return;
     }
-    fetch(`${baseUrl}/api/auth/reset/${encodeURIComponent(token)}`)
+    correlatedFetch(`${baseUrl}/api/auth/reset/${encodeURIComponent(token)}`)
       .then(async (r) => {
         if (r.ok) {
-          const d = (await r.json()) as { email: string; name: string | null };
+          const d = await consumeCorrelated(
+            r,
+            () => r.json() as Promise<{ email: string; name: string | null }>,
+          );
           setState({ kind: "ready", ...d });
         } else {
           const d = await r.json().catch(() => ({ error: "Invalid link" }));
@@ -107,7 +111,7 @@ export function ResetPassword() {
     }
     setSubmitting(true);
     try {
-      const r = await fetch(`${baseUrl}/api/auth/reset/${encodeURIComponent(token!)}`, {
+      const r = await correlatedFetch(`${baseUrl}/api/auth/reset/${encodeURIComponent(token!)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),

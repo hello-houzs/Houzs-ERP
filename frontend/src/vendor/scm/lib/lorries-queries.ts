@@ -12,6 +12,12 @@ import { authedFetch, API_URL, humanApiError } from './authed-fetch';
 // read must come from the shared accessor, never an inlined localStorage hit.
 import { readAuthToken } from '../../../lib/authToken';
 import { prepareImageForUpload } from '../../../lib/imagePipeline';
+import {
+  consumeCorrelated,
+  correlateError,
+  correlatedFetch,
+  requestIdFromResponse,
+} from '../../../lib/requestCorrelation';
 
 // Matches the lorry_type enum in migration 0195 / Houzs scm 0053.
 export const LORRY_TYPES = [
@@ -214,7 +220,7 @@ export function useDeleteLorryServiceRecord(lorryId: string) {
 
 /** The record's invoice as a blob object URL, for `window.open` / `<a href>`.
  *
- *  A raw fetch rather than authedFetch: that helper JSON-parses its response
+ *  A correlated raw-body fetch rather than authedFetch: that helper JSON-parses its response
  *  and this endpoint streams bytes. Mirrors slip.ts's fetchSlipAsObjectUrl —
  *  the established shape for an authed binary in this tree — and reuses
  *  authed-fetch's exported API_URL rather than declaring a fourth copy of it.
@@ -235,15 +241,21 @@ export async function fetchServiceInvoiceUrl(recordId: string): Promise<{ url: s
       return Number.isFinite(n) && n > 0 ? String(n) : null;
     } catch { return null; }
   })();
-  const res = await fetch(`${API_URL}/lorry-service-records/${encodeURIComponent(recordId)}/invoice`, {
+  const res = await correlatedFetch(`${API_URL}/lorry-service-records/${encodeURIComponent(recordId)}/invoice`, {
     headers: {
       authorization: `Bearer ${token}`,
       ...(companyId ? { 'X-Company-Id': companyId } : {}),
     },
   });
-  if (!res.ok) throw new Error(humanApiError(res.status, await res.text().catch(() => '')));
+  if (!res.ok) throw correlateError(
+    new Error(humanApiError(res.status, await res.text().catch(() => ''))),
+    requestIdFromResponse(res),
+  );
   const contentType = res.headers.get('content-type') ?? 'application/octet-stream';
-  return { url: URL.createObjectURL(await res.blob()), contentType };
+  return consumeCorrelated(res, async () => ({
+    url: URL.createObjectURL(await res.blob()),
+    contentType,
+  }));
 }
 
 /** Upload / replace a record's invoice. FormData on purpose: authedFetch only

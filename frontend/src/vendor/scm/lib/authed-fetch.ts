@@ -26,6 +26,13 @@ import { serviceConfirm } from './dialog-service';
 // authenticated user and every /scm/* page throws not_authenticated. This is
 // the vendor auth boundary — it is exactly where the host's answer belongs.
 import { readAuthToken } from '../../../lib/authToken';
+import {
+  consumeCorrelated,
+  correlateError,
+  correlatedFetch,
+  requestIdFromError,
+  requestIdFromResponse,
+} from '../../../lib/requestCorrelation';
 
 // `||` not `??`: the CI build inlines VITE_API_URL as an EMPTY STRING when the
 // repo var is unset, and `'' ?? default` keeps `''`. PROD fallback is now
@@ -62,8 +69,9 @@ function timeoutSignal(path: string): AbortSignal | undefined {
 async function fetchWithTimeout(url: string, init: RequestInit, path: string): Promise<Response> {
   const callerSignal = init.signal;
   try {
-    return await fetch(url, { ...init, signal: callerSignal ?? timeoutSignal(path) });
+    return await correlatedFetch(url, { ...init, signal: callerSignal ?? timeoutSignal(path) });
   } catch (e) {
+    const requestId = requestIdFromError(e);
     if (!callerSignal && e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
       /* A timed-out READ is just a read — "try again" is sound advice. A timed-out
          WRITE is not: aborting the fetch does not abort the Worker, so the save
@@ -81,13 +89,13 @@ async function fetchWithTimeout(url: string, init: RequestInit, path: string): P
         const hasIdemKey = Boolean(
           (init.headers as Record<string, string> | undefined)?.['Idempotency-Key'],
         );
-        throw new Error(
+        throw correlateError(new Error(
           hasIdemKey
             ? "That took too long and didn't go through. Please try saving again."
             : "That took too long and we couldn't confirm whether it saved. Please refresh and check before trying again — saving twice may create a duplicate.",
-        );
+        ), requestId);
       }
-      throw new Error('The request took too long — please check your connection and try again.');
+      throw correlateError(new Error('The request took too long — please check your connection and try again.'), requestId);
     }
     /* A genuine network failure — offline, DNS, CORS, the server unreachable —
        surfaces as a TypeError ("Failed to fetch"), NOT a DOMException abort.
@@ -97,7 +105,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, path: string): P
        DOMException, never a TypeError, so it never matches this and is re-thrown
        verbatim below — real aborts/timeouts keep today's behaviour. */
     if (e instanceof TypeError) {
-      throw new Error('Network error — please check your connection and try again.');
+      throw correlateError(new Error('Network error — please check your connection and try again.'), requestId);
     }
     throw e;
   }
@@ -257,7 +265,7 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
     let mergedBody: Record<string, unknown> | null = null;
     try { mergedBody = JSON.parse(init.body) as Record<string, unknown>; } catch { mergedBody = null; }
     for (let guard = 0; mergedBody && guard < 4 && res.status === 409; guard++) {
-      const text = await res.clone().text();
+      const text = await consumeCorrelated(res, () => res.clone().text());
       if (text.includes('"short_stock"') && mergedBody.confirmShortStock !== true) {
         if (!(await confirmShortStock(text))) break;            // declined → terminal error below
         mergedBody = { ...mergedBody, confirmShortStock: true };
@@ -271,7 +279,10 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
            machine code with a JSON fragment in it. Nothing was saved, and that
            is what it now says. */
         if (!(await confirmDropship(text))) {
-          throw new Error('Drop-ship not confirmed, so nothing was saved. Nothing has changed.');
+          throw correlateError(
+            new Error('Drop-ship not confirmed, so nothing was saved. Nothing has changed.'),
+            requestIdFromResponse(res),
+          );
         }
         mergedBody = { ...mergedBody, dropShip: true };
       } else {
@@ -285,16 +296,16 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
      A no-PO sofa_no_batch (canDropship absent/false) can't drop-ship, so
      surface the server's plain-English reason (no "ship anyway" retry). */
   if (res.status === 409) {
-    const text = await res.clone().text();
+    const text = await consumeCorrelated(res, () => res.clone().text());
     if (text.includes('"sofa_no_batch"')) {
       let msg = "This sofa set can't ship yet — no single production batch on hand covers the whole set. Wait until one complete batch is received.";
       try { const b = JSON.parse(text) as { message?: string }; if (b?.message) msg = b.message; } catch { /* keep fallback */ }
-      throw new Error(msg);
+      throw correlateError(new Error(msg), requestIdFromResponse(res));
     }
     if (text.includes('"sofa_partial_set"')) {
       let msg = "A sofa set must ship whole from one batch — this delivery leaves part of the set behind. Include the rest of the set, or ship none of it.";
       try { const b = JSON.parse(text) as { message?: string }; if (b?.message) msg = b.message; } catch { /* keep fallback */ }
-      throw new Error(msg);
+      throw correlateError(new Error(msg), requestIdFromResponse(res));
     }
   }
 
@@ -307,10 +318,10 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
     const err = new Error(humanApiError(res.status, body)) as Error & { status?: number; body?: string };
     err.status = res.status;
     err.body = body;
-    throw err;
+    throw correlateError(err, requestIdFromResponse(res));
   }
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  return consumeCorrelated(res, () => res.json() as Promise<T>);
 }
 
 /** One reason a save was rejected, as the backend's aggregated `validation_failed`

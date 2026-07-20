@@ -43,6 +43,7 @@
 import { api, requestIdFromError } from "../api/client";
 import { readAuthToken } from "./authToken";
 import { companyHeader } from "./activeCompany";
+import { correlatedFetch } from "./requestCorrelation";
 
 declare const __BUILD_ID__: string;
 const BUILD_ID = typeof __BUILD_ID__ !== "undefined" ? __BUILD_ID__ : "dev";
@@ -153,7 +154,7 @@ function flush(): void {
     // logout + 403 toast listeners, and invalidates SWR caches -- all behaviour
     // changes a crash reporter must never cause. keepalive lets the batch
     // survive a tab close / the reload the user is about to click.
-    void fetch(`${api.baseUrl}/api/client-errors`, {
+    void correlatedFetch(`${api.baseUrl}/api/client-errors`, {
       method: "POST",
       keepalive: true,
       headers: {

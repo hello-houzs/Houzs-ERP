@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, requestIdFromError } from "./client";
+import { correlateError } from "../lib/requestCorrelation";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -96,5 +97,58 @@ describe("API request correlation", () => {
       .toBeUndefined();
     expect(requestIdFromError(Object.assign(new Error("bad"), { requestId: "x".repeat(65) })))
       .toBeUndefined();
+  });
+
+  test("keeps correlation for a frozen Error without changing its identity or semantics", () => {
+    const frozen = Object.freeze(new TypeError("offline"));
+    const correlated = correlateError(frozen, "frozen-trace-1234");
+
+    expect(correlated).toBe(frozen);
+    expect(correlated).toBeInstanceOf(TypeError);
+    expect(correlated.message).toBe("offline");
+    expect(requestIdFromError(correlated)).toBe("frozen-trace-1234");
+  });
+
+  test("the current physical attempt overrides a stale pre-attached id", () => {
+    const error = Object.assign(new Error("offline"), { requestId: "old-trace-1234" });
+    correlateError(error, "current-trace-1234");
+    expect(requestIdFromError(error)).toBe("current-trace-1234");
+  });
+
+  test("correlates a binary 2xx JSON parse failure with the echoed server id", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not-json", {
+      status: 200,
+      headers: { "X-Request-Id": "parse-trace-1234" },
+    })));
+
+    let caught: unknown;
+    try {
+      await api.putBinary("/api/request-correlation-upload", new Blob(["x"]), "text/plain");
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(SyntaxError);
+    expect(requestIdFromError(caught)).toBe("parse-trace-1234");
+  });
+
+  test("correlates a binary filename decode failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("download", {
+      status: 200,
+      headers: {
+        "X-Request-Id": "decode-trace-1234",
+        "Content-Disposition": "attachment; filename*=UTF-8''%E0%A4%A",
+      },
+    })));
+
+    let caught: unknown;
+    try {
+      await api.downloadFile("/api/request-correlation-download");
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(URIError);
+    expect(requestIdFromError(caught)).toBe("decode-trace-1234");
   });
 });

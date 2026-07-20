@@ -26,6 +26,7 @@ import {
   setBrandingCache,
 } from "../lib/branding";
 import type { SyncStatusResponse, Paginated, ExecutionLog } from "../types";
+import { correlatedFetch } from "../lib/requestCorrelation";
 
 type SettingsTab = "connection" | "sync" | "email" | "branding" | "logs";
 
@@ -129,7 +130,7 @@ function ConnectionTab() {
          except a DNS/network drop. This button is what IT presses to decide
          whether the server is the problem, so a false green sends them to
          look somewhere else. */
-      const res = await fetch(`${api.baseUrl}/health`);
+      const res = await correlatedFetch(`${api.baseUrl}/health`);
       if (!res.ok) {
         setConnectionOk(false);
         toast.error("Server reachable but unhealthy. Please try again shortly.");
