@@ -15,6 +15,7 @@ function appFooterLabel(): string {
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { useSystemNoticeUnread } from "./useSystemNoticeUnread";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { fmtCenti } from "../lib/scm";
 import {
@@ -190,22 +191,11 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
     [roster, user?.id],
   );
 
-  // Announcements unread count — this user's audience-matching notices (incl.
-  // the private scan-result notices, target USER_IDS) minus what they've acked.
-  // Drives the red pill on the Organisation → Announcements row so it reads like
-  // a notification. Polls 30s; fail-soft (a hiccup just shows no badge).
-  const bannerQ = useQuery({
-    queryKey: ["mobile-profile-ann-unread"],
-    queryFn: () => api.get<{ data?: { id: string }[]; ackedIds?: string[] }>("/api/announcements/banner"),
-    staleTime: 30_000,
-    refetchInterval: 30_000,
-    retry: false,
-  });
-  const annUnread = useMemo(() => {
-    const items = bannerQ.data?.data ?? [];
-    const acked = new Set(bannerQ.data?.ackedIds ?? []);
-    return items.filter((a) => !acked.has(a.id)).length;
-  }, [bannerQ.data]);
+  // Un-acked SYSTEM-notice count (scan / service-case) — the actionable notices
+  // the Announcements list excludes after B1. Drives the red pill on the
+  // Organisation > Announcements row; the SAME hook badges the Profile bottom
+  // tab (MobileApp) so the two agree and share one poll (owner B2 global badge).
+  const annUnread = useSystemNoticeUnread();
 
   // Salesperson MTD scoreboard (Orders MTD / Sales MTD) — the caller's OWN
   // sales orders this Malaysia-calendar month, from the SCM backend.

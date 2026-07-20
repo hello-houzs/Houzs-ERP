@@ -567,6 +567,16 @@ app.get("/banner", async (c) => {
     return c.json({ success: false, error: "Your session has expired. Please sign in again." }, 401);
   }
 
+  // The mobile app splits this feed into two surfaces (owner 2026-07-20): the
+  // PERSISTENT Announcements list asks scope=human (source IS NULL — human posts
+  // only, matching the desktop Announcements page), the notification BELL asks
+  // scope=system (source NOT NULL — the actionable scan / service-case per-user
+  // notices). Absent/other keeps the FULL feed, so the desktop top-banner popup
+  // and every existing caller are unchanged.
+  const scope = (c.req.query("scope") ?? "").toLowerCase();
+  const humanOnly = scope === "human";
+  const systemOnly = scope === "system";
+
   // PER-USER KV snapshot (inbox.ts pattern) — this payload is per-user three
   // times over (own ackedIds, dept/position/user-id targeting, the reader's
   // company grants), so it must NEVER enter a shared cache; the key's scope
@@ -576,8 +586,12 @@ app.get("/banner", async (c) => {
   // 60s TTL matches the frontend's poll and sessionCache's freshness window
   // for role/dept edits. Best-effort: any KV trouble serves the live build.
   const bannerVersion = await configCacheVersion(c.env, "banner");
+  // The filtered variants bypass the snapshot (the cache key is not keyed on the
+  // scope) — a cheap live read + in-memory filter; the mobile surfaces poll at 30s.
   const cacheKey =
-    bannerVersion == null ? null : bannerCacheKey(bannerVersion, user.id);
+    bannerVersion == null || humanOnly || systemOnly
+      ? null
+      : bannerCacheKey(bannerVersion, user.id);
   if (cacheKey) {
     try {
       const cached = await c.env.SESSION_CACHE?.get(cacheKey);
@@ -596,6 +610,7 @@ app.get("/banner", async (c) => {
     .all<AnnouncementRow>();
   const active = (res.results ?? []).filter(
     (r) =>
+      (humanOnly ? !r.source : systemOnly ? !!r.source : true) &&
       isActiveFlag(r.isActive ?? r.is_active ?? null) &&
       notExpired(r.expiresAt ?? r.expires_at ?? null) &&
       companyCanSee(r, allowed) &&
