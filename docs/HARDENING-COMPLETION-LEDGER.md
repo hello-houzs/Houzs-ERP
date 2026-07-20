@@ -5,7 +5,7 @@ Policy: a batch being merged does **not** complete a workstream. An item is `DON
 
 Status: `DONE` = fully accepted; `PARTIAL` = useful foundation exists but acceptance is incomplete; `OPEN` = not implemented; `STALE` = the old prescription is unsafe/outdated and must use the replacement acceptance below.
 
-Change classes: `FE` frontend-only; `INFRA` CI/deploy/testing; `AUDIT` read-only; `BE★` backend/API/database/migration/permission and requires owner approval before code; `HYBRID★` frontend/audit may proceed but backend portion requires approval.
+Change classes: `FE` frontend-only; `INFRA` CI/deploy/testing; `AUDIT` read-only; `BE★` backend/API/database/migration/permission; `HYBRID★` mixed frontend/backend. The owner granted implementation approval for the complete A–Z hardening scope on 2026-07-21, so repeated per-file approval is not required. Production data mutation, deployment, applying migrations and merging remain separate gated operations.
 
 ## Execution order
 
@@ -111,6 +111,6 @@ Change classes: `FE` frontend-only; `INFRA` CI/deploy/testing; `AUDIT` read-only
 
 1. Every row needs owner, commit/PR, evidence, completion date and verified baseline hash before `DONE`.
 2. `STALE` means use the replacement acceptance above; the superseded wording is not an implementation ticket.
-3. Before any `BE★`/backend portion of `HYBRID★`, submit exact files/contracts, reason, impacted modules/data/permissions, migration/rollback and tests; code begins only after explicit approval.
+3. The 2026-07-21 owner authorization covers `BE★` and backend portions of `HYBRID★` within this ledger. Every backend batch must still record exact files/contracts, reason, impact, migration/rollback and tests in its PR; production data mutation/deployment/migration application/merge remains separately gated. Position privilege assignment and control stays backend-owned.
 4. Existing correct infrastructure is maintained, not rebuilt. A batch may close while its workstream remains open.
 5. Claude Code review is a merge gate. Authentication failure pauses merge, not frontend/infra implementation.
