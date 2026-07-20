@@ -247,6 +247,48 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     pending_supplier_return: "Pending Supplier Return",
   };
   const subStatusLabel = SUB_STATUS_LABEL[(cs as any).sub_status ?? ""] || null;
+
+  // Warehouse — auto-detected from the case's delivery area (location
+  // code) via the SCM State-to-Warehouse mapping (scm.state_warehouse_
+  // mappings, company-scoped, configurable in SCM settings), so the
+  // supplier copy shows which warehouse the item moves through. Falls
+  // back to the legacy public.warehouses code table, then em-dash.
+  // Wrapped in try/catch: the D1 test mirror has no scm schema.
+  const LOCATION_STATE: Record<string, string> = {
+    KL: "Kuala Lumpur",
+    PG: "Pulau Pinang",
+    SBH: "Sabah",
+    SRW: "Sarawak",
+  };
+  let warehouseLabel: string | null = null;
+  const locCode = String((cs as any).location || "").toUpperCase();
+  if (locCode) {
+    try {
+      const stateName = LOCATION_STATE[locCode] ?? null;
+      if (stateName) {
+        const row = await c.env.DB.prepare(
+          `SELECT w.name AS name
+             FROM scm.state_warehouse_mappings m
+             JOIN scm.warehouses w ON w.id = m.warehouse_id
+            WHERE m.state = ? AND m.company_id = ?
+            LIMIT 1`
+        )
+          .bind(stateName, Number((cs as any).company_id ?? 1))
+          .first<{ name: string }>();
+        warehouseLabel = row?.name ?? null;
+      }
+      if (!warehouseLabel) {
+        const row = await c.env.DB.prepare(
+          `SELECT name FROM warehouses WHERE code = ? LIMIT 1`
+        )
+          .bind(locCode)
+          .first<{ name: string }>();
+        warehouseLabel = row?.name ?? null;
+      }
+    } catch {
+      warehouseLabel = null;
+    }
+  }
   const generatedTs = fmtDateTime(new Date().toISOString());
 
   const html = `<!DOCTYPE html>
@@ -754,8 +796,8 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <div class="mgrid cols-4">
       <div class="lc">Customer</div><div class="vc">${esc(cs.customer_name || "—")}</div>
       <div class="lc">Delivery Area</div><div class="vc">${esc(cs.location || (cs as any).addr4 || "—")}</div>
-      <div class="lc">Coordinator</div><div class="vc">${esc((cs as any).assigned_to_name ? `${coShort} Ops · ${(cs as any).assigned_to_name}` : `${coShort} CS Team`)}</div>
-      <div class="lc">Warehouse</div><div class="vc">${esc((cs as any).delivery_order || "—")}</div>
+      <div class="lc">Service Admin (Purchasing)</div><div class="vc">${esc((cs as any).assigned_to_name || `${coShort} CS Team`)}</div>
+      <div class="lc">Warehouse</div><div class="vc">${esc(warehouseLabel || "—")}</div>
       <div class="lc">Note</div><div class="vc span3" style="font-weight: 400; color: #6a6a6a; font-size: 8.2pt;">Customer's direct phone &amp; full address are shared after dispatch is confirmed.</div>
     </div>
 
@@ -769,17 +811,17 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <!-- reported issue -->
     <div class="bar">Reported Issue</div>
     <div class="boxed">
-      ${firstItem ? `<div style="font-family: 'IBM Plex Mono', monospace; font-size: 9.8pt; font-weight: 700;">${esc(firstItem.item_code)}</div>` : ""}
-      <div style="font-size: 8.8pt; color: #3a3a3a; margin-top: 1.6mm; line-height: 1.55;">${esc(cs.complaint_issue || "—")}${cs.issue_category ? ` &nbsp;·&nbsp; Category: ${esc(cs.issue_category)}` : ""}</div>
+      <div style="font-size: 7.6pt; letter-spacing: .08em; text-transform: uppercase; color: #8a8578;">Product Code</div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 9.8pt; font-weight: 700; margin-top: 0.8mm;">${esc((items as any[]).map((it) => it.item_code).filter(Boolean).join(", ") || "—")}</div>
+      <div style="font-size: 7.6pt; letter-spacing: .08em; text-transform: uppercase; color: #8a8578; margin-top: 2.4mm;">Issue Details</div>
+      <div style="font-size: 8.8pt; color: #3a3a3a; margin-top: 0.8mm; line-height: 1.55;">${esc(cs.complaint_issue || "—")}${cs.issue_category ? ` &nbsp;·&nbsp; Category: ${esc(cs.issue_category)}` : ""}</div>
     </div>
 
     <!-- resolution plan -->
     <div class="bar">Resolution Plan</div>
     <div class="mgrid cols-4">
       <div class="lc">Method</div><div class="vc">${esc(cs.resolution_method ? (RESOLUTION_LABEL[cs.resolution_method] || cs.resolution_method) : "—")}</div>
-      <div class="lc">Assigned To</div><div class="vc${(cs as any).assigned_to_name ? "" : " dim"}">${esc((cs as any).assigned_to_name || "—")}</div>
-      <div class="lc">PO No</div><div class="vc mono">${esc(cs.po_no || "—")}</div>
-      <div class="lc">Target</div><div class="vc mono">${supplierTargetIso ? fmtDate(supplierTargetIso) : "—"}</div>
+      <div class="lc">Target Date</div><div class="vc mono">${supplierTargetIso ? fmtDate(supplierTargetIso) : "—"}</div>
     </div>
 
     <!-- supporting evidence -->
