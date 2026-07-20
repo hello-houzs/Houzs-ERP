@@ -1,5 +1,11 @@
 ## 2026-07-21
 
+### [HIGH] Caller-controlled request IDs could forge log context and explode telemetry cardinality; browser failures could not be traced back to the matching Worker request
+- **Symptom.** The Worker copied any `X-Request-Id` into console logs and Analytics Engine without validation, while the SPA did not send or retain an ID. A malformed/high-cardinality header could poison the incident trail, and a reported frontend 4xx/5xx or upload failure had no reliable lookup key for its backend request.
+- **Root cause (traced).** `requestLog` trusted the raw request header and generated only 32 bits when absent; CORS did not expose the response header; the main JSON and binary fetch paths discarded the echoed ID when constructing errors.
+- **Fix.** Request IDs are now 128-bit lowercase hex and an inbound ID is accepted only when it is 8-64 safe ASCII characters. CORS exposes `X-Request-Id`; every SPA JSON/binary attempt sends a fresh bounded ID, uses the authoritative echoed ID on errors and slow-request logs, and preserves it on the error object so the existing client-error reporter records it with the stack. Regression tests pin unsafe-header replacement, CORS exposure, JSON requests and binary failures.
+- **Ref:** `fix/request-correlation-hardening`, 2026-07-21. Backend middleware + frontend transport only; no migration.
+
 ### [MIXED] Mobile parity gaps (calendar span, Fair Report summaries, search deep-link) + two desktop announcement/notification bugs — one audit batch
 Grouped fix from a mobile-vs-desktop parity audit (`fix/mparity-misc`). Each item is independent; per-item severity in the tag.
 

@@ -40,7 +40,7 @@
 // so the pipeline is still exercised before production.
 // ---------------------------------------------------------------------------
 
-import { api } from "../api/client";
+import { api, requestIdFromError } from "../api/client";
 import { readAuthToken } from "./authToken";
 import { companyHeader } from "./activeCompany";
 
@@ -92,8 +92,11 @@ function toMessage(err: unknown): string {
 }
 
 function toStack(err: unknown): string | undefined {
-  if (err instanceof Error && err.stack) return err.stack.slice(0, MAX_STACK);
-  return undefined;
+  const requestId = requestIdFromError(err);
+  const stack = err instanceof Error && err.stack ? err.stack : "";
+  if (!requestId) return stack ? stack.slice(0, MAX_STACK) : undefined;
+  const suffix = `\nRequest-Id: ${requestId}`;
+  return `${stack.slice(0, Math.max(0, MAX_STACK - suffix.length))}${suffix}`.trim();
 }
 
 function enqueue(message: string, stack: string | undefined): void {

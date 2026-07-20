@@ -11,13 +11,23 @@ import type { Env } from "../types";
 // Worker dependency + bundle weight; the onError humanizer already returns
 // clean errors. Add a SENTRY_DSN-gated hook later if error aggregation is wanted.
 
+const SAFE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,63}$/;
+
 function requestId(): string {
-  const b = crypto.getRandomValues(new Uint8Array(4));
+  const b = crypto.getRandomValues(new Uint8Array(16));
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+export function normalizeRequestId(candidate: string | undefined): string {
+  const value = candidate?.trim();
+  return value && SAFE_REQUEST_ID.test(value) ? value : requestId();
+}
+
 export const requestLog: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
-  const id = c.req.header("X-Request-Id") || requestId();
+  // Never put an arbitrary caller-controlled value into logs or Analytics
+  // Engine indexes. Besides cardinality abuse, whitespace/control characters
+  // can forge log lines and make an incident trail ambiguous.
+  const id = normalizeRequestId(c.req.header("X-Request-Id"));
   c.header("X-Request-Id", id);
   c.set("requestId", id);
   const t0 = Date.now();
