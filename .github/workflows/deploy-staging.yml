@@ -46,6 +46,9 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
+      # Staging also runs on main and supports workflow_dispatch, so it must
+      # enforce the same route-capability drift gate as PR/prod CI.
+      - run: npm run audit:routes
       - run: npm run typecheck
       - run: npm test
       # Apply pending Postgres migrations against the STAGING Supabase before
