@@ -331,9 +331,12 @@ export const PcLineCard = ({
           <PcVariantEditor
             category={l.category ?? ''}
             variants={l.variants}
-            onChange={(k, v) => { if (!identityLocked) onSetVariant(k, v); }}
+            onChange={onSetVariant}
             fabrics={fabrics}
             maint={maint!}
+            disabled={disabled}
+            sourceLinked={identityReadOnly}
+            sourceLabel="Purchase Consignment Order"
           />
         </div>
       )}
