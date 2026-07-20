@@ -462,6 +462,13 @@ purchaseConsignmentReturns.post('/', async (c) => {
       notes: (it.notes as string | undefined) ?? null,
       item_group: (it.itemGroup as string | null | undefined) ?? null,
       variants: (it.variants as Record<string, unknown> | null | undefined) ?? null,
+      // description2 = rendered variant + SPECIAL summary. The server-convert
+      // paths already set it; this New-page create was the one path that dropped
+      // it, leaving PCRet rows inconsistent with every sibling table (2026-07-20).
+      description2: buildVariantSummary(
+        String((it.itemGroup as string | null | undefined) ?? ''),
+        (it.variants as Record<string, unknown> | null | undefined) ?? null,
+      ) || null,
     };
   }).filter((r) => Number(r.qty_returned) > 0);
 
