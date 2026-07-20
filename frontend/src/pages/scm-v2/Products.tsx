@@ -112,7 +112,7 @@ import { formatSizeRich, formatSizeRichWithCfg, resolveSizeInfo } from '../../ve
 import { ProductModels, NewModelDialog } from './ProductModels';
 import { VariantsTab } from './products/VariantsTab';
 import { Categories } from './Categories';
-import { useBrandingPool, useProjectBrands } from '../../vendor/scm/lib/product-models-queries';
+import { useBrandingPool } from '../../vendor/scm/lib/product-models-queries';
 import { useQueryClient } from '@tanstack/react-query';
 import { parseMoneyToSen } from '../../lib/money';
 import styles from './Products.module.css';
@@ -3119,27 +3119,42 @@ const SofaQuickPresetsList = ({
    Mirrors the SO Maintenance "Venues" read-only list. Active brands only,
    matching what the Branding datalists offer (useBrandingPool). */
 const BrandingsReadOnlyPanel = () => {
-  const brands = useProjectBrands();
-  const rows = (brands.data ?? []).filter((b) => b.active === 1 || b.active === true);
+  // Resolve the SAME branding pool the SCM Branding inputs use, so the display
+  // matches what those inputs actually offer. Under HOUZS that is the PMS
+  // project_brands pool; under 2990 the PMS pool is empty (PMS is Houzs-only
+  // and project_brands is now company-scoped), so this falls back to the
+  // DISTINCT brandings on 2990's OWN products/models instead of showing the
+  // other company's brands (or a blank list).
+  const { pool, fromConfig, isLoading } = useBrandingPool();
 
   return (
     <div className={styles.maintList}>
       <p className={styles.stateInfo} style={{ marginBottom: 12 }}>
-        Brandings are maintained in <strong>Project Maintenance</strong>. This
-        list is read-only; add, rename, or deactivate a branding there and it
-        flows to every Branding input here.
+        {fromConfig ? (
+          <>
+            Brandings are maintained in <strong>Project Maintenance</strong>.
+            This list is read-only; add, rename, or deactivate a branding there
+            and it flows to every Branding input here.
+          </>
+        ) : (
+          <>
+            This read-only list is derived from the brandings on this company’s
+            own products and models. Maintain brandings centrally in{' '}
+            <strong>Project Maintenance</strong>.
+          </>
+        )}
       </p>
-      {brands.isLoading ? (
+      {isLoading ? (
         <p className={styles.eyebrow}>Loading brandings…</p>
-      ) : rows.length === 0 ? (
+      ) : pool.length === 0 ? (
         <p className={styles.eyebrow}>
           No brandings yet — add them in Project Maintenance.
         </p>
       ) : (
-        rows.map((b, i) => (
-          <div key={b.id} className={styles.maintRow} style={{ gridTemplateColumns: '32px 1fr' }}>
+        pool.map((name, i) => (
+          <div key={name} className={styles.maintRow} style={{ gridTemplateColumns: '32px 1fr' }}>
             <span className={styles.maintRowIdx}>{i + 1}</span>
-            <span className={styles.maintRowValue}>{b.name}</span>
+            <span className={styles.maintRowValue}>{name}</span>
           </div>
         ))
       )}

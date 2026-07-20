@@ -203,10 +203,20 @@ app.delete("/event-types/:id", requirePermission("projects.manage"), async (c) =
 
 app.get("/brands", async (c) => {
   const includeInactive = c.req.query("include_inactive") === "1";
+  // Company-scope the brand pool. project_brands carries company_id (mig 0093)
+  // but this read was left unscoped by that migration's paired code change, so
+  // the SCM Products > Maintenance > Brandings tab (which 2990 uses, re-sourced
+  // via this endpoint) showed 2990 the HOUZS brand pool. activeCompanySql
+  // degrades to no predicate when the company is unresolved (cold-start /
+  // single-company), so Houzs-only behaviour is unchanged.
+  const coSql = activeCompanySql(c);
+  const whereClause = includeInactive
+    ? (coSql ? `WHERE 1=1${coSql}` : "")
+    : `WHERE active = 1${coSql}`;
   const rows = await c.env.DB.prepare(
     `SELECT id, name, color, sort_order, active, logo_r2_key
        FROM project_brands
-      ${includeInactive ? "" : "WHERE active = 1"}
+      ${whereClause}
       ORDER BY sort_order, name`
   ).all<{ id: number; name: string; color: string; sort_order: number; active: number; logo_r2_key: string | null }>();
   const all = rows.results ?? [];
@@ -233,18 +243,32 @@ app.post("/brands", requirePermission("projects.manage"), async (c) => {
     .bind(name)
     .first<{ id: number }>();
   if (existing) return c.json({ error: "A brand with that name already exists" }, 409);
-  const r = await c.env.DB.prepare(
-    `INSERT INTO project_brands (name, color, sort_order, active)
-     VALUES (?, ?, ?, 1)`
-  )
-    .bind(name, color, body.sort_order ?? 0)
-    .run();
+  // Stamp the active company so a brand created under 2990 isn't silently
+  // labelled HOUZS by the company_id column DEFAULT. When the company is
+  // unresolved (single-company / cold-start) fall back to that DEFAULT.
+  const activeCo = activeCompanyId(c);
+  const r = activeCo != null
+    ? await c.env.DB.prepare(
+        `INSERT INTO project_brands (name, color, sort_order, active, company_id)
+         VALUES (?, ?, ?, 1, ?)`
+      )
+        .bind(name, color, body.sort_order ?? 0, activeCo)
+        .run()
+    : await c.env.DB.prepare(
+        `INSERT INTO project_brands (name, color, sort_order, active)
+         VALUES (?, ?, ?, 1)`
+      )
+        .bind(name, color, body.sort_order ?? 0)
+        .run();
   return c.json({ id: r.meta.last_row_id, name, color }, 201);
 });
 
 app.patch("/brands/:id", requirePermission("projects.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Invalid ID." }, 400);
+  // Scope every read + write in this handler to the active company, so a
+  // 2990-context request can't rename/reorder/deactivate a HOUZS brand.
+  const brandCoSql = activeCompanySql(c);
   const body = await c.req.json<{
     name?: string;
     color?: string;
@@ -261,7 +285,7 @@ app.patch("/brands/:id", requirePermission("projects.manage"), async (c) => {
     // existing projects — projects.brand is plain text, not a FK, so
     // renaming here without a cascade would orphan historical rows.
     const cur = await c.env.DB.prepare(
-      `SELECT name FROM project_brands WHERE id = ?`
+      `SELECT name FROM project_brands WHERE id = ?${brandCoSql}`
     )
       .bind(id)
       .first<{ name: string }>();
@@ -286,16 +310,16 @@ app.patch("/brands/:id", requirePermission("projects.manage"), async (c) => {
   if (!sets.length) return c.json({ error: "No fields to update" }, 400);
   binds.push(id);
   const r = await c.env.DB.prepare(
-    `UPDATE project_brands SET ${sets.join(", ")} WHERE id = ?`
+    `UPDATE project_brands SET ${sets.join(", ")} WHERE id = ?${brandCoSql}`
   )
     .bind(...binds)
     .run();
   if (!r.meta.changes) return c.json({ error: "Not found" }, 404);
 
-  // Cascade rename to historical projects.brand values.
+  // Cascade rename to historical projects.brand values (this company only).
   if (oldName && body.name && oldName !== body.name.trim()) {
     await c.env.DB.prepare(
-      `UPDATE projects SET brand = ?, updated_at = datetime('now') WHERE brand = ?`
+      `UPDATE projects SET brand = ?, updated_at = datetime('now') WHERE brand = ?${brandCoSql}`
     )
       .bind(body.name.trim(), oldName)
       .run();
@@ -307,9 +331,10 @@ app.delete("/brands/:id", requirePermission("projects.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Invalid ID." }, 400);
   // Soft-delete. Existing projects keep their brand label; the brand
-  // just stops appearing in new-project pickers.
+  // just stops appearing in new-project pickers. Scoped so a 2990-context
+  // request can't deactivate a HOUZS brand.
   await c.env.DB.prepare(
-    `UPDATE project_brands SET active = 0 WHERE id = ?`
+    `UPDATE project_brands SET active = 0 WHERE id = ?${activeCompanySql(c)}`
   )
     .bind(id)
     .run();
@@ -326,9 +351,11 @@ app.put("/brands/reorder", requirePermission("projects.manage"), async (c) => {
   }
   const ids = body.ids as number[];
   if (ids.length === 0) return c.json({ ok: true });
+  // Scoped so a 2990-context reorder can't touch HOUZS brand rows.
+  const coSql = activeCompanySql(c);
   await c.env.DB.batch(
     ids.map((id, idx) =>
-      c.env.DB.prepare(`UPDATE project_brands SET sort_order = ? WHERE id = ?`)
+      c.env.DB.prepare(`UPDATE project_brands SET sort_order = ? WHERE id = ?${coSql}`)
         .bind((idx + 1) * 10, id),
     ),
   );
