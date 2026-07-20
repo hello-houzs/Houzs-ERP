@@ -163,6 +163,10 @@ export function useBrandingPool() {
     configPool,
     /** DISTINCT branding values across products + models (suggestion seed). */
     distinct,
+    /** True while any source of the resolved pool is still loading — lets a
+     *  read-only consumer avoid flashing an empty state before the fallback
+     *  (products/models) has settled. */
+    isLoading: brands.isLoading || products.isLoading || models.isLoading,
   };
 }
 
