@@ -36,7 +36,8 @@
 import { Hono } from 'hono';
 import type { Env, Variables } from '../env';
 import { supabaseAuth } from '../middleware/auth';
-import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { resolveCallerStaffId, resolveSalesScopeIds } from '../lib/salesScope';
 import { canViewAllSales } from '../lib/houzs-perms';
 
@@ -186,7 +187,11 @@ quotes.patch('/:id', async (c) => {
     return c.json({ error: 'invalid_total' }, 400);
   }
 
-  const { data, error } = await scopeToCompany(
+  // Multi-company: a write refuses on an unresolved company rather than
+  // degrading to every company (strict, like the create path above).
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(
     supabase
       .from('quotes')
       .update({
@@ -196,7 +201,7 @@ quotes.patch('/:id', async (c) => {
       })
       .eq('id', id)
       .is('promoted_to_order_id', null), // never edit an already-converted quote
-    c,
+    co.companyId,
   )
     .select('id, customer_name, total, updated_at')
     .maybeSingle();
@@ -215,12 +220,17 @@ quotes.patch('/:id', async (c) => {
 quotes.delete('/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
-  const { error } = await scopeToCompany(
+  // Multi-company: scope strictly; select reports whether a row in THIS
+  // company was actually removed (a blind id from another company is not found).
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(
     supabase.from('quotes').delete().eq('id', id),
-    c,
-  );
+    co.companyId,
+  ).select('id').maybeSingle();
   if (error) {
     return c.json({ error: 'db_delete_failed', detail: error.message }, 500);
   }
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true });
 });

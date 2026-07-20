@@ -24,7 +24,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
-import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const addons = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -159,7 +160,7 @@ addons.post('/', async (c) => {
 });
 
 // PATCH /:id — update.
-addons.patch('/:id', async (c) => {
+export const patchAddonHandler = async (c: any) => {
   const id = c.req.param('id');
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -184,21 +185,31 @@ addons.patch('/:id', async (c) => {
   if (p.sortOrder      !== undefined) patch.sort_order       = p.sortOrder;
 
   const supabase = c.get('supabase');
-  const { data, error } = await supabase.from('addons').update(patch).eq('id', id).select(SELECT).maybeSingle();
+  // Multi-company: scope the write to the active company so a blind id from
+  // another company matches nothing (reported as not-found, not mutated).
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(supabase.from('addons').update(patch).eq('id', id), co.companyId).select(SELECT).maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ addon: toApi(data as AddonRow) });
-});
+};
+addons.patch('/:id', patchAddonHandler);
 
 // DELETE /:id — blocked by the order_items FK when the add-on is in use
 // (23503). The UI translates that into a "used on existing orders" message.
 addons.delete('/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
-  const { error } = await supabase.from('addons').delete().eq('id', id);
+  // Multi-company: scope the delete; select reports whether a row in THIS
+  // company was actually removed.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(supabase.from('addons').delete().eq('id', id), co.companyId).select('id').maybeSingle();
   if (error) {
     if (error.code === '23503') return c.json({ error: 'in_use', reason: 'still referenced by existing orders' }, 409);
     return c.json({ error: 'delete_failed', reason: error.message }, 500);
   }
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true });
 });

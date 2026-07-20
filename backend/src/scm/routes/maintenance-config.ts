@@ -24,7 +24,8 @@ import type { Context } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { canWriteScmConfig } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
-import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import {
   CONFIG_CACHE_TTL_SECONDS,
   bumpConfigVersion,
@@ -344,20 +345,24 @@ maintenanceConfig.delete('/changes/:id', async (c) => {
   }
   const id = c.req.param('id');
   const supabase = c.get('supabase');
+  // Multi-company: a write refuses on an unresolved company rather than
+  // degrading to every company; scope the load and the delete strictly.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
-  const { data: row, error: findErr } = await scopeToCompany(
+  const { data: row, error: findErr } = await scopeToCompanyId(
     supabase
       .from('maintenance_config_history')
       .select('id')
       .eq('id', id),
-    c,
+    co.companyId,
   ).maybeSingle();
   if (findErr) return c.json({ error: 'load_failed', reason: findErr.message }, 500);
-  if (!row) return c.json({ error: 'not_found' }, 404);
+  if (!row) return c.json(NOT_THIS_COMPANY, 404);
 
-  const { error } = await scopeToCompany(
+  const { error } = await scopeToCompanyId(
     supabase.from('maintenance_config_history').delete().eq('id', id),
-    c,
+    co.companyId,
   );
   if (error) {
     if (error.code === '42501' || /permission denied/i.test(error.message)) {

@@ -27,7 +27,8 @@ import { effectiveDelivery } from '../shared/effective-delivery';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { bindingToProductPatch } from '../lib/cost-anchor-sync';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 /* Task #91 — small helper: normalize a body field to E.164 phone storage,
@@ -433,7 +434,7 @@ suppliers.post('/', async (c) => {
 });
 
 // ── Update supplier ─────────────────────────────────────────────────
-suppliers.patch('/:id', async (c) => {
+export const patchSupplierHandler = async (c: any) => {
   const id = c.req.param('id');
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch {
@@ -485,13 +486,21 @@ suppliers.patch('/:id', async (c) => {
   }
 
   const supabase = c.get('supabase');
-  const { data, error } = await supabase.from('suppliers').update(updates).eq('id', id).select(SUPPLIER_COLS).single();
+  /* Multi-company: an edit must act only on THIS company's supplier. Scope the
+     UPDATE predicate on company_id (not just id) so a blind id from another
+     company matches nothing — maybeSingle then reports it as not-found rather
+     than mutating a supplier the caller can't even see in its own list. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(supabase.from('suppliers').update(updates).eq('id', id), co.companyId).select(SUPPLIER_COLS).maybeSingle();
   if (error) {
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ supplier: data });
-});
+};
+suppliers.patch('/:id', patchSupplierHandler);
 
 // ── Bindings: list / create / update / delete ─────────────────────────
 suppliers.get('/:id/bindings', async (c) => {
@@ -676,21 +685,26 @@ suppliers.patch('/:id/bindings/:bindingId', async (c) => {
   if (body.isMainSupplier !== undefined) updates.is_main_supplier = Boolean(body.isMainSupplier);
 
   const supabase = c.get('supabase');
+  /* Multi-company: this binding carries a costing (price_matrix / unit cost) —
+     scope every load AND the write to the active company so a blind bindingId
+     from another company can't be read or re-priced. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   // PR — Commander 2026-05-27: validate price_matrix shape against the
   // binding's current category. We fetch the existing row's material_kind +
   // material_code (since the PATCH body may omit them), then look up the
   // SKU's category.
   if (body.priceMatrix !== undefined) {
-    const { data: existing } = await supabase
+    const { data: existing } = await scopeToCompanyId(supabase
       .from('supplier_material_bindings')
       .select('material_kind, material_code')
-      .eq('id', bindingId)
+      .eq('id', bindingId), co.companyId)
       .maybeSingle();
-    if (!existing) return c.json({ error: 'not_found' }, 404);
+    if (!existing) return c.json(NOT_THIS_COMPANY, 404);
     const kind = (updates.material_kind as string | undefined) ?? existing.material_kind;
     const code = (updates.material_code as string | undefined) ?? existing.material_code;
-    const cat = await categoryForMaterial(supabase, kind, code, activeCompanyId(c));
+    const cat = await categoryForMaterial(supabase, kind, code, co.companyId);
     try {
       updates.price_matrix = validatePriceMatrix(body.priceMatrix, cat);
     } catch (e) {
@@ -701,10 +715,10 @@ suppliers.patch('/:id/bindings/:bindingId', async (c) => {
 
   // If promoting to main, demote others first (need to fetch the binding's material info).
   if (updates.is_main_supplier === true) {
-    const { data: existing } = await supabase
+    const { data: existing } = await scopeToCompanyId(supabase
       .from('supplier_material_bindings')
       .select('material_kind, material_code')
-      .eq('id', bindingId)
+      .eq('id', bindingId), co.companyId)
       .maybeSingle();
     if (existing) {
       await supabase
@@ -713,16 +727,17 @@ suppliers.patch('/:id/bindings/:bindingId', async (c) => {
         .eq('material_kind', existing.material_kind)
         .eq('material_code', existing.material_code)
         .eq('is_main_supplier', true)
-        .eq('company_id', activeCompanyId(c))
+        .eq('company_id', co.companyId)
         .neq('id', bindingId);
     }
   }
 
-  const { data, error } = await supabase.from('supplier_material_bindings').update(updates).eq('id', bindingId).select(BINDING_COLS).single();
+  const { data, error } = await scopeToCompanyId(supabase.from('supplier_material_bindings').update(updates).eq('id', bindingId), co.companyId).select(BINDING_COLS).maybeSingle();
   if (error) {
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
 
   /* Cost anchor (0177) — if this binding is the cost anchor for its
      material_code, mirror its (just-written) cost onto the linked
@@ -753,22 +768,27 @@ suppliers.patch('/:id/bindings/:bindingId/cost-anchor', async (c) => {
   const anchor = body.anchor;
 
   const supabase = c.get('supabase');
+  /* Multi-company: setting a cost anchor re-points a material's costing and
+     pushes it onto the product, so scope both the load and the write to the
+     active company — a blind bindingId from another company is not found. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   // Fetch the binding's material identity (needed to clear sibling anchors and
   // to drive the initial sync).
-  const { data: existing, error: loadErr } = await supabase
+  const { data: existing, error: loadErr } = await scopeToCompanyId(supabase
     .from('supplier_material_bindings')
     .select('id, material_kind, material_code')
-    .eq('id', bindingId)
+    .eq('id', bindingId), co.companyId)
     .maybeSingle();
   if (loadErr) return c.json({ error: 'load_failed', reason: loadErr.message }, 500);
-  if (!existing) return c.json({ error: 'not_found' }, 404);
+  if (!existing) return c.json(NOT_THIS_COMPANY, 404);
 
   // Set this binding's flag first (this is the write RLS gates → 403 on denial).
-  const { data: updated, error: setErr } = await supabase
+  const { data: updated, error: setErr } = await scopeToCompanyId(supabase
     .from('supplier_material_bindings')
     .update({ is_cost_anchor: anchor, updated_at: new Date().toISOString() })
-    .eq('id', bindingId)
+    .eq('id', bindingId), co.companyId)
     .select(BINDING_COLS)
     .single();
   if (setErr) {
@@ -785,7 +805,7 @@ suppliers.patch('/:id/bindings/:bindingId/cost-anchor', async (c) => {
       .eq('material_kind', existing.material_kind)
       .eq('material_code', existing.material_code)
       .eq('is_cost_anchor', true)
-      .eq('company_id', activeCompanyId(c))
+      .eq('company_id', co.companyId)
       .neq('id', bindingId);
 
     // Initial sync — push the binding's current cost onto the product so they
@@ -799,8 +819,14 @@ suppliers.patch('/:id/bindings/:bindingId/cost-anchor', async (c) => {
 suppliers.delete('/:id/bindings/:bindingId', async (c) => {
   const bindingId = c.req.param('bindingId');
   const supabase = c.get('supabase');
-  const { error } = await supabase.from('supplier_material_bindings').delete().eq('id', bindingId);
+  /* Multi-company: scope the DELETE to the active company. select+maybeSingle
+     reports whether a row in THIS company was actually removed — a blind
+     bindingId from another company deletes nothing and returns not-found. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(supabase.from('supplier_material_bindings').delete().eq('id', bindingId), co.companyId).select('id').maybeSingle();
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.body(null, 204);
 });
 

@@ -25,7 +25,8 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 
 export const warehouse = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -277,15 +278,20 @@ warehouse.patch('/racks/:id', async (c) => {
   if (typeof body.notes === 'string')    updates.notes = body.notes;
   if (typeof body.reserved === 'boolean') updates.reserved = body.reserved;
 
-  const { error } = await sb.from('warehouse_racks').update(updates).eq('id', id);
+  // Multi-company: scope the write (and the read-back) to the active company so
+  // a blind rack id from another company matches nothing.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: updated, error } = await scopeToCompanyId(sb.from('warehouse_racks').update(updates).eq('id', id), co.companyId).select('id').maybeSingle();
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_rack' }, 409);
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
+  if (!updated) return c.json(NOT_THIS_COMPANY, 404);
 
   // reserved flag affects derived status — recompute.
   const status = await refreshRackStatus(sb, id);
-  const { data } = await sb.from('warehouse_racks').select(RACK_COLS).eq('id', id).single();
+  const { data } = await scopeToCompanyId(sb.from('warehouse_racks').select(RACK_COLS).eq('id', id), co.companyId).single();
   return c.json({ rack: data, status });
 });
 
@@ -293,12 +299,18 @@ warehouse.patch('/racks/:id', async (c) => {
 warehouse.delete('/racks/:id', async (c) => {
   const sb = c.get('supabase');
   const id = c.req.param('id');
+  // Multi-company: confirm the rack is THIS company's before the empty-check
+  // (so another company's rack can't even be probed) and scope the delete.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: rackRow } = await scopeToCompanyId(sb.from('warehouse_racks').select('id').eq('id', id), co.companyId).maybeSingle();
+  if (!rackRow) return c.json(NOT_THIS_COMPANY, 404);
   const { count } = await sb
     .from('warehouse_rack_items')
     .select('id', { head: true, count: 'exact' })
     .eq('rack_id', id);
   if ((count ?? 0) > 0) return c.json({ error: 'rack_not_empty' }, 409);
-  const { error } = await sb.from('warehouse_racks').delete().eq('id', id);
+  const { error } = await scopeToCompanyId(sb.from('warehouse_racks').delete().eq('id', id), co.companyId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   return c.json({ ok: true });
 });
@@ -316,12 +328,18 @@ warehouse.post('/stock-in', async (c) => {
   if (!productCode) return c.json({ error: 'product_code_required' }, 400);
   const qty = Math.max(1, Number(body.qty ?? 1) || 1);
 
+  // Multi-company: resolve strictly, then scope the rack load so stock can only
+  // be placed onto THIS company's rack (a blind rack id from another company is
+  // not found).
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
   // Verify the rack exists (and grab its label + warehouse for the movement
   // snapshot). A reserved rack can still be stocked into — items win.
-  const { data: rack, error: rackErr } = await sb
+  const { data: rack, error: rackErr } = await scopeToCompanyId(sb
     .from('warehouse_racks')
     .select('id, rack, warehouse_id')
-    .eq('id', rackId)
+    .eq('id', rackId), co.companyId)
     .single();
   if (rackErr || !rack) return c.json({ error: 'rack_not_found' }, 404);
 
@@ -374,12 +392,17 @@ warehouse.post('/stock-out', async (c) => {
   const itemId = String(body.itemId ?? '').trim();
   if (!itemId) return c.json({ error: 'item_required' }, 400);
 
+  // Multi-company: resolve strictly and scope the load + delete so a blind rack
+  // item id from another company can't be stocked out.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
   // Load the item (and its rack snapshot) before we delete it so the movement
   // record captures what left.
-  const { data: item, error: itemErr } = await sb
+  const { data: item, error: itemErr } = await scopeToCompanyId(sb
     .from('warehouse_rack_items')
     .select(`${ITEM_COLS}, rack:warehouse_racks(id, rack, warehouse_id)`)
-    .eq('id', itemId)
+    .eq('id', itemId), co.companyId)
     .single();
   if (itemErr || !item) return c.json({ error: 'item_not_found' }, 404);
 
@@ -392,10 +415,10 @@ warehouse.post('/stock-out', async (c) => {
   };
   const rack = Array.isArray(itemRow.rack) ? (itemRow.rack[0] ?? null) : itemRow.rack;
 
-  const { error: delErr } = await sb
+  const { error: delErr } = await scopeToCompanyId(sb
     .from('warehouse_rack_items')
     .delete()
-    .eq('id', itemId);
+    .eq('id', itemId), co.companyId);
   if (delErr) return c.json({ error: 'delete_failed', reason: delErr.message }, 500);
 
   let status: RackStatus | null = null;
@@ -433,11 +456,17 @@ warehouse.post('/transfer', async (c) => {
   if (!fromItemId) return c.json({ error: 'from_item_required' }, 400);
   if (!toRackId) return c.json({ error: 'to_rack_required' }, 400);
 
+  // Multi-company: every load AND write below is scoped to the active company so
+  // a physical relocation can never move another company's stock (both the
+  // source item and the destination rack must be this company's).
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
   // Source item + its rack (for warehouse match + label snapshot).
-  const { data: item, error: itemErr } = await sb
+  const { data: item, error: itemErr } = await scopeToCompanyId(sb
     .from('warehouse_rack_items')
     .select(`${ITEM_COLS}, rack:warehouse_racks(id, rack, warehouse_id)`)
-    .eq('id', fromItemId)
+    .eq('id', fromItemId), co.companyId)
     .single();
   if (itemErr || !item) return c.json({ error: 'item_not_found' }, 404);
   const itemRow = item as unknown as RackItemRow & {
@@ -448,8 +477,8 @@ warehouse.post('/transfer', async (c) => {
   if (fromRack.id === toRackId) return c.json({ error: 'same_rack' }, 400);
 
   // Destination rack must exist AND be in the same warehouse.
-  const { data: toRack, error: toErr } = await sb
-    .from('warehouse_racks').select('id, rack, warehouse_id').eq('id', toRackId).single();
+  const { data: toRack, error: toErr } = await scopeToCompanyId(sb
+    .from('warehouse_racks').select('id, rack, warehouse_id').eq('id', toRackId), co.companyId).single();
   if (toErr || !toRack) return c.json({ error: 'to_rack_not_found' }, 404);
   if (toRack.warehouse_id !== fromRack.warehouse_id) {
     return c.json({ error: 'cross_warehouse_not_allowed' }, 400);
@@ -460,24 +489,24 @@ warehouse.post('/transfer', async (c) => {
 
   // Decrement (or delete) the source item.
   if (moveQty >= itemRow.qty) {
-    await sb.from('warehouse_rack_items').delete().eq('id', fromItemId);
+    await scopeToCompanyId(sb.from('warehouse_rack_items').delete().eq('id', fromItemId), co.companyId);
   } else {
-    await sb.from('warehouse_rack_items').update({ qty: itemRow.qty - moveQty }).eq('id', fromItemId);
+    await scopeToCompanyId(sb.from('warehouse_rack_items').update({ qty: itemRow.qty - moveQty }).eq('id', fromItemId), co.companyId);
   }
 
   // Merge into an existing same (product, variant) item on the destination
   // rack, else create a new placement row there.
-  const { data: dstExisting } = await sb.from('warehouse_rack_items')
+  const { data: dstExisting } = await scopeToCompanyId(sb.from('warehouse_rack_items')
     .select('id, qty')
     .eq('rack_id', toRackId)
     .eq('product_code', itemRow.product_code)
-    .eq('variant_key', vk)
+    .eq('variant_key', vk), co.companyId)
     .limit(1)
     .maybeSingle();
   if (dstExisting) {
-    await sb.from('warehouse_rack_items')
+    await scopeToCompanyId(sb.from('warehouse_rack_items')
       .update({ qty: (dstExisting as { qty: number }).qty + moveQty })
-      .eq('id', (dstExisting as { id: string }).id);
+      .eq('id', (dstExisting as { id: string }).id), co.companyId);
   } else {
     await sb.from('warehouse_rack_items').insert({
       company_id: activeCompanyId(c), // multi-company: stamp the active company

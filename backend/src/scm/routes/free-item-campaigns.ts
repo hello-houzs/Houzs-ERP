@@ -7,7 +7,8 @@ import { parseFreeItemEligible, ruleTargetSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { canWriteScmConfig } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
-import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
 
@@ -85,13 +86,17 @@ freeItemCampaigns.patch('/:id', async (c) => {
   const parsed = writeSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: 'validation_failed', issues: parsed.error.issues }, 400);
   const eligible = parseFreeItemEligible(parsed.data.eligible);
-  const { data, error } = await gate.supabase
+  // Multi-company: scope the write to the active company so a blind id from
+  // another company matches nothing.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(gate.supabase
     .from('free_item_campaigns')
     .update({ name: parsed.data.name, active: parsed.data.active, max_free_qty: parsed.data.maxFreeQty, eligible, updated_at: new Date().toISOString() })
-    .eq('id', c.req.param('id'))
+    .eq('id', c.req.param('id')), co.companyId)
     .select('id');
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
-  if (!data || data.length === 0) return c.json({ error: 'update_failed', reason: 'not_found_or_rls' }, 404);
+  if (!data || data.length === 0) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true });
 });
 
@@ -99,8 +104,11 @@ freeItemCampaigns.patch('/:id', async (c) => {
 freeItemCampaigns.delete('/:id', async (c) => {
   const gate = await requireCampaignEditor(c);
   if ('error' in gate) return gate.error;
-  const { data, error } = await gate.supabase.from('free_item_campaigns').delete().eq('id', c.req.param('id')).select('id');
+  // Multi-company: scope the delete to the active company.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(gate.supabase.from('free_item_campaigns').delete().eq('id', c.req.param('id')), co.companyId).select('id');
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
-  if (!data || data.length === 0) return c.json({ error: 'delete_failed', reason: 'not_found_or_rls' }, 404);
+  if (!data || data.length === 0) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true });
 });

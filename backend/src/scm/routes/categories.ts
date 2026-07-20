@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { canWriteScmConfig } from '../lib/houzs-perms';
-import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId,
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 // TODO(Task 18): add categories.test.ts when R2 mocking is set up.
@@ -20,8 +21,14 @@ categoriesApi.post('/:id/hero-image', async (c) => {
     return c.json({ error: 'forbidden' }, 403);
   }
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   const id = c.req.param('id');
+  // Multi-company: confirm the category is THIS company's before writing the R2
+  // object or the DB row (a blind slug from another company is not found).
+  const { data: exists } = await scopeToCompanyId(supabase.from('categories').select('id').eq('id', id), co.companyId).maybeSingle();
+  if (!exists) return c.json(NOT_THIS_COMPANY, 404);
   const contentType = c.req.header('content-type') ?? '';
   if (!contentType.startsWith('image/jpeg') && !contentType.startsWith('image/png')) {
     return c.json({ error: 'unsupported_type', expected: 'image/jpeg or image/png' }, 400);
@@ -36,7 +43,7 @@ categoriesApi.post('/:id/hero-image', async (c) => {
   const key = `category-heroes/${id}.${ext}`;
 
   await c.env.PUBLIC_ASSETS.put(key, blob, { httpMetadata: { contentType } });
-  await supabase.from('categories').update({ hero_image_key: key }).eq('id', id);
+  await scopeToCompanyId(supabase.from('categories').update({ hero_image_key: key }).eq('id', id), co.companyId);
 
   return c.json({ ok: true, key });
 });
@@ -78,18 +85,23 @@ categoriesApi.delete('/:id/hero-image', async (c) => {
     return c.json({ error: 'forbidden' }, 403);
   }
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
 
   const id = c.req.param('id');
-  const row = await supabase.from('categories').select('hero_image_key').eq('id', id).maybeSingle();
+  // Multi-company: scope the load so we never read (or delete the R2 object of)
+  // another company's category hero.
+  const row = await scopeToCompanyId(supabase.from('categories').select('hero_image_key').eq('id', id), co.companyId).maybeSingle();
+  if (!row.data) return c.json(NOT_THIS_COMPANY, 404);
   if (row.data?.hero_image_key) {
     await c.env.PUBLIC_ASSETS.delete(row.data.hero_image_key);
   }
-  await supabase.from('categories').update({
+  await scopeToCompanyId(supabase.from('categories').update({
     hero_image_key: null,
     hero_focal_x: null,
     hero_focal_y: null,
     hero_alt: null,
-  }).eq('id', id);
+  }).eq('id', id), co.companyId);
 
   return c.json({ ok: true });
 });
@@ -309,6 +321,8 @@ publicCategoriesApi.patch('/:id', async (c) => {
   try { body = (await c.req.json()) as Record<string, unknown>; }
   catch { return c.json({ error: 'invalid_json' }, 400); }
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const id = c.req.param('id');
 
   // Block accidental PATCH against the meta sub-route — that route lives
@@ -336,10 +350,12 @@ publicCategoriesApi.patch('/:id', async (c) => {
     return c.json({ error: 'nothing_to_patch' }, 400);
   }
 
-  const { data, error } = await supabase
+  // Multi-company: scope the write so a blind slug from another company matches
+  // nothing (PGRST116 → not-found, not mutated).
+  const { data, error } = await scopeToCompanyId(supabase
     .from('categories')
     .update(patch)
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .select('id, label, icon, sort_order, hero_image_key')
     .single();
   if (error) {
@@ -354,6 +370,8 @@ publicCategoriesApi.delete('/:id', async (c) => {
     return c.json({ error: 'forbidden' }, 403);
   }
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const id = c.req.param('id');
 
   // Pre-flight: product_models.category is an UPPERCASE Postgres enum
@@ -384,18 +402,20 @@ publicCategoriesApi.delete('/:id', async (c) => {
   }
 
   // Also clean up R2 hero (if any) — DELETE on the row alone would leave a
-  // stranded blob in PUBLIC_ASSETS.
-  const { data: row } = await supabase
+  // stranded blob in PUBLIC_ASSETS. Scoped so a blind slug from another company
+  // can neither read its hero nor delete its R2 object.
+  const { data: row } = await scopeToCompanyId(supabase
     .from('categories')
     .select('hero_image_key')
-    .eq('id', id)
+    .eq('id', id), co.companyId)
     .maybeSingle();
+  if (!row) return c.json(NOT_THIS_COMPANY, 404);
   const heroKey = (row as { hero_image_key: string | null } | null)?.hero_image_key;
   if (heroKey && c.env.PUBLIC_ASSETS) {
     await c.env.PUBLIC_ASSETS.delete(heroKey).catch(() => {});
   }
 
-  const { error } = await supabase.from('categories').delete().eq('id', id);
+  const { error } = await scopeToCompanyId(supabase.from('categories').delete().eq('id', id), co.companyId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
 
   return c.json({ ok: true });
@@ -410,6 +430,8 @@ publicCategoriesApi.patch('/:id/hero-meta', async (c) => {
   try { body = (await c.req.json()) as Record<string, unknown>; }
   catch { return c.json({ error: 'invalid_json' }, 400); }
   const supabase = c.get('supabase');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const id = c.req.param('id');
 
   const patch: Record<string, unknown> = {};
@@ -438,7 +460,10 @@ publicCategoriesApi.patch('/:id/hero-meta', async (c) => {
     return c.json({ error: 'nothing_to_patch' }, 400);
   }
 
-  const { error } = await supabase.from('categories').update(patch).eq('id', id);
+  // Multi-company: scope the write; select reports whether a row in THIS
+  // company was actually updated.
+  const { data: upd, error } = await scopeToCompanyId(supabase.from('categories').update(patch).eq('id', id), co.companyId).select('id').maybeSingle();
   if (error) return c.json({ error: 'patch_failed', reason: error.message }, 500);
+  if (!upd) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true });
 });
