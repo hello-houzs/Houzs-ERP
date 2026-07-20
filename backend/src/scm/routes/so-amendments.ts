@@ -511,13 +511,17 @@ soAmendments.patch('/:id/approve-po', async (c) => {
     fieldChanges: [
       { field: 'amendment_status', from: amendment.status, to },
       { field: 'pos_revised', to: revised.perPo.map((p) => p.poNumber).join(', ') || 'none' },
+      /* Anything that needed a human hand (an already-received removed line left
+         in place, an added item with no open PO, an emptied PO) is recorded on
+         the SO's own audit trail so it is visible later, not just in the toast. */
+      ...(revised.warnings.length ? [{ field: 'needs_attention', to: revised.warnings.join(' | ') }] : []),
     ],
     note: revised.perPo.length
       ? `Revised PO(s): ${revised.perPo.map((p) => `${p.poNumber} rev ${p.revision}`).join('; ')}`
       : 'No bound PO — nothing to revise.',
   });
 
-  return c.json({ amendment: updated, revisedPurchaseOrders: revised.perPo });
+  return c.json({ amendment: updated, revisedPurchaseOrders: revised.perPo, warnings: revised.warnings });
 });
 
 /* ── PATCH /:id/send ───────────────────────────────────────────────────────

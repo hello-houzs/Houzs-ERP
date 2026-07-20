@@ -664,7 +664,18 @@ export const PurchaseOrderDetail = () => {
           }
           notify({ title: 'Could not approve the PO', body: e instanceof Error ? e.message : 'Something went wrong.', tone: 'error' });
         },
-        onSuccess: () => notify({ title: 'PO revision approved' }),
+        onSuccess: (res) => {
+          /* The revision succeeded, but reconciliation may have left something for
+             a human: an already-received removed line kept on the PO, an added
+             item whose supplier has no open PO, or a PO now with no lines. Show
+             those plain-language notes rather than a bare "approved". */
+          const warns = (res as { warnings?: string[] } | undefined)?.warnings ?? [];
+          if (warns.length) {
+            notify({ title: 'PO revision approved — please check a few items', body: warns.join(' '), tone: 'info' });
+          } else {
+            notify({ title: 'PO revision approved' });
+          }
+        },
       });
     });
   };
