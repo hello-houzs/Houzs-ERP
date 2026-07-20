@@ -2365,7 +2365,7 @@ const SALES_DOC_TILES: ReadonlyArray<{
 }> = [
   { label: "Weekend Activity", match: /^weekend/i, remarkTile: true, fullWidth: true, readOnly: true },
   { label: "Permit", match: /permit/i, readOnly: true },
-  { label: "Deco / Coffee Table", match: /^deco/i, readOnly: true },
+  { label: "Decoration", match: /^deco/i, readOnly: true },
   { label: "Setup Image", match: /^setup image/i, salesPicOnly: true },
   { label: "Defect List", match: /^defect list/i, requirePhotoRemark: true },
   { label: "Event Complete Image", match: /^event complete image/i, fullWidth: true, mediaH: 108 },
