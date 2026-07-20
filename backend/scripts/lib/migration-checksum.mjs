@@ -28,15 +28,28 @@ export async function checksumMigrationSql(sql) {
  * proven, so it is fail-closed drift too. Once a row has a checksum, both
  * content changes and file deletion are likewise fail-closed drift.
  */
-export function planMigrationChecksums(localFiles, appliedRows) {
+export function planMigrationChecksums(localFiles, appliedRows, options = {}) {
   const localByName = new Map(localFiles.map((file) => [file.filename, file]));
   const appliedByName = new Map(appliedRows.map((row) => [row.filename, row]));
+  const retiredByName = new Map(
+    (options.retiredMigrations ?? []).map((entry) => [entry.filename, entry]),
+  );
 
   const pending = [];
   const backfill = [];
   const drift = [];
+  const retired = [];
 
   for (const file of localFiles) {
+    if (retiredByName.has(file.filename)) {
+      drift.push({
+        filename: file.filename,
+        storedChecksum: null,
+        currentChecksum: file.checksum,
+        reason: "retired_filename_reused",
+      });
+      continue;
+    }
     const applied = appliedByName.get(file.filename);
     if (!applied) {
       pending.push(file);
@@ -60,6 +73,25 @@ export function planMigrationChecksums(localFiles, appliedRows) {
 
   for (const applied of appliedRows) {
     if (localByName.has(applied.filename)) continue;
+    const retirement = retiredByName.get(applied.filename);
+    if (retirement) {
+      if (applied.checksum && applied.checksum !== retirement.archivedChecksum) {
+        drift.push({
+          filename: applied.filename,
+          storedChecksum: applied.checksum,
+          currentChecksum: retirement.archivedChecksum,
+          reason: "retired_checksum_mismatch",
+        });
+      } else {
+        retired.push({
+          filename: applied.filename,
+          storedChecksum: applied.checksum ?? null,
+          archivedChecksum: retirement.archivedChecksum,
+          gitBlob: retirement.gitBlob,
+        });
+      }
+      continue;
+    }
     if (applied.checksum) {
       drift.push({
         filename: applied.filename,
@@ -77,5 +109,5 @@ export function planMigrationChecksums(localFiles, appliedRows) {
     }
   }
 
-  return { pending, backfill, drift };
+  return { pending, backfill, drift, retired };
 }

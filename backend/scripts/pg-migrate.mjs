@@ -21,6 +21,7 @@ import {
   planMigrationChecksums,
 } from "./lib/migration-checksum.mjs";
 import { loadAppliedMigrationRows } from "./lib/migration-tracker.mjs";
+import { RETIRED_MIGRATIONS } from "./lib/migration-retirements.mjs";
 
 const DRY = process.argv.includes("--dry-run");
 const VERIFY_ONLY = process.argv.includes("--verify-only");
@@ -66,20 +67,31 @@ const files = await Promise.all(
   }),
 );
 
-const { pending, backfill, drift } = planMigrationChecksums(
+const { pending, backfill, drift, retired } = planMigrationChecksums(
   files,
   appliedRows,
+  { retiredMigrations: RETIRED_MIGRATIONS },
 );
 
 console.log(
   `${files.length} migration(s), ${appliedRows.length} applied, ` +
-    `${pending.length} pending, ${backfill.length} checksum(s) to backfill`,
+    `${pending.length} pending, ${backfill.length} checksum(s) to backfill, ` +
+    `${retired.length} reviewed retirement(s)`,
 );
 
 if (drift.length > 0) {
   console.error("Migration drift detected. Applied migration history is immutable:");
   for (const item of drift) {
-    if (item.reason === "legacy_file_deleted_unverifiable") {
+    if (item.reason === "retired_filename_reused") {
+      console.error(
+        `  DRIFT   ${item.filename}: this historical filename is retired and may never be reused`,
+      );
+    } else if (item.reason === "retired_checksum_mismatch") {
+      console.error(
+        `  DRIFT   ${item.filename}: retired row checksum ${item.storedChecksum} ` +
+          `does not match archived ${item.currentChecksum}`,
+      );
+    } else if (item.reason === "legacy_file_deleted_unverifiable") {
       console.error(
         `  DRIFT   ${item.filename}: legacy tracker row has no checksum and ` +
           "the migration file is missing; applied history cannot be verified",
@@ -101,6 +113,7 @@ if (drift.length > 0) {
 }
 
 if (DRY) {
+  for (const item of retired) console.log(`  RETIRED ${item.filename}`);
   for (const file of backfill) console.log(`  BACKFILL ${file.filename}`);
   for (const file of pending) console.log(`  PENDING ${file.filename}`);
   await pg.end();
@@ -108,6 +121,7 @@ if (DRY) {
 }
 
 if (VERIFY_ONLY) {
+  for (const item of retired) console.log(`  RETIRED ${item.filename}`);
   for (const file of backfill) console.error(`  UNVERIFIED ${file.filename}: checksum backfill required`);
   for (const file of pending) console.error(`  PENDING ${file.filename}`);
   if (backfill.length > 0 || pending.length > 0) {

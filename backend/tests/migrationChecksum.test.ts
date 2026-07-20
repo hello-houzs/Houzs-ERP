@@ -88,6 +88,63 @@ describe("migration checksum plan", () => {
       }),
     ]);
   });
+
+  it("fails closed when a retired historical filename is reused", () => {
+    const retired = {
+      filename: "0017_removed.sql",
+      archivedChecksum: "sha256:archived",
+      gitBlob: "0123456789012345678901234567890123456789",
+    };
+    const result = planMigrationChecksums(
+      [file("0017_removed.sql", "sha256:new")],
+      [],
+      { retiredMigrations: [retired] },
+    );
+
+    expect(result.pending).toEqual([]);
+    expect(result.drift).toEqual([
+      expect.objectContaining({
+        filename: "0017_removed.sql",
+        reason: "retired_filename_reused",
+      }),
+    ]);
+  });
+
+  it("accepts only a known retirement with a legacy NULL or archived checksum", () => {
+    const retired = {
+      filename: "0017_removed.sql",
+      archivedChecksum: "sha256:archived",
+      gitBlob: "0123456789012345678901234567890123456789",
+    };
+    const legacy = planMigrationChecksums(
+      [],
+      [{ filename: retired.filename, checksum: null }],
+      { retiredMigrations: [retired] },
+    );
+    expect(legacy.drift).toEqual([]);
+    expect(legacy.retired).toEqual([expect.objectContaining({ filename: retired.filename })]);
+
+    const archived = planMigrationChecksums(
+      [],
+      [{ filename: retired.filename, checksum: retired.archivedChecksum }],
+      { retiredMigrations: [retired] },
+    );
+    expect(archived.drift).toEqual([]);
+    expect(archived.retired).toHaveLength(1);
+
+    const mismatch = planMigrationChecksums(
+      [],
+      [{ filename: retired.filename, checksum: "sha256:different" }],
+      { retiredMigrations: [retired] },
+    );
+    expect(mismatch.retired).toEqual([]);
+    expect(mismatch.drift).toEqual([
+      expect.objectContaining({
+        filename: retired.filename,
+        reason: "retired_checksum_mismatch",
+      }),
+    ]);
+  });
 });
 
 describe("read-only migration tracker inspection", () => {

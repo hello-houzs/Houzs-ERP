@@ -79,18 +79,19 @@ breaks something:
 
 - **Worker only**: `wrangler rollback --env staging` (one previous version).
 - **Schema**: `pg-migrate.mjs` is forward-only (no `--revert` flag — by
-  design, to keep the prod path one-directional). To unwind a staging
-  migration, run the paired down SQL directly against staging:
+  design, to keep the prod path one-directional). Prefer a new, reviewed
+  forward-repair migration. If an incident requires a down script, keep it
+  **outside** `backend/src/db/migrations-pg/` and run it directly against
+  staging only after snapshot + approval:
   ```bash
   psql "$STAGING_DATABASE_URL" \
-    -f backend/src/db/migrations-pg/<NNN>_<name>_down.sql
-  # then drop the row from the bookkeeping table so the next deploy re-runs it:
-  psql "$STAGING_DATABASE_URL" \
-    -c "DELETE FROM _pg_migrations WHERE name = '<NNN>_<name>.sql';"
+    -f backend/src/db/recovery-pg/<NNN>_<name>_down.sql
   ```
-  Convention: every migration that's not trivially reversible should ship a
-  `*_down.sql` sibling in `migrations-pg/`. If a migration has no down file,
-  the Supabase-snapshot path below is the only safe undo.
+  Never delete or edit `_pg_migrations` ad hoc: checksum history is immutable,
+  and removing a row makes the forward runner replay that file. Never place a
+  `*_down.sql` file in `migrations-pg/`; the runner treats every top-level SQL
+  file there as a forward migration. If no separately reviewed recovery script
+  exists, the Supabase-snapshot path below is the only safe undo.
 - **Worst case**: restore from a Supabase snapshot taken before the staging
   deploy. **Take a snapshot before any migration that's not trivially
   reversible** — Supabase Dashboard → Database → Backups.
