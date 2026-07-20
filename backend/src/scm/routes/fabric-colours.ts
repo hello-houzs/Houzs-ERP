@@ -59,6 +59,10 @@ fabricColours.get("/", async (c) => {
     colourId: r.colourId ?? r.colour_id ?? "",
     label: r.label ?? null,
     swatchHex: r.swatchHex ?? r.swatch_hex ?? null,
+    // POS filters on `active` (FabricColourRow.active); the list is active-only
+    // (server .eq('active', true)), so surface it or the POS drops every row and
+    // the colour picker renders empty.
+    active: (r.active ?? true) as boolean,
     sortOrder: r.sortOrder ?? r.sort_order ?? 0,
   }));
   return c.json({ colours });

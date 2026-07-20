@@ -7,6 +7,7 @@ import { TRANSIENT_CONN_RE } from "./db/d1-compat";
 // Ported 2990's SCM modules (furniture supply chain). Talk to the `scm` Postgres
 // schema via supabase-js; namespaced under /api/scm/*, owner-only during the port.
 import scmApp from "./scm";
+import { publicScmImages } from "./scm/routes/public-images";
 import { idempotency } from "./middleware/idempotency";
 import { requestLog } from "./middleware/requestLog";
 import assr from "./routes/assr";
@@ -193,6 +194,13 @@ app.route("/api/assr-form-intake", assrFormIntake);
 
 // Auth gate for everything else under /api/*. Mounted AFTER the
 // public API routes above so they stay unauthenticated.
+// PUBLIC image proxies for the cross-origin POS — MUST be mounted BEFORE the
+// global `auth` + `requireScmAccess` gates so a plain <img src> (no Bearer, no
+// same-origin cookie) reaches them. Only these two GET routes are exposed; every
+// other /api/scm/* path is untouched and still hits the gates below. Mirrors how
+// 2990's api serves Model photos auth-free. See scm/routes/public-images.ts.
+app.route("/api/scm", publicScmImages);
+
 app.use("/api/*", auth);
 
 // Opt-in request idempotency (no-op unless the client sends an

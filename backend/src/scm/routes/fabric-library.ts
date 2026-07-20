@@ -33,7 +33,7 @@ fabricLibrary.get('/', async (c) => {
   const supabase = c.get('supabase');
   let q = supabase
     .from('fabric_library')
-    .select('id, label, tier, default_surcharge, active, sort_order')
+    .select('id, label, tier, sofa_tier, bedframe_tier, default_surcharge, active, sort_order')
     .order('sort_order', { ascending: true });
   q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
@@ -48,6 +48,11 @@ fabricLibrary.get('/', async (c) => {
     id: r.id,
     label: r.label,
     tier: r.tier,
+    // POS reads sofaTier/bedframeTier to compute the fabric-tier upcharge; without
+    // them the upcharge resolves to 0 → POS total < server recompute → the drift
+    // gate REJECTS the order (premium PRICE_2/PRICE_3 fabrics).
+    sofaTier: r.sofaTier ?? r.sofa_tier ?? null,
+    bedframeTier: r.bedframeTier ?? r.bedframe_tier ?? null,
     defaultSurcharge: r.defaultSurcharge ?? r.default_surcharge ?? 0,
     active: r.active,
     sortOrder: r.sortOrder ?? r.sort_order ?? 0,

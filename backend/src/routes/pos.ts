@@ -125,25 +125,108 @@ pos.post("/verify-pin", auth, async (c) => {
   const row = await c.env.DB.prepare(`SELECT pin_hash FROM scm.pos_pins WHERE staff_id = ?`)
     .bind(staffId).first<{ pin_hash: string }>();
   const ok = row ? await verifyPassword(body.pin!, row.pin_hash) : false;
-  return c.json({ ok });
+  // Return `valid` for POS parity — 2990's verify-pin returns {valid,...} and the
+  // POS reads body.valid; keep `ok` for any other caller.
+  return c.json({ valid: ok, ok });
 });
 
-// ── AUTHED: caller's month-to-date KPI tiles ────────────────────────────────
-// companyContext runs here explicitly: /api/pos is mounted BEFORE the global
-// /api/* companyContext (it must stay pre-auth for pin-login), so without this
-// the c.get("companyId") scope below would always be undefined and the MTD
-// tiles would pool BOTH companies' orders. Applied only on this authed route.
+// ── AUTHED: caller's KPI tiles (personal + showroom) — the POS home dashboard ─
+// Ported from 2990's /pos/sales-stats to the full SalesStatsRow shape. Personal
+// = the caller; Showroom = the caller's showroom mates (or the whole company
+// when the caller has no showroom — admin/owner/coordinator). Period defaults to
+// the current MY calendar month; ?from=&to= (MY YYYY-MM-DD, `to` inclusive)
+// override, sharing the My-orders board window.
+//
+// companyContext runs here explicitly: /api/pos is pre-auth (mounted before the
+// global /api/* companyContext, which must stay off pin-login), so without it
+// the scope below would pool BOTH companies' orders.
+//
+// Revenue split (Loo 2026-06-20): Products = goods (mattress/sofa + bedframe +
+// accessories + others), Service = total − goods (delivery + SERVICE lines),
+// KPI = the item-KPI-flagged add-on amount. The item-KPI split needs the HR
+// commission machinery, which has no Houzs home yet (#19) — so KPI is 0 and
+// Products = goods here, which is EXACTLY 2990's own value when no item-KPI flag
+// is active. status::text guards the enum (excludes CANCELLED/ON_HOLD safely).
+// ?salesperson (owner-tier targeting) is not yet honoured — the personal card
+// always follows the caller (TODO with the HR work).
+const KPI_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 pos.get("/sales-stats", auth, companyContext, async (c) => {
-  const staffId = await callerStaffId(c);
-  if (!staffId) return c.json({ ordersMtd: 0, revenueMtdSen: 0 });
+  const DB = c.env.DB;
+  const uid = c.get("user")?.id;
+  const me = uid == null ? null : await DB.prepare(
+    `SELECT id, name, showroom_id FROM scm.staff WHERE user_id = ?`,
+  ).bind(uid).first<{ id: string; name: string; showroom_id: string | null }>();
   const companyId = (c.get("companyId") as number | undefined) ?? null;
-  const scope = companyId != null ? `AND company_id = ${Number(companyId)}` : "";
-  const row = await c.env.DB.prepare(
-    `SELECT count(*)::int AS orders, COALESCE(sum(total_revenue_centi),0)::bigint AS revenue
+
+  // Period (Asia/Kuala_Lumpur = UTC+8). so_date is a DATE → range compares are tz-free.
+  const fromYmd = c.req.query("from") || null;
+  const toYmd = c.req.query("to") || null;
+  const nowMy = new Date(Date.now() + 8 * 3600 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const monthStart = fromYmd ?? `${nowMy.getUTCFullYear()}-${pad(nowMy.getUTCMonth() + 1)}-01`;
+  const monthEnd = toYmd;
+  const monthLabel = fromYmd
+    ? `${fromYmd}${toYmd ? ` – ${toYmd}` : ""}`
+    : `${KPI_MONTHS[nowMy.getUTCMonth()]} ${nowMy.getUTCFullYear()}`;
+
+  const empty = {
+    monthLabel, monthStart, monthEnd, staffName: me?.name ?? "",
+    showroomTotal: 0, showroomCount: 0, showroomProducts: 0, showroomService: 0, showroomKpi: 0,
+    personalTotal: 0, personalCount: 0, personalProducts: 0, personalService: 0, personalKpi: 0,
+  };
+  if (!me) return c.json(empty);
+
+  // Shared period + company + status predicate.
+  const conds = ["status::text NOT IN ('CANCELLED','ON_HOLD')", "so_date >= ?"];
+  const binds: unknown[] = [monthStart];
+  if (toYmd) { conds.push("so_date <= ?"); binds.push(toYmd); }
+  if (companyId != null) { conds.push("company_id = ?"); binds.push(Number(companyId)); }
+
+  const aggSql = (extraWhere: string) =>
+    `SELECT count(*)::int AS cnt,
+            COALESCE(sum(total_revenue_centi),0)::bigint AS total_centi,
+            COALESCE(sum(COALESCE(mattress_sofa_centi,0)+COALESCE(bedframe_centi,0)+COALESCE(accessories_centi,0)+COALESCE(others_centi,0)),0)::bigint AS goods_centi
        FROM scm.mfg_sales_orders
-      WHERE salesperson_id = ? AND so_date >= date_trunc('month', current_date) ${scope}`,
-  ).bind(staffId).first<{ orders: number; revenue: number }>();
-  return c.json({ ordersMtd: Number(row?.orders ?? 0), revenueMtdSen: Number(row?.revenue ?? 0) });
+      WHERE ${[...conds, extraWhere].join(" AND ")}`;
+
+  // Showroom scope: the caller's showroom mates, else the whole company.
+  let showroomWhere = "true";
+  const showroomBinds: unknown[] = [];
+  if (me.showroom_id) {
+    const mates = await DB.prepare(`SELECT id FROM scm.staff WHERE showroom_id = ?`)
+      .bind(me.showroom_id).all<{ id: string }>();
+    const ids = (mates.results ?? []).map((r) => r.id);
+    if (ids.length === 0) return c.json(empty);
+    showroomWhere = `salesperson_id IN (${ids.map(() => "?").join(",")})`;
+    showroomBinds.push(...ids);
+  }
+
+  type Agg = { cnt: number; total_centi: number; goods_centi: number };
+  const showroomRow = await DB.prepare(aggSql(showroomWhere)).bind(...binds, ...showroomBinds).first<Agg>();
+  const personalRow = await DB.prepare(aggSql("salesperson_id = ?")).bind(...binds, me.id).first<Agg>();
+
+  const toMyr = (centi: number) => Math.round(Number(centi) / 100);
+  const card = (r: Agg | null) => {
+    const total = Number(r?.total_centi ?? 0);
+    const goods = Number(r?.goods_centi ?? 0);
+    return {
+      total: toMyr(total),
+      count: Number(r?.cnt ?? 0),
+      products: toMyr(goods),                       // = goods (item-KPI split deferred → #19)
+      service: toMyr(Math.max(0, total - goods)),
+      kpi: 0,
+    };
+  };
+  const s = card(showroomRow);
+  const p = card(personalRow);
+
+  return c.json({
+    monthLabel, monthStart, monthEnd, staffName: me.name,
+    showroomTotal: s.total, showroomCount: s.count,
+    showroomProducts: s.products, showroomService: s.service, showroomKpi: s.kpi,
+    personalTotal: p.total, personalCount: p.count,
+    personalProducts: p.products, personalService: p.service, personalKpi: p.kpi,
+  });
 });
 
 export default pos;

@@ -15,6 +15,7 @@ import { specialAddons } from "./routes/special-addons";
 import { fabricLibrary } from "./routes/fabric-library";
 import { mfgProducts } from "./routes/mfg-products";
 import { productModels } from "./routes/product-models";
+import { posPools } from "./routes/pos-pools";
 import { sofaCompartmentPhotos } from "./routes/sofa-compartment-photos";
 import { maintenanceConfig } from "./routes/maintenance-config";
 import { maintenancePush } from "./routes/maintenance-push";
@@ -141,9 +142,15 @@ scm.use("/delivery-fees/*", scmAreaGuard("scm.procurement.products", { openRead:
 scm.route("/delivery-fees", deliveryFees);
 scm.use("/fabric-tier-addon/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/fabric-tier-addon", fabricTierAddonConfig);
-scm.use("/pwp-rules/*", scmAreaGuard("scm.procurement.products"));
+// openRead (2026-07-20, POS cutover) — PWP (换购) is an in-cart SALE-flow read:
+// the POS reads eligibility rules + the seller's reserved codes for every
+// salesperson, same class as the SO-FLOW REFERENCE READS above. GET/HEAD pass
+// the coarse umbrella; the reserve/release WRITES stay edit-gated for now
+// (their writeLevel depends on the POS-role provisioning model — see task #13).
+// No cost/margin on these reads.
+scm.use("/pwp-rules/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/pwp-rules", pwpRules);
-scm.use("/pwp-codes/*", scmAreaGuard("scm.procurement.products"));
+scm.use("/pwp-codes/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/pwp-codes", pwpCodes);
 // SO-FLOW REFERENCE READS (openRead, 2026-07-04) — special-addons,
 // fabric-library, mfg-products, product-models, maintenance-config,
@@ -161,6 +168,11 @@ scm.use("/mfg-products/*", scmAreaGuard("scm.procurement.products", { openRead: 
 scm.route("/mfg-products", mfgProducts);
 scm.use("/product-models/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/product-models", productModels);
+// POS repoint (cutover P2) — the 2990 POS reads its whole catalog + configurator
+// pools here. openRead so any authenticated salesperson past the coarse umbrella
+// can GET; the handlers select SELLING-only columns (#625). company-scoped.
+scm.use("/pos-pools/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.route("/pos-pools", posPools);
 // Houzs → 2990 option-list push. NO openRead — DELIBERATE: the dry-run report
 // echoes 2990's master config, which carries sellingPriceSen / costSen, i.e.
 // 2990's retail AND cost sides. Opening it would hand that to any scoped

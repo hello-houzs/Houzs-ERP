@@ -424,7 +424,16 @@ pwpCodes.get('/:code', async (c) => {
   const redeemable =
     r.status === 'AVAILABLE' ||
     (r.status === 'RESERVED' && userId != null && r.owner_staff_id === userId);
-  if (!redeemable) return c.json({ valid: false, reason: r.status === 'USED' ? 'already_used' : 'not_redeemable' });
+  // Return the reward RANGE even on a USED / non-redeemable code — the POS reads
+  // rewardCategory/type/eligibleRewardModelIds on EVERY found response to build the
+  // swap context; without them a placed (USED-voucher) reward line falls to `locked`.
+  if (!redeemable) return c.json({
+    valid: false,
+    reason: r.status === 'USED' ? 'already_used' : 'not_redeemable',
+    rewardCategory: r.reward_category,
+    eligibleRewardModelIds: r.eligible_reward_model_ids ?? [],
+    type: (r.type ?? 'pwp') as 'pwp' | 'promo',
+  });
 
   if (rewardCategory && rewardCategory !== String(r.reward_category).toUpperCase()) {
     return c.json({ valid: false, reason: 'reward_category_mismatch' });
@@ -447,5 +456,5 @@ pwpCodes.get('/:code', async (c) => {
     customerMatches = customerId !== '' ? customerId === r.customer_id : true;
   }
 
-  return c.json({ valid: true, rewardCategory: r.reward_category, customerMatches, status: r.status, type: (r.type ?? 'pwp') as 'pwp' | 'promo' });
+  return c.json({ valid: true, rewardCategory: r.reward_category, eligibleRewardModelIds: r.eligible_reward_model_ids ?? [], customerMatches, status: r.status, type: (r.type ?? 'pwp') as 'pwp' | 'promo' });
 });
