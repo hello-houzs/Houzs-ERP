@@ -98,6 +98,7 @@ import { runProjectDueReminders } from "./services/projectReminders";
 import { distillAllSalespersonRules, warmCatalogCacheForCron, processScanQueueMessage } from "./scm/routes/scan-so";
 import { runAgentHeartbeat } from "./services/agent-scheduler";
 import { getSupabaseService } from "./db/supabase";
+import { reapOnce } from "./scm/lib/reaper";
 import { getBranding } from "./services/branding";
 // AutoCount inbound SO pull — restored 2026-07-14. Reads SO from the AutoCount
 // middleware and upserts the local `sales_orders` mirror (read-only against
@@ -432,6 +433,22 @@ export default {
           );
         }
       }
+      // Slip reaper (mirrors 2990's */10 orphan-slip sweep, which retires with
+      // 2990's apps/api). Leases up to 100 orphan pending_slip_uploads rows
+      // (5-min lease, SKIP LOCKED via lease_orphan_slips), deletes each R2 blob,
+      // marks the row failed — reclaims leaked payment-slip objects from
+      // abandoned/failed uploads. Idempotent; best-effort (a failure can never
+      // break the other crons).
+      ctx.waitUntil(
+        reapOnce(getSupabaseService(env), env, `cron-${event.scheduledTime}`)
+          .then((r) => {
+            if (r.claimed > 0 || r.errors > 0)
+              console.log(
+                `[cron slip-reaper] claimed=${r.claimed} deleted=${r.deleted} errors=${r.errors} remaining=${r.remaining}`
+              );
+          })
+          .catch((e) => console.error("[cron slip-reaper]", e))
+      );
     } else if (event.cron === "0 2 * * *") {
       // Daily 02:00 UTC slot: SLA escalation + ASSR digest + project reminders.
       ctx.waitUntil(

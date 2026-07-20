@@ -4591,6 +4591,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     customer_state: (body.customerState as string) ?? null,
     /* Task #121 — country snapshot auto-derived above. */
     customer_country: customerCountrySnapshot,
+    /* Cutover #14 (mig 0158) — POS marketing demographics captured ON the SO,
+       hidden (never surfaced on SO/PDF/UI). 2990 kept these on the customers
+       table; owner ruled they slot onto the SO here. Capture-only at create. */
+    customer_race: (body.customerRace as string) ?? null,
+    customer_birthday: (body.customerBirthday as string) ?? null,
+    customer_gender: (body.customerGender as string) ?? null,
     customer_delivery_date: (body.customerDeliveryDate as string) ?? null,
     /* PR #144 — Commander: "当我已经 create 好了这个 sales order 的时候，
        为什么我点进去 edit processing 的 delivery date 时，怎么没看到呢".
