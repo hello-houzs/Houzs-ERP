@@ -136,18 +136,29 @@ binding = "SESSION_CACHE"
 id = "c25f593faf5a46a2b94155eba91083e1"
 
 # Analytics Engine — System Health observability (phase 2, ported from Hookka).
-# DEFERRED: Analytics Engine must be ENABLED on the account first (one click:
-# Cloudflare Dashboard -> Workers & Pages -> Analytics Engine -> Enable;
-# else deploy fails with "code: 10089 You need to enable Analytics Engine").
-# Once enabled, re-add the binding below and redeploy — the request-timing
-# write path (middleware/requestLog.ts, guarded) and Env type are already in
-# place, so it starts collecting immediately.
-#   [[analytics_engine_datasets]]
-#   binding = "ERP_METRICS"
-#   dataset = "houzs_erp_metrics"
-# Reads also need two secrets (set with `wrangler secret put`):
+# PREREQUISITE (one-time, account-level, must happen BEFORE this binding merges):
+# Cloudflare Dashboard -> Workers & Pages -> Analytics Engine -> Enable.
+# Deploying with the binding while AE is disabled fails with "code: 10089 You
+# need to enable Analytics Engine" — and because push-to-main runs deploy.yml,
+# that failure repeats on EVERY prod deploy until AE is enabled (or this block
+# is re-commented). The write path (middleware/requestLog.ts) is guarded
+# (env.ERP_METRICS?.writeDataPoint?.() inside try/catch), so the Worker is
+# runtime-safe with or without the binding — only the deploy gate cares.
+# Staging intentionally has NO AE binding: bindings do not inherit into named
+# envs, so `deploy --env staging` (deploy-staging.yml) stays green regardless
+# of AE state, and staging traffic must not pollute the prod dataset. If
+# staging collection is ever wanted, add [[env.staging.analytics_engine_datasets]]
+# with its own dataset (e.g. houzs_erp_metrics_staging) — the same account-level
+# enable covers it.
+[[analytics_engine_datasets]]
+binding = "ERP_METRICS"
+dataset = "houzs_erp_metrics"
+
+# Reads (the phase-2 /api/admin/health/perf endpoint queries AE over the
+# Cloudflare SQL API) need two secrets (set with `wrangler secret put`):
 #   AE_QUERY_TOKEN       — Cloudflare API token, Account Analytics:Read
 #   CF_ACCOUNT_ID        — Cloudflare account id
+# Other worker secrets:
 #   AUTOCOUNT_API_KEY
 #   DASHBOARD_API_KEY
 #   GOOGLE_MAPS_API_KEY  — used by the planner geocoder (Phase 2)
