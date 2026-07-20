@@ -6,6 +6,7 @@ import { useToast } from "../hooks/useToast";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useDebouncedValue } from "../vendor/scm/lib/hooks";
 import { formatDate } from "../lib/utils";
+import { SearchScopeHint } from "../components/SearchScopeHint";
 import "./mobile.css";
 
 // Mobile Mail Center — the email client, wired to /api/mail-center. Kept at
@@ -418,6 +419,14 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
             </span>
           )}
         </div>
+        <SearchScopeHint
+          scope="server"
+          searching={searching}
+          countPending={loading || Boolean(error) || threadsQuery !== listQuery}
+          resultCount={listTotal}
+          term={q}
+          className="-mt-1 mb-2 px-1"
+        />
 
         <div className="chips" style={{ display: "flex", gap: 7, overflowX: "auto" }}>
           {FOLDERS.map(([f, label]) => (

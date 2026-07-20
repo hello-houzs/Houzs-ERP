@@ -53,6 +53,7 @@ afterEach(() => {
   cleanup();
   localStorage.clear();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   if (originalMatchMedia) Object.defineProperty(window, "matchMedia", originalMatchMedia);
   else Reflect.deleteProperty(window, "matchMedia");
   if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
@@ -106,6 +107,51 @@ describe("DataTable responsive rendering", () => {
     expect(viewport.listenerCount()).toBe(1);
     unmount();
     expect(viewport.listenerCount()).toBe(0);
+  });
+
+  it("keeps the DOM bounded and reaches the final row in a 10,000-row dataset", () => {
+    setViewport(1280);
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const largeRows: Row[] = Array.from({ length: 10_000 }, (_, index) => ({
+      id: index + 1,
+      name: `Order ${index + 1}`,
+      status: index % 2 ? "Open" : "Closed",
+    }));
+    const { container } = render(
+      <DataTable tableId="orders-10k" rows={largeRows} columns={columns} getRowKey={(row) => row.id} />,
+    );
+
+    expect(container.querySelectorAll("tr[data-vrow]").length).toBeLessThanOrEqual(60);
+    expect(screen.queryByText("Order 10000")).toBeNull();
+
+    const body = container.querySelector("tbody")!;
+    let top = 0;
+    vi.spyOn(body, "getBoundingClientRect").mockImplementation(() => ({
+      top,
+      bottom: top + 330_000,
+      left: 0,
+      right: 1000,
+      width: 1000,
+      height: 330_000,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    }));
+    top = -329_200;
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+      frames.splice(0).forEach((frame) => frame(0));
+    });
+
+    expect(screen.getByText("Order 10000")).toBeTruthy();
+    expect(screen.queryByText("Order 1")).toBeNull();
+    expect(container.querySelectorAll("tr[data-vrow]").length).toBeLessThanOrEqual(60);
   });
 });
 
@@ -162,5 +208,74 @@ describe("DataTable server search feedback", () => {
     expect(screen.getByRole("button", { name: "Export" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("checkbox", { name: "Select all rows" }).hasAttribute("disabled")).toBe(true);
     expect(screen.queryByText("2 rows")).toBeNull();
+  });
+
+  it("states whether search covers the server set or only loaded rows", () => {
+    setViewport(1280);
+    const { rerender } = render(
+      <DataTable
+        tableId="search-scope"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+        search={{ value: "", onChange: vi.fn(), scope: "server", totalRecords: 200 }}
+      />,
+    );
+    expect(screen.getByText(/Searches across all pages you can access/)).toBeTruthy();
+    expect(screen.getByText(/200 records/)).toBeTruthy();
+
+    rerender(
+      <DataTable
+        tableId="search-scope"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+        search={{ value: "", onChange: vi.fn() }}
+      />,
+    );
+    expect(screen.getByText("Searches loaded rows only")).toBeTruthy();
+  });
+
+  it("does not show a stale result count while replacement results are pending", () => {
+    setViewport(1280);
+    render(
+      <DataTable
+        tableId="search-scope-pending"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+        search={{
+          value: "A1",
+          onChange: vi.fn(),
+          searching: true,
+          scope: "server",
+          totalRecords: 200,
+        }}
+      />,
+    );
+    expect(screen.getByText("Searches across all pages you can access")).toBeTruthy();
+    expect(screen.queryByText(/200 matches/)).toBeNull();
+  });
+
+  it("does not announce zero records before the first server count settles", () => {
+    setViewport(1280);
+    render(
+      <DataTable
+        tableId="search-scope-initial-count"
+        rows={[]}
+        columns={columns}
+        getRowKey={(row) => row.id}
+        search={{
+          value: "",
+          onChange: vi.fn(),
+          searching: false,
+          countPending: true,
+          scope: "server",
+          totalRecords: 0,
+        }}
+      />,
+    );
+    expect(screen.getByText("Searches across all pages you can access")).toBeTruthy();
+    expect(screen.queryByText(/0 records/)).toBeNull();
   });
 });

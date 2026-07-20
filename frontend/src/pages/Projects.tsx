@@ -1054,7 +1054,7 @@ function ProjectsListView() {
     hideCompleted && section !== "__done" ? 1 : undefined;
 
   const list = useQuery<Paginated<ProjectRow>>("/api/projects:",
-    () =>
+    (signal) =>
       api.get(
         `/api/projects${buildQuery({
           // Cohort uses ONLY stage + assigned_to_me + search; the section /
@@ -1077,7 +1077,8 @@ function ProjectsListView() {
           per_page: perPage,
           include_archived: showArchived ? 1 : undefined,
           ...sortParams,
-        })}`
+        })}`,
+        { signal },
       ),
     [brand, year, month, section, status, phase, restrictedCohort, sendAssignedToMe, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir],
     // Paginated + filter-switched list: keep the current rows on screen while
@@ -1669,6 +1670,9 @@ function ProjectsListView() {
             onChange: (v) => setSearch(v),
             placeholder: "Search code, name, venue, organizer…",
             searching: searchTransition.isSearching,
+            countPending: list.loading || list.placeholder || Boolean(list.error) || searchTransition.resultsAreStale,
+            scope: "server",
+            totalRecords: list.data?.total,
           }}
           resetFilters={{
             active: !!(search || brand || year || month || section || status),
@@ -2152,7 +2156,7 @@ function FinanceListView() {
   );
 
   const list = useQuery<FinanceByProjectResponse>("/api/projects/finance/by-project:)}",
-    () =>
+    (signal) =>
       api.get(
         `/api/projects/finance/by-project${buildQuery({
           date_from: dateFrom || undefined,
@@ -2164,7 +2168,8 @@ function FinanceListView() {
           page,
           per_page: perPage,
           ...sortParams,
-        })}`
+        })}`,
+        { signal },
       ),
     [dateFrom, dateTo, brand, stage, search, includeArchived, page, perPage, sort?.key, sort?.dir],
     // Paginated + filter-switched list: keep the current rows on screen while
@@ -2592,6 +2597,9 @@ function FinanceListView() {
           onChange: (v) => setSearch(v),
           placeholder: "Search project code, name, venue, organizer…",
           searching: searchTransition.isSearching,
+          countPending: list.loading || list.placeholder || Boolean(list.error) || searchTransition.resultsAreStale,
+          scope: "server",
+          totalRecords: list.data?.total,
         }}
         resetFilters={{
           active: !!(

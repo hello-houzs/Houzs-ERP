@@ -1,23 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 /**
- * Windowed vertical card list for the mobile screens. Renders only the cards
- * scrolled into view (plus overscan), so a 1,000-row list keeps ~30 nodes in
- * the DOM instead of all of them — the mobile analogue of the desktop DataTable
- * windowing.
+ * Windowed vertical card list for mobile screens.
  *
- * Page-scroll-preserving: a CAPTURING window scroll listener catches the mobile
- * scroll container's scroll (scroll events don't bubble), the visible slice is
- * measured from the list's viewport position, and two spacer divs reserve the
- * off-screen height so the scrollbar behaves normally. Card height is measured
- * from a real rendered card so the spacers can't drift.
- *
- * `gap` matches the caller's inter-card gap (default 11) so a short list looks
- * byte-identical to the plain `.map` container it replaces — it feeds both the
- * flex gap and the spacer math.
- *
- * No-op below `threshold` — short lists render exactly as before, so wiring this
- * into a list that's usually small (most modules) costs nothing until it grows.
+ * Card heights are measured individually. A prefix-offset table plus binary
+ * search keeps variable-height cards reachable without assuming every card is
+ * the same height as the first one. Short lists remain completely unwindowed.
  */
 export function MobileVirtualList<T>({
   items,
@@ -38,8 +26,61 @@ export function MobileVirtualList<T>({
 }) {
   const on = items.length > threshold;
   const ref = useRef<HTMLDivElement>(null);
-  const rowH = useRef(estimateHeight + gap);
+  const measuredByKey = useRef(new Map<string | number, number>());
+  const [measurementVersion, setMeasurementVersion] = useState(0);
   const [range, setRange] = useState({ start: 0, end: threshold * 2 });
+  const estimatedRowHeight = estimateHeight + gap;
+
+  const offsets = useMemo(() => {
+    const next = new Float64Array(items.length + 1);
+    for (let index = 0; index < items.length; index++) {
+      const key = getKey(items[index], index);
+      next[index + 1] = next[index] + (measuredByKey.current.get(key) ?? estimatedRowHeight);
+    }
+    return next;
+  }, [items, getKey, estimatedRowHeight, measurementVersion]);
+  const offsetsRef = useRef(offsets);
+  offsetsRef.current = offsets;
+
+  const indexAtOffset = (table: Float64Array, target: number) => {
+    let low = 0;
+    let high = Math.max(0, table.length - 1);
+    while (low < high) {
+      const mid = Math.floor((low + high + 1) / 2);
+      if (table[mid] <= target) low = mid;
+      else high = mid - 1;
+    }
+    return Math.min(Math.max(0, table.length - 2), low);
+  };
+
+  useLayoutEffect(() => {
+    if (!on || !ref.current) return;
+    const cards = [...ref.current.querySelectorAll<HTMLElement>("[data-vcard][data-vindex]")];
+    const recordMeasurements = (targets: HTMLElement[]) => {
+      let changed = false;
+      for (const card of targets) {
+        const index = Number(card.dataset.vindex);
+        if (!Number.isInteger(index) || index < 0 || index >= items.length) continue;
+        const height = card.offsetHeight;
+        if (height <= 0) continue;
+        const key = getKey(items[index], index);
+        const next = height + gap;
+        if (Math.abs((measuredByKey.current.get(key) ?? 0) - next) > 0.5) {
+          measuredByKey.current.set(key, next);
+          changed = true;
+        }
+      }
+      if (changed) setMeasurementVersion((version) => version + 1);
+    };
+    recordMeasurements(cards);
+
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      recordMeasurements(entries.map((entry) => entry.target as HTMLElement));
+    });
+    cards.forEach((card) => observer.observe(card));
+    return () => observer.disconnect();
+  }, [on, items, getKey, gap, range.start, range.end]);
 
   useEffect(() => {
     if (!on) return;
@@ -48,14 +89,15 @@ export function MobileVirtualList<T>({
       raf = 0;
       const el = ref.current;
       if (!el) return;
-      const card = el.querySelector<HTMLElement>("[data-vcard]");
-      if (card && card.offsetHeight > 0) rowH.current = card.offsetHeight + gap;
-      const rh = rowH.current || estimateHeight + gap;
-      const top = el.getBoundingClientRect().top; // list top relative to viewport
-      const first = Math.max(0, Math.floor(-top / rh) - overscan);
-      const count = Math.ceil(window.innerHeight / rh) + overscan * 2;
-      const last = Math.min(items.length, first + count);
-      setRange((p) => (p.start === first && p.end === last ? p : { start: first, end: last }));
+      const table = offsetsRef.current;
+      const top = el.getBoundingClientRect().top;
+      const visibleTop = Math.max(0, -top);
+      const visibleBottom = visibleTop + window.innerHeight;
+      const first = Math.max(0, indexAtOffset(table, visibleTop) - overscan);
+      const last = Math.min(items.length, indexAtOffset(table, visibleBottom) + overscan + 1);
+      setRange((previous) => (
+        previous.start === first && previous.end === last ? previous : { start: first, end: last }
+      ));
     };
     const onScroll = () => {
       if (!raf) raf = requestAnimationFrame(measure);
@@ -68,22 +110,26 @@ export function MobileVirtualList<T>({
       window.removeEventListener("resize", onScroll);
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [on, items.length, overscan, estimateHeight, gap]);
+  }, [on, items.length, overscan, measurementVersion]);
 
   const start = on ? range.start : 0;
   const end = on ? Math.min(items.length, range.end) : items.length;
-  const rh = rowH.current;
+  const topHeight = offsets[start] ?? 0;
+  const bottomHeight = (offsets[items.length] ?? 0) - (offsets[end] ?? 0);
 
   return (
-    <div ref={ref} style={{ display: "flex", flexDirection: "column", gap }}>
-      {on && start > 0 && <div aria-hidden style={{ height: Math.max(0, start * rh - gap) }} />}
-      {items.slice(start, end).map((item, i) => (
-        <div data-vcard="" key={getKey(item, start + i)}>
-          {renderItem(item, start + i)}
-        </div>
-      ))}
+    <div ref={ref} data-mobile-virtual-list="" style={{ display: "flex", flexDirection: "column", gap }}>
+      {on && start > 0 && <div aria-hidden style={{ height: Math.max(0, topHeight - gap) }} />}
+      {items.slice(start, end).map((item, indexWithinRange) => {
+        const index = start + indexWithinRange;
+        return (
+          <div data-vcard="" data-vindex={index} key={getKey(item, index)}>
+            {renderItem(item, index)}
+          </div>
+        );
+      })}
       {on && end < items.length && (
-        <div aria-hidden style={{ height: Math.max(0, (items.length - end) * rh - gap) }} />
+        <div aria-hidden style={{ height: Math.max(0, bottomHeight - gap) }} />
       )}
     </div>
   );

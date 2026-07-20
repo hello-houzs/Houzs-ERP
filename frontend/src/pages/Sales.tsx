@@ -214,11 +214,11 @@ export function Sales() {
   }, [qs]);
 
   const list = useQuery<ListResponse>("/api/sales/entries?:",
-    () => {
+    (signal) => {
       const p = new URLSearchParams(qs);
       p.set("page", String(page));
       p.set("per_page", String(PER_PAGE));
-      return api.get(`/api/sales/entries?${p.toString()}`);
+      return api.get(`/api/sales/entries?${p.toString()}`, { signal });
     },
     [qs, page]
   );

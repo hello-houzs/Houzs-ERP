@@ -63,10 +63,10 @@ export const useConsignmentNotesPaged = (params: {
   if (status) usp.set('status', status);
   if (q && q.trim()) usp.set('q', q.trim());
   if (sort) usp.set('sort', sort);
-  return useQuery({
+  return useQuery<{ deliveryOrders: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentNoteAggregates }>({
     queryKey: ['consignment-note', 'list-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    queryFn: () => authedFetch<{ deliveryOrders: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentNoteAggregates }>(`/consignment-notes?${usp.toString()}`),
+    queryFn: ({ signal }) => authedFetch<{ deliveryOrders: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentNoteAggregates }>(`/consignment-notes?${usp.toString()}`, { signal }),
     placeholderData: (prev: unknown) => prev as { deliveryOrders: unknown[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentNoteAggregates } | undefined,
     staleTime: 30_000,
     retry: retryUnlessClientError,

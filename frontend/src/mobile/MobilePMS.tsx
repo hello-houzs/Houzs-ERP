@@ -5,6 +5,9 @@ import { api } from "../api/client";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { MobileGantt } from "./MobileGantt";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
+import { SearchProgress } from "../components/SearchProgress";
+import { SearchScopeHint } from "../components/SearchScopeHint";
+import { useSearchResultTransition } from "../hooks/useServerSearch";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesNonDirector, isSalesDirectorUser } from "../auth/salesAccess";
 import { capability } from "../auth/capabilities";
@@ -453,11 +456,14 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     return p.toString();
   };
   const {
-    data, isLoading, error,
+    data, isLoading, isFetching, isPlaceholderData, error,
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
+    // `showAssigned` is read by buildParams, so it MUST be in the key (main) —
+    // and the query's signal is forwarded so a superseded search is cancelled
+    // rather than left racing (this branch).
     queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ, showAssigned],
-    queryFn: ({ pageParam }) => api.get<ListResponse>(`/api/projects?${buildParams(pageParam)}`),
+    queryFn: ({ pageParam, signal }) => api.get<ListResponse>(`/api/projects?${buildParams(pageParam)}`, { signal }),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
       const loaded = pages.reduce((n, p) => n + (p.data?.length ?? p.projects?.length ?? p.rows?.length ?? 0), 0);
@@ -470,6 +476,16 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     () => data?.pages.flatMap((p) => p.data ?? p.projects ?? p.rows ?? []) ?? [],
     [data],
   );
+  const totalCount = data?.pages[0]?.total ?? 0;
+  const searchTransition = useSearchResultTransition({
+    inputTerm: q,
+    requestTerm: debouncedQ,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const visibleRows = searchTransition.resultsAreStale ? [] : rows;
 
   /* Infinite-scroll trigger — an IntersectionObserver watches a 1px sentinel at
      the list's bottom and fetches the next page as it nears the viewport
@@ -511,7 +527,9 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search project · venue" />
           </div>
+          <SearchProgress active={searchTransition.isSearching} label="Searching…" />
         </div>
+        <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={totalCount} term={q} className="mt-1 px-1" />
         <div className="chips" style={{ marginTop: 11 }}>
           {(tickOnly || restrictedCohort) && (
             <button
@@ -540,9 +558,9 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
         )}
         {!isLoading && !error && (
           <>
-            {rows.length > 0 && (
+            {visibleRows.length > 0 && (
               <MobileVirtualList
-                items={rows}
+                items={visibleRows}
                 getKey={(r) => r.id}
                 estimateHeight={108}
                 renderItem={(r) => {
@@ -610,15 +628,15 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
             {/* Infinite-scroll sentinel — the IntersectionObserver watches this
                 1px marker at the list's bottom; it enters view (+600px) near the
                 end and pulls the next page. Only present while more pages exist. */}
-            {rows.length > 0 && hasNextPage && (
+            {visibleRows.length > 0 && hasNextPage && (
               <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
             )}
             {/* "Loading more…" while the next page is in flight; nothing once
                 every page is loaded (hasNextPage false). */}
-            {rows.length > 0 && isFetchingNextPage && (
+            {visibleRows.length > 0 && isFetchingNextPage && (
               <div style={{ textAlign: "center", padding: "14px 0 2px", fontSize: 11.5, color: "#9aa093" }}>Loading more…</div>
             )}
-            {!rows.length && (
+            {!visibleRows.length && !searchTransition.isSearching && (
               <div className="empty">
                 <div className="empty-t">No projects</div>
                 <div className="empty-s">No projects match this filter.</div>

@@ -220,12 +220,13 @@ export function useMfgProducts(opts?: {
 }) {
   return useQuery({
     queryKey: ['mfg-products', activeCompanyKey(), opts?.category ?? 'all', opts?.search ?? ''],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (opts?.category) params.set('category', opts.category);
       if (opts?.search) params.set('search', opts.search);
       const res = await authedFetch<{ products: MfgProductRow[] }>(
         `/mfg-products${params.toString() ? `?${params.toString()}` : ''}`,
+        { signal },
       );
       return res.products;
     },

@@ -25,7 +25,7 @@ describe("server search transition", () => {
 
   it("hides placeholder rows from an old term but keeps same-term paging rows", () => {
     const { result, rerender } = renderHook(
-      (props) => useSearchResultTransition(props),
+      (props: Parameters<typeof useSearchResultTransition>[0]) => useSearchResultTransition(props),
       {
         initialProps: {
           inputTerm: "A",
@@ -33,6 +33,7 @@ describe("server search transition", () => {
           isFetching: false,
           isPlaceholderData: false,
           hasData: true,
+          hasError: false,
         },
       },
     );
@@ -43,6 +44,7 @@ describe("server search transition", () => {
       isFetching: false,
       isPlaceholderData: false,
       hasData: true,
+      hasError: false,
     });
     expect(result.current.resultsAreStale).toBe(true);
 
@@ -52,6 +54,7 @@ describe("server search transition", () => {
       isFetching: true,
       isPlaceholderData: true,
       hasData: true,
+      hasError: false,
     });
     expect(result.current.resultsAreStale).toBe(true);
 
@@ -61,6 +64,7 @@ describe("server search transition", () => {
       isFetching: false,
       isPlaceholderData: false,
       hasData: true,
+      hasError: false,
     });
     expect(result.current.resultsAreStale).toBe(false);
 
@@ -70,6 +74,7 @@ describe("server search transition", () => {
       isFetching: true,
       isPlaceholderData: true,
       hasData: true,
+      hasError: false,
     });
     expect(result.current.resultsAreStale).toBe(false);
 

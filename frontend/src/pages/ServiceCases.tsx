@@ -436,7 +436,7 @@ function CasesView({
   };
 
   const list = useQuery<Paginated<AssrCase>>("assr-list",
-    () =>
+    (signal) =>
       api.get(
         `/api/assr${buildQuery({
           stage: stage === "ALL" ? undefined : stage,
@@ -448,7 +448,8 @@ function CasesView({
           assigned_to: myCases && user?.id ? user.id : undefined,
           creditor_code: creditorFilter || undefined,
           ...sortParams,
-        })}`
+        })}`,
+        { signal },
       ),
     [stage, search, page, perPage, showArchived, excludeStageParam, myCases, user?.id, creditorFilter, sort?.key, sort?.dir],
     // Paginated + stage/filter-switched list: keep the current rows visible
@@ -961,6 +962,9 @@ function CasesView({
           onChange: (v) => { setPage(1); setSearch(v); },
           placeholder: "Search ASSR no, SO no, Ref no, customer, phone…",
           searching: searchTransition.isSearching,
+          countPending: list.loading || list.placeholder || Boolean(list.error) || searchTransition.resultsAreStale,
+          scope: "server",
+          totalRecords: list.data?.total,
         }}
         resetFilters={{
           active: !!(

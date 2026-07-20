@@ -59,7 +59,7 @@ export function useMfgSalesOrdersPaged(params: { page: number; pageSize: number;
   if (sort) usp.set('sort', sort);
   return useQuery({
     queryKey: ['mfg-sales-orders-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
-    queryFn: () => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; confirmed: number; cancelled: number }; aggregates?: { revenueCenti: number; outstandingCenti: number; paidCenti: number } }>(`/mfg-sales-orders?${usp.toString()}`),
+    queryFn: ({ signal }) => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; confirmed: number; cancelled: number }; aggregates?: { revenueCenti: number; outstandingCenti: number; paidCenti: number } }>(`/mfg-sales-orders?${usp.toString()}`, { signal }),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
     retry: retryUnlessClientError,
@@ -139,8 +139,9 @@ export type DebtorSuggestion = {
 
 export const useDebtorSearch = (q: string) => useQuery({
   queryKey: ['mfg-sales-orders', 'debtors', q],
-  queryFn: () => authedFetch<{ debtors: DebtorSuggestion[] }>(
+  queryFn: ({ signal }) => authedFetch<{ debtors: DebtorSuggestion[] }>(
     `/mfg-sales-orders/debtors/search${q ? `?q=${encodeURIComponent(q)}` : ''}`,
+    { signal },
   ),
   enabled: q.trim().length >= 2,
   staleTime: 5 * 60_000,

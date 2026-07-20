@@ -70,10 +70,10 @@ export const useConsignmentOrdersPaged = (params: {
   if (q && q.trim()) usp.set('q', q.trim());
   if (sort) usp.set('sort', sort);
   if (outstanding) usp.set('outstanding', '1');
-  return useQuery({
+  return useQuery<{ salesOrders: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentOrderAggregates }>({
     queryKey: ['consignment-order', 'list-paged', page, pageSize, status ?? '', q ?? '', sort ?? '', outstanding ? '1' : ''],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    queryFn: () => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentOrderAggregates }>(`/consignment-orders?${usp.toString()}`),
+    queryFn: ({ signal }) => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentOrderAggregates }>(`/consignment-orders?${usp.toString()}`, { signal }),
     placeholderData: (prev: unknown) => prev as { salesOrders: unknown[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentOrderAggregates } | undefined,
     staleTime: 30_000,
     retry: retryUnlessClientError,
@@ -339,8 +339,9 @@ export type DebtorSuggestion = {
 };
 export const useConsignmentDebtorSearch = (q: string) => useQuery({
   queryKey: ['consignment-order', 'debtors', q],
-  queryFn: () => authedFetch<{ debtors: DebtorSuggestion[] }>(
+  queryFn: ({ signal }) => authedFetch<{ debtors: DebtorSuggestion[] }>(
     `/consignment-orders/debtors/search${q ? `?q=${encodeURIComponent(q)}` : ''}`,
+    { signal },
   ),
   enabled: q.trim().length >= 2,
   staleTime: 5 * 60_000,

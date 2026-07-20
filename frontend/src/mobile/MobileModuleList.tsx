@@ -8,6 +8,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { api } from "../api/client";
 import { SearchProgress } from "../components/SearchProgress";
+import { SearchScopeHint } from "../components/SearchScopeHint";
 import { useDebouncedSearchTerm, useSearchResultTransition } from "../hooks/useServerSearch";
 import {
   resolveStatusPill,
@@ -417,12 +418,12 @@ export function MobileModuleList({
     queryKey: wantsPagination
       ? ["mobile-module-paged", base, debouncedQ]
       : ["mobile-module", config.core ? "core" : "scm", config.endpoint],
-    queryFn: ({ pageParam }) =>
+    queryFn: ({ pageParam, signal }) =>
       wantsPagination
-        ? authedFetch<unknown>(buildUrl(pageParam as number))
+        ? authedFetch<unknown>(buildUrl(pageParam as number), { signal })
         : config.core
           ? api.get<unknown>(config.endpoint)
-          : authedFetch<unknown>(config.endpoint),
+          : authedFetch<unknown>(config.endpoint, { signal }),
     initialPageParam: 0,
     getNextPageParam: (last: any, pages) => {
       if (!wantsPagination) return undefined;
@@ -552,6 +553,23 @@ export function MobileModuleList({
             </select>
           )}
         </div>
+        <SearchScopeHint
+          scope={serverPaginated ? "server" : "loaded"}
+          searching={searchTransition.isSearching}
+          countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale}
+          resultCount={serverPaginated ? serverTotal : undefined}
+          term={q}
+          className="mt-1 px-1"
+        />
+        {serverPaginated && (
+          (config.chips?.length ?? 0) > 0 ||
+          (config.chips2?.length ?? 0) > 0 ||
+          (config.sorts?.length ?? 0) > 0
+        ) && (
+          <div className="mt-1 px-1 text-[10px] text-ink-muted">
+            Search uses all pages; chips and sorting use loaded rows.
+          </div>
+        )}
 
         {config.chips && config.chips.length > 0 && (
           <div className="chips" style={{ marginTop: 11 }}>
@@ -560,7 +578,7 @@ export function MobileModuleList({
               const count = c.key === "all" ? all.length : all.filter((r) => safeMatch(c.match, r)).length;
               return (
                 <button key={c.key} onClick={() => setChip(c.key)} className={on ? "chip on" : "chip"}>
-                  {c.label} ({count})
+                  {c.label} ({count} loaded)
                 </button>
               );
             })}
@@ -579,7 +597,10 @@ export function MobileModuleList({
         {/* Variable-count note pill (spec § list-note): server total for a
             paginated list, else the count of shown records. */}
         {!listLoading && !error && rows.length > 0 && (
-          <span className="list-note">{recordCount} {recordCount === 1 ? "record" : "records"}</span>
+          <span className="list-note">
+            {recordCount} {recordCount === 1 ? "record" : "records"}
+            {(!serverPaginated || clientFilterActive) ? " loaded" : ""}
+          </span>
         )}
 
         {/* LOADING: skeleton cards (spec § Foundations — 3 skeletons). */}

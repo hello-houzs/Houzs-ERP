@@ -38,6 +38,7 @@ import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import { ListErrorPanel, SearchPendingPanel, SearchProgress } from "../../components/SearchProgress";
+import { SearchScopeHint } from "../../components/SearchScopeHint";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { useBranding } from "../../hooks/useBranding";
 import { shortCompanyName } from "../../lib/branding";
@@ -1584,6 +1585,7 @@ export function SalesInvoicesListV2() {
           className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
         <SearchProgress active={searchTransition.isSearching} label={searchTransition.statusText} className="mt-1.5" />
+        <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={total} term={search} className="mt-1" />
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-3 md:hidden">
@@ -1660,6 +1662,9 @@ export function SalesInvoicesListV2() {
                 placeholder: "Search SI no, customer, phone, ref…",
                 debounceMs: 0,
                 searching: searchTransition.isSearching,
+                countPending: isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale,
+                scope: "server",
+                totalRecords: total,
               }}
               resetFilters={{
                 active: filtersActive,
@@ -1687,6 +1692,7 @@ export function SalesInvoicesListV2() {
                   className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
                 />
                 <SearchProgress active={searchTransition.isSearching} />
+                <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={total} term={search} />
                 {filtersActive && (
                   <button
                     type="button"

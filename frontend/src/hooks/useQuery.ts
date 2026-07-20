@@ -82,14 +82,14 @@ export function buildQueryKey(
  */
 export function useQuery<T>(
   key: UseQueryKey,
-  fetcher: () => Promise<T>,
+  fetcher: (signal?: AbortSignal) => Promise<T>,
   deps: ReadonlyArray<unknown> = [],
   options: UseQueryOptions = {},
 ): QueryState<T> {
   const enabled = options.enabled ?? true;
   const q = useTanstackQuery<T>({
     queryKey: buildQueryKey(key, deps),
-    queryFn: () => fetcher(),
+    queryFn: ({ signal }) => fetcher(signal),
     enabled,
     ...(options.refetchOnMount !== undefined && {
       refetchOnMount: options.refetchOnMount,

@@ -32,6 +32,7 @@ import { UdfCell } from "./UdfCell";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useUdf, type UseUdfResult } from "../hooks/useUdf";
 import { downloadCSV, toCSV, type CSVColumn } from "../lib/csv";
+import { SearchScopeHint } from "./SearchScopeHint";
 
 export interface Column<T> {
   key: string;
@@ -114,6 +115,15 @@ interface Props<T> {
      */
     searching?: boolean;
     searchingLabel?: string;
+    /** True while totalRecords belongs to a placeholder/failed filter key. */
+    countPending?: boolean;
+    /**
+     * Declares the data boundary of this search box. Defaults to `loaded`, so
+     * a partial-page filter can never silently present itself as global.
+     */
+    scope?: "server" | "loaded";
+    /** Settled result count. Hidden while a replacement search is pending. */
+    totalRecords?: number;
     /**
      * Milliseconds to wait after the last keystroke before calling `onChange`.
      * Default 250. Pass 0 to propagate on every keystroke (only correct when
@@ -1100,31 +1110,41 @@ export function DataTable<T>({
       <div className="mb-2.5 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
         <div className="flex flex-1 flex-wrap items-center gap-2 sm:gap-3">
           {search && (
-            <div className="relative w-full sm:w-72 sm:max-w-full">
-              <Search
-                size={13}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
-              />
-              <DebouncedSearchInput
-                value={search.value}
-                onChange={search.onChange}
-                placeholder={search.placeholder || "Search…"}
-                delayMs={search.debounceMs ?? 250}
-                onPendingChange={search.searching !== undefined ? setSearchDraftPending : undefined}
-                className={cn(
-                  "h-9 w-full rounded-md border border-border bg-surface pl-8 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20 sm:h-8 sm:text-[12px]",
-                  searchBusy ? "pr-24" : "pr-3",
+            <div className="w-full sm:w-72 sm:max-w-full">
+              <div className="relative">
+                <Search
+                  size={13}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
+                />
+                <DebouncedSearchInput
+                  value={search.value}
+                  onChange={search.onChange}
+                  placeholder={search.placeholder || "Search…"}
+                  delayMs={search.debounceMs ?? 250}
+                  onPendingChange={search.searching !== undefined ? setSearchDraftPending : undefined}
+                  className={cn(
+                    "h-9 w-full rounded-md border border-border bg-surface pl-8 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20 sm:h-8 sm:text-[12px]",
+                    searchBusy ? "pr-24" : "pr-3",
+                  )}
+                />
+                {searchBusy && (
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-primary"
+                  >
+                    {search.searchingLabel ?? "Searching…"}
+                  </span>
                 )}
+              </div>
+              <SearchScopeHint
+                scope={search.scope ?? "loaded"}
+                searching={searchBusy}
+                countPending={search.countPending}
+                resultCount={search.totalRecords}
+                term={search.value}
+                className="mt-1 px-1"
               />
-              {searchBusy && (
-                <span
-                  role="status"
-                  aria-live="polite"
-                  className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-primary"
-                >
-                  {search.searchingLabel ?? "Searching…"}
-                </span>
-              )}
             </div>
           )}
           {resetFilters && (

@@ -371,6 +371,7 @@ const BalancesTab = ({
         exportName="Inventory Balances"
         rowKey={(r) => r.product_code}
         searchPlaceholder="Search SKUs…"
+        hideSearch
         groupBanner={false}
         isLoading={isLoading}
         emptyMessage="No SKUs match the filters."
@@ -706,6 +707,7 @@ const BatchesTab = ({
         exportName="Inventory Batches"
         rowKey={(b) => `${b.warehouseId}|${b.batchNo}`}
         searchPlaceholder="Search batches…"
+        hideSearch
         groupBanner={false}
         isLoading={isLoading}
         emptyMessage={`No open batches${q ? ' match the search' : ''}.`}

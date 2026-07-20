@@ -115,6 +115,9 @@ export type DataGridProps<T> = {
   /** row id accessor — required for selection + key */
   rowKey: (row: T) => string;
   searchPlaceholder?: string;
+  /** Optional exact loaded-set count for the client search hint. Defaults to
+      rows.length; pass a pre-filter count when the caller already narrowed rows. */
+  loadedSearchCount?: number;
   /** Human filename stem for the "Export Excel" button, e.g. "Purchase Orders".
       Falls back to a cleaned storageKey when omitted. A YYYY-MM-DD date is
       appended automatically. (Wei Siang 2026-06-20 — storageKey filenames like
@@ -288,6 +291,7 @@ function DataGridInner<T>({
   storageKey,
   rowKey,
   searchPlaceholder = 'Search…',
+  loadedSearchCount,
   exportName,
   onRowDoubleClick,
   onRowClick,
@@ -1154,16 +1158,21 @@ function DataGridInner<T>({
         {toolbar}
         <div className={styles.toolbarSpacer} />
         {!embedded && !hideSearch && (
-          <div className={styles.searchWrap}>
-            <Search {...ICON} aria-hidden />
-            <input
-              ref={searchRef}
-              className={styles.searchInput}
-              type="search"
-              placeholder={searchPlaceholder}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+          <div className={styles.searchGroup}>
+            <div className={styles.searchWrap}>
+              <Search {...ICON} aria-hidden />
+              <input
+                ref={searchRef}
+                className={styles.searchInput}
+                type="search"
+                placeholder={searchPlaceholder}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <div className={styles.searchScope} data-search-scope>
+              Searches {(loadedSearchCount ?? rows.length).toLocaleString()} loaded rows only
+            </div>
           </div>
         )}
         {/* Clear-all-filters — appears only when ≥1 column filter is active.

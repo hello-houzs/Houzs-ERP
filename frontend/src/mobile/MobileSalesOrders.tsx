@@ -11,6 +11,7 @@ import { fmtCenti } from "../lib/scm";
 import { resolveSoLocation } from "../lib/soLocation";
 import { formatDate } from "../lib/utils";
 import { SearchProgress } from "../components/SearchProgress";
+import { SearchScopeHint } from "../components/SearchScopeHint";
 import { useDebouncedSearchTerm, useSearchResultTransition } from "../hooks/useServerSearch";
 import "./mobile.css";
 
@@ -209,7 +210,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
     queryKey: ["mobile-so-list-paged", status, range, debouncedQ],
-    queryFn: ({ pageParam }) => authedFetch<SoListPage>(`/mfg-sales-orders?${buildParams(pageParam)}`),
+    queryFn: ({ pageParam, signal }) => authedFetch<SoListPage>(`/mfg-sales-orders?${buildParams(pageParam)}`, { signal }),
     initialPageParam: 0,
     getNextPageParam: (last, pages) => {
       const loaded = pages.reduce((n, p) => n + (p.salesOrders?.length ?? 0), 0);
@@ -479,6 +480,14 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
             {filterActive && <span style={{ position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%", background: "var(--gold)", border: "1.5px solid #fff" }} />}
           </button>
         </div>
+        <SearchScopeHint
+          scope="server"
+          searching={searchTransition.isSearching}
+          countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale}
+          resultCount={totalCount}
+          term={q}
+          className="mt-1 px-1"
+        />
       </header>
 
       <div ref={scrollRef} className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
