@@ -1,5 +1,11 @@
 ## 2026-07-20
 
+### [POLICY] Sales Director un-blocked from assigning project PIC + Sales Attending (reverses the deliberate 2026-07-18 block, owner 2026-07-20)
+- **Symptom (owner).** A Sales Director hit "A Sales Director cannot assign the project PIC" on a project (and the sibling Sales-Attending block) and wanted it gone — Sales Directors should be able to assign.
+- **Root cause.** Not a bug — a deliberate **2026-07-18 owner rule** blocked Sales Directors from PIC / attendee assignment in FOUR places in `projects.ts`: `POST /` (set pic_id at create), `PATCH /:id` (reassign pic_id), `POST /:id/sales-attendees` (add attendee), `DELETE /:id/sales-attendees/:repId` (remove attendee). Owner reversed the decision on 2026-07-20.
+- **Fix.** Removed all four `isSalesDirectorUser` gates (+ the now-unused import) in `projects.ts`. A Sales Director now assigns/reassigns the PIC and changes Sales Attending like everyone else holding `projects.write`; the brand-coverage + row-scope gates still apply to the picked user. The frontend never separately blocked it (the SD reached the backend 403), so no FE change.
+- **Ref:** `feat/sd-assign-pic`, 2026-07-20. Backend only, no migration.
+
 ### [MEDIUM] Stock Transfer moved the UNCLASSIFIED bucket, never the actual variant — the New forms never captured `variant_key`, so every transfer desynced per-variant stock + MRP
 - **Symptom (owner).** A bedframe / sofa is stocked per fabric / gap / leg variant; transferring one between warehouses should move that specific bucket. But the transfer form only let you pick a SKU + qty — no variant — so "how would the stock stay accurate?"
 - **Root cause (traced; frontend-only — the backend was already ready).** `stock-transfers.ts:349` already maps `it.variantKey -> variant_key`, but the frontend never sent it: `StockTransferNew` + `MobileStockTransferNew` `LineDraft` had no `variantKey`, `StockTransferItemInput` had no `variantKey` field, and "Available" was a per-`product_code` aggregate. So every line posted `variant_key = ''` and the OUT/IN `inventory_movements` hit the unclassified bucket — the real per-variant FIFO buckets + MRP went wrong. (Specials are part of `variant_key` per `variant-key.ts`, so special-order buckets were dropped too.)
