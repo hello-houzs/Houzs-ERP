@@ -819,9 +819,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <div class="bar">Resolution Plan</div>
     <div class="mgrid cols-4">
       <div class="lc">Method</div><div class="vc">${esc(cs.resolution_method ? (RESOLUTION_LABEL[cs.resolution_method] || cs.resolution_method) : "—")}</div>
-      <div class="lc">Assigned To</div><div class="vc${(cs as any).assigned_to_name ? "" : " dim"}">${esc((cs as any).assigned_to_name || "—")}</div>
-      <div class="lc">PO No</div><div class="vc mono">${esc(cs.po_no || "—")}</div>
-      <div class="lc">Target</div><div class="vc mono">${supplierTargetIso ? fmtDate(supplierTargetIso) : "—"}</div>
+      <div class="lc">Target Date</div><div class="vc mono">${supplierTargetIso ? fmtDate(supplierTargetIso) : "—"}</div>
     </div>
 
     <!-- supporting evidence -->
