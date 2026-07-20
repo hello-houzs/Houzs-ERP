@@ -286,7 +286,7 @@ describe("neither editor can save a retired key", () => {
     await testEnv.DB.exec(`DELETE FROM roles WHERE is_system = 0`);
   });
 
-  test("PATCH /api/positions/:id/page-access rejects `petty_cash` with 400", async () => {
+  test("PATCH /api/positions/:id/page-access is disabled — 409, nothing written", async () => {
     const bearer = await seedAdmin(["users.manage", "users.read"]);
     await testEnv.DB.prepare(
       `INSERT OR IGNORE INTO positions (id, department_id, slug, name)
@@ -298,10 +298,12 @@ describe("neither editor can save a retired key", () => {
       headers: { Authorization: bearer, "Content-Type": "application/json" },
       body: JSON.stringify({ entries: [{ page_key: "petty_cash", level: "view" }] }),
     });
-    expect(res.status).toBe(400);
-    expect((await res.json() as { error: string }).error).toContain("Unknown page_key");
+    // Per-position page-access editing is disabled (fix/disable-position-page-access-editor):
+    // the endpoint answers 409 and writes nothing, so it cannot persist a retired key either.
+    expect(res.status).toBe(409);
+    expect((await res.json() as { error: string }).error).toContain("turned off");
 
-    // Nothing was written — a rejected save must not leave a row behind.
+    // Nothing was written — a blocked save must not leave a row behind.
     const rows = await testEnv.DB.prepare(
       `SELECT COUNT(*) AS n FROM position_page_access WHERE page_key = 'petty_cash'`,
     ).all();
