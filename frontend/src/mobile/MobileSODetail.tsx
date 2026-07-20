@@ -748,7 +748,19 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Building type" value={val(h.building_type)} /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Venue" value={val(h.venue ?? h.venue_id)} /></div></div>
               <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Processing date" value={dl(h.internal_expected_dd ?? h.processing_date)} mono /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Delivery date" value={dl(h.customer_delivery_date)} mono /></div></div>
               <RoField label="Sales location" value={val(h.sales_location ?? h.customer_state)} />
-              <RoField label="Note" value={val(h.note)} />
+              {/* Note — a non-empty note is emphasised as an amber callout (desktop
+                  SalesOrderDetailV2 parity), reusing THIS screen's own amber family
+                  (the --amber-bg / --amber / #e0cf9e / #6d5626 tokens the Draft
+                  banner above already uses) and the card's own field font sizes
+                  (9px label / 12.5px value). An empty note keeps the plain field. */}
+              {(h.note ?? "").trim() ? (
+                <div style={{ marginTop: 2, border: "1px solid #e0cf9e", background: "var(--amber-bg, #f6efd9)", borderRadius: 10, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--amber, #8a6a2e)" }}>Note</div>
+                  <p style={{ margin: "4px 0 0", fontSize: 12.5, lineHeight: 1.5, color: "#6d5626", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{h.note}</p>
+                </div>
+              ) : (
+                <RoField label="Note" value="—" />
+              )}
             </div></div>
 
             {/* Delivery address — the STRUCTURED parts the desktop SO form shows,
