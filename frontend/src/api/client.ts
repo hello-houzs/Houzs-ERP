@@ -194,13 +194,22 @@ export function humanHttpMessage(status: number, body: string): string {
 
 type CorrelatedError = Error & { requestId?: string };
 
+const SAFE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,63}$/;
+
+function normalizeRequestId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return SAFE_REQUEST_ID.test(normalized) ? normalized : undefined;
+}
+
 function createRequestId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   return Array.from(bytes, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
 function responseRequestId(res: Response, fallback?: string): string | undefined {
-  return res.headers.get("X-Request-Id") || fallback;
+  return normalizeRequestId(res.headers.get("X-Request-Id"))
+    ?? normalizeRequestId(fallback);
 }
 
 function correlateError(error: unknown, requestId: string): Error {
@@ -208,7 +217,7 @@ function correlateError(error: unknown, requestId: string): Error {
     ? error as CorrelatedError
     : new Error(String(error));
   try {
-    correlated.requestId ||= requestId;
+    correlated.requestId = requestIdFromError(correlated) ?? requestId;
   } catch {
     // A frozen browser error is still more important than its telemetry tag.
   }
@@ -217,7 +226,7 @@ function correlateError(error: unknown, requestId: string): Error {
 
 export function requestIdFromError(error: unknown): string | undefined {
   const value = (error as CorrelatedError | null)?.requestId;
-  return typeof value === "string" ? value : undefined;
+  return normalizeRequestId(value);
 }
 
 class HttpError extends Error {
@@ -252,17 +261,24 @@ function binarySignal(ms: number): AbortSignal | undefined {
   }
 }
 
-async function binaryFetch(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+type BinaryFetchResult = { response: Response; clientRequestId: string };
+
+async function binaryFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<BinaryFetchResult> {
   const caller = init.signal;
   const requestId = createRequestId();
   const headers = new Headers(init.headers);
   headers.set("X-Request-Id", requestId);
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       ...init,
       headers,
       signal: caller ?? binarySignal(timeoutMs),
     });
+    return { response, clientRequestId: requestId };
   } catch (e) {
     if (!caller && e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
       throw correlateError(
@@ -539,7 +555,7 @@ export const api = {
    */
   async putBinary<T>(path: string, body: Blob | ArrayBuffer, contentType: string): Promise<T> {
     const token = tokenStore.get();
-    const res = await binaryFetch(`${baseUrl}${path}`, {
+    const { response: res, clientRequestId } = await binaryFetch(`${baseUrl}${path}`, {
       method: "PUT",
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -553,7 +569,7 @@ export const api = {
       try {
         txt = await res.text();
       } catch {}
-      throw new HttpError(res.status, txt || res.statusText, responseRequestId(res));
+      throw new HttpError(res.status, txt || res.statusText, responseRequestId(res, clientRequestId));
     }
     return (await res.json()) as T;
   },
@@ -564,7 +580,7 @@ export const api = {
    */
   async postBinary<T>(path: string, body: Blob | ArrayBuffer, contentType: string): Promise<T> {
     const token = tokenStore.get();
-    const res = await binaryFetch(`${baseUrl}${path}`, {
+    const { response: res, clientRequestId } = await binaryFetch(`${baseUrl}${path}`, {
       method: "POST",
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -578,7 +594,7 @@ export const api = {
       try {
         txt = await res.text();
       } catch {}
-      throw new HttpError(res.status, txt || res.statusText, responseRequestId(res));
+      throw new HttpError(res.status, txt || res.statusText, responseRequestId(res, clientRequestId));
     }
     return (await res.json()) as T;
   },
@@ -595,7 +611,7 @@ export const api = {
     const token = tokenStore.get();
     const form = new FormData();
     for (const f of files) form.append(fieldName, f);
-    const res = await binaryFetch(`${baseUrl}${path}`, {
+    const { response: res, clientRequestId } = await binaryFetch(`${baseUrl}${path}`, {
       method: "POST",
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
       body: form,
@@ -605,7 +621,7 @@ export const api = {
       try {
         txt = await res.text();
       } catch {}
-      throw new HttpError(res.status, txt || res.statusText, responseRequestId(res));
+      throw new HttpError(res.status, txt || res.statusText, responseRequestId(res, clientRequestId));
     }
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
@@ -623,10 +639,10 @@ export const api = {
    */
   async fetchBlobUrl(path: string): Promise<string> {
     const token = tokenStore.get();
-    const res = await binaryFetch(`${baseUrl}${path}`, {
+    const { response: res, clientRequestId } = await binaryFetch(`${baseUrl}${path}`, {
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
-    if (!res.ok) throw new HttpError(res.status, res.statusText, responseRequestId(res));
+    if (!res.ok) throw new HttpError(res.status, res.statusText, responseRequestId(res, clientRequestId));
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },
@@ -643,10 +659,10 @@ export const api = {
    */
   async downloadFile(path: string, fallbackName = "download"): Promise<void> {
     const token = tokenStore.get();
-    const res = await binaryFetch(`${baseUrl}${path}`, {
+    const { response: res, clientRequestId } = await binaryFetch(`${baseUrl}${path}`, {
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
-    if (!res.ok) throw new HttpError(res.status, res.statusText, responseRequestId(res));
+    if (!res.ok) throw new HttpError(res.status, res.statusText, responseRequestId(res, clientRequestId));
     const cd = res.headers.get("Content-Disposition") || "";
     const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
     const name = m ? decodeURIComponent(m[1]) : fallbackName;
@@ -663,10 +679,10 @@ export const api = {
 
   async openHtml(path: string): Promise<void> {
     const token = tokenStore.get();
-    const res = await binaryFetch(`${baseUrl}${path}`, {
+    const { response: res, clientRequestId } = await binaryFetch(`${baseUrl}${path}`, {
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
-    if (!res.ok) throw new HttpError(res.status, res.statusText, responseRequestId(res));
+    if (!res.ok) throw new HttpError(res.status, res.statusText, responseRequestId(res, clientRequestId));
     const html = await res.text();
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);

@@ -51,4 +51,50 @@ describe("API request correlation", () => {
 
     expect(requestIdFromError(caught)).toBe("binarytrace1234");
   });
+
+  test("keeps the actual binary client id when the response does not echo one", async () => {
+    let sent: string | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      sent = new Headers(init?.headers).get("X-Request-Id");
+      return new Response("gateway rejected upload", { status: 502 });
+    }));
+
+    let caught: unknown;
+    try {
+      await api.putBinary("/api/request-correlation-upload", new Blob(["x"]), "text/plain");
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(sent).toMatch(/^[a-f0-9]{32}$/);
+    expect(requestIdFromError(caught)).toBe(sent);
+  });
+
+  test("rejects an oversized response id and falls back to the actual client id", async () => {
+    let sent: string | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      sent = new Headers(init?.headers).get("X-Request-Id");
+      return new Response("bad gateway", {
+        status: 502,
+        headers: { "X-Request-Id": "x".repeat(1_000) },
+      });
+    }));
+
+    let caught: unknown;
+    try {
+      await api.post("/api/request-correlation-test", { probe: true });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(sent).toMatch(/^[a-f0-9]{32}$/);
+    expect(requestIdFromError(caught)).toBe(sent);
+  });
+
+  test("rejects malformed and oversized request ids already attached to errors", () => {
+    expect(requestIdFromError(Object.assign(new Error("bad"), { requestId: "bad id" })))
+      .toBeUndefined();
+    expect(requestIdFromError(Object.assign(new Error("bad"), { requestId: "x".repeat(65) })))
+      .toBeUndefined();
+  });
 });

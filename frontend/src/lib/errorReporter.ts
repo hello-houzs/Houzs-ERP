@@ -91,7 +91,7 @@ function toMessage(err: unknown): string {
   }
 }
 
-function toStack(err: unknown): string | undefined {
+export function formatReportedStack(err: unknown): string | undefined {
   const requestId = requestIdFromError(err);
   const stack = err instanceof Error && err.stack ? err.stack : "";
   if (!requestId) return stack ? stack.slice(0, MAX_STACK) : undefined;
@@ -181,7 +181,7 @@ export function reportClientError(err: unknown, context?: string): void {
   inReporter = true;
   try {
     const base = toMessage(err);
-    enqueue(context ? `[${context}] ${base}` : base, toStack(err));
+    enqueue(context ? `[${context}] ${base}` : base, formatReportedStack(err));
   } catch {
     // A reporter bug is dropped, never surfaced.
   } finally {
@@ -206,7 +206,7 @@ export function installGlobalErrorReporting(): void {
       // Non-capture listener: resource load failures (img/script tags) do not
       // bubble to window, so only real script errors arrive here.
       const err = ev.error ?? ev.message;
-      enqueue(toMessage(err), toStack(ev.error));
+      enqueue(toMessage(err), formatReportedStack(ev.error));
     } catch {
       // dropped
     } finally {
@@ -219,7 +219,7 @@ export function installGlobalErrorReporting(): void {
     inReporter = true;
     try {
       const reason = (event as PromiseRejectionEvent).reason;
-      enqueue(toMessage(reason), toStack(reason));
+      enqueue(toMessage(reason), formatReportedStack(reason));
     } catch {
       // dropped
     } finally {
