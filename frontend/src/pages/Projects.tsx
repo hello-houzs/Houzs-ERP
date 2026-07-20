@@ -7678,14 +7678,16 @@ function ChecklistRow({
             </button>
           ))}
         </div>
-        {/* Attach below the row — same style as the other sections. */}
+        {/* Attach below the row — allow multiple (e.g. deposit + balance slips). */}
         <input
           ref={fileInputRef}
           type="file"
+          multiple
           hidden
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) uploadAttachment(f);
+          onChange={async (e) => {
+            const files = Array.from(e.target.files || []);
+            for (const f of files) await uploadAttachment(f);
+            if (fileInputRef.current) fileInputRef.current.value = "";
           }}
         />
         {attachments && attachments.length > 0 && (
