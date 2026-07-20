@@ -76,6 +76,14 @@ interface Props<T> {
   /** Stable identifier used for persisting column visibility, order, sort,
    *  and density per page (localStorage). */
   tableId?: string;
+  /**
+   * Optional stable layout family shared by many instances of the same table
+   * schema. Detail pages must use this instead of embedding a document id in
+   * every persisted key, otherwise browsing documents grows localStorage
+   * forever. This affects layout preferences only; row identity still comes
+   * from `getRowKey` and `tableId` remains available to the caller.
+   */
+  layoutFamily?: string;
   columns: Column<T>[];
   rows: T[] | null;
   loading?: boolean;
@@ -272,6 +280,35 @@ function readSmallViewport(): boolean {
   return window.matchMedia?.(SMALL_VIEWPORT_QUERY).matches ?? window.innerWidth < 640;
 }
 
+function sanitizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && item.length > 0))]
+    .slice(0, 500);
+}
+
+function sanitizeSortState(value: unknown): SortState | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.key !== "string" || !record.key) return null;
+  if (record.dir !== "asc" && record.dir !== "desc") return null;
+  return { key: record.key, dir: record.dir };
+}
+
+function sanitizeMobileView(value: unknown): "cards" | "table" {
+  return value === "table" ? "table" : "cards";
+}
+
+function sanitizeColumnWidths(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const widths: Record<string, number> = {};
+  for (const [key, width] of Object.entries(value as Record<string, unknown>)) {
+    if (!key || typeof width !== "number" || !Number.isFinite(width)) continue;
+    widths[key] = Math.min(10_000, Math.max(40, width));
+    if (Object.keys(widths).length >= 500) break;
+  }
+  return widths;
+}
+
 function useSmallViewport(): boolean {
   const [small, setSmall] = useState(readSmallViewport);
 
@@ -399,6 +436,7 @@ function DebouncedSearchInput({
 
 export function DataTable<T>({
   tableId,
+  layoutFamily,
   columns,
   rows,
   loading,
@@ -430,14 +468,36 @@ export function DataTable<T>({
   );
   const effectiveLoading = Boolean(loading || searchBusy);
   const rowActionsDisabled = effectiveLoading || Boolean(error);
-  const idKey = tableId || "_";
-  const [hiddenList, setHiddenList] = useLocalStorage<string[]>(`dt:hidden:${idKey}`, []);
+  const idKey = layoutFamily || tableId || "_";
+  const legacyIdKey = layoutFamily && tableId && layoutFamily !== tableId ? tableId : undefined;
+  const legacyStorageKey = (part: string) => legacyIdKey ? `dt:${part}:${legacyIdKey}` : undefined;
+  const [hiddenList, setHiddenList] = useLocalStorage<string[]>(
+    `dt:hidden:${idKey}`,
+    [],
+    legacyStorageKey("hidden"),
+    sanitizeStringList,
+  );
   // `shownList` lets the user opt-IN to a column that's defaultHidden=true.
   // We need a separate set (rather than relying on hiddenList alone) so a
   // defaultHidden column stays hidden until the user explicitly enables it.
-  const [shownList, setShownList] = useLocalStorage<string[]>(`dt:shown:${idKey}`, []);
-  const [order, setOrder] = useLocalStorage<string[]>(`dt:order:${idKey}`, []);
-  const [sort, setSort] = useLocalStorage<SortState | null>(`dt:sort:${idKey}`, null);
+  const [shownList, setShownList] = useLocalStorage<string[]>(
+    `dt:shown:${idKey}`,
+    [],
+    legacyStorageKey("shown"),
+    sanitizeStringList,
+  );
+  const [order, setOrder] = useLocalStorage<string[]>(
+    `dt:order:${idKey}`,
+    [],
+    legacyStorageKey("order"),
+    sanitizeStringList,
+  );
+  const [sort, setSort] = useLocalStorage<SortState | null>(
+    `dt:sort:${idKey}`,
+    null,
+    legacyStorageKey("sort"),
+    sanitizeSortState,
+  );
   // Mobile-only view preference. "cards" renders the stacked cards
   // (default for `<sm`); "table" forces the desktop table with a
   // horizontal scroll. Persisted per-table so each list page
@@ -445,6 +505,8 @@ export function DataTable<T>({
   const [mobileView, setMobileView] = useLocalStorage<"cards" | "table">(
     `dt:mview:${idKey}`,
     "cards",
+    legacyStorageKey("mview"),
+    sanitizeMobileView,
   );
   const showTable = !isSmallViewport || mobileView === "table";
   const showMobileCards = isSmallViewport && mobileView === "cards";
@@ -455,6 +517,8 @@ export function DataTable<T>({
   const [storedWidths, setStoredWidths] = useLocalStorage<Record<string, number>>(
     widthStorageKey,
     {},
+    legacyStorageKey("widths"),
+    sanitizeColumnWidths,
   );
   // Column resizing needs live state for immediate visual feedback, but
   // localStorage is synchronous. Keep the drag width in memory and commit the
@@ -484,7 +548,12 @@ export function DataTable<T>({
   );
   // Pinned (frozen-left) column keys. Pinned columns render at the front
   // (after any alwaysVisible columns) and stick during horizontal scroll.
-  const [pinned, setPinned] = useLocalStorage<string[]>(`dt:pinned:${idKey}`, []);
+  const [pinned, setPinned] = useLocalStorage<string[]>(
+    `dt:pinned:${idKey}`,
+    [],
+    legacyStorageKey("pinned"),
+    sanitizeStringList,
+  );
   const [chooserOpen, setChooserOpen] = useState(false);
   const userHidden = useMemo(() => new Set(hiddenList), [hiddenList]);
   const userShown = useMemo(() => new Set(shownList), [shownList]);
@@ -556,7 +625,9 @@ export function DataTable<T>({
   // user's collapse choices survive reloads, mirroring the other dt:* prefs.
   const [collapsedGroups, setCollapsedGroups] = useLocalStorage<string[]>(
     `dt:groups:${idKey}`,
-    []
+    [],
+    legacyStorageKey("groups"),
+    sanitizeStringList,
   );
   const collapsedGroupSet = useMemo(
     () => new Set(collapsedGroups),

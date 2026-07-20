@@ -22,6 +22,7 @@ import {
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
+import { DATA_TABLE_LAYOUT_FAMILIES } from "../../components/dataTableLayoutFamilies";
 import {
   DetailGrid,
   DetailMain,
@@ -718,6 +719,7 @@ function PurchaseInvoiceDetailV2ReadOnly() {
             <Section title={`Line items · ${items.length}`}>
               <DataTable<PiItem>
                 tableId={`pi-lines-${id}`}
+                layoutFamily={DATA_TABLE_LAYOUT_FAMILIES.purchaseInvoiceLines}
                 rows={items}
                 loading={false}
                 columns={lineColumns}

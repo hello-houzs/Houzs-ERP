@@ -290,6 +290,64 @@ describe("DataTable responsive rendering", () => {
 });
 
 describe("DataTable column width persistence", () => {
+  it("uses a bounded family identity instead of a per-document layout key", () => {
+    setViewport(1280);
+
+    render(
+      <DataTable
+        tableId="so-lines-SO-2026-000123"
+        layoutFamily="sales-order-lines"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+      />,
+    );
+
+    const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index) ?? "");
+    expect(keys).toHaveLength(8);
+    expect(keys.every((key) => key.endsWith(":sales-order-lines"))).toBe(true);
+    expect(keys.some((key) => key.includes("SO-2026-000123"))).toBe(false);
+  });
+
+  it("migrates the current document's valid legacy preferences into its family", () => {
+    setViewport(1280);
+    localStorage.setItem("dt:hidden:so-lines-SO-2026-000123", JSON.stringify(["status"]));
+
+    render(
+      <DataTable
+        tableId="so-lines-SO-2026-000123"
+        layoutFamily="sales-order-lines"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+      />,
+    );
+
+    expect(screen.queryByRole("columnheader", { name: "Status" })).toBeNull();
+    expect(JSON.parse(localStorage.getItem("dt:hidden:sales-order-lines")!)).toEqual(["status"]);
+  });
+
+  it("sanitizes corrupt persisted preferences instead of crashing the table", () => {
+    setViewport(1280);
+    localStorage.setItem("dt:hidden:corrupt-layout", JSON.stringify({ status: true }));
+    localStorage.setItem("dt:sort:corrupt-layout", JSON.stringify({ key: 7, direction: "sideways" }));
+    localStorage.setItem("dt:widths:corrupt-layout", JSON.stringify({ name: "wide", status: -50 }));
+
+    expect(() => render(
+      <DataTable
+        tableId="corrupt-layout"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+      />,
+    )).not.toThrow();
+
+    expect(screen.getByRole("columnheader", { name: /Status/ })).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem("dt:hidden:corrupt-layout")!)).toEqual([]);
+    expect(JSON.parse(localStorage.getItem("dt:sort:corrupt-layout")!)).toBeNull();
+    expect(JSON.parse(localStorage.getItem("dt:widths:corrupt-layout")!)).toEqual({ status: 40 });
+  });
+
   it("updates the drag width live without writing storage, then persists once on mouseup", () => {
     setViewport(1280);
     const setItem = vi.spyOn(Storage.prototype, "setItem");

@@ -1,6 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AUTH_TOKEN_KEY, writeAuthToken } from "./authToken";
+import { setActiveCompanyId } from "./activeCompany";
 import { installQueryPersist } from "./query-persist";
 
 const originalRequestIdle = Object.getOwnPropertyDescriptor(window, "requestIdleCallback");
@@ -35,7 +36,7 @@ describe("query snapshot scheduling", () => {
   it("defers the large stringify/write until the browser is idle", () => {
     vi.useFakeTimers();
     localStorage.setItem(AUTH_TOKEN_KEY, "session-token");
-    localStorage.setItem("houzs.activeCompanyId", "7");
+    setActiveCompanyId(7);
     const idleCallbacks: IdleRequestCallback[] = [];
     Object.defineProperty(window, "requestIdleCallback", {
       configurable: true,
@@ -68,14 +69,14 @@ describe("query snapshot scheduling", () => {
     (eventName) => {
       vi.useFakeTimers();
       localStorage.setItem(AUTH_TOKEN_KEY, "company-switch-session");
-      localStorage.setItem("houzs.activeCompanyId", "7");
+      setActiveCompanyId(7);
       const qc = new QueryClient();
       install(qc);
       qc.setQueryData(["mfg-sales-orders", "all"], [{ id: "OLD-COMPANY-SO" }]);
 
       // TopNavbar writes the next company immediately before reload. This old
       // page's flush must not relabel its cache as company 8 data.
-      localStorage.setItem("houzs.activeCompanyId", "8");
+      setActiveCompanyId(8);
       if (eventName === "visibilitychange") {
         Object.defineProperty(document, "visibilityState", {
           configurable: true,
@@ -95,7 +96,6 @@ describe("query snapshot scheduling", () => {
 
   it("binds a QueryClient installed signed out to an explicit SPA login", () => {
     vi.useFakeTimers();
-    localStorage.setItem("houzs.activeCompanyId", "7");
     const idleCallbacks: IdleRequestCallback[] = [];
     Object.defineProperty(window, "requestIdleCallback", {
       configurable: true,
@@ -117,7 +117,7 @@ describe("query snapshot scheduling", () => {
     expect(idleCallbacks).toHaveLength(1);
     idleCallbacks[0]({ didTimeout: false, timeRemaining: () => 10 });
 
-    const key = snapshotKeys().find((candidate) => candidate.endsWith(":7"));
+    const key = snapshotKeys().find((candidate) => candidate.endsWith(":0"));
     expect(key).toBeTruthy();
     expect(localStorage.getItem(key!)).toContain("NEW-SESSION-SO");
   });
@@ -125,7 +125,7 @@ describe("query snapshot scheduling", () => {
   it("reinstalling disposes the old cache and global listener wiring", () => {
     vi.useFakeTimers();
     localStorage.setItem(AUTH_TOKEN_KEY, "session-token");
-    localStorage.setItem("houzs.activeCompanyId", "7");
+    setActiveCompanyId(7);
     const removeEventListener = vi.spyOn(window, "removeEventListener");
     const oldClient = new QueryClient();
     const oldDispose = installQueryPersist(oldClient);
@@ -148,7 +148,7 @@ describe("query snapshot scheduling", () => {
   it("drops old list rows when another tab replaces the remembered session", () => {
     vi.useFakeTimers();
     localStorage.setItem(AUTH_TOKEN_KEY, "first-session");
-    localStorage.setItem("houzs.activeCompanyId", "7");
+    setActiveCompanyId(7);
     const qc = new QueryClient();
     install(qc);
     qc.setQueryData(["mfg-sales-orders", "all"], [{ id: "FIRST-USER-SO" }]);

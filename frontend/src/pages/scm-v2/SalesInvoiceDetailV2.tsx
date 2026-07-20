@@ -51,6 +51,7 @@ import {
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
+import { DATA_TABLE_LAYOUT_FAMILIES } from "../../components/dataTableLayoutFamilies";
 import {
   DetailGrid,
   DetailMain,
@@ -1415,6 +1416,7 @@ export function SalesInvoiceDetailV2() {
             <Section title={`Line items · ${items.length}`}>
               <DataTable<SiItem>
                 tableId={`si-lines-${id}`}
+                layoutFamily={DATA_TABLE_LAYOUT_FAMILIES.salesInvoiceLines}
                 rows={items}
                 loading={false}
                 columns={lineColumns}

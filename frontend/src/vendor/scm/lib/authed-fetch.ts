@@ -33,6 +33,7 @@ import {
   requestIdFromError,
   requestIdFromResponse,
 } from '../../../lib/requestCorrelation';
+import { companyHeader } from '../../../lib/activeCompany';
 import { abortableDelay, combineAbortSignals } from '../../../lib/abort';
 
 // `||` not `??`: the CI build inlines VITE_API_URL as an EMPTY STRING when the
@@ -214,19 +215,10 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
   // localStorage key DIRECTLY here to keep this vendored file self-contained
   // (same style as the auth:token read above). Absent → NO header → backend
   // falls back to its hostname default, so single-company Houzs is unchanged.
-  const activeCompanyId = (() => {
-    try {
-      const raw = localStorage.getItem('houzs.activeCompanyId');
-      const n = raw ? Number(raw) : NaN;
-      return Number.isFinite(n) && n > 0 ? String(n) : null;
-    } catch {
-      return null;
-    }
-  })();
   const headers = {
     ...(init?.headers ?? {}),
     authorization: `Bearer ${token}`,
-    ...(activeCompanyId ? { 'X-Company-Id': activeCompanyId } : {}),
+    ...companyHeader(),
     ...(typeof init?.body === 'string' ? { 'content-type': 'application/json' } : {}),
   };
   // Weak-wifi / Hyperdrive cold-start resilience (ported from HOOKKA

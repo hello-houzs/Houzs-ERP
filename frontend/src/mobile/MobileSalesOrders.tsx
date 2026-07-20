@@ -12,6 +12,7 @@ import { resolveSoLocation } from "../lib/soLocation";
 import { formatDate } from "../lib/utils";
 import { SearchProgress } from "../components/SearchProgress";
 import { SearchScopeHint } from "../components/SearchScopeHint";
+import { identityStorageKey } from "../lib/storageIdentity";
 import { useDebouncedSearchTerm, useSearchResultTransition } from "../hooks/useServerSearch";
 import "./mobile.css";
 
@@ -74,7 +75,9 @@ const SCAN_ACK_WINDOW_MS = 30 * 60 * 1000; // 30 min
 
 function readAckedJobIds(): Set<string> {
   try {
-    const raw = localStorage.getItem(SCAN_ACK_KEY);
+    const key = identityStorageKey(SCAN_ACK_KEY);
+    if (!key) return new Set();
+    const raw = localStorage.getItem(key);
     if (!raw) return new Set();
     const arr = JSON.parse(raw) as unknown;
     return Array.isArray(arr) ? new Set(arr.map(String)) : new Set();
@@ -87,7 +90,8 @@ function writeAckedJobIds(ids: Set<string>): void {
     // Keep only the most recent SCAN_ACK_MAX ids (insertion order preserved).
     const arr = Array.from(ids);
     const trimmed = arr.length > SCAN_ACK_MAX ? arr.slice(arr.length - SCAN_ACK_MAX) : arr;
-    localStorage.setItem(SCAN_ACK_KEY, JSON.stringify(trimmed));
+    const key = identityStorageKey(SCAN_ACK_KEY);
+    if (key) localStorage.setItem(key, JSON.stringify(trimmed));
   } catch {
     /* private-mode / quota — the toast just re-fires next open, harmless */
   }

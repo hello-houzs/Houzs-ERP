@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { identityStorageKey } from "../lib/storageIdentity";
 import type { AnnAttachment, AnnMediaLayout } from "./AnnouncementMedia";
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -75,9 +76,14 @@ const POLL_MS = 60_000;
 // the next poll picks up the server's ackedIds.
 const LOCAL_ACKS_KEY = "announcements:localAcks";
 
+// Scoped by the bound user+company: on a shared browser an ack by one user must
+// not silently hide an office notice from the next one. No identity bound yet
+// (pre-/auth/me) → no key → the memo is simply empty, never cross-user.
 function readLocalAcks(): Record<string, number> {
   try {
-    const raw = localStorage.getItem(LOCAL_ACKS_KEY);
+    const key = identityStorageKey(LOCAL_ACKS_KEY);
+    if (!key) return {};
+    const raw = localStorage.getItem(key);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return {};
@@ -89,7 +95,8 @@ function readLocalAcks(): Record<string, number> {
 
 function writeLocalAcks(next: Record<string, number>) {
   try {
-    localStorage.setItem(LOCAL_ACKS_KEY, JSON.stringify(next));
+    const key = identityStorageKey(LOCAL_ACKS_KEY);
+    if (key) localStorage.setItem(key, JSON.stringify(next));
   } catch {
     // non-fatal
   }

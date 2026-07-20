@@ -128,6 +128,8 @@ function relativeTime(iso: string): string {
   return new Date(t).toLocaleDateString("en-MY");
 }
 
+// The local-ack memo moved into useAnnouncementBanner (main); this branch's
+// identity scoping of that key is applied there, not re-duplicated here.
 export function AnnouncementBanner() {
   // Unscoped feed (human posts AND the per-user scan / service-case notices) —
   // the desktop pop-up has always shown both.

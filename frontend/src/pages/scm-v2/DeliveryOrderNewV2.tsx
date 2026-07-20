@@ -7,7 +7,7 @@
 // ?fromSo=<SO-doc-no>, the SO detail hook prefills the customer, address,
 // emergency contact, and — when it arrived from the line-level SO→DO picker
 // (?fromPicks=1) — the picked LINES, variants and all, from the
-// `doFromSoPicks` sessionStorage stash. Editing an existing DO with ?edit=<id>
+// the scoped `doFromSoPicks` handoff. Editing an existing DO with ?edit=<id>
 // prefills from the DO itself and SAVES IN PLACE (header PATCH + per-line
 // add/update/delete diff) instead of minting a duplicate.
 //
@@ -52,6 +52,7 @@ import {
   useDeliverableSoLinesForDoc,
 } from "../../vendor/scm/lib/delivery-order-queries";
 import { useIdempotencyKey } from "../../lib/idempotency";
+import { readScmHandoff, removeScmHandoff } from "../../lib/scmHandoffStorage";
 import { useSoDropdownOptions, optionsOrFallback } from "../../vendor/scm/lib/so-dropdown-options-queries";
 import {
   SoLineCard,
@@ -579,13 +580,8 @@ export function DeliveryOrderNewV2() {
   useEffect(() => {
     if (!fromPicks || stashSeeded) return;
     setStashSeeded(true);
-    let stash: Array<Record<string, unknown>> = [];
-    try {
-      stash = JSON.parse(sessionStorage.getItem("doFromSoPicks") ?? "[]");
-    } catch {
-      stash = [];
-    }
-    sessionStorage.removeItem("doFromSoPicks");
+    const stash = readScmHandoff<Array<Record<string, unknown>>>("doFromSoPicks") ?? [];
+    removeScmHandoff("doFromSoPicks");
     if (Array.isArray(stash) && stash.length > 0) {
       setLines(
         stash.map((s) => ({

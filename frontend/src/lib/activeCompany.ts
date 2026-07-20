@@ -11,14 +11,24 @@
 //
 // Plain module + a tiny pub/sub so it's readable synchronously from the
 // non-React fetch modules AND subscribable from React via useSyncExternalStore.
-// The localStorage KEY is duplicated (not imported) inside the vendored
-// authed-fetch to keep that vendored file self-contained — keep them in sync.
+// The stored key is scoped by the effective auth session. Every request path,
+// including the vendored SCM clients, reads through this module so another
+// signed-in tab cannot silently change this tab's tenant header.
+
+import { authSessionFingerprint } from "./authToken";
 
 export const ACTIVE_COMPANY_KEY = "houzs.activeCompanyId";
 
+function scopedKey(): string | null {
+  const session = authSessionFingerprint();
+  return session ? `${ACTIVE_COMPANY_KEY}:${session}` : null;
+}
+
 function read(): number | null {
   try {
-    const raw = localStorage.getItem(ACTIVE_COMPANY_KEY);
+    const key = scopedKey();
+    if (!key) return null;
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     const n = Number(raw);
     return Number.isFinite(n) && n > 0 ? n : null;
@@ -27,7 +37,19 @@ function read(): number | null {
   }
 }
 
-const listeners = new Set<() => void>();
+export type ActiveCompanyChangeSource = "same-tab" | "storage";
+type ActiveCompanyListener = (source: ActiveCompanyChangeSource) => void;
+const listeners = new Set<ActiveCompanyListener>();
+
+function emit(source: ActiveCompanyChangeSource): void {
+  for (const fn of listeners) fn(source);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === scopedKey() || event.key === null) emit("storage");
+  });
+}
 
 /** Current active company id, or null when unset (→ no X-Company-Id header). */
 export function getActiveCompanyId(): number | null {
@@ -44,13 +66,15 @@ export function companyHeader(): Record<string, string> {
 /** Set (or clear, with null) the active company and notify subscribers. */
 export function setActiveCompanyId(id: number | null): void {
   try {
-    if (id === null) localStorage.removeItem(ACTIVE_COMPANY_KEY);
-    else localStorage.setItem(ACTIVE_COMPANY_KEY, String(id));
+    const key = scopedKey();
+    if (!key) return;
+    if (id === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, String(id));
   } catch {}
-  for (const fn of listeners) fn();
+  emit("same-tab");
 }
 
-export function subscribeActiveCompany(fn: () => void): () => void {
+export function subscribeActiveCompany(fn: ActiveCompanyListener): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }

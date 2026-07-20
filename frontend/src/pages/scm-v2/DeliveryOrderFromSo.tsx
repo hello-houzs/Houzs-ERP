@@ -26,6 +26,7 @@
 
 import { useMemo, useState, type CSSProperties } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
@@ -285,7 +286,10 @@ export const DeliveryOrderFromSo = () => {
        sorted-first picked line. Each line keeps its own soItemId, so multiple
        same-customer SOs still link back correctly. */
     const firstDocNo = stash.map((s) => s.docNo).sort()[0] ?? '';
-    sessionStorage.setItem('doFromSoPicks', JSON.stringify(stash));
+    if (!writeScmHandoff('doFromSoPicks', stash)) {
+      setDialog({ title: 'Unable to continue', body: 'This browser could not safely store your picked lines. Your selection is still here; free some browser storage and try again.' });
+      return;
+    }
     navigate(`/scm/delivery-orders/new?fromSo=${encodeURIComponent(firstDocNo)}&fromPicks=1`);
   };
 

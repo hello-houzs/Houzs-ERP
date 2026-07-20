@@ -9,15 +9,28 @@
 // so they sync across users/devices via the API (see mail-actions.ts).
 //
 // Compose DRAFTS remain LOCAL: there is no draft table this round, so saved
-// drafts are kept in localStorage, keyed per device, with a tiny pub/sub so the
-// inbox Drafts folder and the compose dialog stay in sync within and across
-// tabs. GAP (reported to owner): drafts do NOT sync between users/devices and
-// are lost if site data is cleared. Promoting them needs an email_drafts table
-// + CRUD endpoints.
+// drafts are kept in localStorage under the resolved user + company identity,
+// with a tiny pub/sub so the inbox Drafts folder and compose dialog stay in
+// sync within and across tabs. The old ownerless v1 key is quarantined: it is
+// never auto-claimed by the next login and never silently deleted. Drafts still
+// do not sync between devices and are lost if site data is cleared. Promoting
+// them needs an email_drafts table + CRUD endpoints.
 // ---------------------------------------------------------------------------
 
-// Bump the version suffix if the persisted shape ever changes incompatibly.
-const KEY = "houzs-mail-local:v1";
+import {
+  getBrowserStorageIdentity,
+  subscribeBrowserStorageIdentity,
+} from "../../lib/storageIdentity";
+
+const LEGACY_KEY = "houzs-mail-local:v1";
+const KEY_PREFIX = "houzs-mail-local:v2";
+
+function currentKey(): string | null {
+  const identity = getBrowserStorageIdentity();
+  return identity
+    ? `${KEY_PREFIX}:u${identity.userId}:c${identity.companyId}`
+    : null;
+}
 
 export type MailDraft = {
   id: string;
@@ -82,7 +95,9 @@ export function sanitizeDrafts(value: unknown): MailDraft[] {
 function load(): MailLocalState {
   if (typeof window === "undefined") return { ...EMPTY };
   try {
-    const raw = window.localStorage.getItem(KEY);
+    const key = currentKey();
+    if (!key) return { ...EMPTY };
+    const raw = window.localStorage.getItem(key);
     if (!raw) return { ...EMPTY };
     const parsed = JSON.parse(raw) as Partial<MailLocalState>;
     return {
@@ -98,7 +113,8 @@ const listeners = new Set<() => void>();
 function persistAndNotify(): void {
   if (typeof window !== "undefined") {
     try {
-      window.localStorage.setItem(KEY, JSON.stringify(state));
+      const key = currentKey();
+      if (key) window.localStorage.setItem(key, JSON.stringify(state));
     } catch {
       // Quota / disabled storage — keep the in-memory copy so the current
       // session still works; it just won't survive a reload.
@@ -116,7 +132,7 @@ function persistAndNotify(): void {
 // Cross-tab sync: another tab writing the key fires a storage event here.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
-    if (e.key !== KEY) return;
+    if (e.key !== currentKey()) return;
     state = load();
     for (const cb of listeners) {
       try {
@@ -126,6 +142,26 @@ if (typeof window !== "undefined") {
       }
     }
   });
+}
+
+subscribeBrowserStorageIdentity(() => {
+  state = load();
+  for (const cb of listeners) {
+    try {
+      cb();
+    } catch {
+      /* ignore */
+    }
+  }
+});
+
+/** Legacy v1 has no owner/company metadata, so it stays quarantined. */
+export function hasQuarantinedLegacyDrafts(): boolean {
+  try {
+    return window.localStorage.getItem(LEGACY_KEY) !== null;
+  } catch {
+    return false;
+  }
 }
 
 // ── Subscription (for useSyncExternalStore) ────────────────────────────────
@@ -140,12 +176,16 @@ export function getSnapshot(): MailLocalState {
 
 // ── Draft mutators ───────────────────────────────────────────────────────
 export function saveDraft(draft: MailDraft): void {
-  const rest = state.drafts.filter((d) => d.id !== draft.id);
+  // Re-read before a read/modify/write so a draft saved by another tab since
+  // our last storage event is not erased by this tab's stale in-memory array.
+  const base = currentKey() ? load() : state;
+  const rest = base.drafts.filter((d) => d.id !== draft.id);
   state = { ...state, drafts: [draft, ...rest] };
   persistAndNotify();
 }
 
 export function deleteDraft(id: string): void {
-  state = { ...state, drafts: state.drafts.filter((d) => d.id !== id) };
+  const base = currentKey() ? load() : state;
+  state = { ...state, drafts: base.drafts.filter((d) => d.id !== id) };
   persistAndNotify();
 }

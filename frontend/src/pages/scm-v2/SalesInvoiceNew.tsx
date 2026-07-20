@@ -19,6 +19,7 @@
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { newIdempotencyKey, useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, removeScmHandoff } from '../../lib/scmHandoffStorage';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
@@ -181,11 +182,7 @@ export const SalesInvoiceNew = () => {
       unitPriceCenti: number; discountCenti: number; unitCostCenti: number;
       variants: unknown;
     };
-    let stash: Stash[] | null = null;
-    if (fromPicks) {
-      try { stash = JSON.parse(sessionStorage.getItem('siFromDoPicks') ?? 'null'); }
-      catch { stash = null; }
-    }
+    const stash = fromPicks ? readScmHandoff<Stash[]>('siFromDoPicks') : null;
 
     if (stash && stash.length > 0) {
       setLines(stash.map((s, i) => ({
@@ -202,7 +199,7 @@ export const SalesInvoiceNew = () => {
         unitCostCenti: Number(s.unitCostCenti ?? 0),
         variants: (s.variants as Record<string, unknown>) ?? {},
       })));
-      sessionStorage.removeItem('siFromDoPicks');
+      removeScmHandoff('siFromDoPicks');
     } else if (doItems.length > 0) {
       setLines(doItems.map((it) => ({
         ...emptySoLine(),

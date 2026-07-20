@@ -23,7 +23,8 @@
 //     size-capped, and fail-soft on quota / corruption.
 
 import type { QueryClient } from "@tanstack/react-query";
-import { readAuthToken, subscribeAuthTokenChange } from "./authToken";
+import { authSessionFingerprint, subscribeAuthTokenChange } from "./authToken";
+import { getActiveCompanyId } from "./activeCompany";
 
 // Injected at build time by vite.config `define`. Unique per deploy.
 declare const __BUILD_ID__: string;
@@ -39,13 +40,7 @@ const IDLE_TIMEOUT_MS = 5000;
 // other company's list (multi-company isolation). Both are read at call time
 // because the active company can change during a session.
 function activeCompany(): string {
-  try {
-    const raw = localStorage.getItem("houzs.activeCompanyId");
-    const n = raw ? Number(raw) : NaN;
-    return Number.isFinite(n) && n > 0 ? String(n) : "0";
-  } catch {
-    return "0";
-  }
+  return String(getActiveCompanyId() ?? 0);
 }
 // Identity fingerprint for the CURRENT session. The bearer token is the only
 // identity signal available synchronously at module-init time (hydrate runs
@@ -54,17 +49,7 @@ function activeCompany(): string {
 // while making the namespace change the moment the signed-in user changes.
 // Empty string when signed out.
 function sessionFp(): string {
-  let token = "";
-  try {
-    token = readAuthToken();
-  } catch {
-    return "";
-  }
-  if (!token) return "";
-  // djb2 — we need a stable bucket per token, not cryptographic strength.
-  let h = 5381;
-  for (let i = 0; i < token.length; i++) h = ((h << 5) + h + token.charCodeAt(i)) | 0;
-  return (h >>> 0).toString(36);
+  return authSessionFingerprint();
 }
 
 /** Prefix owned by the CURRENT build + signed-in session (all companies). */

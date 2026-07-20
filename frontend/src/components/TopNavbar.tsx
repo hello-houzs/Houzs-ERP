@@ -16,6 +16,7 @@ import {
   setActiveCompanyId,
   subscribeActiveCompany,
 } from "../lib/activeCompany";
+import { clearAllScmHandoffs } from "../lib/scmHandoffStorage";
 
 /**
  * Desktop-only sticky top navbar. Hosts breadcrumb (left), search +
@@ -209,6 +210,7 @@ function CompanySwitcher() {
     // and every request carries the new X-Company-Id header. Company switches are
     // rare + deliberate, so the reload cost is an acceptable trade for guaranteed
     // zero cross-company staleness.
+    clearAllScmHandoffs();
     setActiveCompanyId(id);
     window.location.reload();
   }

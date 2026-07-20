@@ -43,6 +43,7 @@ import {
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
+import { DATA_TABLE_LAYOUT_FAMILIES } from "../../components/dataTableLayoutFamilies";
 import {
   DetailGrid,
   DetailMain,
@@ -1339,6 +1340,7 @@ export function DeliveryOrderDetailV2() {
             >
               <DataTable<DoItem>
                 tableId={`do-lines-${id}`}
+                layoutFamily={DATA_TABLE_LAYOUT_FAMILIES.deliveryOrderLines}
                 rows={items}
                 loading={false}
                 columns={lineColumns}

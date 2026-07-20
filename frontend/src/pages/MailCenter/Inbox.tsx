@@ -54,6 +54,7 @@ import {
   subscribe as subscribeLocal,
   getSnapshot as getLocalSnapshot,
   deleteDraft,
+  hasQuarantinedLegacyDrafts,
   type MailDraft,
 } from "./mail-local";
 import {
@@ -795,26 +796,38 @@ function emptyLabel(folder: Folder): string {
 // ── Drafts list ────────────────────────────────────────────────────────────
 function DraftsList({
   drafts,
+  legacyFound,
   onResume,
 }: {
   drafts: MailDraft[];
+  legacyFound: boolean;
   onResume: (d: MailDraft) => void;
 }) {
+  const legacyNotice = legacyFound ? (
+    <div role="status" className="m-3 rounded-md border border-warning-text/30 bg-warning-bg px-3 py-2 text-[11px] leading-relaxed text-warning-text">
+      This device contains older drafts whose user and company ownership cannot be verified. They are retained but not shown or assigned automatically. Recovery requires an owner decision.
+    </div>
+  ) : null;
   if (drafts.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-10 text-center">
-        <FileText className="h-6 w-6 text-ink-muted/40" />
-        <p className="text-xs font-medium text-ink-muted">No drafts</p>
-        <p className="max-w-xs text-[11px] leading-snug text-ink-muted/70">
-          Start a new email and choose "Save draft" to keep it here. Drafts are
-          stored on this device only.
-        </p>
-      </div>
+      <>
+        {legacyNotice}
+        <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-10 text-center">
+          <FileText className="h-6 w-6 text-ink-muted/40" />
+          <p className="text-xs font-medium text-ink-muted">No drafts</p>
+          <p className="max-w-xs text-[11px] leading-snug text-ink-muted/70">
+            Start a new email and choose "Save draft" to keep it here. Drafts are
+            stored on this device only.
+          </p>
+        </div>
+      </>
     );
   }
   return (
-    <ul className="divide-y divide-border">
-      {drafts.map((d) => (
+    <>
+      {legacyNotice}
+      <ul className="divide-y divide-border">
+        {drafts.map((d) => (
         <li key={d.id} className="group flex items-stretch hover:bg-surface-dim/50">
           <button
             onClick={() => onResume(d)}
@@ -840,8 +853,9 @@ function DraftsList({
             </RowIconButton>
           </div>
         </li>
-      ))}
-    </ul>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -1643,6 +1657,7 @@ export function MailInbox() {
           {folder === "drafts" ? (
             <DraftsList
               drafts={drafts}
+              legacyFound={hasQuarantinedLegacyDrafts()}
               onResume={(d) => {
                 setResumeDraft(d);
                 setComposeOpen(true);

@@ -15,18 +15,19 @@
 // `localStorage.getItem('auth:token')` anywhere — call this instead.
 
 export const AUTH_TOKEN_KEY = "auth:token";
+const LOCAL_TOKEN_SUPPRESSED_KEY = "auth:local-token-suppressed";
 
-type AuthTokenListener = (token: string) => void;
+export type AuthTokenChangeSource = "same-tab" | "storage";
+type AuthTokenListener = (token: string, source: AuthTokenChangeSource) => void;
 const authTokenListeners = new Set<AuthTokenListener>();
 
 /** The current bearer token, from whichever store login put it in. "" = none. */
 export function readAuthToken(): string {
   try {
-    return (
-      localStorage.getItem(AUTH_TOKEN_KEY) ||
-      sessionStorage.getItem(AUTH_TOKEN_KEY) ||
-      ""
-    );
+    const tabToken = sessionStorage.getItem(AUTH_TOKEN_KEY);
+    if (tabToken) return tabToken;
+    if (sessionStorage.getItem(LOCAL_TOKEN_SUPPRESSED_KEY) === "1") return "";
+    return localStorage.getItem(AUTH_TOKEN_KEY) || "";
   } catch {
     return "";
   }
@@ -38,9 +39,13 @@ export function subscribeAuthTokenChange(listener: AuthTokenListener): () => voi
   return () => authTokenListeners.delete(listener);
 }
 
-function emitAuthTokenChange(): void {
+let lastEffectiveToken = readAuthToken();
+
+function emitAuthTokenChange(source: AuthTokenChangeSource): void {
   const token = readAuthToken();
-  for (const listener of authTokenListeners) listener(token);
+  if (token === lastEffectiveToken) return;
+  lastEffectiveToken = token;
+  for (const listener of authTokenListeners) listener(token, source);
 }
 
 // localStorage is shared by every tab, but a `storage` event is delivered only
@@ -49,7 +54,7 @@ function emitAuthTokenChange(): void {
 // caches. sessionStorage is tab-local and deliberately has no cross-tab event.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
-    if (event.key === AUTH_TOKEN_KEY) emitAuthTokenChange();
+    if (event.key === AUTH_TOKEN_KEY || event.key === null) emitAuthTokenChange("storage");
   });
 }
 
@@ -59,19 +64,40 @@ export function writeAuthToken(token: string, persistent = true): void {
     if (persistent) {
       localStorage.setItem(AUTH_TOKEN_KEY, token);
       sessionStorage.removeItem(AUTH_TOKEN_KEY);
+      sessionStorage.removeItem(LOCAL_TOKEN_SUPPRESSED_KEY);
     } else {
       sessionStorage.setItem(AUTH_TOKEN_KEY, token);
-      localStorage.removeItem(AUTH_TOKEN_KEY);
+      // A tab-only login must not log every remembered-login tab out. The
+      // session token has precedence in this tab; the shared token stays put.
+      sessionStorage.setItem(LOCAL_TOKEN_SUPPRESSED_KEY, "1");
     }
   } catch {}
-  emitAuthTokenChange();
+  emitAuthTokenChange("same-tab");
 }
 
-/** Clear both backing stores, then notify session-scoped caches. */
+/** Clear this tab's effective session, then notify session-scoped caches. */
 export function clearAuthToken(): void {
   try {
-    localStorage.removeItem(AUTH_TOKEN_KEY);
-    sessionStorage.removeItem(AUTH_TOKEN_KEY);
+    if (sessionStorage.getItem(AUTH_TOKEN_KEY)) {
+      sessionStorage.removeItem(AUTH_TOKEN_KEY);
+      // Do not fall through into another account's remembered token after a
+      // session-only logout/expiry in this tab.
+      sessionStorage.setItem(LOCAL_TOKEN_SUPPRESSED_KEY, "1");
+    } else {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      sessionStorage.removeItem(LOCAL_TOKEN_SUPPRESSED_KEY);
+    }
   } catch {}
-  emitAuthTokenChange();
+  emitAuthTokenChange("same-tab");
+}
+
+/** Stable non-secret bucket for browser storage isolation. */
+export function authSessionFingerprint(): string {
+  const token = readAuthToken();
+  if (!token) return "";
+  let hash = 5381;
+  for (let i = 0; i < token.length; i++) {
+    hash = ((hash << 5) + hash + token.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
 }

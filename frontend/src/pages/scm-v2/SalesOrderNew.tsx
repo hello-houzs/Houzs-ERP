@@ -48,6 +48,7 @@ import {
 import { authedFetch, humanApiError, parseSaveProblems } from '../../vendor/scm/lib/authed-fetch';
 import { SaveProblemsList, saveProblemsTitle } from '../../vendor/scm/components/SaveProblemsList';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, removeScmHandoff } from '../../lib/scmHandoffStorage';
 import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
@@ -79,9 +80,7 @@ import { useFabricLibrary } from '../../vendor/scm/lib/queries';
    the SAME variant keys SoLineCard.toggleSpecial does and the special renders
    checked on the New SO line. */
 import { useSpecialAddons, type MfgProductRow } from '../../vendor/scm/lib/mfg-products-queries';
-import {
-  SCAN_PREFILL_KEY, type ScanPrefill, type ExtractedSlip,
-} from '../../vendor/scm/components/ScanOrderModal';
+import { type ScanPrefill, type ExtractedSlip } from '../../vendor/scm/components/ScanOrderModal';
 import {
   PaymentsTable, labelToApi, draftMethodFields, newPaymentDraft,
   missingMethodSubField, parseInstallmentMonths, type PaymentDraft,
@@ -364,9 +363,9 @@ export const SalesOrderNew = () => {
     if (preferred) setCustomerType((prev) => prev || preferred);
   }, [copyFromDocNo, copySeeded, customerTypeOpts]);
 
-  /* Scan-Order prefill — ?fromScan=1 + sessionStorage handoff from
+  /* Scan-Order prefill — ?fromScan=1 + scoped browser handoff from
      ScanOrderModal ("Scan Order" on the SO list). Same one-shot seeding
-     idea as copyFrom above, but via sessionStorage because the source is
+     idea as copyFrom above, but via the short-lived handoff store because the source is
      an OCR'd handwritten slip, not an existing SO. The key is consumed
      (removed) immediately so a refresh starts clean. Everything seeded
      here is a DRAFT the operator reviews — normal pricing/validation
@@ -374,7 +373,7 @@ export const SalesOrderNew = () => {
   const fromScan = searchParams.get('fromScan') === '1';
   const [scanSeeded, setScanSeeded] = useState(false);
   /* Original-slip R2 key from the scan handoff — survives in state past the
-     one-shot sessionStorage consume so it can ride onto the create body and
+     one-shot handoff consume so it can ride onto the create body and
      become the SO's "Original Slip" proof. '' for a non-scan / PDF order. */
   const [scanSlipImageKey, setScanSlipImageKey] = useState('');
   /* Payment-receipt R2 key from the scan handoff — parallel to the slip key
@@ -384,11 +383,8 @@ export const SalesOrderNew = () => {
   useEffect(() => {
     if (!fromScan || scanSeeded) return;
     setScanSeeded(true);
-    let payload: ScanPrefill | null = null;
-    try {
-      payload = JSON.parse(sessionStorage.getItem(SCAN_PREFILL_KEY) ?? 'null') as ScanPrefill | null;
-    } catch { payload = null; }
-    sessionStorage.removeItem(SCAN_PREFILL_KEY);
+    const payload = readScmHandoff<ScanPrefill>('soScanPrefill');
+    removeScmHandoff('soScanPrefill');
     if (!payload) return;
     if (payload.slipImageKey) setScanSlipImageKey(payload.slipImageKey);
     if (payload.receiptImageKey) setScanReceiptImageKey(payload.receiptImageKey);

@@ -8,7 +8,7 @@
 // A supplier-lock keeps the merge clean: once one line is ticked, lines of a
 // DIFFERENT supplier grey out — a receive is for ONE supplier.
 //
-// Continue stashes the picked lines to sessionStorage['pcrFromOrderPicks'] and
+// Continue stashes the picked lines in the scoped SCM handoff store and
 // opens the normal New Purchase Consignment Receive form prefilled for review
 // (?fromPicks=1). No inventory moves until Create.
 //
@@ -17,6 +17,7 @@
 
 import { useMemo, useState, type CSSProperties } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { useOutstandingPcOrderLines, type OutstandingPcOrderLine } from '../../vendor/scm/lib/purchase-consignment-receive-queries';
@@ -233,7 +234,10 @@ export const PurchaseConsignmentReceiveFromOrder = () => {
     }
 
     const firstOrderId = stash[0]?.purchaseConsignmentOrderId ?? '';
-    sessionStorage.setItem('pcrFromOrderPicks', JSON.stringify(stash));
+    if (!writeScmHandoff('pcrFromOrderPicks', stash)) {
+      setDialog({ title: 'Unable to continue', body: 'This browser could not safely store your picked lines. Your selection is still here; free some browser storage and try again.' });
+      return;
+    }
     navigate(`/scm/purchase-consignment-receives/new?fromPcOrder=${encodeURIComponent(firstOrderId)}&fromPicks=1`);
   };
 
