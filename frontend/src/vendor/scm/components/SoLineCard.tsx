@@ -26,7 +26,7 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Trash2, ImagePlus, X, ChevronDown, ChevronRight } from 'lucide-react';
+import { Trash2, ImagePlus, X } from 'lucide-react';
 import {
   computeMfgLinePrice,
   buildSpecialsPoolFromAddons,
@@ -57,6 +57,7 @@ import { CATEGORY_BADGE } from '../lib/category-badges';
 import { sortByNumeric } from '../lib/sort-options';
 import { posRemarkSpecialOf } from '../lib/pos-remark-special';
 import { useNotify } from './NotifyDialog';
+import { SpecialOrders } from './SpecialOrders';
 import styles from './SoLineCard.module.css';
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -432,15 +433,6 @@ const SoLineCardInner = ({
   };
   const setVariant = (k: string, v: string | number | string[]) => setVariants({ [k]: v });
 
-  /* Unified "Custom / other" special-order writer — feeds the free-text channel
-     (variants.extraAddonNote + extraAddonAmountRM), the SAME fields POS folds
-     and the server honest-pricing recompute reads (mfg-pricing-recompute.ts).
-     DATA MODEL UNCHANGED: we only write these two existing keys — no migration,
-     no new field. setVariants keeps overriddenKeys in sync so the follower
-     cascade leaves a manually-entered custom order alone. */
-  const setExtraAddon = (patch: { extraAddonNote?: string; extraAddonAmountRM?: number }) =>
-    setVariants(patch);
-
   /* PR #127 — HOOKKA multi-select Special Orders. */
   const specialsList = (v: unknown): string[] => {
     if (Array.isArray(v)) return v.map(String).filter(Boolean);
@@ -579,39 +571,6 @@ const SoLineCardInner = ({
       (a) => a.active && a.categories.includes(catUpper) && (!restricted || allowed.has(a.code)),
     );
   }, [specialDefs, catUpper, allowOpts]);
-  const specialChoicesMap: Record<string, string[]> =
-    (draft.variants.specialChoices && typeof draft.variants.specialChoices === 'object'
-      ? (draft.variants.specialChoices as Record<string, string[]>)
-      : {});
-
-  /* Tick/untick writes specials (codes) + specialChoices (per-code chosen
-     option-group labels; required groups default to their first choice, like
-     the POS picker) + specialLabels (display snapshot) in one patch. */
-  const toggleSpecial = (code: string) => {
-    const current = specialsList(draft.variants.specials ?? draft.variants.special);
-    const has = current.includes(code);
-    const nextPicked = has ? current.filter((c) => c !== code) : [...current, code];
-    const nextChoices: Record<string, string[]> = { ...specialChoicesMap };
-    if (has) {
-      delete nextChoices[code];
-    } else {
-      const def = specialDefs.find((d) => d.code === code);
-      if (def && def.optionGroups.length > 0) {
-        nextChoices[code] = def.optionGroups.map((g) => (g.required && g.choices[0] ? g.choices[0].label : ''));
-      }
-    }
-    setVariants({
-      specials: nextPicked,
-      specialChoices: nextChoices,
-      specialLabels: nextPicked.map((c) => specialDefs.find((d) => d.code === c)?.label ?? c),
-    });
-  };
-  const changeSpecialChoice = (code: string, groupIdx: number, label: string) => {
-    const def = specialDefs.find((d) => d.code === code);
-    const entry = [...(specialChoicesMap[code] ?? (def?.optionGroups ?? []).map(() => ''))];
-    entry[groupIdx] = label;
-    setVariants({ specialChoices: { ...specialChoicesMap, [code]: entry } });
-  };
 
   /* Commander 2026-05-29 — the right-rail "Pricing" summary reflects the
      operator-authored SELLING unit price, not a computed cost base. extraSen
@@ -942,19 +901,14 @@ const SoLineCardInner = ({
               (Divan + Leg + Gap)
             </div>
           )}
-          <SpecialsAccordion
+          <SpecialOrders
             open={specialsOpen}
             onToggle={() => setSpecialsOpen((o) => !o)}
-            picked={specials}
-            choices={specialChoicesMap}
             options={specialOptions}
+            variants={draft.variants}
+            onPatch={setVariants}
             disabled={!isEditing}
             showPrices={showPrices}
-            extraNote={String(draft.variants.extraAddonNote ?? '')}
-            extraAmountRM={Number(draft.variants.extraAddonAmountRM ?? 0)}
-            onExtraChange={setExtraAddon}
-            onToggleCode={toggleSpecial}
-            onChoice={changeSpecialChoice}
           />
         </div>
       )}
@@ -997,19 +951,14 @@ const SoLineCardInner = ({
             {/* Empty cell so the 4-col grid stays balanced */}
             <span />
           </div>
-          <SpecialsAccordion
+          <SpecialOrders
             open={specialsOpen}
             onToggle={() => setSpecialsOpen((o) => !o)}
-            picked={specials}
-            choices={specialChoicesMap}
             options={specialOptions}
+            variants={draft.variants}
+            onPatch={setVariants}
             disabled={!isEditing}
             showPrices={showPrices}
-            extraNote={String(draft.variants.extraAddonNote ?? '')}
-            extraAmountRM={Number(draft.variants.extraAddonAmountRM ?? 0)}
-            onExtraChange={setExtraAddon}
-            onToggleCode={toggleSpecial}
-            onChoice={changeSpecialChoice}
           />
         </div>
       )}
@@ -1017,19 +966,14 @@ const SoLineCardInner = ({
       {hasMattressSpecials && (
         <div className={styles.variants}>
           <div className={styles.variantsHead}>MATTRESS ADD-ONS</div>
-          <SpecialsAccordion
+          <SpecialOrders
             open={specialsOpen}
             onToggle={() => setSpecialsOpen((o) => !o)}
-            picked={specials}
-            choices={specialChoicesMap}
             options={specialOptions}
+            variants={draft.variants}
+            onPatch={setVariants}
             disabled={!isEditing}
             showPrices={showPrices}
-            extraNote={String(draft.variants.extraAddonNote ?? '')}
-            extraAmountRM={Number(draft.variants.extraAddonAmountRM ?? 0)}
-            onExtraChange={setExtraAddon}
-            onToggleCode={toggleSpecial}
-            onChoice={changeSpecialChoice}
           />
         </div>
       )}
@@ -1433,214 +1377,6 @@ export function missingRequiredVariants(
 ): string[] {
   return missingVariantAxes(itemGroup, variants).map((a) => a.label);
 }
-
-/* ──────────────────────────────────────────────────────────────────────
-   SpecialsAccordion — collapsible checkbox grid (Houzs <details>)
-   ────────────────────────────────────────────────────────────────────── */
-
-const SpecialsAccordion = ({
-  open, onToggle, picked, choices, options, onToggleCode, onChoice, disabled = false,
-  showPrices, extraNote, extraAmountRM, onExtraChange,
-}: {
-  open:     boolean;
-  onToggle: () => void;
-  /** Picked special_addons CODES (variants.specials). */
-  picked:   string[];
-  /** variants.specialChoices — per-code chosen option-group labels, indexed
-      by optionGroups position (the POS storage convention). */
-  choices:  Record<string, string[]>;
-  /* SO-parity (Loo 2026-06-06): options are live special_addons rows (already
-     filtered to this line's category ∩ the Model's allowed_options.specials),
-     replacing the legacy maintenance string pool. Shows the SELLING surcharge
-     (base + chosen-choice extras), the same figure the server recompute
-     charges via buildSpecialsPoolFromAddons. */
-  options:  SpecialAddonRow[];
-  disabled?: boolean;
-  /* Owner-approved role gate — non-admin sales only DESCRIBES specials, so all
-     RM surcharges + the "Custom / other" price field are hidden (see
-     SoLineCard.showPrices, which reuses lib/auth isAdminLevel). */
-  showPrices: boolean;
-  /* Unified "Custom / other" channel — free-text description + manual RM,
-     stored on the UNCHANGED variants.extraAddonNote + extraAddonAmountRM. This
-     replaces the old standalone "Extra" input AND the read-only POS-remark row:
-     both now flow through this one control, and the server honest-pricing
-     recompute prices it exactly as before. */
-  extraNote: string;
-  extraAmountRM: number;
-  onExtraChange: (patch: { extraAddonNote?: string; extraAddonAmountRM?: number }) => void;
-  onToggleCode: (code: string) => void;
-  onChoice: (code: string, groupIdx: number, label: string) => void;
-}) => {
-  /* Effective selling surcharge for one add-on = base + Σ chosen extras. */
-  const effectiveSen = (o: SpecialAddonRow): number => {
-    let sen = o.sellingPriceSen;
-    (choices[o.code] ?? []).forEach((label, i) => {
-      const hit = label ? o.optionGroups[i]?.choices.find((c) => c.label === label) : undefined;
-      if (hit) sen += hit.extraSen;
-    });
-    return sen;
-  };
-  /* A saved line can carry codes that have since been retired/renamed in the
-     Special Add-ons tab (or pre-takeover legacy strings). Surface them as
-     removable rows — invisible-but-stuck picks were how the old editor leaked
-     RM 0 specials onto orders. */
-  const retired = picked.filter((c) => !options.some((o) => o.code === c));
-  /* "Custom / other" carries data whenever the free-text note or a manual RM
-     is present. Old orders whose Extra was entered through the legacy channel
-     (or POS) still render here with their description + amount intact. */
-  const hasCustom = Boolean(extraNote.trim()) || extraAmountRM > 0;
-  const [customOpen, setCustomOpen] = useState(hasCustom);
-  return (
-    <div className={styles.specials}>
-      <div
-        className={styles.specialsHead}
-        onClick={onToggle}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onToggle(); }}
-      >
-        {open ? <ChevronDown {...SM_ICON} /> : <ChevronRight {...SM_ICON} />}
-        <span>Special Orders</span>
-        <span className={styles.specialsCount}>({picked.length + (hasCustom ? 1 : 0)} selected)</span>
-      </div>
-      {open && (
-        <div className={styles.specialsBody}>
-          {options.map((o) => {
-            const on = picked.includes(o.code);
-            const sen = on ? effectiveSen(o) : o.sellingPriceSen;
-            return (
-              <label key={o.code} className={styles.specialsItem}>
-                <input
-                  type="checkbox"
-                  className={styles.specialsCheckbox}
-                  checked={on}
-                  disabled={disabled}
-                  onChange={() => { if (!disabled) onToggleCode(o.code); }}
-                />
-                <div>
-                  <div className={styles.specialsLabel}>{o.label}</div>
-                  {/* Role gate — non-admin sales sees the NAME only (owner). */}
-                  {showPrices && (
-                    <div className={styles.specialsSurcharge}>
-                      {sen > 0 ? `+${fmtRm(sen)}` : sen < 0 ? `−${fmtRm(Math.abs(sen))}` : 'RM 0'}
-                    </div>
-                  )}
-                </div>
-              </label>
-            );
-          })}
-          {retired.map((code) => (
-            <label key={`retired-${code}`} className={styles.specialsItem}>
-              <input
-                type="checkbox"
-                className={styles.specialsCheckbox}
-                checked
-                disabled={disabled}
-                onChange={() => { if (!disabled) onToggleCode(code); }}
-              />
-              <div>
-                <div className={styles.specialsLabel}>{code}</div>
-                <div className={styles.specialsSurcharge} style={{ color: 'var(--c-festive-b, #B8331F)' }}>
-                  {showPrices ? 'retired — prices RM 0, untick to remove' : 'retired — untick to remove'}
-                </div>
-              </div>
-            </label>
-          ))}
-          {/* Follow-up choice pickers (追问) for ticked add-ons with option
-              groups — mirrors the POS SpecialAddonsPicker. */}
-          {options.filter((o) => picked.includes(o.code) && o.optionGroups.length > 0).map((o) =>
-            o.optionGroups.map((g, gi) => (
-              <label key={`${o.code}-${gi}`} className={styles.variantField} style={{ gridColumn: '1 / -1' }}>
-                <span className={styles.variantLabel}>
-                  {o.label} · {g.label}{g.required ? ' *' : ''}
-                </span>
-                <select
-                  className={styles.select}
-                  value={(choices[o.code] ?? [])[gi] ?? ''}
-                  disabled={disabled}
-                  onChange={(e) => onChoice(o.code, gi, e.target.value)}
-                >
-                  {!g.required && <option value="">None</option>}
-                  {g.required && <option value="" disabled>Select…</option>}
-                  {g.choices.map((c) => (
-                    <option key={c.label} value={c.label}>
-                      {c.label}{showPrices && c.extraSen !== 0 ? ` (${c.extraSen > 0 ? '+' : '−'}${fmtRm(Math.abs(c.extraSen))})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )),
-          )}
-
-          {/* ── Custom / other (unified free-text special order) ─────────────
-              Replaces the old standalone "Extra" input + the read-only POS
-              remark row. Picking it reveals a description (→ extraAddonNote)
-              and, for admin/office only, an Extra-charge field (→
-              extraAddonAmountRM). Sales just describes what the customer
-              needs. Spans the full grid width, always offered last. */}
-          <div className={styles.customSpecial}>
-            <div
-              className={styles.customHead}
-              role="button"
-              tabIndex={0}
-              onClick={() => { if (!disabled) setCustomOpen((o) => !o); }}
-              onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) setCustomOpen((o) => !o); }}
-            >
-              {(customOpen || hasCustom) ? <ChevronDown {...SM_ICON} /> : <ChevronRight {...SM_ICON} />}
-              <span className={styles.specialsLabel} style={{ fontWeight: 600 }}>Custom / other</span>
-              {hasCustom && <span className={styles.specialsCount}>1 added</span>}
-            </div>
-            {(customOpen || hasCustom) && (
-              <div className={styles.customFields}>
-                <label className={styles.variantField}>
-                  <span className={styles.variantLabel}>Description</span>
-                  <input
-                    className={styles.select}
-                    placeholder="Describe the special order…"
-                    value={extraNote}
-                    disabled={disabled}
-                    onChange={(e) => onExtraChange({ extraAddonNote: e.target.value })}
-                  />
-                </label>
-                {showPrices && (
-                  <label className={styles.variantField} style={{ maxWidth: 140 }}>
-                    <span className={styles.variantLabel}>Extra charge (RM)</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step={1}
-                      className={styles.select}
-                      style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
-                      placeholder="0"
-                      value={extraAmountRM ? String(extraAmountRM) : ''}
-                      disabled={disabled}
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        const n = raw === '' ? 0 : Math.max(0, Math.round(Number(raw)) || 0);
-                        onExtraChange({ extraAddonAmountRM: n });
-                      }}
-                    />
-                  </label>
-                )}
-                {/* Clear hidden from non-admin sales when a price they can't see
-                    is set — they must not silently wipe an admin-priced order. */}
-                {hasCustom && !disabled && (showPrices || extraAmountRM <= 0) && (
-                  <button
-                    type="button"
-                    className={styles.customClear}
-                    onClick={() => onExtraChange({ extraAddonNote: '', extraAddonAmountRM: 0 })}
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
 
 /* ──────────────────────────────────────────────────────────────────────
    PhotoThumb — Task #92 signed-URL flow

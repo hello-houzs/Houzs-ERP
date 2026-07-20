@@ -58,6 +58,7 @@ import { useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
+import { SpecialOrders } from '../../vendor/scm/components/SpecialOrders';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
@@ -217,7 +218,8 @@ export const GoodsReceivedDetail = () => {
       .filter((r) => r.active)
       .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''));
-    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    // FULL rows feed the shared SpecialOrders block (owner 2026-07-20 unify).
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat));
     return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
   }, [specialAddonsQ.data]);
 
@@ -666,9 +668,8 @@ export const GoodsReceivedDetail = () => {
                             value={String(d.variants?.gap ?? '')} onChange={(v) => setVariant(it, 'gap', v)} />
                           <VariantSelect label="Leg Height" disabled={isLocked} options={activeOptions(maint.legHeights, String(d.variants?.legHeight ?? ''))}
                             value={String(d.variants?.legHeight ?? '')} onChange={(v) => setVariant(it, 'legHeight', v)} />
-                          {/* Total Height auto-computed (see setVariant). */}
-                          <VariantSelect label="Special" disabled={isLocked} options={specialsPools.bedframe}
-                            value={String(d.variants?.special ?? '')} onChange={(v) => setVariant(it, 'special', v)} />
+                          {/* Total Height auto-computed (see setVariant). Special
+                              Orders moved to the shared block below. */}
                         </div>
                       ) : (
                         <div className={styles.formGrid4}>
@@ -676,8 +677,6 @@ export const GoodsReceivedDetail = () => {
                             value={String(d.variants?.seatHeight ?? '')} onChange={(v) => setVariant(it, 'seatHeight', v)} />
                           <VariantSelect label="Leg Height" disabled={isLocked} options={activeOptions(maint.sofaLegHeights, String(d.variants?.legHeight ?? ''))}
                             value={String(d.variants?.legHeight ?? '')} onChange={(v) => setVariant(it, 'legHeight', v)} />
-                          <VariantSelect label="Special" disabled={isLocked} options={specialsPools.sofa}
-                            value={String(d.variants?.special ?? '')} onChange={(v) => setVariant(it, 'special', v)} />
                           <label className={styles.field}>
                             <span className={styles.fieldLabel}>Fabrics (free text)</span>
                             <input className={styles.fieldInput} disabled={isLocked} value={String(d.variants?.fabricColor ?? '')}
@@ -685,6 +684,20 @@ export const GoodsReceivedDetail = () => {
                           </label>
                         </div>
                       )}
+                      {/* Special Orders — shared editor (owner 2026-07-20),
+                          writing variants.specials (array). */}
+                      <div style={{ marginTop: 'var(--space-2)' }}>
+                        <SpecialOrders
+                          options={d.itemGroup === 'bedframe' ? specialsPools.bedframe : specialsPools.sofa}
+                          variants={(d.variants ?? {}) as Record<string, unknown>}
+                          onPatch={(patch) => setLineDrafts((prev) => {
+                            const cur = prev[it.id] ?? lineSnapshot(it);
+                            return { ...prev, [it.id]: { ...cur, variants: { ...(cur.variants ?? {}), ...patch } } };
+                          })}
+                          showPrices={false}
+                          disabled={isLocked}
+                        />
+                      </div>
                     </div>
                   ) : (
                     variantSummary && (

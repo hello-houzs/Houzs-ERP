@@ -34,6 +34,7 @@ import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { SpecialOrders } from '../../vendor/scm/components/SpecialOrders';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -113,7 +114,8 @@ export const StockAdjustmentNew = () => {
       .filter((r) => r.active)
       .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''));
-    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    // FULL rows feed the shared SpecialOrders block (owner 2026-07-20 unify).
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat));
     return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
   }, [specialAddonsQ.data]);
 
@@ -444,9 +446,6 @@ export const StockAdjustmentNew = () => {
                       value={String(variants.fabricCode ?? '')}
                       onChange={(e) => setVariant('fabricCode', e.target.value)} />
                   </label>
-                  <VariantSelect label="Special" options={specialsPools.bedframe}
-                    value={String(variants.special ?? '')}
-                    onChange={(v) => setVariant('special', v)} />
                 </div>
               ) : (
                 <div className={styles.formGrid4}>
@@ -457,9 +456,6 @@ export const StockAdjustmentNew = () => {
                   <VariantSelect label="Leg Height" options={activeOptions(maint.sofaLegHeights, String(variants.legHeight ?? ''))}
                     value={String(variants.legHeight ?? '')}
                     onChange={(v) => setVariant('legHeight', v)} />
-                  <VariantSelect label="Special" options={specialsPools.sofa}
-                    value={String(variants.special ?? '')}
-                    onChange={(v) => setVariant('special', v)} />
                   {/* Fabric — stored as fabricCode (the key the variant bucket +
                       the required-axis gate read). Free text. */}
                   <label className={styles.field}>
@@ -470,6 +466,17 @@ export const StockAdjustmentNew = () => {
                   </label>
                 </div>
               )}
+              {/* Special Orders — shared editor (owner 2026-07-20). A standalone
+                  adjustment has no parent, so it is directly editable and writes
+                  variants.specials (array). */}
+              <div style={{ marginTop: 'var(--space-3)' }}>
+                <SpecialOrders
+                  options={itemGroup === 'bedframe' ? specialsPools.bedframe : specialsPools.sofa}
+                  variants={variants}
+                  onPatch={(patch) => setVariants((prev) => ({ ...prev, ...patch }))}
+                  showPrices={false}
+                />
+              </div>
               {/* Batch Number — required for sofa (so the stock can be allocated
                   to an order later); optional for bedframe. */}
               <label className={`${styles.field} ${styles.fieldFull}`} style={{ marginTop: 'var(--space-3)' }}>

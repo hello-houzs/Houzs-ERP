@@ -34,8 +34,9 @@
 // ----------------------------------------------------------------------------
 
 import { Trash2 } from 'lucide-react';
-import type { MfgProductRow, MaintenanceConfig } from '../lib/mfg-products-queries';
+import type { MfgProductRow, MaintenanceConfig, SpecialAddonRow } from '../lib/mfg-products-queries';
 import { useModelAllowedOptionsByCode } from '../lib/mfg-products-queries';
+import { SpecialOrders } from './SpecialOrders';
 import type { BindingRow, MaterialKind } from '../lib/suppliers-queries';
 import { activeOptions, maintPickerValues, restrictPricedToPool, restrictStringsToPool } from '@2990s/shared';
 import { fabricOptionLabel, type FabricTrackingRow } from '../lib/fabric-queries';
@@ -98,44 +99,6 @@ export const emptyPoLine = (): PoLineDraft => ({
   variants: {},
 });
 
-/* Special Orders multi-select — mirrors the Sales Order variant editor (PR #126).
-   Writes variants.specials as a string[] so it flows into Description 2 like SO. */
-const SpecialsCheckboxes = ({
-  pool, picked, onChange, disabled = false,
-}: {
-  pool: Array<{ value: string }> | undefined;
-  picked: string[];
-  onChange: (arr: string[]) => void;
-  disabled?: boolean;
-}) => {
-  if (!pool || pool.length === 0) return null;
-  return (
-    <div style={{ marginTop: 'var(--space-2)' }}>
-      <div style={{
-        fontSize: 'var(--fs-11)', fontWeight: 700, letterSpacing: '0.08em',
-        textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 4,
-      }}>
-        Special Orders
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px' }}>
-        {pool.map((o) => {
-          const on = picked.includes(o.value);
-          return (
-            <label key={o.value} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-12)', cursor: disabled ? 'not-allowed' : 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={on}
-                disabled={disabled}
-                onChange={() => onChange(on ? picked.filter((x) => x !== o.value) : [...picked, o.value])}
-              />
-              {o.value}
-            </label>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
 
 /* ──────────────────────────────────────────────────────────────────────
    PoLineCard
@@ -177,8 +140,9 @@ export const PoLineCard = ({
   maint: MaintenanceConfig | null;
   /** Fabric trackings (variant fabric dropdown). */
   fabrics: FabricTrackingRow[];
-  /** Per-category Special Orders pools (from special_addons). */
-  specialsPools: { bedframe: Array<{ value: string }>; sofa: Array<{ value: string }> };
+  /** Per-category Special Orders pools (full special_addons rows) — feed the
+      shared SpecialOrders block (owner 2026-07-20 unification). */
+  specialsPools: { bedframe: SpecialAddonRow[]; sofa: SpecialAddonRow[] };
   /** Patch arbitrary line fields (qty / price / discount / delivery / ship-to /
       supplierSku / description …). */
   onChange: (patch: Partial<PoLineDraft>) => void;
@@ -214,7 +178,6 @@ export const PoLineCard = ({
   // PR #135 — only sofa / bedframe carry a variant editor (mattress size +
   // branding are encoded in the SKU code itself).
   const showVariants = Boolean(l.category) && ['sofa', 'bedframe'].includes(l.category ?? '') && Boolean(maint);
-  const specials = Array.isArray(l.variants.specials) ? (l.variants.specials as string[]) : [];
   // T12 — identity (code/SKU/description) + variants lock for GRN-sourced PI
   // lines; the whole card's `disabled` (locked doc) still wins over everything.
   const identityLocked = disabled || identityReadOnly;
@@ -468,11 +431,14 @@ export const PoLineCard = ({
                   </select>
                 </label>
               </div>
-              <SpecialsCheckboxes
-                pool={specialsPools.bedframe}
-                picked={specials}
+              <SpecialOrders
+                options={specialsPools.bedframe}
+                variants={l.variants}
+                onPatch={(patch) => onChange({ variants: { ...l.variants, ...patch } })}
+                showPrices={false}
                 disabled={identityLocked}
-                onChange={(arr) => onSetVariant('specials', arr)}
+                sourceLinked={Boolean(l.soItemId)}
+                sourceLabel="Sales Order"
               />
             </>
           )}
@@ -523,11 +489,14 @@ export const PoLineCard = ({
                 </label>
                 <span />
               </div>
-              <SpecialsCheckboxes
-                pool={specialsPools.sofa}
-                picked={specials}
+              <SpecialOrders
+                options={specialsPools.sofa}
+                variants={l.variants}
+                onPatch={(patch) => onChange({ variants: { ...l.variants, ...patch } })}
+                showPrices={false}
                 disabled={identityLocked}
-                onChange={(arr) => onSetVariant('specials', arr)}
+                sourceLinked={Boolean(l.soItemId)}
+                sourceLabel="Sales Order"
               />
             </>
           )}

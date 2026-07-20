@@ -217,7 +217,7 @@ export const PurchaseOrderDetail = () => {
       .filter((r) => r.active)
       .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''));
-    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat));
     return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
   }, [specialAddonsQ.data]);
 

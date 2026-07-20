@@ -42,6 +42,7 @@ import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
+import { SpecialOrders } from '../../vendor/scm/components/SpecialOrders';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
@@ -147,7 +148,8 @@ export const PurchaseReturnNew = () => {
       .filter((r) => r.active)
       .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''));
-    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    // FULL rows feed the shared SpecialOrders block (owner 2026-07-20 unify).
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat));
     return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
   }, [specialAddonsQ.data]);
 
@@ -561,10 +563,8 @@ export const PurchaseReturnNew = () => {
                             value={String(l.variants?.legHeight ?? '')}
                             onChange={(v) => setVariant('legHeight', v)} />
                           {/* Total Heights removed — auto-computed from Divan +
-                              Leg + Gap (see setVariant). */}
-                          <VariantSelect label="Special" options={specialsPools.bedframe}
-                            value={String(l.variants?.special ?? '')}
-                            onChange={(v) => setVariant('special', v)} />
+                              Leg + Gap (see setVariant). Special Orders moved to
+                              the shared block below. */}
                         </div>
                       ) : (
                         <div className={styles.formGrid4}>
@@ -575,9 +575,6 @@ export const PurchaseReturnNew = () => {
                           <VariantSelect label="Leg Height" options={sortByNumeric(activeOptions(maint!.sofaLegHeights, String(l.variants?.legHeight ?? '')))}
                             value={String(l.variants?.legHeight ?? '')}
                             onChange={(v) => setVariant('legHeight', v)} />
-                          <VariantSelect label="Special" options={specialsPools.sofa}
-                            value={String(l.variants?.special ?? '')}
-                            onChange={(v) => setVariant('special', v)} />
                           <label className={styles.field}>
                             <span className={styles.fieldLabel}>Fabrics (free text)</span>
                             <input className={styles.fieldInput}
@@ -586,6 +583,17 @@ export const PurchaseReturnNew = () => {
                           </label>
                         </div>
                       )}
+                      {/* Special Orders — shared editor (owner 2026-07-20). A
+                          manual PR line is not parent-linked, so it is directly
+                          editable and writes variants.specials (array). */}
+                      <div style={{ marginTop: 'var(--space-2)' }}>
+                        <SpecialOrders
+                          options={l.itemGroup === 'bedframe' ? specialsPools.bedframe : specialsPools.sofa}
+                          variants={(l.variants ?? {}) as Record<string, unknown>}
+                          onPatch={(patch) => setLine(l.rid, { variants: { ...(l.variants ?? {}), ...patch } })}
+                          showPrices={false}
+                        />
+                      </div>
                     </div>
                   )}
 

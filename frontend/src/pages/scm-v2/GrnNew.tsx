@@ -45,6 +45,7 @@ import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
+import { SpecialOrders } from '../../vendor/scm/components/SpecialOrders';
 import type { GrnFromPoPick } from './GrnFromPo';
 import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
@@ -166,15 +167,17 @@ export const GrnNew = () => {
   const maint  = maintQ.data?.data ?? null;
 
   // Special Orders pool now comes from special_addons (Backend↔POS parity, Loo
-  // 2026-06-08), filtered by category — replacing the legacy maint.specials /
-  // maint.sofaSpecials pools. `code` shares the old value namespace.
+  // 2026-06-08), filtered by category. FULL rows feed the shared SpecialOrders
+  // block (owner 2026-07-20 unification) — a manual GRN line now gets the SAME
+  // multi-select + choices + Custom/other editor as the SO, writing
+  // variants.specials (array), not the legacy single-select variants.special.
   const specialAddonsQ = useSpecialAddons();
   const specialsPools = useMemo(() => {
     const rows = (specialAddonsQ.data ?? [])
       .filter((r) => r.active)
       .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''));
-    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat));
     return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
   }, [specialAddonsQ.data]);
 
@@ -1136,10 +1139,8 @@ export const GrnNew = () => {
                             value={String(l.variants?.legHeight ?? '')}
                             onChange={(v) => setVariant('legHeight', v)} />
                           {/* Total Heights removed — auto-computed from Divan +
-                              Leg + Gap (see setVariant). */}
-                          <VariantSelect label="Special" options={specialsPools.bedframe}
-                            value={String(l.variants?.special ?? '')}
-                            onChange={(v) => setVariant('special', v)} />
+                              Leg + Gap (see setVariant). Special Orders moved to
+                              the shared block below (owner 2026-07-20). */}
                         </div>
                       ) : (
                         <div className={styles.formGrid4}>
@@ -1150,9 +1151,6 @@ export const GrnNew = () => {
                           <VariantSelect label="Leg Height" options={activeOptions(maint!.sofaLegHeights, String(l.variants?.legHeight ?? ''))}
                             value={String(l.variants?.legHeight ?? '')}
                             onChange={(v) => setVariant('legHeight', v)} />
-                          <VariantSelect label="Special" options={specialsPools.sofa}
-                            value={String(l.variants?.special ?? '')}
-                            onChange={(v) => setVariant('special', v)} />
                           <label className={styles.field}>
                             <span className={styles.fieldLabel}>Fabrics (free text)</span>
                             <input className={styles.fieldInput}
@@ -1161,6 +1159,17 @@ export const GrnNew = () => {
                           </label>
                         </div>
                       )}
+                      {/* Special Orders — shared editor (owner 2026-07-20). A
+                          manual GRN line is not parent-linked, so it is directly
+                          editable and writes variants.specials (array). */}
+                      <div style={{ marginTop: 'var(--space-2)' }}>
+                        <SpecialOrders
+                          options={l.itemGroup === 'bedframe' ? specialsPools.bedframe : specialsPools.sofa}
+                          variants={(l.variants ?? {}) as Record<string, unknown>}
+                          onPatch={(patch) => setLine(l.rid, { variants: { ...(l.variants ?? {}), ...patch } })}
+                          showPrices={false}
+                        />
+                      </div>
                     </div>
                   )}
 

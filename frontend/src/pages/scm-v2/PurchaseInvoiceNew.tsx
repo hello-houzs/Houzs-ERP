@@ -42,6 +42,7 @@ import { useIdempotencyKey } from '../../lib/idempotency';
 import { useGrnDetail } from '../../vendor/scm/lib/grn-queries';
 import { useActiveCurrencies, rateFor } from '../../vendor/scm/lib/currencies-queries';
 import { CurrencySelect } from '../../vendor/scm/components/CurrencySelect';
+import { SpecialOrders } from '../../vendor/scm/components/SpecialOrders';
 import { useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
@@ -151,7 +152,8 @@ export const PurchaseInvoiceNew = () => {
       .filter((r) => r.active)
       .slice()
       .sort((a, b) => a.sortOrder - b.sortOrder || (a.code ?? '').localeCompare(b.code ?? ''));
-    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat)).map((r) => ({ value: r.code, priceSen: 0 }));
+    // FULL rows feed the shared SpecialOrders block (owner 2026-07-20 unify).
+    const pick = (cat: string) => rows.filter((r) => r.categories.includes(cat));
     return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
   }, [specialAddonsQ.data]);
 
@@ -840,9 +842,8 @@ export const PurchaseInvoiceNew = () => {
                           value={String(l.variants?.gap ?? '')} onChange={(v) => setVariant('gap', v)} />
                         <VariantSelect label="Leg Height" options={sortByNumeric(activeOptions(maint!.legHeights, String(l.variants?.legHeight ?? '')))}
                           value={String(l.variants?.legHeight ?? '')} onChange={(v) => setVariant('legHeight', v)} />
-                        {/* Total Heights auto-computed (see setVariant). */}
-                        <VariantSelect label="Special" options={specialsPools.bedframe}
-                          value={String(l.variants?.special ?? '')} onChange={(v) => setVariant('special', v)} />
+                        {/* Total Heights auto-computed (see setVariant). Special
+                            Orders moved to the shared block below. */}
                       </div>
                     ) : (
                       <div className={styles.formGrid4}>
@@ -850,8 +851,6 @@ export const PurchaseInvoiceNew = () => {
                           value={String(l.variants?.seatHeight ?? '')} onChange={(v) => setVariant('seatHeight', v)} />
                         <VariantSelect label="Leg Height" options={sortByNumeric(activeOptions(maint!.sofaLegHeights, String(l.variants?.legHeight ?? '')))}
                           value={String(l.variants?.legHeight ?? '')} onChange={(v) => setVariant('legHeight', v)} />
-                        <VariantSelect label="Special" options={specialsPools.sofa}
-                          value={String(l.variants?.special ?? '')} onChange={(v) => setVariant('special', v)} />
                         <label className={styles.field}>
                           <span className={styles.fieldLabel}>Fabrics (free text)</span>
                           <input className={styles.fieldInput} value={String(l.variants?.fabricColor ?? '')}
@@ -859,6 +858,17 @@ export const PurchaseInvoiceNew = () => {
                         </label>
                       </div>
                     )}
+                    {/* Special Orders — shared editor (owner 2026-07-20). A manual
+                        PI line is not parent-linked, so it is directly editable
+                        and writes variants.specials (array). */}
+                    <div style={{ marginTop: 'var(--space-2)' }}>
+                      <SpecialOrders
+                        options={l.itemGroup === 'bedframe' ? specialsPools.bedframe : specialsPools.sofa}
+                        variants={(l.variants ?? {}) as Record<string, unknown>}
+                        onPatch={(patch) => setLine(l.rid, { variants: { ...(l.variants ?? {}), ...patch } })}
+                        showPrices={false}
+                      />
+                    </div>
                   </div>
                 )}
 
