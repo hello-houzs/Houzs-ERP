@@ -7,7 +7,8 @@ describe('SO concurrency domain migration', () => {
     expect(migration0161).toContain('CREATE OR REPLACE FUNCTION scm.apply_so_header_cas');
     expect(migration0161).toContain('FOR UPDATE');
     expect(migration0161).toContain('jsonb_populate_record');
-    expect(migration0161).toContain('v_patched := jsonb_populate_record(v_row, p_patch)');
+    expect(migration0161).toContain('NULL::scm.mfg_sales_orders');
+    expect(migration0161).toContain('to_jsonb(v_row) || p_patch');
     expect(migration0161).toContain('($1::scm.mfg_sales_orders)');
     expect(migration0161).not.toContain('jsonb_populate_record(t, $1)');
     expect(migration0161).toContain('mfg_sales_order_payments');

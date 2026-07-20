@@ -81,7 +81,10 @@ BEGIN
   -- as a scalar at runtime ("cannot call populate_composite on a scalar").
   -- Starting from the locked row keeps omitted keys unchanged while preserving
   -- explicit JSON null as an intentional clear.
-  v_patched := jsonb_populate_record(v_row, p_patch);
+  v_patched := jsonb_populate_record(
+    NULL::scm.mfg_sales_orders,
+    to_jsonb(v_row) || p_patch
+  );
 
   SELECT string_agg(
     format('%1$I = ($1::scm.mfg_sales_orders).%1$I', a.attname),
