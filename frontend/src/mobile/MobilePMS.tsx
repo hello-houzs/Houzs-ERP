@@ -1030,8 +1030,11 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             </details>
 
-            {/* tasklist */}
-            <TasklistSectionView
+            {/* tasklist — REMOVED for the sales cohort (owner 2026-07-17):
+                their six deliverables live in the SalesDocsCard tiles and the
+                floorplans in the FloorPlans card, so the row list was pure
+                duplication for them. Everyone else keeps the full tasklist. */}
+            {!isSalesExecMgr && <TasklistSectionView
               sections={data.sections}
               items={visibleChecklist}
               progress={data.section_progress}
@@ -1046,7 +1049,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               prompt={prompt}
               projectId={id}
               reload={reload}
-            />
+            />}
 
             {/* setup & dismantle (logistic). Owner 2026-07-17: Sales may VIEW it
                 (crew + dates) — the backend now sends the data for them — but
@@ -2588,6 +2591,10 @@ function FloorPlans({
   };
   const unfilledFiles = (() => { const t = taskPlanFiles(/^blank\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[0]); })();
   const filledFiles = (() => { const t = taskPlanFiles(/^filled\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[1]); })();
+  // 3D banner (owner 2026-07-17): tap opens the "3D Design" / "3D render" task
+  // attachments in the lightbox (which carries a Download button) — it was a
+  // dead placeholder before, so sales couldn't view the render at all.
+  const threeDFiles = taskPlanFiles(/^3d\s/i);
   // Checklist task ids by title prefix — used to attach uploads to the right task.
   const taskIdByPrefix = (prefix: RegExp): number | null =>
     (checklist ?? []).find((it) => prefix.test((it.title || "").trim()))?.id ?? null;
@@ -2686,13 +2693,23 @@ function FloorPlans({
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">
-        <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, background: "#15161a", borderRadius: 12, padding: "13px 14px", marginBottom: 9 }}>
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => void openPlan(threeDFiles, "3D")}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void openPlan(threeDFiles, "3D"); } }}
+          style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, background: "#15161a", borderRadius: 12, padding: "13px 14px", marginBottom: 9, cursor: "pointer" }}
+        >
           <span style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(216,168,90,.18)", display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}>
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#d8a85a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8l-9-5-9 5v8l9 5Z" /><path d="M3 8l9 5 9-5M12 13v8" /></svg>
           </span>
           <span style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
             <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#fff" }}>3D floor plan</span>
-            <span style={{ display: "block", fontSize: 10.5, color: "#8c968a" }}>Interactive booth render</span>
+            <span style={{ display: "block", fontSize: 10.5, color: threeDFiles.length ? "#7ed6a7" : "#8c968a" }}>
+              {threeDFiles.length
+                ? `${threeDFiles.length} file${threeDFiles.length === 1 ? "" : "s"} · tap to view / download`
+                : "Not uploaded yet"}
+            </span>
           </span>
           <span style={{ color: "#8c968a" }}>›</span>
         </div>
