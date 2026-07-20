@@ -58,6 +58,7 @@ import { compareCalendarEvents } from "../lib/calendarSort";
 import { toCSV, downloadCSV } from "../lib/csv";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
+import { ListErrorPanel, SearchPendingPanel } from "../components/SearchProgress";
 import { StatusDot } from "../components/StatusDot";
 import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
@@ -74,6 +75,7 @@ import { InlineEdit } from "../components/InlineEdit";
 import { StatCard } from "../components/StatCard";
 import { DashboardGrid } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
+import { useSearchResultTransition } from "../hooks/useServerSearch";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { Skeleton, ListSkeleton } from "../components/Skeleton";
@@ -1082,6 +1084,14 @@ function ProjectsListView() {
     // the next page/filter loads instead of flashing an empty table.
     { keepPreviousData: true }
   );
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: search,
+    isFetching: list.fetching,
+    isPlaceholderData: list.placeholder,
+    hasData: list.data !== null,
+    hasError: Boolean(list.error),
+  });
 
   // Status (Confirmed / Pending / Cancelled) is now filtered server-side via
   // the list endpoint's `status` param, so the rows the endpoint returns are
@@ -1089,7 +1099,7 @@ function ProjectsListView() {
   const rows = list.data?.data ?? null;
   // Non-null view of rows for the card list + right rail (rows itself stays
   // nullable for the DataTable's loading state).
-  const cardRows = rows ?? [];
+  const cardRows = searchTransition.resultsAreStale ? [] : rows ?? [];
 
   // Export = the FULL filtered project list (ALL pages), IGNORING the "My
   // pending tasks" toggle — that's a screen-only view (owner 2026-07-20). Loops
@@ -1572,8 +1582,10 @@ function ProjectsListView() {
       <div className={cn(listMode === "cards" && "grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_300px]")}>
       <div className="min-w-0">
       {listMode === "cards" ? (
-        list.loading && !list.data ? (
-          <div className="py-10 text-center text-[12px] text-ink-muted">Loading…</div>
+        list.error ? (
+          <ListErrorPanel message={list.error} />
+        ) : (list.loading && !list.data) || searchTransition.isSearching ? (
+          <SearchPendingPanel label={searchTransition.statusText} />
         ) : cardRows.length === 0 ? (
           <div className="rounded-xl border border-border bg-surface p-8 text-center text-[12px] text-ink-muted shadow-stone">
             No projects yet
@@ -1656,6 +1668,7 @@ function ProjectsListView() {
             value: search,
             onChange: (v) => setSearch(v),
             placeholder: "Search code, name, venue, organizer…",
+            searching: searchTransition.isSearching,
           }}
           resetFilters={{
             active: !!(search || brand || year || month || section || status),
@@ -1669,7 +1682,7 @@ function ProjectsListView() {
           }}
           columns={columns}
           rows={rows}
-          loading={list.loading}
+          loading={list.loading || searchTransition.isSearching}
           error={list.error}
           emptyLabel="No projects yet"
           getRowKey={(r) => r.id}
@@ -1734,7 +1747,7 @@ function ProjectsListView() {
       )}
       </div>
 
-      {list.data && (
+      {list.data && !searchTransition.resultsAreStale && (
         <Pagination
           page={page}
           perPage={perPage}
@@ -2158,6 +2171,14 @@ function FinanceListView() {
     // the next page/filter loads instead of flashing an empty table.
     { keepPreviousData: true, enabled: canProjectFinance }
   );
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: search,
+    isFetching: list.fetching,
+    isPlaceholderData: list.placeholder,
+    hasData: list.data !== null,
+    hasError: Boolean(list.error),
+  });
 
   const columns: Column<FinanceProjectRow>[] = [
     {
@@ -2570,6 +2591,7 @@ function FinanceListView() {
           value: search,
           onChange: (v) => setSearch(v),
           placeholder: "Search project code, name, venue, organizer…",
+          searching: searchTransition.isSearching,
         }}
         resetFilters={{
           active: !!(
@@ -2590,7 +2612,7 @@ function FinanceListView() {
         }}
         columns={columns}
         rows={list.data?.data ?? null}
-        loading={list.loading}
+        loading={list.loading || searchTransition.isSearching}
         error={list.error}
         emptyLabel="No projects match these filters"
         getRowKey={(r) => r.id}
@@ -2599,7 +2621,7 @@ function FinanceListView() {
         onSortChange={handleSortChange}
       />
 
-      {list.data && (
+      {list.data && !searchTransition.resultsAreStale && (
         <Pagination
           page={page}
           perPage={perPage}

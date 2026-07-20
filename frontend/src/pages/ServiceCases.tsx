@@ -66,6 +66,7 @@ import { InlineEdit } from "../components/InlineEdit";
 import { ExpandableText } from "../components/ExpandableText";
 import { StatCard } from "../components/StatCard";
 import { useQuery } from "../hooks/useQuery";
+import { useSearchResultTransition } from "../hooks/useServerSearch";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { useLocalStorage } from "../hooks/useLocalStorage";
@@ -454,6 +455,14 @@ function CasesView({
     // while the next page/filter loads instead of flashing an empty table.
     { keepPreviousData: true }
   );
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: search,
+    isFetching: list.fetching,
+    isPlaceholderData: list.placeholder,
+    hasData: list.data !== null,
+    hasError: Boolean(list.error),
+  });
 
   // Drop selections that are no longer on screen — keeps the bulk
   // toolbar count honest when you change pages or filters.
@@ -880,7 +889,7 @@ function CasesView({
 
       {caseView === "list" && (
       <>
-      {bulkSelected.size > 0 && (
+      {bulkSelected.size > 0 && !searchTransition.resultsAreStale && (
         <BulkActionsBar
           count={bulkSelected.size}
           allSelected={allSelected}
@@ -951,6 +960,7 @@ function CasesView({
           value: search,
           onChange: (v) => { setPage(1); setSearch(v); },
           placeholder: "Search ASSR no, SO no, Ref no, customer, phone…",
+          searching: searchTransition.isSearching,
         }}
         resetFilters={{
           active: !!(
@@ -977,7 +987,7 @@ function CasesView({
         }}
         columns={columns}
         rows={list.data?.data ?? null}
-        loading={list.loading}
+        loading={list.loading || searchTransition.isSearching}
         error={list.error}
         emptyLabel="No service cases"
         getRowKey={(r) => r.id}
@@ -987,7 +997,7 @@ function CasesView({
         onSortChange={handleSortChange}
       />
 
-      {list.data && (
+      {list.data && !searchTransition.resultsAreStale && (
         <Pagination
           page={page}
           perPage={perPage}

@@ -7,6 +7,8 @@ import { fmtAmt } from "../lib/scm";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { api } from "../api/client";
+import { SearchProgress } from "../components/SearchProgress";
+import { useDebouncedSearchTerm, useSearchResultTransition } from "../hooks/useServerSearch";
 import {
   resolveStatusPill,
   statusLabel as scmStatusLabel,
@@ -378,11 +380,7 @@ export function MobileModuleList({
      into the infinite query) so a keystroke doesn't fire a request per
      character. 300ms after typing stops the paged query re-runs from page 0 and
      the server searches the WHOLE table, not just the rows already loaded. */
-  const [debouncedQ, setDebouncedQ] = useState("");
-  useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
-    return () => window.clearTimeout(t);
-  }, [q]);
+  const { requestTerm: debouncedQ } = useDebouncedSearchTerm(q);
 
   /* Whether THIS config's endpoint has a server-paginated handler. Core /api
      lists and un-paged SCM lists fall back to a single page + client-side
@@ -410,7 +408,7 @@ export function MobileModuleList({
   };
 
   const {
-    data, isLoading, error,
+    data, isLoading, isFetching, isPlaceholderData, error,
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
     // Paged lists key on the debounced search so changing it restarts at page 0
@@ -436,6 +434,15 @@ export function MobileModuleList({
     staleTime: 30_000,
     placeholderData: (prev) => prev,
   });
+  const searchTransition = useSearchResultTransition({
+    inputTerm: wantsPagination ? q : debouncedQ,
+    requestTerm: debouncedQ,
+    isFetching,
+    isPlaceholderData: wantsPagination ? isPlaceholderData : false,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const listLoading = isLoading || searchTransition.isSearching;
 
   // All rows loaded so far, flat-mapped through the config's listKey extractor.
   const all = useMemo(
@@ -530,6 +537,7 @@ export function MobileModuleList({
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={config.placeholder ?? `Search ${config.title.toLowerCase()}`} />
           </div>
+          <SearchProgress active={searchTransition.isSearching} label="Searching…" />
           {config.sorts && config.sorts.length > 0 && (
             <select
               value={sortKey}
@@ -570,12 +578,12 @@ export function MobileModuleList({
       <div ref={scrollRef} className="hz-scroll" style={{ flex: 1, overflowY: "auto", padding: 14, paddingBottom: 120 }}>
         {/* Variable-count note pill (spec § list-note): server total for a
             paginated list, else the count of shown records. */}
-        {!isLoading && !error && rows.length > 0 && (
+        {!listLoading && !error && rows.length > 0 && (
           <span className="list-note">{recordCount} {recordCount === 1 ? "record" : "records"}</span>
         )}
 
         {/* LOADING: skeleton cards (spec § Foundations — 3 skeletons). */}
-        {isLoading && (
+        {listLoading && (
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
             {[0, 1, 2].map((i) => (
               <div key={i} className="card"><div className="card-b" style={{ padding: "12px 13px" }}>
@@ -587,14 +595,14 @@ export function MobileModuleList({
         )}
 
         {/* ERROR: retry strip (spec § Foundations). */}
-        {!!error && !isLoading && (
+        {!!error && !listLoading && (
           <div className="empty">
             <div className="empty-t">Couldn't load {config.title.toLowerCase()}.</div>
             <div className="empty-s">Pull to refresh to try again.</div>
           </div>
         )}
 
-        {!isLoading && !error && rows.length > 0 && (
+        {!listLoading && !error && rows.length > 0 && (
           <MobileVirtualList
             items={rows}
             getKey={(r, i) => (r.id as string) ?? (r.doc_no as string) ?? i}
@@ -606,7 +614,7 @@ export function MobileModuleList({
             more pages exist (even if a client chip filtered the loaded rows to
             zero, so the loader keeps pulling until a match appears or pages run
             out). Absent for un-paged lists (hasNextPage is always false). */}
-        {!isLoading && !error && hasNextPage && (
+        {!listLoading && !error && hasNextPage && (
           <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
         )}
         {/* "Loading more…" while the next page is in flight; nothing once every
@@ -617,7 +625,7 @@ export function MobileModuleList({
         {/* EMPTY state (spec § Foundations — empty block). Held back while more
             pages are still loading so a client-filtered-to-zero page doesn't
             flash "No records" before the next page arrives. */}
-        {!isLoading && !error && !rows.length && !hasNextPage && !isFetchingNextPage && (
+        {!listLoading && !error && !rows.length && !hasNextPage && !isFetchingNextPage && (
           <div className="empty">
             <div className="empty-t">No {config.title.toLowerCase()}</div>
             <div className="empty-s">{q.trim() ? "Try a different search." : "Nothing to show yet."}</div>

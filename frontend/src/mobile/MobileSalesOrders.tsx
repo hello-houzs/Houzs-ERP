@@ -10,6 +10,8 @@ import { invalidateSoShared } from "./sharedInvalidate";
 import { fmtCenti } from "../lib/scm";
 import { resolveSoLocation } from "../lib/soLocation";
 import { formatDate } from "../lib/utils";
+import { SearchProgress } from "../components/SearchProgress";
+import { useDebouncedSearchTerm, useSearchResultTransition } from "../hooks/useServerSearch";
 import "./mobile.css";
 
 type SoRow = {
@@ -156,11 +158,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
   /* Debounced search term — the actual value sent to the server (and keyed into
      the infinite query) so a keystroke doesn't fire a request per character.
      300ms after the operator stops typing the query re-runs from page 0. */
-  const [debouncedQ, setDebouncedQ] = useState("");
-  useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
-    return () => window.clearTimeout(t);
-  }, [q]);
+  const { requestTerm: debouncedQ } = useDebouncedSearchTerm(q);
   // FAB "+" speed-dial — offers New Sales Order + New Service Case (parity with
   // the desktop QuickActionsFAB two-choice). A Sales user always gets the case
   // option (owner rule 2026-07); others get it only if their matrix grants it.
@@ -207,7 +205,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
   };
   type SoListPage = { salesOrders?: SoRow[]; total?: number; page?: number; pageSize?: number; aggregates?: { revenueCenti: number; outstandingCenti: number; paidCenti: number } };
   const {
-    data, isLoading, error, refetch,
+    data, isLoading, isFetching, isPlaceholderData, error, refetch,
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
     queryKey: ["mobile-so-list-paged", status, range, debouncedQ],
@@ -220,6 +218,15 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
     staleTime: 30_000,
     placeholderData: (prev) => prev,
   });
+  const searchTransition = useSearchResultTransition({
+    inputTerm: q,
+    requestTerm: debouncedQ,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const listLoading = isLoading || searchTransition.isSearching;
   const rows = useMemo(() => data?.pages.flatMap((p) => p.salesOrders ?? []) ?? [], [data]);
   const totalCount = data?.pages[0]?.total ?? 0;
 
@@ -466,6 +473,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customer · phone · SO · reference" />
           </div>
+          <SearchProgress active={searchTransition.isSearching} label="Searching…" />
           <button onClick={() => setFilterOpen(true)} className="iconbtn" style={{ position: "relative" }} aria-label="Filter by status">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#414539" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5h18M6 12h12M10 19h4" /></svg>
             {filterActive && <span style={{ position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%", background: "var(--gold)", border: "1.5px solid #fff" }} />}
@@ -479,7 +487,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
             totals are the whole filtered set (no caveat). The "(loaded)" suffix
             only appears in the defensive fallback, where rev/out reflect just the
             rows scrolled in so far. */}
-        {!isLoading && !error && (
+        {!listLoading && !error && (
           <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", fontSize: 11.5, color: "var(--mut)", margin: "0 2px 11px" }}>
             <span><b style={{ color: "var(--ink)" }}>{totalCount}</b> orders</span>
             <span style={{ opacity: .4 }}>·</span>
@@ -498,7 +506,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
           ))}
         </div>
 
-        {isLoading && (
+        {listLoading && (
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
             {[0, 1, 2].map((i) => (
               <div key={i} className="card"><div className="card-b ph" style={{ height: 92, borderRadius: 14 }} /></div>
@@ -511,7 +519,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
             <button onClick={() => refetch()} style={{ border: "none", background: "transparent", color: "var(--red)", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Retry</button>
           </div>
         )}
-        {!isLoading && !error && (
+        {!listLoading && !error && (
           <>
             {rows.length > 0 && (
               <MobileVirtualList

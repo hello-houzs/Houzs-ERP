@@ -108,3 +108,59 @@ describe("DataTable responsive rendering", () => {
     expect(viewport.listenerCount()).toBe(0);
   });
 });
+
+describe("DataTable server search feedback", () => {
+  it("propagates every keystroke and announces when rows are still catching up", () => {
+    setViewport(1280);
+    const onChange = vi.fn();
+    const onToggleAll = vi.fn();
+
+    render(
+      <DataTable
+        tableId="search-orders"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+        search={{
+          value: "A",
+          onChange,
+          debounceMs: 0,
+          searching: false,
+        }}
+        selection={{
+          selectedIds: new Set(),
+          onToggle: vi.fn(),
+          onToggleAll,
+        }}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "A1" } });
+
+    expect(onChange).toHaveBeenLastCalledWith("A1");
+    expect(screen.getByRole("status").textContent).toContain("Searching…");
+    expect(screen.queryByText("Order 1")).toBeNull();
+    expect(screen.getByRole("button", { name: "Export" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("checkbox", { name: "Select all rows" }).hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all rows" }));
+    expect(onToggleAll).not.toHaveBeenCalled();
+  });
+
+  it("keeps stale row actions disabled when the replacement search fails", () => {
+    setViewport(1280);
+    render(
+      <DataTable
+        tableId="failed-search-orders"
+        rows={rows.slice(0, 2)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+        error="Search failed"
+        selection={{ selectedIds: new Set(), onToggle: vi.fn(), onToggleAll: vi.fn() }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Export" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("checkbox", { name: "Select all rows" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByText("2 rows")).toBeNull();
+  });
+});

@@ -37,9 +37,11 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { ListErrorPanel, SearchPendingPanel, SearchProgress } from "../../components/SearchProgress";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { useBranding } from "../../hooks/useBranding";
 import { shortCompanyName } from "../../lib/branding";
+import { useDebouncedSearchTerm, useSearchResultTransition } from "../../hooks/useServerSearch";
 import {
   useSalesInvoicesPaged,
   useSalesInvoiceDetail,
@@ -780,11 +782,7 @@ export function SalesInvoicesListV2() {
   const [sort, setSort] = useState<string | undefined>(undefined);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [printingDocs, setPrintingDocs] = useState(false);
-  const [debouncedSearch, setDebouncedSearch] = useState(search);
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(t);
-  }, [search]);
+  const { requestTerm: debouncedSearch } = useDebouncedSearchTerm(search);
 
   // Send the active tab's BUCKET NAME as `status`; the backend resolves each
   // bucket to the raw statuses it covers (sent = DRAFT+SENT+ISSUED, partial =
@@ -792,13 +790,22 @@ export function SalesInvoicesListV2() {
   // `all` omits the filter.
   const apiStatus = status === "all" ? undefined : status;
 
-  const { data, isLoading, error } = useSalesInvoicesPaged({
+  const { data, isLoading, isFetching, isPlaceholderData, error } = useSalesInvoicesPaged({
     page,
     pageSize,
     status: apiStatus,
     q: debouncedSearch,
     sort,
   });
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: debouncedSearch,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const listLoading = isLoading || searchTransition.isSearching;
   const updateStatus = useUpdateSalesInvoiceStatus();
 
   // Server already filtered + sorted this page — render verbatim.
@@ -1576,6 +1583,7 @@ export function SalesInvoicesListV2() {
           placeholder="Search SI, customer, phone, ref…"
           className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
+        <SearchProgress active={searchTransition.isSearching} label={searchTransition.statusText} className="mt-1.5" />
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-3 md:hidden">
@@ -1587,8 +1595,8 @@ export function SalesInvoicesListV2() {
       </div>
 
       <div className="md:hidden">
-        <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
-        <div className="pb-24">
+        {error ? <ListErrorPanel message={(error as Error).message} /> : searchTransition.resultsAreStale ? <SearchPendingPanel label={searchTransition.statusText} /> : <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />}
+        {!searchTransition.resultsAreStale && <div className="pb-24">
           <PaginationFooter
             page={page}
             pageSize={pageSize}
@@ -1596,13 +1604,13 @@ export function SalesInvoicesListV2() {
             onPrev={() => setPageParam(page - 1)}
             onNext={() => setPageParam(page + 1)}
           />
-        </div>
+        </div>}
       </div>
 
       <div className="hidden md:block">
         {view === "table" ? (
           <>
-            {selectedIds.size > 0 && (
+            {selectedIds.size > 0 && !searchTransition.resultsAreStale && (
               <div className="mb-3 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2.5 shadow-stone">
                 <span className="text-[13px] font-semibold text-ink">
                   {selectedIds.size} selected
@@ -1628,7 +1636,7 @@ export function SalesInvoicesListV2() {
             <DataTable<SiRow>
               tableId="sales-invoices-v2"
               rows={rows}
-              loading={isLoading}
+              loading={listLoading}
               error={error ? (error as Error).message ?? "Failed to load" : null}
               columns={columns}
               getRowKey={(r) => r.id}
@@ -1650,6 +1658,8 @@ export function SalesInvoicesListV2() {
                 value: search,
                 onChange: setSearch,
                 placeholder: "Search SI no, customer, phone, ref…",
+                debounceMs: 0,
+                searching: searchTransition.isSearching,
               }}
               resetFilters={{
                 active: filtersActive,
@@ -1657,13 +1667,13 @@ export function SalesInvoicesListV2() {
                 label: "Reset layout",
               }}
             />
-            <PaginationFooter
+            {!searchTransition.resultsAreStale && <PaginationFooter
               page={page}
               pageSize={pageSize}
               total={total}
               onPrev={() => setPageParam(page - 1)}
               onNext={() => setPageParam(page + 1)}
-            />
+            />}
           </>
         ) : (
           <>
@@ -1676,6 +1686,7 @@ export function SalesInvoicesListV2() {
                   placeholder="Search SI no, customer, phone, ref…"
                   className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
                 />
+                <SearchProgress active={searchTransition.isSearching} />
                 {filtersActive && (
                   <button
                     type="button"
@@ -1687,14 +1698,14 @@ export function SalesInvoicesListV2() {
                 )}
               </div>
             </div>
-            <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+            {error ? <ListErrorPanel message={(error as Error).message} /> : searchTransition.resultsAreStale ? <SearchPendingPanel label={searchTransition.statusText} /> : <><CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
             <PaginationFooter
               page={page}
               pageSize={pageSize}
               total={total}
               onPrev={() => setPageParam(page - 1)}
               onNext={() => setPageParam(page + 1)}
-            />
+            /></>}
           </>
         )}
       </div>

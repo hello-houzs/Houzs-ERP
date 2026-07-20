@@ -3,6 +3,10 @@ import { useQuery as useTanstackQuery, keepPreviousData } from "@tanstack/react-
 export interface QueryState<T> {
   data: T | null;
   loading: boolean;
+  /** A request is active, including background/placeholder transitions. */
+  fetching: boolean;
+  /** The visible data belongs to the previous query key. */
+  placeholder: boolean;
   error: string | null;
   reload: () => void;
 }
@@ -110,6 +114,8 @@ export function useQuery<T>(
     // "error first, then it loads" class of bug. This wrapper already uses
     // isPending for exactly that reason.
     loading: enabled ? q.isPending : false,
+    fetching: enabled ? q.isFetching : false,
+    placeholder: enabled ? q.isPlaceholderData : false,
     error: q.error ? (q.error as Error).message || String(q.error) : null,
     reload: () => {
       void q.refetch();

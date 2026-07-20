@@ -36,9 +36,11 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { ListErrorPanel, SearchPendingPanel, SearchProgress } from "../../components/SearchProgress";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { useBranding } from "../../hooks/useBranding";
 import { shortCompanyName } from "../../lib/branding";
+import { useDebouncedSearchTerm, useSearchResultTransition } from "../../hooks/useServerSearch";
 import {
   useMfgDeliveryOrdersPaged,
   useMfgDeliveryOrderDetail,
@@ -841,11 +843,7 @@ export function MfgDeliveryOrdersListV2() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
   const [sort, setSort] = useState<string | undefined>(undefined);
-  const [debouncedSearch, setDebouncedSearch] = useState(search);
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(t);
-  }, [search]);
+  const { requestTerm: debouncedSearch } = useDebouncedSearchTerm(search);
 
   // Send the active tab's BUCKET NAME as `status`; the backend resolves each
   // bucket to the raw statuses it covers (open = DRAFT+LOADED, in_transit =
@@ -853,13 +851,22 @@ export function MfgDeliveryOrdersListV2() {
   // cancelled = CANCELLED). `all` omits the filter.
   const apiStatus = status === "all" ? undefined : status;
 
-  const { data, isLoading, error } = useMfgDeliveryOrdersPaged({
+  const { data, isLoading, isFetching, isPlaceholderData, error } = useMfgDeliveryOrdersPaged({
     page,
     pageSize,
     status: apiStatus,
     q: debouncedSearch,
     sort,
   });
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: debouncedSearch,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const listLoading = isLoading || searchTransition.isSearching;
   const updateStatus = useUpdateMfgDeliveryOrderStatus();
 
   // Server already filtered + sorted this page — render verbatim, no client
@@ -1630,6 +1637,7 @@ export function MfgDeliveryOrdersListV2() {
           placeholder="Search DO, customer, phone, driver…"
           className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
+        <SearchProgress active={searchTransition.isSearching} label={searchTransition.statusText} className="mt-1.5" />
       </div>
 
       {/* Mobile filter row — desktop pills live inside the sticky chrome above. */}
@@ -1643,8 +1651,14 @@ export function MfgDeliveryOrdersListV2() {
 
       {/* Phone → Cards */}
       <div className="md:hidden">
-        <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
-        <div className="pb-24">
+        {error ? (
+          <ListErrorPanel message={(error as Error).message} />
+        ) : searchTransition.resultsAreStale ? (
+          <SearchPendingPanel label={searchTransition.statusText} />
+        ) : (
+          <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+        )}
+        {!searchTransition.resultsAreStale && <div className="pb-24">
           <PaginationFooter
             page={page}
             pageSize={pageSize}
@@ -1652,7 +1666,7 @@ export function MfgDeliveryOrdersListV2() {
             onPrev={() => setPageParam(page - 1)}
             onNext={() => setPageParam(page + 1)}
           />
-        </div>
+        </div>}
       </div>
 
       {/* Desktop → Table / Cards */}
@@ -1663,7 +1677,7 @@ export function MfgDeliveryOrdersListV2() {
                 DeliveryPlanning "Convert N to DO" bar's look/placement (count
                 on the left, primary action + Clear on the right), rendered in
                 Theme C Tailwind instead of the vendored CSS module. */}
-            {selectedIds.size > 0 && (
+            {selectedIds.size > 0 && !searchTransition.resultsAreStale && (
               <div className="mb-3 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2.5 shadow-stone">
                 <span className="text-[13px] font-semibold text-ink">
                   {selectedIds.size} selected
@@ -1693,7 +1707,7 @@ export function MfgDeliveryOrdersListV2() {
             <DataTable<DoRow>
               tableId="delivery-orders-v2"
               rows={rows}
-              loading={isLoading}
+              loading={listLoading}
               error={error ? (error as Error).message ?? "Failed to load" : null}
               columns={columns}
               getRowKey={(r) => r.id}
@@ -1731,6 +1745,8 @@ export function MfgDeliveryOrdersListV2() {
                 value: search,
                 onChange: setSearch,
                 placeholder: "Search DO no, customer, phone, driver, ref…",
+                debounceMs: 0,
+                searching: searchTransition.isSearching,
               }}
               resetFilters={{
                 active: filtersActive,
@@ -1738,13 +1754,13 @@ export function MfgDeliveryOrdersListV2() {
                 label: "Reset layout",
               }}
             />
-            <PaginationFooter
+            {!searchTransition.resultsAreStale && <PaginationFooter
               page={page}
               pageSize={pageSize}
               total={total}
               onPrev={() => setPageParam(page - 1)}
               onNext={() => setPageParam(page + 1)}
-            />
+            />}
           </>
         ) : (
           <>
@@ -1757,6 +1773,7 @@ export function MfgDeliveryOrdersListV2() {
                   placeholder="Search DO no, customer, phone, driver, ref…"
                   className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
                 />
+                <SearchProgress active={searchTransition.isSearching} />
                 {filtersActive && (
                   <button
                     type="button"
@@ -1768,14 +1785,18 @@ export function MfgDeliveryOrdersListV2() {
                 )}
               </div>
             </div>
-            <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+            {error ? (
+              <ListErrorPanel message={(error as Error).message} />
+            ) : searchTransition.resultsAreStale ? (
+              <SearchPendingPanel label={searchTransition.statusText} />
+            ) : <><CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
             <PaginationFooter
               page={page}
               pageSize={pageSize}
               total={total}
               onPrev={() => setPageParam(page - 1)}
               onNext={() => setPageParam(page + 1)}
-            />
+            /></>}
           </>
         )}
       </div>

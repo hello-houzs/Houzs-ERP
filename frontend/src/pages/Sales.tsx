@@ -15,8 +15,10 @@ import { usePageAccess } from "../auth/PageGuard";
 import { formatCurrency, formatDate, formatDateTime, cn, todayInAppTz } from "../lib/utils";
 import { parseMoneyToSen, parseQuantity, senToRm, scaledToQuantity } from "../lib/money";
 import { DataTable, type Column } from "../components/DataTable";
+import { SearchProgress } from "../components/SearchProgress";
 import { EmptyState } from "../components/EmptyState";
 import { Pagination } from "../components/Pagination";
+import { useDebouncedSearchTerm, useSearchResultTransition } from "../hooks/useServerSearch";
 
 const SALES_FILTER_KEYS = ["status", "search", "date_from", "date_to", "view"] as const;
 
@@ -170,6 +172,7 @@ export function Sales() {
         : "all";
   const status = view === "quicklogs" ? "draft" : params.get("status") || "";
   const search = params.get("search") || "";
+  const { requestTerm: debouncedSearch } = useDebouncedSearchTerm(search);
   const dateFrom = params.get("date_from") || "";
   const dateTo = params.get("date_to") || "";
 
@@ -195,7 +198,7 @@ export function Sales() {
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     if (status) p.set("status", status);
-    if (search) p.set("search", search);
+    if (debouncedSearch) p.set("search", debouncedSearch);
     if (dateFrom) p.set("date_from", dateFrom);
     if (dateTo) p.set("date_to", dateTo);
     // Quick Logs tab → only quick-log rows.
@@ -203,7 +206,7 @@ export function Sales() {
     if (view === "quicklogs") p.set("quick_log", "1");
     else p.set("quick_log", "0");
     return p.toString();
-  }, [status, search, dateFrom, dateTo, view]);
+  }, [status, debouncedSearch, dateFrom, dateTo, view]);
 
   // qs is filter-only (page excluded) so a filter change lands here → page 1.
   useEffect(() => {
@@ -219,6 +222,14 @@ export function Sales() {
     },
     [qs, page]
   );
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: debouncedSearch,
+    isFetching: list.fetching,
+    isPlaceholderData: list.placeholder,
+    hasData: list.data !== null,
+    hasError: Boolean(list.error),
+  });
   // Pending edit-approval queue (managers only). Drives the Approvals tab +
   // its badge; reps don't see this surface.
   const approvals = useQuery<{ requests: ChangeRequest[] }>("/api/sales/entries/change-requests?status=pending",
@@ -548,6 +559,7 @@ export function Sales() {
           placeholder="Search customer / phone / ref no…"
           className="h-8 flex-1 min-w-[200px] max-w-[320px] rounded-md border border-border bg-surface px-3 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         />
+        <SearchProgress active={searchTransition.isSearching} label={searchTransition.statusText} />
         {(status || search || dateFrom || dateTo) && (
           <button
             onClick={() =>
@@ -561,7 +573,7 @@ export function Sales() {
       </div>
 
       {/* List */}
-      {list.data && list.data.data.length === 0 && !list.loading ? (
+      {list.data && list.data.data.length === 0 && !list.loading && !searchTransition.resultsAreStale ? (
         <EmptyState
           message={
             view === "quicklogs"
@@ -581,13 +593,13 @@ export function Sales() {
           tableId="sales"
           columns={columns}
           rows={list.data?.data ?? null}
-          loading={list.loading}
+          loading={list.loading || searchTransition.isSearching}
           error={list.error}
           getRowKey={(e) => e.id}
           exportName="sales"
         />
       )}
-      {list.data && (
+      {list.data && !searchTransition.resultsAreStale && (
         <Pagination
           page={page}
           perPage={PER_PAGE}

@@ -109,6 +109,12 @@ interface Props<T> {
     onChange: (next: string) => void;
     placeholder?: string;
     /**
+     * True while the visible term has not yet produced the rows below. This
+     * keeps A results from being presented as if they belonged to A1.
+     */
+    searching?: boolean;
+    searchingLabel?: string;
+    /**
      * Milliseconds to wait after the last keystroke before calling `onChange`.
      * Default 250. Pass 0 to propagate on every keystroke (only correct when
      * `onChange` does nothing but set local state).
@@ -300,18 +306,24 @@ function DebouncedSearchInput({
   placeholder,
   delayMs,
   className,
+  onPendingChange,
 }: {
   value: string;
   onChange: (next: string) => void;
   placeholder: string;
   delayMs: number;
   className: string;
+  onPendingChange?: (pending: boolean) => void;
 }) {
   const [draft, setDraft] = useState(value);
   const lastSentRef = useRef(value);
   const timerRef = useRef<number | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+
+  useEffect(() => {
+    onPendingChange?.(draft !== value);
+  }, [draft, value, onPendingChange]);
 
   // DOWN-sync: adopt an externally-driven change, ignore our own echo.
   useEffect(() => {
@@ -359,7 +371,11 @@ function DebouncedSearchInput({
   return (
     <input
       value={draft}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        const next = e.target.value;
+        setDraft(next);
+        onPendingChange?.(next !== value);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") flush();
       }}
@@ -397,6 +413,12 @@ export function DataTable<T>({
   selection,
 }: Props<T>) {
   const isSmallViewport = useSmallViewport();
+  const [searchDraftPending, setSearchDraftPending] = useState(false);
+  const searchBusy = Boolean(
+    search?.searching || (search?.searching !== undefined && searchDraftPending),
+  );
+  const effectiveLoading = Boolean(loading || searchBusy);
+  const rowActionsDisabled = effectiveLoading || Boolean(error);
   const idKey = tableId || "_";
   const [hiddenList, setHiddenList] = useLocalStorage<string[]>(`dt:hidden:${idKey}`, []);
   // `shownList` lets the user opt-IN to a column that's defaultHidden=true.
@@ -763,6 +785,7 @@ export function DataTable<T>({
   }
 
   function handleExport() {
+    if (rowActionsDisabled) return;
     // Optional override: the caller exports a broader/full dataset (e.g. all
     // pages, ignoring a screen-only filter) instead of the on-screen rows.
     if (onExport) { onExport(); return; }
@@ -1033,7 +1056,7 @@ export function DataTable<T>({
   // and sticky header behave exactly as before. Row height is measured from a
   // real row so the spacers can't drift (avoids the HOOKKA getTotalSize lag).
   const canVirtualize =
-    showTable && !loading && !error && !groupBy && !expandable &&
+    showTable && !effectiveLoading && !error && !groupBy && !expandable &&
     renderList.length > VIRTUAL_ROW_THRESHOLD;
   const tbodyRef = useRef<HTMLTableSectionElement>(null);
   const rowHeightRef = useRef(ROW_HEIGHT_ESTIMATE);
@@ -1087,8 +1110,21 @@ export function DataTable<T>({
                 onChange={search.onChange}
                 placeholder={search.placeholder || "Search…"}
                 delayMs={search.debounceMs ?? 250}
-                className="h-9 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20 sm:h-8 sm:text-[12px]"
+                onPendingChange={search.searching !== undefined ? setSearchDraftPending : undefined}
+                className={cn(
+                  "h-9 w-full rounded-md border border-border bg-surface pl-8 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20 sm:h-8 sm:text-[12px]",
+                  searchBusy ? "pr-24" : "pr-3",
+                )}
               />
+              {searchBusy && (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-primary"
+                >
+                  {search.searchingLabel ?? "Searching…"}
+                </span>
+              )}
             </div>
           )}
           {resetFilters && (
@@ -1107,7 +1143,9 @@ export function DataTable<T>({
                 <span className="text-ink-muted">·</span>
               </>
             )}
-            {rows ? (
+            {rowActionsDisabled ? (
+              <span className="text-ink-muted">{error ? "Unavailable" : "Loading…"}</span>
+            ) : rows ? (
               <span>
                 <span className="font-mono text-ink">{rowCount.toLocaleString()}</span>
                 <span className="ml-1 text-ink-muted">{rowCount === 1 ? "row" : "rows"}</span>
@@ -1138,7 +1176,7 @@ export function DataTable<T>({
           )}
           <button
             onClick={handleExport}
-            disabled={!sortedRows || sortedRows.length === 0}
+            disabled={rowActionsDisabled || !sortedRows || sortedRows.length === 0}
             className={toolbarBtn}
           >
             <Download size={13} />
@@ -1220,8 +1258,9 @@ export function DataTable<T>({
                         if (el) el.indeterminate = someRowsSelected;
                       }}
                       onChange={() =>
-                        selection.onToggleAll(selectableKeys, allRowsSelected)
+                        !rowActionsDisabled && selection.onToggleAll(selectableKeys, allRowsSelected)
                       }
+                      disabled={rowActionsDisabled}
                       onClick={(e) => e.stopPropagation()}
                       className="cursor-pointer accent-primary"
                     />
@@ -1378,8 +1417,8 @@ export function DataTable<T>({
               </tr>
             </thead>
             <tbody ref={tbodyRef}>
-              {loading && <TableSkeleton rows={8} cols={totalColSpan} />}
-              {!loading && error && (
+              {effectiveLoading && <TableSkeleton rows={8} cols={totalColSpan} />}
+              {!effectiveLoading && error && (
                 <tr>
                   <td
                     colSpan={totalColSpan}
@@ -1390,7 +1429,7 @@ export function DataTable<T>({
                   </td>
                 </tr>
               )}
-              {!loading && !error && sortedRows && sortedRows.length === 0 && (
+              {!effectiveLoading && !error && sortedRows && sortedRows.length === 0 && (
                 <tr>
                   <td
                     colSpan={totalColSpan}
@@ -1405,7 +1444,7 @@ export function DataTable<T>({
                   <td colSpan={totalColSpan} style={{ height: vStart * rowHeightRef.current, padding: 0, border: 0 }} />
                 </tr>
               )}
-              {!loading &&
+              {!effectiveLoading &&
                 !error &&
                 sortedRows &&
                 renderList.slice(vStart, vEnd).map((item) => {
@@ -1627,7 +1666,7 @@ export function DataTable<T>({
           intentionally hid the first column. */}
       {showMobileCards && (
         <div className="space-y-2 sm:hidden">
-        {loading && (
+        {effectiveLoading && (
           <>
             {[0, 1, 2, 3, 4].map((i) => (
               <div
@@ -1643,18 +1682,18 @@ export function DataTable<T>({
             ))}
           </>
         )}
-        {!loading && error && (
+        {!effectiveLoading && error && (
           <div className="rounded-lg border border-err/40 bg-err/5 p-4 text-center text-sm text-err">
             <div className="font-semibold">Failed to load</div>
             <div className="mt-1 text-xs text-ink-muted">{error}</div>
           </div>
         )}
-        {!loading && !error && sortedRows && sortedRows.length === 0 && (
+        {!effectiveLoading && !error && sortedRows && sortedRows.length === 0 && (
           <div className="rounded-lg border border-dashed border-border bg-surface px-4 py-12 text-center text-sm text-ink-muted">
             {emptyLabel}
           </div>
         )}
-        {!loading &&
+        {!effectiveLoading &&
           !error &&
           sortedRows &&
           sortedRows.map((row) => {
