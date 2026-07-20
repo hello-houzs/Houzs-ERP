@@ -27,8 +27,8 @@
 // vendored sales-invoice-queries slice (useSalesInvoiceDetail /
 // useUpdateSalesInvoiceStatus).
 
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   History,
@@ -83,6 +83,7 @@ import {
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
 import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { clearPaymentRetryHandoff, completePaymentRetryDraft, consumePaymentRetryNavigationState, planPaymentDraftFlush, readPaymentRetryHandoff, readPaymentRetryNavigationState } from "../../lib/paymentRetryHandoff";
 
 // ─── Row shapes (subset — see SalesInvoiceDetail.tsx for the full 40-field
 // header) ───────────────────────────────────────────────────────────────
@@ -542,6 +543,7 @@ export function SalesInvoiceDetailV2() {
   const { id } = useParams<{ id: string }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const detail = useSalesInvoiceDetail(id ?? null);
   const updateStatus = useUpdateSalesInvoiceStatus();
@@ -611,6 +613,30 @@ export function SalesInvoiceDetailV2() {
     () => (paymentsQ.data ?? []).map(apiToDraft),
     [paymentsQ.data, apiToDraft]
   );
+  const [paymentRetryDrafts, setPaymentRetryDrafts] = useState<PaymentDraft[]>([]);
+  const paymentRetrySeededFor = useRef<string | null>(null);
+  const paymentEditBaselineIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!id || !paymentsQ.isSuccess) return;
+    if (paymentRetrySeededFor.current === id) return;
+    paymentRetrySeededFor.current = id;
+    const stored = readPaymentRetryHandoff("si", id)?.drafts ?? [];
+    const navigated = readPaymentRetryNavigationState(location.state, "si", id);
+    const retry = [...new Map([...stored, ...navigated].map((draft) => [draft.idempotencyKey, draft])).values()];
+    paymentEditBaselineIds.current = new Set(persistedDrafts.map((draft) => draft.uid));
+    setPaymentRetryDrafts(retry);
+    setPaymentDrafts([]);
+    setEditingPayments(false);
+    if (location.state && typeof location.state === "object" && "paymentRetry" in location.state) {
+      navigate(
+        { pathname: location.pathname, search: location.search, hash: location.hash },
+        { replace: true, state: consumePaymentRetryNavigationState(location.state) },
+      );
+    }
+    if (retry.length === 0) return;
+    setPaymentDrafts([...persistedDrafts, ...retry]);
+    setEditingPayments(true);
+  }, [id, location.hash, location.pathname, location.search, location.state, navigate, paymentsQ.isSuccess, persistedDrafts]);
 
   useSetBreadcrumbs([
     { label: "Sales Invoices", to: "/scm/sales-invoices" },
@@ -756,7 +782,8 @@ export function SalesInvoiceDetailV2() {
   // into view. Replaces the old dead `?tab=payments&record=1` navigation —
   // nothing consumed that param, so the button did nothing.
   const goRecordPayment = () => {
-    setPaymentDrafts(persistedDrafts);
+    paymentEditBaselineIds.current = new Set(persistedDrafts.map((draft) => draft.uid));
+    setPaymentDrafts([...persistedDrafts, ...paymentRetryDrafts]);
     setEditingPayments(true);
     requestAnimationFrame(() =>
       paymentsSectionRef.current?.scrollIntoView({
@@ -766,10 +793,12 @@ export function SalesInvoiceDetailV2() {
     );
   };
   const startEditPayments = () => {
-    setPaymentDrafts(persistedDrafts);
+    paymentEditBaselineIds.current = new Set(persistedDrafts.map((draft) => draft.uid));
+    setPaymentDrafts([...persistedDrafts, ...paymentRetryDrafts]);
     setEditingPayments(true);
   };
   const cancelEditPayments = () => {
+    paymentEditBaselineIds.current = new Set();
     setEditingPayments(false);
     setPaymentDrafts([]);
   };
@@ -792,15 +821,15 @@ export function SalesInvoiceDetailV2() {
         "We couldn't check which payments are already saved, so nothing was changed. Please refresh and try again.",
       );
     }
-    const draftIds = new Set(paymentDrafts.map((d) => d.uid));
-    for (const p of persisted) {
-      if (!draftIds.has(p.id)) {
-        await deletePayment.mutateAsync({ id: salesInvoice.id, paymentId: p.id });
-      }
+    const plan = planPaymentDraftFlush(
+      paymentEditBaselineIds.current,
+      persisted.map((payment) => payment.id),
+      paymentDrafts,
+    );
+    for (const paymentId of plan.deleteIds) {
+      await deletePayment.mutateAsync({ id: salesInvoice.id, paymentId });
     }
-    const persistedIds = new Set(persisted.map((p) => p.id));
-    for (const d of paymentDrafts) {
-      if (persistedIds.has(d.uid)) continue;
+    for (const d of plan.draftsToPost) {
       if (d.amountCenti <= 0) continue;
       const { method } = labelToApi(d.methodLabel);
       const body: { id: string } & Record<string, unknown> = {
@@ -818,12 +847,22 @@ export function SalesInvoiceDetailV2() {
       };
       Object.assign(body, draftMethodFields(method, d));
       await addPayment.mutateAsync(body);
+      if (d.idempotencyKey && paymentRetryDrafts.some((retry) => retry.idempotencyKey === d.idempotencyKey)) {
+        completePaymentRetryDraft("si", salesInvoice.id, d.idempotencyKey);
+        setPaymentRetryDrafts((current) =>
+          current.filter((retry) => retry.idempotencyKey !== d.idempotencyKey),
+        );
+      }
     }
   };
   const saveEditPayments = () => {
     setSavingPayments(true);
     flushPaymentDrafts()
-      .then(() => setEditingPayments(false))
+      .then(() => {
+        if (salesInvoice) clearPaymentRetryHandoff("si", salesInvoice.id);
+        setPaymentRetryDrafts([]);
+        setEditingPayments(false);
+      })
       .catch((e) =>
         notify({
           title: "Failed to save payments",
@@ -1434,6 +1473,12 @@ export function SalesInvoiceDetailV2() {
                 persisted rows; adds / deletes flush on Save. A DRAFT SI isn't
                 payable until Confirm; a cancelled SI shows its ledger read-only. */}
             <div ref={paymentsSectionRef}>
+              {paymentRetryDrafts.length > 0 && (
+                <div className="mb-3 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-[12px] text-ink" role="status">
+                  This invoice exists, but {paymentRetryDrafts.length} payment row{paymentRetryDrafts.length === 1 ? "" : "s"} were not confirmed saved.
+                  The editor includes a temporary retry copy; Save payments to confirm it on the server.
+                </div>
+              )}
               <Section
                 title="Payments"
                 actions={

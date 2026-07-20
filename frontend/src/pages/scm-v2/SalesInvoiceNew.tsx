@@ -20,6 +20,7 @@
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { newIdempotencyKey, useIdempotencyKey } from '../../lib/idempotency';
 import { readScmHandoff, removeScmHandoff } from '../../lib/scmHandoffStorage';
+import { completePaymentRetryDraft, paymentRetryNavigationState, writePaymentRetryHandoff } from '../../lib/paymentRetryHandoff';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
@@ -134,6 +135,7 @@ export const SalesInvoiceNew = () => {
   // ── Items + payments ──
   const [lines, setLines] = useState<DraftLine[]>(() => [newLine()]);
   const [paymentDrafts, setPaymentDrafts] = useState<PaymentDraft[]>([]);
+  const [createdInvoice, setCreatedInvoice] = useState<{ id: string; number: string } | null>(null);
 
   /* Prefill from the DO once its detail + payments load. Guarded so we only
      seed once (when the form is still pristine) — re-fetches don't clobber
@@ -269,11 +271,11 @@ export const SalesInvoiceNew = () => {
 
   const canSave = debtorName.trim().length > 0;
 
-  const flushPaymentDrafts = async (id: string): Promise<{ failed: number }> => {
-    if (paymentDrafts.length === 0) return { failed: 0 };
-    const tasks = paymentDrafts
-      .filter((d) => d.amountCenti > 0)
-      .map(async (d) => {
+  const paymentIntents = () => paymentDrafts.filter((d) => d.amountCenti > 0);
+
+  const flushPaymentDrafts = async (id: string, drafts: PaymentDraft[]): Promise<{ failedDrafts: PaymentDraft[] }> => {
+    const tasks = drafts
+      .map((d) => async () => {
         const { method } = labelToApi(d.methodLabel);
         const body: { id: string } & Record<string, unknown> = {
           id,
@@ -289,19 +291,51 @@ export const SalesInvoiceNew = () => {
           idempotencyKey: d.idempotencyKey,
         };
         Object.assign(body, draftMethodFields(method, d));
-        try { await addPayment.mutateAsync(body); return true; }
+        try {
+          await addPayment.mutateAsync(body);
+          if (d.idempotencyKey) completePaymentRetryDraft('si', id, d.idempotencyKey);
+          return null;
+        }
         catch (e) {
           // eslint-disable-next-line no-console
           console.error('[si-payment] post failed for new invoice:', e);
-          return false;
+          return d;
         }
       });
-    const results = await Promise.all(tasks);
-    return { failed: results.filter((ok) => !ok).length };
+    const results: Array<PaymentDraft | null> = [];
+    for (const task of tasks) results.push(await task());
+    return { failedDrafts: results.filter((draft): draft is PaymentDraft => draft !== null) };
   };
 
   const onSave = (asDraft = false) => {
+    if (createdInvoice) {
+      const intents = paymentIntents();
+      if (intents.length === 0) {
+        navigate(`/scm/sales-invoices/${createdInvoice.id}`);
+        return;
+      }
+      if (!writePaymentRetryHandoff('si', createdInvoice.id, intents)) {
+        notify({
+          title: `Invoice ${createdInvoice.number} already exists; payments were not sent.`,
+          body: 'Browser storage is still unavailable. This page is keeping the payment rows; retry Save after storage is available.',
+          tone: 'error',
+        });
+        return;
+      }
+      navigate(`/scm/sales-invoices/${createdInvoice.id}?retryPayments=1`, {
+        state: paymentRetryNavigationState('si', createdInvoice.id, intents),
+      });
+      return;
+    }
     if (!canSave) { notify({ title: 'Customer name is required.', tone: 'error' }); return; }
+    if (asDraft && paymentDrafts.some((draft) => draft.amountCenti > 0)) {
+      notify({
+        title: 'Payments are not saved on a draft invoice.',
+        body: 'Confirm the invoice before recording payment, or remove the payment rows before saving this draft.',
+        tone: 'error',
+      });
+      return;
+    }
     const validLines = lines.filter((l) => l.itemCode.trim() && l.qty > 0);
     if (validLines.length === 0) {
       notify({ title: 'Add at least one item via "+ Add Line Item".', tone: 'error' });
@@ -361,12 +395,19 @@ export const SalesInvoiceNew = () => {
           /* A DRAFT invoice cannot take payments yet (the server 409s a draft
              payment). Skip the payment flush — the operator records payments
              after confirming on the detail page. */
-          const { failed } = asDraft ? { failed: 0 } : await flushPaymentDrafts(res.id);
+          const intents = asDraft ? [] : paymentIntents();
+          const staged = intents.length === 0 || writePaymentRetryHandoff('si', res.id, intents);
+          const { failedDrafts } = staged
+            ? await flushPaymentDrafts(res.id, intents)
+            : { failedDrafts: intents };
+          const failed = failedDrafts.length;
           if (failed > 0) {
             await notify({
               title: `Invoice ${res.invoiceNumber} was created, but ${failed} payment ` +
-                `row${failed === 1 ? '' : 's'} failed to save. Please re-enter ` +
-                `${failed === 1 ? 'it' : 'them'} on the Detail page.`,
+                `row${failed === 1 ? '' : 's'} ${staged ? 'failed to save' : 'was not sent'}.`,
+              body: staged
+                ? 'The failed rows will be available to retry on the Detail page.'
+                : 'Browser storage was unavailable, so no payment request was attempted. The rows are carried to the Detail page for a safe retry.',
               tone: 'error',
             });
           }
@@ -382,7 +423,14 @@ export const SalesInvoiceNew = () => {
               body: res.priceWarningMessage,
             });
           }
-          navigate(`/scm/sales-invoices/${res.id}`);
+          if (!staged) {
+            setCreatedInvoice({ id: res.id, number: res.invoiceNumber });
+            return;
+          }
+          navigate(
+            `/scm/sales-invoices/${res.id}${failed > 0 ? '?retryPayments=1' : ''}`,
+            { state: failed > 0 ? paymentRetryNavigationState('si', res.id, failedDrafts) : undefined },
+          );
         },
         onError: (err) => notify({ title: 'Save failed', body: err instanceof Error ? err.message : 'Something went wrong.', tone: 'error' }),
       },
@@ -408,7 +456,7 @@ export const SalesInvoiceNew = () => {
             <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices')}>
               <X {...ICON} /> Cancel
             </Button>
-            <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={create.isPending}>
+            <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={create.isPending || !!createdInvoice}>
               <Save {...ICON} />
               {create.isPending ? 'Saving…' : 'Save as Draft'}
             </Button>
@@ -419,6 +467,12 @@ export const SalesInvoiceNew = () => {
           </div>
         }
       />
+
+      {createdInvoice && (
+        <div role="status" className="mb-3 rounded-lg border border-warning-text/30 bg-warning-bg px-3 py-2 text-sm text-warning-text">
+          Invoice {createdInvoice.number} already exists. Only the payment rows are retained here; make any other changes on the Detail page.
+        </div>
+      )}
 
       {loadingPrefill && (
         <div className={styles.bannerWarn} style={{ background: 'var(--c-cream)', border: '1px solid var(--line)', color: 'var(--fg-muted)' }}>

@@ -45,6 +45,7 @@ const RECOVER_COOLDOWN_MS = 60_000;
 /** hardRecover() always ends in reload(), but its awaits (SW unregister, cache
  *  delete) are not guaranteed to settle. Don't strand the user on a skeleton. */
 const RECOVER_TIMEOUT_MS = 10_000;
+const CLEANUP_TIMEOUT_MS = 8_000;
 
 /** Whether we may self-heal now. False when we already tried within the
  *  cooldown — or when sessionStorage is unavailable, since without a memory
@@ -85,20 +86,28 @@ function isStaleChunkError(err: unknown): boolean {
  * build from the network and registers the current SW. Best-effort; always
  * reloads even if a step throws.
  */
-async function hardRecover(): Promise<void> {
-  try {
-    if ("serviceWorker" in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map((r) => r.unregister().catch(() => false)));
-    }
-  } catch {}
-  try {
-    if ("caches" in window) {
-      const ks = await caches.keys();
-      await Promise.all(ks.map((k) => caches.delete(k).catch(() => false)));
-    }
-  } catch {}
-  window.location.reload();
+export async function hardRecover(reload = () => window.location.reload()): Promise<void> {
+  const cleanup = async () => {
+    try {
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister().catch(() => false)));
+      }
+    } catch {}
+    try {
+      if ("caches" in window) {
+        const ks = await caches.keys();
+        await Promise.all(ks.map((k) => caches.delete(k).catch(() => false)));
+      }
+    } catch {}
+  };
+  // Browser APIs can hang indefinitely. Reload anyway before the boundary's
+  // watchdog exposes the manual recovery panel; the cooldown prevents loops.
+  await Promise.race([
+    cleanup(),
+    new Promise<void>((resolve) => window.setTimeout(resolve, CLEANUP_TIMEOUT_MS)),
+  ]);
+  reload();
 }
 
 interface BoundaryState {
@@ -158,12 +167,13 @@ export class ChunkReloadBoundary extends React.Component<BoundaryProps, Boundary
     reportClientError(error, "route-crash");
   }
 
+  componentDidMount(): void {
+    if (this.state.recovering) this.startRecoverTimer();
+  }
+
   componentDidUpdate(prevProps: BoundaryProps, prevState: BoundaryState): void {
     if (this.state.recovering && !prevState.recovering) {
-      this.recoverTimer = window.setTimeout(() => {
-        // The reload never landed — stop pretending to load and show the panel.
-        this.setState({ recovering: false });
-      }, RECOVER_TIMEOUT_MS);
+      this.startRecoverTimer();
     }
     // Recover on navigation: when the route changes while a crash is showing,
     // clear it so the destination page renders. A single boundary wraps every
@@ -188,6 +198,14 @@ export class ChunkReloadBoundary extends React.Component<BoundaryProps, Boundary
       window.clearTimeout(this.recoverTimer);
       this.recoverTimer = null;
     }
+  }
+
+  private startRecoverTimer(): void {
+    this.clearRecoverTimer();
+    this.recoverTimer = window.setTimeout(() => {
+      // The reload never landed — stop pretending to load and show the panel.
+      this.setState({ recovering: false });
+    }, RECOVER_TIMEOUT_MS);
   }
 
   render() {

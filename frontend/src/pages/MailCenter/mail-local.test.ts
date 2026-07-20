@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { writeAuthToken } from "../../lib/authToken";
 import { setActiveCompanyId } from "../../lib/activeCompany";
 import {
@@ -9,6 +9,9 @@ import {
   getSnapshot,
   hasQuarantinedLegacyDrafts,
   deleteDraft,
+  deleteDraftBestEffort,
+  MAIL_DRAFT_MAX_BYTES,
+  MAIL_DRAFT_MAX_COUNT,
   sanitizeDrafts,
   saveDraft,
 } from "./mail-local";
@@ -40,6 +43,7 @@ afterEach(() => {
   clearBrowserStorageIdentity();
   localStorage.clear();
   sessionStorage.clear();
+  vi.restoreAllMocks();
 });
 
 describe("sanitizeDrafts", () => {
@@ -125,9 +129,9 @@ describe("mail draft browser scope", () => {
     expect(getSnapshot().drafts).toEqual([]);
   });
 
-  test("does not persist while identity is unresolved", () => {
-    saveDraft(VALID);
-    expect(getSnapshot().drafts).toEqual([VALID]);
+  test("does not claim a persistent save while identity is unresolved", () => {
+    expect(() => saveDraft(VALID)).toThrow(/not ready/i);
+    expect(getSnapshot().drafts).toEqual([]);
     expect(Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)))
       .not.toContain(expect.stringContaining("houzs-mail-local:v2"));
   });
@@ -149,5 +153,74 @@ describe("mail draft browser scope", () => {
     ] }));
     deleteDraft("d1");
     expect(getSnapshot().drafts.map((draft) => draft.id)).toEqual(["d4", "d3", "d2"]);
+  });
+
+  test("does not claim a draft was saved when localStorage rejects the write", () => {
+    writeAuthToken("user-one", true);
+    bindBrowserStorageIdentity(1);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("quota", "QuotaExceededError");
+    });
+
+    expect(() => saveDraft(VALID)).toThrow(/could not be saved/i);
+    expect(getSnapshot().drafts).toEqual([]);
+  });
+
+  test("does not claim an explicit discard succeeded when persistence fails", () => {
+    writeAuthToken("user-one", true);
+    bindBrowserStorageIdentity(1);
+    saveDraft(VALID);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("quota", "QuotaExceededError");
+    });
+
+    expect(() => deleteDraft(VALID.id)).toThrow(/could not be saved/i);
+    expect(getSnapshot().drafts).toEqual([VALID]);
+  });
+
+  test("post-send cleanup is best effort and keeps an undeleted draft visible", () => {
+    writeAuthToken("user-one", true);
+    bindBrowserStorageIdentity(1);
+    saveDraft(VALID);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("quota", "QuotaExceededError");
+    });
+
+    expect(() => deleteDraftBestEffort(VALID.id)).not.toThrow();
+    expect(getSnapshot().drafts).toEqual([VALID]);
+  });
+
+  test("bounds draft count without deleting an older draft silently", () => {
+    writeAuthToken("user-one", true);
+    bindBrowserStorageIdentity(1);
+    for (let index = 0; index < MAIL_DRAFT_MAX_COUNT; index += 1) {
+      saveDraft({ ...VALID, id: `d${index}` });
+    }
+
+    expect(() => saveDraft({ ...VALID, id: "overflow" })).toThrow(/100 drafts/i);
+    expect(getSnapshot().drafts).toHaveLength(MAIL_DRAFT_MAX_COUNT);
+    expect(getSnapshot().drafts.some((draft) => draft.id === "overflow")).toBe(false);
+  });
+
+  test("rejects an oversized draft and preserves the prior saved state", () => {
+    writeAuthToken("user-one", true);
+    bindBrowserStorageIdentity(1);
+    saveDraft(VALID);
+
+    expect(() => saveDraft({
+      ...VALID,
+      id: "huge",
+      body: "x".repeat(MAIL_DRAFT_MAX_BYTES),
+    })).toThrow(/too large/i);
+    expect(getSnapshot().drafts).toEqual([VALID]);
+  });
+
+  test("clears the live snapshot after another tab clears storage", () => {
+    writeAuthToken("user-one", true);
+    bindBrowserStorageIdentity(1);
+    saveDraft(VALID);
+    localStorage.clear();
+    window.dispatchEvent(new StorageEvent("storage", { key: null, storageArea: localStorage }));
+    expect(getSnapshot().drafts).toEqual([]);
   });
 });

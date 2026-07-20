@@ -24,6 +24,8 @@ import {
 
 const LEGACY_KEY = "houzs-mail-local:v1";
 const KEY_PREFIX = "houzs-mail-local:v2";
+export const MAIL_DRAFT_MAX_COUNT = 100;
+export const MAIL_DRAFT_MAX_BYTES = 1_000_000;
 
 function currentKey(): string | null {
   const identity = getBrowserStorageIdentity();
@@ -110,16 +112,7 @@ function load(): MailLocalState {
 
 const listeners = new Set<() => void>();
 
-function persistAndNotify(): void {
-  if (typeof window !== "undefined") {
-    try {
-      const key = currentKey();
-      if (key) window.localStorage.setItem(key, JSON.stringify(state));
-    } catch {
-      // Quota / disabled storage — keep the in-memory copy so the current
-      // session still works; it just won't survive a reload.
-    }
-  }
+function notify(): void {
   for (const cb of listeners) {
     try {
       cb();
@@ -132,27 +125,15 @@ function persistAndNotify(): void {
 // Cross-tab sync: another tab writing the key fires a storage event here.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
-    if (e.key !== currentKey()) return;
+    if (e.key !== null && e.key !== currentKey()) return;
     state = load();
-    for (const cb of listeners) {
-      try {
-        cb();
-      } catch {
-        /* ignore */
-      }
-    }
+    notify();
   });
 }
 
 subscribeBrowserStorageIdentity(() => {
   state = load();
-  for (const cb of listeners) {
-    try {
-      cb();
-    } catch {
-      /* ignore */
-    }
-  }
+  notify();
 });
 
 /** Legacy v1 has no owner/company metadata, so it stays quarantined. */
@@ -162,6 +143,23 @@ export function hasQuarantinedLegacyDrafts(): boolean {
   } catch {
     return false;
   }
+}
+
+function persist(next: MailLocalState): void {
+  if (typeof window !== "undefined") {
+    const key = currentKey();
+    if (key) {
+      // Persist before publishing the in-memory snapshot. A rejected write must
+      // leave the composer open instead of claiming a reload-safe save.
+      try {
+        window.localStorage.setItem(key, JSON.stringify(next));
+      } catch {
+        throw new Error("Draft could not be saved in this browser. Free some site storage and try again.");
+      }
+    }
+  }
+  state = next;
+  notify();
 }
 
 // ── Subscription (for useSyncExternalStore) ────────────────────────────────
@@ -178,14 +176,37 @@ export function getSnapshot(): MailLocalState {
 export function saveDraft(draft: MailDraft): void {
   // Re-read before a read/modify/write so a draft saved by another tab since
   // our last storage event is not erased by this tab's stale in-memory array.
-  const base = currentKey() ? load() : state;
+  if (!currentKey()) {
+    throw new Error("Draft storage is not ready yet. Please wait a moment and try again.");
+  }
+  const base = load();
   const rest = base.drafts.filter((d) => d.id !== draft.id);
-  state = { ...state, drafts: [draft, ...rest] };
-  persistAndNotify();
+  const drafts = [draft, ...rest];
+  if (drafts.length > MAIL_DRAFT_MAX_COUNT) {
+    throw new Error(`This browser already has ${MAIL_DRAFT_MAX_COUNT} drafts. Delete one before saving another.`);
+  }
+  const next = { ...state, drafts };
+  const bytes = new TextEncoder().encode(JSON.stringify(next)).byteLength;
+  if (bytes > MAIL_DRAFT_MAX_BYTES) {
+    throw new Error("This draft is too large for reliable browser storage. Shorten it and try again.");
+  }
+  persist(next);
 }
 
 export function deleteDraft(id: string): void {
   const base = currentKey() ? load() : state;
-  state = { ...state, drafts: base.drafts.filter((d) => d.id !== id) };
-  persistAndNotify();
+  const next = { ...state, drafts: base.drafts.filter((d) => d.id !== id) };
+  persist(next);
+}
+
+/** A sent email must stay successful even when cleanup of its local draft
+ * fails. Explicit user-driven Discard uses deleteDraft() and reports failure;
+ * only post-send cleanup may use this best-effort variant. */
+export function deleteDraftBestEffort(id: string): void {
+  try {
+    deleteDraft(id);
+  } catch {
+    // Keep the persisted snapshot intact. The draft can be discarded later
+    // after browser storage is available again.
+  }
 }

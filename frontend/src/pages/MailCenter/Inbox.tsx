@@ -798,10 +798,12 @@ function DraftsList({
   drafts,
   legacyFound,
   onResume,
+  onDiscard,
 }: {
   drafts: MailDraft[];
   legacyFound: boolean;
   onResume: (d: MailDraft) => void;
+  onDiscard: (d: MailDraft) => void;
 }) {
   const legacyNotice = legacyFound ? (
     <div role="status" className="m-3 rounded-md border border-warning-text/30 bg-warning-bg px-3 py-2 text-[11px] leading-relaxed text-warning-text">
@@ -848,7 +850,7 @@ function DraftsList({
             </div>
           </button>
           <div className="flex shrink-0 items-center pr-2 opacity-0 transition group-hover:opacity-100">
-            <RowIconButton title="Discard draft" onClick={() => deleteDraft(d.id)}>
+            <RowIconButton title="Discard draft" onClick={() => onDiscard(d)}>
               <Trash2 className="h-4 w-4" />
             </RowIconButton>
           </div>
@@ -1661,6 +1663,14 @@ export function MailInbox() {
               onResume={(d) => {
                 setResumeDraft(d);
                 setComposeOpen(true);
+              }}
+              onDiscard={(d) => {
+                try {
+                  deleteDraft(d.id);
+                  toast.success("Draft discarded.");
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : "Draft could not be discarded. Please try again.");
+                }
               }}
             />
           ) : (

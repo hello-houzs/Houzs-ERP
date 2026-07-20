@@ -8,10 +8,13 @@ import {
   removeScmHandoff,
   SCM_HANDOFF_KEYS,
   SCM_HANDOFF_TTL_MS,
+  SCM_PAYMENT_RETRY_TTL_MS,
   writeScmHandoff,
 } from "./scmHandoffStorage";
 
 const physicalKey = (key: string): string => `houzs:scm-handoff:v1:${key}`;
+const durablePhysicalKey = (key: string, user: number, company: number, documentId: string): string =>
+  `${physicalKey(key)}:u${user}:c${company}:${encodeURIComponent(documentId)}`;
 
 beforeEach(() => {
   localStorage.clear();
@@ -45,6 +48,40 @@ describe("SCM handoff storage", () => {
       payload,
     });
     expect(readScmHandoff("doFromSoPicks")).toEqual(payload);
+  });
+
+  it("keeps payment retry intents in durable, physically scoped storage within idempotency retention", () => {
+    bindBrowserStorageIdentity(42);
+    const payload = { "SO-1": [{ idempotencyKey: "pay-1" }] };
+    expect(writeScmHandoff("soPaymentRetry", payload, "SO-1")).toBe(true);
+    expect(sessionStorage.getItem(physicalKey("soPaymentRetry"))).toBeNull();
+    expect(localStorage.getItem(durablePhysicalKey("soPaymentRetry", 42, 0, "SO-1"))).not.toBeNull();
+
+    vi.advanceTimersByTime(SCM_HANDOFF_TTL_MS + 1);
+    expect(readScmHandoff("soPaymentRetry", "SO-1")).toEqual(payload);
+    vi.advanceTimersByTime(SCM_PAYMENT_RETRY_TTL_MS - SCM_HANDOFF_TTL_MS);
+    expect(readScmHandoff("soPaymentRetry", "SO-1")).toBeNull();
+  });
+
+  it("does not let another identity read or delete a durable payment intent", () => {
+    bindBrowserStorageIdentity(1);
+    writeScmHandoff("soPaymentRetry", { payment: "owner-1" }, "SO-1");
+    bindBrowserStorageIdentity(2);
+    expect(readScmHandoff("soPaymentRetry", "SO-1")).toBeNull();
+    bindBrowserStorageIdentity(1);
+    expect(readScmHandoff("soPaymentRetry", "SO-1")).toEqual({ payment: "owner-1" });
+  });
+
+  it("clears only the current identity's durable payment intents", () => {
+    bindBrowserStorageIdentity(1);
+    writeScmHandoff("soPaymentRetry", { payment: "owner-1" }, "SO-1");
+    bindBrowserStorageIdentity(2);
+    writeScmHandoff("soPaymentRetry", { payment: "owner-2" }, "SO-2");
+    clearAllScmHandoffs();
+    bindBrowserStorageIdentity(1);
+    expect(readScmHandoff("soPaymentRetry", "SO-1")).toEqual({ payment: "owner-1" });
+    bindBrowserStorageIdentity(2);
+    expect(readScmHandoff("soPaymentRetry", "SO-2")).toBeNull();
   });
 
   it("fails closed while no browser storage identity is bound", () => {
@@ -129,7 +166,9 @@ describe("SCM handoff storage", () => {
 
   it("clears scoped and legacy handoffs while preserving unrelated session state", () => {
     bindBrowserStorageIdentity(1);
-    for (const key of SCM_HANDOFF_KEYS) writeScmHandoff(key, { key });
+    for (const key of SCM_HANDOFF_KEYS) {
+      writeScmHandoff(key, { key }, key.endsWith("PaymentRetry") ? "DOC-1" : undefined);
+    }
     sessionStorage.setItem("cnFromOrderPicks", JSON.stringify(["legacy-private-row"]));
     sessionStorage.setItem("unrelated", "keep");
 
@@ -138,6 +177,8 @@ describe("SCM handoff storage", () => {
     for (const key of SCM_HANDOFF_KEYS) {
       expect(sessionStorage.getItem(physicalKey(key))).toBeNull();
     }
+    expect(localStorage.getItem(durablePhysicalKey("soPaymentRetry", 1, 0, "DOC-1"))).toBeNull();
+    expect(localStorage.getItem(durablePhysicalKey("siPaymentRetry", 1, 0, "DOC-1"))).toBeNull();
     expect(sessionStorage.getItem("cnFromOrderPicks")).toBeNull();
     expect(sessionStorage.getItem("unrelated")).toBe("keep");
   });
