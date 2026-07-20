@@ -4,6 +4,7 @@ import { fairAllowedStages } from "../auth/salesAccess";
 import {
   useFairReport,
   useFairReportDetail,
+  fairReportErrorInfo,
   type FairStage,
   type FairFilters,
   type FairDims,
@@ -139,6 +140,9 @@ export function MobileFairReport({ onBack }: { onBack: () => void }) {
   const activeStage: FairStage = allowed.includes(stage) ? stage : (allowed[0] ?? "so");
   const q = useFairReport(activeStage, filters, allowed.includes(activeStage));
   const data = q.data;
+  // A 403 (not in the report's cohort) must not read as a transient "retry" —
+  // distinguish the permission denial from a load failure.
+  const errorInfo = q.isError ? fairReportErrorInfo(q.error) : null;
 
   const [opts, setOpts] = useState<OptionMaps>(EMPTY_OPTS);
   useEffect(() => {
@@ -196,10 +200,12 @@ export function MobileFairReport({ onBack }: { onBack: () => void }) {
             ))}
           </div>
         )}
-        {q.isError && (
+        {errorInfo && (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "var(--red-bg)", border: "1px solid #e6cccc", borderRadius: 12, padding: "11px 13px" }}>
-            <span style={{ fontSize: 12, color: "var(--red)", fontWeight: 600 }}>Couldn't load the Sales Report</span>
-            <button onClick={() => q.refetch()} style={{ border: "none", background: "transparent", color: "var(--red)", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Retry</button>
+            <span style={{ fontSize: 12, color: "var(--red)", fontWeight: 600 }}>{errorInfo.message}</span>
+            {!errorInfo.denied && (
+              <button onClick={() => q.refetch()} style={{ border: "none", background: "transparent", color: "var(--red)", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Retry</button>
+            )}
           </div>
         )}
 
