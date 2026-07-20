@@ -668,7 +668,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
       collectedBy:  d.collectedBy  || null,
       ...draftMethodFields(method, d),
     };
-    editPayment.mutate(body as { docNo: string; id: string } & Record<string, unknown>, {
+    editPayment.mutate(body, {
       onSuccess: () => removeDraft(d.uid),
       onError: (e) => {
         // eslint-disable-next-line no-console

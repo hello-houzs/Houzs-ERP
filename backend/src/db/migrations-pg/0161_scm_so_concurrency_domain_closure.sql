@@ -44,8 +44,9 @@ DECLARE
   v_row scm.mfg_sales_orders%ROWTYPE;
   v_saved_version integer;
   v_customer_id uuid;
-  v_columns text;
+  v_assignments text;
   v_sql text;
+  v_patched scm.mfg_sales_orders%ROWTYPE;
 BEGIN
   SELECT * INTO v_row
   FROM mfg_sales_orders
@@ -74,8 +75,19 @@ BEGIN
     RETURN;
   END IF;
 
-  SELECT string_agg(format('%I', a.attname), ', ' ORDER BY a.attnum)
-  INTO v_columns
+  -- Materialize the typed composite before entering dynamic SQL. Passing an
+  -- UPDATE target alias directly as jsonb_populate_record's polymorphic base
+  -- is not portable across supported PostgreSQL versions and can be resolved
+  -- as a scalar at runtime ("cannot call populate_composite on a scalar").
+  -- Starting from the locked row keeps omitted keys unchanged while preserving
+  -- explicit JSON null as an intentional clear.
+  v_patched := jsonb_populate_record(v_row, p_patch);
+
+  SELECT string_agg(
+    format('%1$I = ($1::scm.mfg_sales_orders).%1$I', a.attname),
+    ', ' ORDER BY a.attnum
+  )
+  INTO v_assignments
   FROM pg_attribute a
   WHERE a.attrelid = 'scm.mfg_sales_orders'::regclass
     AND a.attnum > 0
@@ -86,11 +98,11 @@ BEGIN
 
   v_sql := format(
     'UPDATE scm.mfg_sales_orders AS t '
-    'SET (%1$s) = (SELECT %1$s FROM jsonb_populate_record(t, $1)) '
+    'SET %1$s '
     'WHERE t.doc_no = $2 AND t.version = $3 RETURNING t.version',
-    v_columns
+    v_assignments
   );
-  EXECUTE v_sql INTO v_saved_version USING p_patch, p_doc_no, p_expected_version;
+  EXECUTE v_sql INTO v_saved_version USING v_patched, p_doc_no, p_expected_version;
   IF v_saved_version IS NULL THEN
     RETURN QUERY SELECT false, v_row.version, NULL::uuid, 'version'::text;
     RETURN;

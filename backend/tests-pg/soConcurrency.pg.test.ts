@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import postgres, { type Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'vitest';
 import { lockSoCommandLease, pgTransactionSupabase } from '../src/scm/lib/pg-supabase-transaction';
 import { recordSoAudit } from '../src/scm/lib/so-audit';
 import { snapshotSo } from '../src/scm/lib/so-revision';
@@ -128,6 +128,13 @@ async function callHeaderCas(
   });
 }
 
+async function dropFollowerFailureTrigger(): Promise<void> {
+  await admin.unsafe(`
+    DROP TRIGGER IF EXISTS fail_so_follower ON scm.mfg_sales_order_items;
+    DROP FUNCTION IF EXISTS scm.fail_so_follower();
+  `);
+}
+
 describePg('Sales Order PostgreSQL concurrency migration', () => {
   beforeAll(async () => {
     admin = postgres(url, { max: 4 });
@@ -137,6 +144,11 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
   afterAll(async () => {
     if (admin) await admin.end();
   });
+
+  // A failed assertion must never leave the deliberate failure trigger behind
+  // and turn every later integration test into a false negative.
+  beforeEach(dropFollowerFailureTrigger);
+  afterEach(dropFollowerFailureTrigger);
 
   test('SECURITY DEFINER function is callable only through its granted service role', async () => {
     await admin`INSERT INTO scm.mfg_sales_orders (doc_no, note) VALUES ('SO-PG-1', 'original')`;
@@ -188,10 +200,13 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
       FOR EACH ROW EXECUTE FUNCTION scm.fail_so_follower();
     `);
 
-    await expect(callHeaderCas(admin, 'must rollback', 1, true)).rejects.toThrow(/injected follower failure/);
-    const [saved] = await admin`SELECT note, version FROM scm.mfg_sales_orders WHERE doc_no = 'SO-PG-1'`;
-    expect(saved).toMatchObject({ note: 'before failure', version: 1 });
-    await admin`DROP TRIGGER fail_so_follower ON scm.mfg_sales_order_items`;
+    try {
+      await expect(callHeaderCas(admin, 'must rollback', 1, true)).rejects.toThrow(/injected follower failure/);
+      const [saved] = await admin`SELECT note, version FROM scm.mfg_sales_orders WHERE doc_no = 'SO-PG-1'`;
+      expect(saved).toMatchObject({ note: 'before failure', version: 1 });
+    } finally {
+      await dropFollowerFailureTrigger();
+    }
   });
 
   test('the command adapter rolls every line write back when a later statement fails', async () => {
