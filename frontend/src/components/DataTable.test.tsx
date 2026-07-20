@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { DataTable, type Column } from "./DataTable";
+import { downloadCSV } from "../lib/csv";
+
+vi.mock("../lib/csv", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/csv")>();
+  return { ...actual, downloadCSV: vi.fn() };
+});
 
 type Row = { id: number; name: string; status: string };
 
@@ -17,6 +23,7 @@ const columns: Column<Row>[] = [
 
 const originalMatchMedia = Object.getOwnPropertyDescriptor(window, "matchMedia");
 const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
 
 function setViewport(width: number) {
   let currentWidth = width;
@@ -57,6 +64,7 @@ afterEach(() => {
   if (originalMatchMedia) Object.defineProperty(window, "matchMedia", originalMatchMedia);
   else Reflect.deleteProperty(window, "matchMedia");
   if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+  if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
 });
 
 describe("DataTable responsive rendering", () => {
@@ -73,21 +81,36 @@ describe("DataTable responsive rendering", () => {
     expect(renderedRows).toBeLessThanOrEqual(60);
   });
 
-  it("keeps all mobile cards accessible while applying off-screen layout containment", () => {
+  it("keeps short mobile lists complete and preserves the Cards/Table representation toggle", () => {
     setViewport(375);
+    const onRowClick = vi.fn();
 
     const { container } = render(
-      <DataTable tableId="orders" rows={rows} columns={columns} getRowKey={(row) => row.id} />,
+      <DataTable
+        tableId="orders-short-mobile"
+        rows={rows.slice(0, 20)}
+        columns={columns}
+        getRowKey={(row) => row.id}
+        onRowClick={onRowClick}
+      />,
     );
 
     expect(container.querySelector("table")).toBeNull();
     const renderedCards = container.querySelectorAll<HTMLElement>("[data-mobile-card]");
-    expect(renderedCards).toHaveLength(rows.length);
+    expect(renderedCards).toHaveLength(20);
     expect(renderedCards[0]?.style.contentVisibility).toBe("auto");
+    expect(renderedCards[0]?.getAttribute("role")).toBe("button");
+    expect(renderedCards[0]?.tabIndex).toBe(0);
+    fireEvent.keyDown(renderedCards[0]!, { key: "Enter" });
+    expect(onRowClick).toHaveBeenLastCalledWith(rows[0]);
 
     fireEvent.click(screen.getByRole("button", { name: "Switch to table view" }));
     expect(container.querySelector("table")).not.toBeNull();
     expect(container.querySelectorAll("[data-mobile-card]")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch to card view" }));
+    expect(container.querySelector("table")).toBeNull();
+    expect(container.querySelectorAll("[data-mobile-card]")).toHaveLength(20);
   });
 
   it("switches the mounted representation at the sm breakpoint and cleans up its listener", () => {
@@ -99,7 +122,8 @@ describe("DataTable responsive rendering", () => {
     expect(container.querySelector("table")).not.toBeNull();
     act(() => viewport.resize(375));
     expect(container.querySelector("table")).toBeNull();
-    expect(container.querySelectorAll("[data-mobile-card]")).toHaveLength(rows.length);
+    expect(container.querySelectorAll("[data-mobile-card]").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll("[data-mobile-card]").length).toBeLessThanOrEqual(100);
     act(() => viewport.resize(1280));
     expect(container.querySelector("table")).not.toBeNull();
     expect(container.querySelectorAll("[data-mobile-card]")).toHaveLength(0);
@@ -107,6 +131,102 @@ describe("DataTable responsive rendering", () => {
     expect(viewport.listenerCount()).toBe(1);
     unmount();
     expect(viewport.listenerCount()).toBe(0);
+  });
+
+  it("keeps a variable-height 10,000-card mobile list bounded and reaches its tail", () => {
+    setViewport(375);
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      if (!this.hasAttribute("data-vcard")) return 0;
+      return Number(this.dataset.vindex) % 2 === 0 ? 80 : 140;
+    });
+    const largeRows: Row[] = Array.from({ length: 10_000 }, (_, index) => ({
+      id: index + 1,
+      name: `Order ${index + 1}`,
+      status: index % 2 ? "Open" : "Closed",
+    }));
+    const { container } = render(
+      <DataTable
+        tableId="orders-mobile-10k"
+        rows={largeRows}
+        columns={columns}
+        getRowKey={(row) => row.id}
+      />,
+    );
+
+    const list = container.querySelector<HTMLElement>("[data-mobile-virtual-list]")!;
+    const mountedCards = () => [...list.querySelectorAll<HTMLElement>("[data-vcard]")];
+    expect(list.getAttribute("role")).toBe("list");
+    expect(list.getAttribute("aria-label")).toBe(
+      "10000 loaded records. Only visible records are mounted; scroll to browse this loaded set.",
+    );
+    expect(mountedCards().length).toBeGreaterThan(0);
+    expect(mountedCards().length).toBeLessThanOrEqual(100);
+    expect(mountedCards()[0]?.getAttribute("role")).toBe("listitem");
+    expect(mountedCards()[0]?.getAttribute("aria-posinset")).toBe("1");
+    expect(mountedCards()[0]?.getAttribute("aria-setsize")).toBe("10000");
+    expect(mountedCards()[0]?.offsetHeight).toBe(80);
+    expect(mountedCards()[1]?.offsetHeight).toBe(140);
+    expect(screen.queryByText("Order 10000")).toBeNull();
+
+    let top = 0;
+    const virtualContentHeight = () => {
+      const children = [...list.children] as HTMLElement[];
+      return children.reduce((sum, child) => {
+        const height = child.hasAttribute("data-vcard")
+          ? child.offsetHeight
+          : Number.parseFloat(child.style.height || "0");
+        return sum + height;
+      }, 0) + Math.max(0, children.length - 1) * 8;
+    };
+    vi.spyOn(list, "getBoundingClientRect").mockImplementation(() => ({
+      top,
+      bottom: top + virtualContentHeight(),
+      left: 0,
+      right: 375,
+      width: 375,
+      height: virtualContentHeight(),
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    }));
+    const maxScrollTop = virtualContentHeight() - window.innerHeight;
+    expect(maxScrollTop).toBeGreaterThan(0);
+    top = -maxScrollTop;
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+      frames.splice(0).forEach((frame) => frame(0));
+    });
+
+    expect(screen.getByText("Order 10000")).toBeTruthy();
+    expect(screen.queryByText("Order 1")).toBeNull();
+    expect(list.lastElementChild?.hasAttribute("data-vcard")).toBe(true);
+    expect(mountedCards().length).toBeLessThanOrEqual(100);
+    expect(mountedCards().at(-1)?.getAttribute("aria-posinset")).toBe("10000");
+    expect(mountedCards().at(-1)?.getAttribute("aria-setsize")).toBe("10000");
+
+    const download = vi.mocked(downloadCSV);
+    download.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    expect(download).toHaveBeenCalledOnce();
+    const exportedCSV = download.mock.calls[0]?.[1] ?? "";
+    expect(exportedCSV.split("\r\n")).toHaveLength(largeRows.length + 1);
+    expect(exportedCSV).toContain("Order 1,Closed");
+    expect(exportedCSV).toContain("Order 10000,Open");
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch to table view" }));
+    expect(container.querySelector("table")).not.toBeNull();
+    expect(container.querySelector("[data-mobile-virtual-list]")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Switch to card view" }));
+    expect(container.querySelector("table")).toBeNull();
+    expect(container.querySelector("[data-mobile-virtual-list]")).not.toBeNull();
+    expect(container.querySelectorAll("[data-mobile-card]").length).toBeLessThanOrEqual(100);
   });
 
   it("keeps the DOM bounded and reaches the final row in a 10,000-row dataset", () => {

@@ -23,7 +23,7 @@ import { AndroidInstallGuide } from "../components/AndroidInstallGuide";
 // MODULE_CONFIGS / FORM_MEMBERS_EDIT are read synchronously by the routing +
 // form logic below, so it can't be deferred without splitting those out first.
 import { MobileModuleList, MODULE_CONFIGS, FORM_MEMBERS_EDIT } from "./MobileModuleList";
-import { resolveMobileRoute, type MobileRoute } from "./mobileRoute";
+import { mobileDestinationMatches, resolveMobileRoute, type MobileRoute } from "./mobileRoute";
 import type { SearchNav } from "./MobileSearch";
 import type { MobileScanPrefill } from "./MobileScan";
 import type { ConvertTarget } from "./MobileConvertWizard";
@@ -114,7 +114,9 @@ function destinationScreen(to: string, label: string): DestinationTarget {
   if (path === "/scm/delivery-planning") return { t: "delivery-planning" };
   if (path === "/team") {
     const tab = new URLSearchParams((to.split("?")[1] || "")).get("tab");
-    const teamKey = tab === "members" ? "members" : tab === "positions" ? "positions" : tab === "departments" ? "departments" : null;
+    // Positions is owner-managed through backend/tooling only. Keep it out of
+    // every mobile route, not merely out of the visible Profile row.
+    const teamKey = tab === "members" ? "members" : tab === "departments" ? "departments" : null;
     if (teamKey && MODULE_CONFIGS[teamKey]) return { t: "module", key: teamKey, title: label };
     return { t: "stub", title: label };
   }
@@ -359,7 +361,6 @@ export const PROFILE_ORG_ITEMS: MobileMenuItem[] = [
      (announcements.read = the desktop ADMIN list/composer permission). */
   { to: "/announcements", label: "Announcements", alwaysShow: true },
   { to: "/team?tab=members", label: "Members" },
-  { to: "/team?tab=positions", label: "Positions" },
   { to: "/team?tab=departments", label: "Departments" },
 ];
 
@@ -460,8 +461,10 @@ function MobileAppInner() {
   const walkNav = (t: NavTab) => { flatNav.push(t); (t.children ?? []).forEach(walkNav); };
   NAV_TABS.forEach(walkNav);
   const allowed = (to: string): boolean => {
-    const path = to.split("?")[0];
-    const matches = flatNav.filter((t) => t.to != null && t.to.split("?")[0] === path);
+    // Query-bearing destinations are separate pages with separate gates.
+    // Members must not lend its permission to Departments (or the backend-only
+    // Positions editor) merely because all three share the /team pathname.
+    const matches = flatNav.filter((t) => t.to != null && mobileDestinationMatches(to, t.to));
     return matches.length === 0 ? false : matches.some(navVisible);
   };
 
@@ -507,7 +510,9 @@ function MobileAppInner() {
      on the RIGHT screen or says so plainly — instead of silently rendering the
      Sales Orders list under, say, /scm/purchase-orders. */
   const initialRoute = resolveMobileRoute(
-    typeof window === "undefined" ? "/" : window.location.pathname,
+    typeof window === "undefined"
+      ? "/"
+      : `${window.location.pathname}${window.location.search}${window.location.hash}`,
     visibleDestinations,
     allKnownDestinations,
   );

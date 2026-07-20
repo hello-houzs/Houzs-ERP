@@ -1,8 +1,15 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MobileVirtualList } from "./MobileVirtualList";
 
-afterEach(() => vi.unstubAllGlobals());
+const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+});
 
 describe("MobileVirtualList scalability", () => {
   it("keeps the DOM bounded and reaches the final card in a variable-height 10,000-record list", () => {
@@ -12,14 +19,16 @@ describe("MobileVirtualList scalability", () => {
       frames.push(cb);
       return frames.length;
     });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const cancelAnimationFrame = vi.fn();
+    vi.stubGlobal("cancelAnimationFrame", cancelAnimationFrame);
+    const removeEventListener = vi.spyOn(window, "removeEventListener");
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
       const index = Number(this.dataset.vindex ?? 0);
       return index % 2 === 0 ? 80 : 140;
     });
     const items = Array.from({ length: 10_000 }, (_, index) => ({ id: index + 1 }));
 
-    const { container } = render(
+    const { container, unmount } = render(
       <MobileVirtualList
         items={items}
         getKey={(item) => item.id}
@@ -32,6 +41,14 @@ describe("MobileVirtualList scalability", () => {
     expect(mounted).toBeLessThanOrEqual(100);
 
     const list = container.querySelector<HTMLElement>("[data-mobile-virtual-list]")!;
+    expect(list.getAttribute("role")).toBe("list");
+    expect(list.getAttribute("aria-label")).toBe(
+      "10000 loaded items. Only visible items are mounted; scroll to browse this loaded set.",
+    );
+    const initialCards = [...container.querySelectorAll<HTMLElement>("[data-vcard]")];
+    expect(initialCards[0]?.getAttribute("role")).toBe("listitem");
+    expect(initialCards[0]?.getAttribute("aria-posinset")).toBe("1");
+    expect(initialCards[0]?.getAttribute("aria-setsize")).toBe("10000");
     let top = 0;
     vi.spyOn(list, "getBoundingClientRect").mockImplementation(() => ({
       top,
@@ -64,5 +81,17 @@ describe("MobileVirtualList scalability", () => {
     expect(screen.queryByText("Order 1")).toBeNull();
     expect(list.lastElementChild?.hasAttribute("data-vcard")).toBe(true);
     expect(container.querySelectorAll("[data-vcard]").length).toBeLessThanOrEqual(100);
+    const tailCards = [...container.querySelectorAll<HTMLElement>("[data-vcard]")];
+    expect(tailCards.at(-1)?.getAttribute("aria-posinset")).toBe("10000");
+    expect(tailCards.at(-1)?.getAttribute("aria-setsize")).toBe("10000");
+
+    // Leave a scheduled measurement pending so unmount must cancel it as
+    // well as detaching the capturing scroll and resize listeners.
+    act(() => window.dispatchEvent(new Event("scroll")));
+    expect(frames.length).toBeGreaterThan(0);
+    unmount();
+    expect(cancelAnimationFrame).toHaveBeenCalled();
+    expect(removeEventListener).toHaveBeenCalledWith("scroll", expect.any(Function), true);
+    expect(removeEventListener).toHaveBeenCalledWith("resize", expect.any(Function));
   });
 });

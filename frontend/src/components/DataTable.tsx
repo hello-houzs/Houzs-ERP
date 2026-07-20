@@ -33,6 +33,7 @@ import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useUdf, type UseUdfResult } from "../hooks/useUdf";
 import { downloadCSV, toCSV, type CSVColumn } from "../lib/csv";
 import { SearchScopeHint } from "./SearchScopeHint";
+import { MobileVirtualList } from "../mobile/MobileVirtualList";
 
 export interface Column<T> {
   key: string;
@@ -1771,10 +1772,14 @@ export function DataTable<T>({
             {emptyLabel}
           </div>
         )}
-        {!effectiveLoading &&
-          !error &&
-          sortedRows &&
-          sortedRows.map((row) => {
+        {!effectiveLoading && !error && sortedRows && sortedRows.length > 0 && (
+          <MobileVirtualList
+            items={sortedRows}
+            getKey={getRowKey}
+            estimateHeight={mobileColumns.estimateHeight}
+            gap={8}
+            ariaLabel={`${sortedRows.length} loaded records. Only visible records are mounted; scroll to browse this loaded set.`}
+            renderItem={(row) => {
               const customClass = getRowClassName?.(row);
               const {
                 primary: primaryCol,
@@ -1886,7 +1891,9 @@ export function DataTable<T>({
                 </div>
                 </div>
               );
-            })}
+            }}
+          />
+        )}
         </div>
       )}
 

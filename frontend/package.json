@@ -13,6 +13,10 @@
     "check:sw": "node scripts/check-service-worker.mjs",
     "check:test-focus": "node scripts/check-test-focus.mjs",
     "test:smoke-script": "node --test scripts/smoke-check.test.mjs",
+    "dev:perf-lab": "vite --config perf-lab/vite.config.ts",
+    "typecheck:perf-local": "tsc --noEmit -p perf-lab/tsconfig.json",
+    "test:perf-local": "playwright test --config perf-lab/playwright.config.ts",
+    "test:perf-local:list": "playwright test --config perf-lab/playwright.config.ts --list",
     "smoke": "node scripts/smoke-check.mjs",
     "deploy": "npm run build && wrangler pages deploy --commit-dirty=true"
   },
@@ -30,6 +34,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

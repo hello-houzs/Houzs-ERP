@@ -243,6 +243,12 @@ jobs:
       # flaky wall-clock or an external environment.
       - run: npm run check:sw
       - run: npm run test:smoke-script
+      # Non-skippable local Chromium proof for 10k list geometry/search state.
+      # This suite starts its own Vite lab and never depends on staging data,
+      # credentials, network timing, or optional environment variables.
+      - run: npm run typecheck:perf-local
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:perf-local
 
   e2e-contract:
     runs-on: ubuntu-latest

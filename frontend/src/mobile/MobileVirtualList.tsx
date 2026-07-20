@@ -15,6 +15,7 @@ export function MobileVirtualList<T>({
   threshold = 40,
   overscan = 8,
   gap = 11,
+  ariaLabel,
 }: {
   items: T[];
   renderItem: (item: T, index: number) => ReactNode;
@@ -23,6 +24,12 @@ export function MobileVirtualList<T>({
   threshold?: number;
   overscan?: number;
   gap?: number;
+  /**
+   * Accessible name for the loaded set. Say "loaded" when the caller may be
+   * rendering one server page so assistive technology is not promised a
+   * larger result set than this component can actually browse.
+   */
+  ariaLabel?: string;
 }) {
   const on = items.length > threshold;
   const ref = useRef<HTMLDivElement>(null);
@@ -118,12 +125,28 @@ export function MobileVirtualList<T>({
   const bottomHeight = (offsets[items.length] ?? 0) - (offsets[end] ?? 0);
 
   return (
-    <div ref={ref} data-mobile-virtual-list="" style={{ display: "flex", flexDirection: "column", gap }}>
+    <div
+      ref={ref}
+      data-mobile-virtual-list=""
+      role="list"
+      aria-label={
+        ariaLabel ??
+        `${items.length} loaded items. Only visible items are mounted; scroll to browse this loaded set.`
+      }
+      style={{ display: "flex", flexDirection: "column", gap }}
+    >
       {on && start > 0 && <div aria-hidden style={{ height: Math.max(0, topHeight - gap) }} />}
       {items.slice(start, end).map((item, indexWithinRange) => {
         const index = start + indexWithinRange;
         return (
-          <div data-vcard="" data-vindex={index} key={getKey(item, index)}>
+          <div
+            data-vcard=""
+            data-vindex={index}
+            role="listitem"
+            aria-setsize={items.length}
+            aria-posinset={index + 1}
+            key={getKey(item, index)}
+          >
             {renderItem(item, index)}
           </div>
         );
