@@ -69,13 +69,37 @@ function isDirectFetchCallee(node: ts.Node): boolean {
   return (ts.isIdentifier(node) && node.text === "fetch") || isFetchProperty(node);
 }
 
+function containsFetchToken(sourceText: string): boolean {
+  if (sourceText.includes("fetch")) return true;
+  if (!sourceText.includes("\\u")) return false;
+
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    true,
+    ts.LanguageVariant.JSX,
+    sourceText,
+  );
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    if (
+      (token === ts.SyntaxKind.Identifier || token === ts.SyntaxKind.StringLiteral)
+      && scanner.getTokenValue() === "fetch"
+    ) return true;
+  }
+  return false;
+}
+
 function inventory(path: string, srcRoot: string, sourceText?: string): {
   calls: FetchCall[];
   unsafeReferences: string[];
 } {
+  const text = sourceText ?? readFileSync(path, "utf8");
+  // Reading every source file keeps the inventory exhaustive, while avoiding
+  // expensive AST construction for files without a `fetch` identifier/string.
+  if (!containsFetchToken(text)) return { calls: [], unsafeReferences: [] };
+
   const source = ts.createSourceFile(
     path,
-    sourceText ?? readFileSync(path, "utf8"),
+    text,
     ts.ScriptTarget.Latest,
     true,
     path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
@@ -137,7 +161,7 @@ describe("request correlation transport inventory", () => {
 
     expect(calls).toEqual(EXPECTED_RAW_FETCH_CALLS);
     expect(result.flatMap((entry) => entry.unsafeReferences)).toEqual([]);
-  });
+  }, 15_000); // Deliberately parses the entire source tree; keep the larger budget local to this gate.
 
   test("the two non-API exemptions remain compile-time-constrained static assets", () => {
     const versionSource = readFileSync(resolve(process.cwd(), "src/hooks/useVersionCheck.ts"), "utf8");
@@ -156,6 +180,7 @@ describe("request correlation transport inventory", () => {
     "const raw = window['fetch']; raw('/api/private')",
     "fetch.bind(window)('/api/private')",
     "const { fetch: raw } = window; raw('/api/private')",
+    String.raw`const raw = f\u0065tch; raw('/api/private')`,
   ])("fetch aliases cannot bypass the gate: %s", (source) => {
     expect(inventory("alias-probe.ts", "", source).unsafeReferences).not.toEqual([]);
   });
