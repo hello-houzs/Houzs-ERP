@@ -531,58 +531,41 @@ app.get("/:id/page-access", requirePermission("users.read"), async (c) => {
 });
 
 /**
- * PATCH /api/positions/:id/page-access
- * Body: { entries: Array<{ page_key, level }> } — upsert on (position_id, page_key).
- * Levels are 4-level (none/view/edit/full).
+ * PATCH /api/positions/:id/page-access — DISABLED (2026-07-20).
+ *
+ * This used to upsert `position_page_access` rows, but `services/auth.ts` no
+ * longer reads that table for a positioned user: their `page_access` is resolved
+ * from `resolvePositionPolicy` (services/positionPolicy.ts) at session load (see
+ * hydrateAuthUser). Writing here changed nothing yet returned `{ ok: true }`, so
+ * the Team > Positions editor reported "Saved" for edits that never took effect.
+ * The editor is now read-only; this endpoint is short-circuited so it can never
+ * silently write the ignored table again.
+ *
+ * The route AND the `position_page_access` table are intentionally KEPT so the
+ * per-position matrix can be revived when permissions are reworked — restore the
+ * upsert body from git history once auth.ts reads the table again. Until then it
+ * answers honestly (409 + plain message) and does NOT write.
  */
 app.patch("/:id/page-access", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Invalid ID." }, 400);
 
-  const body = await c.req.json<{ entries: Array<{ page_key: string; level: string }> }>();
-  if (!body || !Array.isArray(body.entries) || body.entries.length === 0) {
-    return c.json({ error: "entries[] is required" }, 400);
-  }
-
-  const cleaned: Array<{ page_key: string; level: string }> = [];
-  for (const e of body.entries) {
-    if (!isValidPageKey(e.page_key)) {
-      return c.json({ error: `Unknown page_key: ${e.page_key}` }, 400);
-    }
-    if (!isValidPositionLevel(e.level)) {
-      return c.json({ error: `Invalid level: ${e.level}` }, 400);
-    }
-    cleaned.push({ page_key: e.page_key, level: e.level });
-  }
-
-  const db = getDb(c.env);
-  const posRow = await db
-    .select({ id: positions.id })
-    .from(positions)
-    .where(eq(positions.id, id))
-    .limit(1);
-  if (posRow.length === 0) return c.json({ error: "Position not found" }, 404);
-
-  for (const e of cleaned) {
-    await c.env.DB.prepare(
-      `INSERT INTO position_page_access (position_id, page_key, level, updated_at)
-       VALUES (?, ?, ?, datetime('now'))
-       ON CONFLICT(position_id, page_key) DO UPDATE SET
-         level = excluded.level, updated_at = excluded.updated_at`,
-    )
-      .bind(id, e.page_key, e.level)
-      .run();
-  }
-
+  // Record the blocked attempt (a stale client or a direct API call) WITHOUT
+  // touching the table, so the audit trail never claims an update happened.
   await audit(c, {
-    action: "position.page_access.update",
+    action: "position.page_access.update_blocked",
     entityType: "position",
     entityId: id,
-    summary: `Updated page access for position #${id} (${cleaned.length} page(s))`,
-    meta: { entries: cleaned },
+    summary: `Blocked a page-access edit for position #${id} — per-position page-access editing is disabled (access is governed by position defaults).`,
   });
 
-  return c.json({ ok: true, written: cleaned.length });
+  return c.json(
+    {
+      error:
+        "Editing page access per position is turned off. Page access is currently governed by position defaults and cannot be changed here.",
+    },
+    409,
+  );
 });
 
 export default app;

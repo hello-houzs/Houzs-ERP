@@ -137,9 +137,12 @@ export interface AuthUser {
   email_alias?: string | null;
   role_id: number;
   role_name: string;
-  /** Position = department×position org unit (mig 094). When set, page_access
-   *  is hydrated from the 4-level position_page_access matrix; when null, the
-   *  user falls back to the legacy role matrix during the transition. */
+  /** Position = department×position org unit (mig 094). When set, page_access is
+   *  resolved from resolvePositionPolicy (services/positionPolicy.ts) at session
+   *  load — the single page-access source for a positioned user; the old 4-level
+   *  position_page_access matrix is NO LONGER read for them (see hydrateAuthUser
+   *  below). When null, the user falls back to the legacy role matrix during the
+   *  transition. */
   position_id: number | null;
   position_name: string | null;
   status: string;
@@ -178,13 +181,14 @@ export interface AuthUser {
    */
   page_access: Record<string, AccessLevel>;
   /**
-   * True iff this user has AT LEAST ONE explicit `scm*` page-access row in
-   * the SAME matrix that hydrated `page_access` (position_page_access when
-   * the user has a position, else role_page_access). Drives the SAFE L2 SCM
-   * write-gate rollout: a user with NO explicit SCM config is NOT enforced
-   * by `scmAreaGuard` and falls back to the coarse `scm.access` umbrella
-   * (allow), so no current SCM user is locked out before the matrix is
-   * configured. Only users WITH explicit SCM rows get per-area enforcement.
+   * True iff this user's resolved page access explicitly configures an `scm*`
+   * area. For a positioned user this is `policy.scmConfigured` from
+   * resolvePositionPolicy (services/positionPolicy.ts); for a positionless user
+   * it means AT LEAST ONE explicit `scm*` row in role_page_access. Drives the
+   * SAFE L2 SCM write-gate rollout: a user with NO explicit SCM config is NOT
+   * enforced by `scmAreaGuard` and falls back to the coarse `scm.access`
+   * umbrella (allow), so no current SCM user is locked out before the matrix is
+   * configured. Only users WITH explicit SCM config get per-area enforcement.
    * Owner (`*`) bypasses the guard entirely, so this stays false for them.
    */
   scm_l2_configured: boolean;
