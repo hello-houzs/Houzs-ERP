@@ -27,14 +27,14 @@ This file is the interruption-safe continuation record. The completion ledger co
 | #912 | `fix/idempotency-phase2-constraints` / `ba91fca7` | Idempotency phase 2 constraints | GitHub CI green. Stacked on #911; never merge/deploy before phase 1 soak. |
 | #913 | `hardening/scale-performance-harness` / `25487ab2` | Deterministic scale/performance harness | GitHub CI green. Full backend run reached 1,328 passing assertions before a Vitest worker transport timeout; isolated scope suite passed 7/7. |
 | #914 | `fix/migration-checksum-gate` / `ce9a09a5` | Migration checksum/drift gate | GitHub CI green. Await Claude Code review and deployment-runbook verification. |
-| #917 | `docs/p0-route-matrices` / `9ac0bbf1` | 929-row executable route-capability inventory and CI/prod/staging drift gates | Independent review P0=0/P1=0. GitHub checks pending; duplicate impersonation route is pinned until D3 removes it. |
-| #918 | `fix/session-revocation-consistency` / `042eb40f` | Authoritative next-request session/authz validation and atomic collision-safe mail-alias transition | Rebased onto `cdf2136a`; independent review P0=0/P1=0; 16/16 focused tests and typecheck pass. GitHub checks and staging auth latency evidence pending. |
+| #917 | `docs/p0-route-matrices` / `ffe6df46` | 929-row executable route-capability inventory and CI/prod/staging drift gates | Rebased onto `c0e8d44d`; independent review P0=0/P1=0; all GitHub backend/frontend checks green. Duplicate impersonation route is pinned until D3 removes it. Await Claude Code review. |
+| #918 | `fix/session-revocation-consistency` / `6efc20af` | Authoritative next-request session/authz validation and atomic collision-safe mail-alias transition | Rebased onto `c0e8d44d`; independent review P0=0/P1=0; 16/16 focused tests, typecheck and all GitHub backend/frontend checks pass. Staging auth latency evidence + Claude Code review pending. |
 
 ## Local branches not yet publishable
 
 | Worktree | Branch / current head | Verified work | Blocking item / exact continuation |
 |---|---|---|---|
-| `C:\Users\User\Desktop\hz-d3-control-plane` | `fix/control-plane-privilege-boundary` / `28229982` before active fix | Neutral preview baseline, self-role constraints, last-wildcard concurrency protection, session bust; 42/42 plus 13/13 tests | Fix hard-delete error+partial-disable behavior. Also consolidate duplicate `POST /:id/impersonate`: the earlier owner-only handler lacks `IMPERSONATION_ENABLED` and can shadow the intended staging-only handler. Rebase after session branch if overlapping `users.ts`. |
+| `C:\Users\User\Desktop\hz-d3-control-plane` | `fix/control-plane-privilege-boundary` / `d5285efe` | Rebased onto `c0e8d44d`; neutral preview/self-role/last-wildcard controls plus atomic PG/D1 hard delete and one staging+Owner-only impersonation route; focused tests 33/33 and typecheck pass | Independent final review is active. If P0/P1=0, push and open Draft PR; then regenerate #917 after the duplicate-route allowlist is removed during merge coordination. |
 | `C:\Users\User\Desktop\hz-so-cas-mandatory` | `fix/so-cas-mandatory` / `92167619` | Five-minute server lease, header CAS, core line mutation lease, D1/PG support; backend 13/13, frontend 4/4, typechecks and build pass | Independent review found P0=0/P1=6. Full route list, required fixes and acceptance tests: [`reviews/SO-CAS-COVERAGE-REVIEW.md`](reviews/SO-CAS-COVERAGE-REVIEW.md). Do not publish until a new review reports P1=0. |
 
 ## Database ordering and rollout
