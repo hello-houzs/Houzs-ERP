@@ -17,6 +17,10 @@ type SoRow = {
   sales_location: string | null; warehouse_name: string | null;
   customer_state: string | null; ref: string | null; po_doc_no: string | null;
   customer_so_no: string | null;
+  /* Branding — header `branding`, falling back to `first_item_branding` for
+     mixed / bedframe-only SOs. Already in the list payload (backend
+     mfg-sales-orders.ts select); drives the card brand pill (desktop parity). */
+  branding: string | null; first_item_branding: string | null;
   processing_date: string | null; customer_delivery_date: string | null; internal_expected_dd: string | null;
   so_date: string | null; created_at: string | null;
   local_total_centi: number | null; total_revenue_centi: number | null; paid_total_centi: number | null;
@@ -37,6 +41,20 @@ const balance = (r: SoRow) => r.balance_centi_live ?? r.balance_centi ?? (total(
 const isCancelled = (r: SoRow) => (r.status ?? "").toLowerCase() === "cancelled";
 const isDraft = (r: SoRow) => (r.status ?? "").toLowerCase() === "draft";
 const soDate = (r: SoRow) => r.so_date ?? r.created_at ?? null;
+
+/* Brand + tone — copied verbatim from the desktop list (MfgSalesOrdersListV2:
+   brandOf/brandTone) so both surfaces resolve the same tone from the same
+   payload. 2990/SOFA = success, BEDFRAME = accent, AKEMI/blank = neutral, any
+   other brand = warning. Mirrored, not paraphrased. */
+const brandOf = (r: SoRow): string => r.branding || r.first_item_branding || "—";
+const brandTone = (b: string): "success" | "neutral" | "warning" | "accent" => {
+  const s = (b || "").toUpperCase();
+  if (s.includes("2990") || s.includes("SOFA")) return "success";
+  if (s.includes("BEDFRAME")) return "accent";
+  if (s.includes("AKEMI")) return "neutral";
+  if (s === "—" || !s) return "neutral";
+  return "warning";
+};
 
 /* ── Draft-created notifier — localStorage ack set ─────────────────────────
    Owner 2026-07-04: "after a scan creates a draft, next time I open the app tell
@@ -503,6 +521,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
                 renderItem={(r) => {
               const cancelled = isCancelled(r);
               const warehouse = resolveSoLocation(r).label;
+              const brand = brandOf(r);
               return (
                 /* Owner-locked SO card (prototype `soRowCard`):
                    L1  {customer name}                          ·  {status badge}
@@ -516,12 +535,14 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
                     <span style={{ minWidth: 0, fontSize: 14, fontWeight: 800, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.debtor_name || "—"}</span>
                     <StatusPill status={r.status} />
                   </div>
-                  {/* Line 2 — doc_no · customer_so_no on their OWN full-width row
-                      (owner: the SO number + reference were squeezed to "SO-260…
-                      · HC 1…" by the warehouse sharing the line). doc_no stays
-                      whole (flex:none); only the ref ellipsises if truly long. */}
+                  {/* Line 2 — doc_no · brand pill · customer_so_no on their OWN
+                      full-width row (owner: the SO number + reference were
+                      squeezed to "SO-260… · HC 1…" by the warehouse sharing the
+                      line). doc_no + brand pill stay whole (flex:none); only the
+                      ref ellipsises if truly long, so the pill never crams it. */}
                   <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, marginTop: 5, fontSize: 11.5, color: "var(--mut)" }}>
                     <span className="money" style={{ fontWeight: 700, color: "var(--brand-d)", flex: "none" }}>{r.doc_no}</span>
+                    {brand !== "—" && <BrandPill brand={brand} />}
                     {r.customer_so_no && <><span style={{ opacity: .4, flex: "none" }}>·</span><span className="money" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.customer_so_no}</span></>}
                   </div>
                   {/* Line 2b — warehouse on its own line so it never crowds the ids */}
@@ -662,17 +683,36 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
   );
 }
 
-/* status → spec badge tone: DRAFT=b-grey · SUBMITTED=b-brand ·
-   CONFIRMED=b-green · CANCELLED=b-red. Any other live status reads as b-brand. */
+/* status → spec badge tone: DRAFT=b-amber · SUBMITTED=b-brand ·
+   CONFIRMED=b-green · CANCELLED=b-red. Any other live status reads as b-brand.
+   Draft is the amber "pending" pill (+ hairline border), identical to the detail
+   StatusPill (MobileSODetail) and the desktop warning tone — it used to be grey,
+   which read as an ordinary neutral state rather than "not confirmed yet". */
 function StatusPill({ status }: { status: string | null }) {
   const s = (status ?? "").toUpperCase();
   const cls =
-    s === "DRAFT" ? "b-grey" :
+    s === "DRAFT" ? "b-amber" :
     s === "CANCELLED" ? "b-red" :
     s === "CONFIRMED" ? "b-green" :
     "b-brand";
   const label = status ? status.charAt(0).toUpperCase() + status.slice(1).toLowerCase() : "—";
-  return <span className={`badge ${cls}`} style={{ flex: "none" }}>{label}</span>;
+  return <span className={`badge ${cls}`} style={{ flex: "none", ...(s === "DRAFT" ? { border: "1px solid #e0cf9e" } : null) }}>{label}</span>;
+}
+
+/* Brand pill — desktop list parity (brandOf/brandTone), rendered in the card's
+   OWN .badge family so it matches StatusPill exactly (same 9px uppercase pill,
+   same radius/tokens — no new colour, shape, or size). Tone → existing badge
+   class: 2990/SOFA green, AKEMI/blank grey, everything else (incl. bedframe)
+   the amber "pending"-family pill; the brand TEXT carries the identity, the
+   colour is the secondary cue. Sits inline on the doc_no row: flex:none so it
+   never shrinks, and a maxWidth+ellipsis so a long brand truncates itself
+   instead of crowding the customer ref beside it. */
+function BrandPill({ brand }: { brand: string }) {
+  const tone = brandTone(brand);
+  const cls = tone === "success" ? "b-green" : tone === "neutral" ? "b-grey" : "b-amber";
+  return (
+    <span className={`badge ${cls}`} style={{ flex: "none", maxWidth: 96, overflow: "hidden", textOverflow: "ellipsis" }}>{brand}</span>
+  );
 }
 
 /* Stock + Delivery-Planning chips (prototype `soFulfilChips`). Rendered ONLY
