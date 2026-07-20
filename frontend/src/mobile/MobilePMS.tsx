@@ -1643,6 +1643,19 @@ function TaskRow({
     (badge === userRole ||
       (badge === "DRIVER" && (userRole === "HELPER" || userRole === "STOREKEEPER")));
   const canAttach = canTick && (!tickOnly || roleMatchesUser);
+  // Owner 2026-07-17: sales staff may DELETE files only on their own four
+  // deliverables (the SALES PIC-badged Setup Image / Event Complete Image /
+  // Defect List / Filled Floorplan). Every other row is add-only for them —
+  // no × on the chips. Directors/mgt/admin keep full remove everywhere.
+  const SALES_REMOVABLE = /^(setup image|event complete image|defect list|filled floor\s*plan)/i;
+  const _isSalesStaffUser =
+    (/sales/i.test((user?.department_name ?? "").trim()) || /^sales/i.test((user?.position_name ?? "").trim())) &&
+    !/\b(Super Admin|Sales Director|Finance Manager)\b/i.test((user?.position_name ?? "").trim()) &&
+    !user?.permissions?.includes("*");
+  const canRemoveFile =
+    canAttach &&
+    (!_isSalesStaffUser ||
+      (badge === "SALES PIC" && SALES_REMOVABLE.test((it.title || "").trim())));
 
   const cycle = async () => {
     if (!canRowTick || busy) return;
@@ -1741,7 +1754,7 @@ function TaskRow({
             <button
               type="button"
               className="tinybtn"
-              style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, maxWidth: 190, ...(canAttach ? { borderTopRightRadius: 0, borderBottomRightRadius: 0, borderRight: "none" } : null) }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, maxWidth: 190, ...(canRemoveFile ? { borderTopRightRadius: 0, borderBottomRightRadius: 0, borderRight: "none" } : null) }}
               onClick={() => setViewIdx(i)}
               title={a.file_name ?? undefined}
             >
@@ -1752,7 +1765,7 @@ function TaskRow({
               )}
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.file_name || "File"}</span>
             </button>
-            {canAttach && (
+            {canRemoveFile && (
               <button
                 type="button"
                 className="tinybtn"
