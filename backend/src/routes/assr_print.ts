@@ -187,12 +187,16 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
   const otherAttachments = attachments.filter(
     (a: any) => !(a.content_type || "").startsWith("image/")
   );
-  // Customer print only shows attachments flagged visible_to_customer.
-  // Supplier print shows everything that isn't customer-marked-private.
-  // Office sees the lot.
+  // Customer print hides only attachments staff EXPLICITLY marked
+  // internal (visible_to_customer = 0). The column's D1-era default was
+  // 1 (show), but the Postgres cut-over dropped that default so every
+  // upload since lands as NULL — treating NULL as hidden silently
+  // stripped all photos from the customer copy. NULL/undefined now
+  // means "not hidden" → visible, matching the original intent.
+  // Supplier print shows everything; office sees the lot.
   const showImage = (a: any): boolean => {
     if (isOffice) return true;
-    if (isCustomer) return a.visible_to_customer === 1 || a.visible_to_customer === true;
+    if (isCustomer) return a.visible_to_customer !== 0 && a.visible_to_customer !== false;
     return true; // supplier
   };
   const inlinedImages: Array<{ category: string; file_name: string | null; data_url: string }> = [];
@@ -693,9 +697,29 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
           <span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span>
         </div>`);
       }
-      const photos = inlinedImages.slice(0, 5).map((a, i) => `
-        <div class="ph"><img src="${a.data_url}" alt="${esc(a.file_name || "")}" /><span class="tag">IMG_${String(i + 1).padStart(2, "0")}</span></div>`);
-      photos.push(`<div class="add">＋ Add</div>`);
+      // Split the case photos into the two panels ops asked for on the
+      // customer copy: the reported defect ("Service Issue") vs the
+      // post-return quality shots ("QC Approved"). Categories mirror the
+      // case-page grouping. Completion / sign-off / delivery images
+      // belong to the sign-off block, not the reference grids, so they
+      // are excluded from both; anything else (incl. uncategorised
+      // legacy photos) falls under Service Issue so none is dropped.
+      const qcCats = new Set(["inspection_report", "receipt_evidence"]);
+      const skipCats = new Set(["completion", "delivery_pod", "sign_off", "signature"]);
+      const qcPhotos = inlinedImages.filter((a) => qcCats.has(a.category));
+      const issuePhotos = inlinedImages.filter(
+        (a) => !qcCats.has(a.category) && !skipCats.has(a.category)
+      );
+      const photoCells = (
+        imgs: Array<{ category: string; file_name: string | null; data_url: string }>,
+        tag: string
+      ): string => {
+        const cells = imgs.slice(0, 6).map((a, i) =>
+          `<div class="ph"><img src="${a.data_url}" alt="${esc(a.file_name || "")}" /><span class="tag">${tag}_${String(i + 1).padStart(2, "0")}</span></div>`
+        );
+        if (cells.length === 0) cells.push(`<div class="add">＋ Add</div>`);
+        return cells.join("");
+      };
       return `
     <!-- meta grid -->
     <div class="mgrid cols-6 rule-top">
@@ -728,8 +752,12 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     ${officeItems.join("")}
 
     <!-- service issue pictures -->
-    <div class="bar">Service Issue &nbsp;<span class="note">(reference pictures)</span></div>
-    <div class="pgrid">${photos.join("")}</div>
+    <div class="bar">Service Issue &nbsp;<span class="note">(reported defect)</span></div>
+    <div class="pgrid">${photoCells(issuePhotos, "ISS")}</div>
+
+    <!-- qc approved pictures -->
+    <div class="bar">QC Approved &nbsp;<span class="note">(quality inspection after service)</span></div>
+    <div class="pgrid">${photoCells(qcPhotos, "QC")}</div>
 
     <!-- sign-off -->
     <div class="bar">Acknowledgement &amp; Sign-off</div>

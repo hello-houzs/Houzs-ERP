@@ -1061,9 +1061,13 @@ export async function saveAttachment(
   category: string,
   uploadedBy: number | null
 ): Promise<number> {
+  // Set visible_to_customer explicitly so it never lands NULL: the
+  // Postgres cut-over dropped the D1 `DEFAULT 1`, and a NULL flag is
+  // treated as hidden on the customer print + portal. Staff still flip
+  // it to 0 to hide a specific photo.
   const r = await env.DB.prepare(
-    `INSERT INTO assr_attachments (assr_id, r2_key, file_name, content_type, category, uploaded_by)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO assr_attachments (assr_id, r2_key, file_name, content_type, category, uploaded_by, visible_to_customer)
+     VALUES (?, ?, ?, ?, ?, ?, 1)`
   )
     .bind(assrId, r2Key, fileName, contentType, category, uploadedBy)
     .run();
