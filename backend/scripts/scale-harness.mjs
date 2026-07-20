@@ -3,7 +3,17 @@
 import Database from "better-sqlite3";
 import postgres from "postgres";
 import { writeFile } from "node:fs/promises";
-import { assertPgTarget } from "./scale-target-guard.mjs";
+import {
+  assertDisposableCatalog,
+  assertPgTarget,
+  readCatalogSnapshot,
+} from "./scale-target-guard.mjs";
+import {
+  PG_QUERY_SHAPES,
+  PG_REAL_SCHEMA_DDL,
+  REAL_SCHEMA_CONTRACT_VERSION,
+  pgSeedSql,
+} from "./scale-pg-real-schema.mjs";
 
 const args = new Map(
   process.argv.slice(2).map((arg) => {
@@ -255,58 +265,108 @@ function sqliteHarness() {
 async function postgresHarness() {
   const url = process.env.PERF_DATABASE_URL;
   if (!url) throw new Error("PERF_DATABASE_URL is required for --engine=pg/both");
-  const local = assertPgTarget(url);
-  const sql = postgres(url, { ssl: local ? false : "require", max: 1, prepare: false });
-  await sql.unsafe("BEGIN");
+  assertPgTarget(url);
+  const sql = postgres(url, { ssl: false, max: 1, prepare: false, connect_timeout: 10 });
+  let transactionOpen = false;
   try {
-    await sql.unsafe(`
-      CREATE TEMP TABLE perf_users (id bigint PRIMARY KEY, company_id bigint NOT NULL, name text NOT NULL, email text NOT NULL, status text NOT NULL) ON COMMIT DROP;
-      CREATE TEMP TABLE perf_skus (id bigint PRIMARY KEY, company_id bigint NOT NULL, code text NOT NULL, name text NOT NULL, status text NOT NULL) ON COMMIT DROP;
-      CREATE TEMP TABLE perf_orders (id bigint PRIMARY KEY, company_id bigint NOT NULL, doc_no text NOT NULL, doc_date date NOT NULL, debtor_name text NOT NULL, status text NOT NULL, updated_at timestamptz NOT NULL) ON COMMIT DROP;
-      CREATE TEMP TABLE perf_order_lines (id bigint PRIMARY KEY, company_id bigint NOT NULL, doc_no text NOT NULL, item_code text NOT NULL, qty integer NOT NULL) ON COMMIT DROP;
-      CREATE UNIQUE INDEX perf_orders_doc_no ON perf_orders(company_id, doc_no);
-      CREATE INDEX perf_orders_list ON perf_orders(company_id, doc_date DESC, doc_no DESC);
-      CREATE INDEX perf_orders_prefix ON perf_orders(company_id, doc_no text_pattern_ops);
-      CREATE INDEX perf_order_lines_doc ON perf_order_lines(company_id, doc_no);
-      CREATE INDEX perf_users_name ON perf_users(company_id, lower(name) text_pattern_ops);
-      CREATE INDEX perf_skus_code ON perf_skus(company_id, lower(code) text_pattern_ops);
-      INSERT INTO perf_users SELECT ((company_id - 1) * ${config.users}) + g, company_id, 'User ' || lpad(g::text, 5, '0'), 'user' || g || '@c' || company_id || '.perf.invalid', 'active' FROM generate_series(1, 2) company_id CROSS JOIN generate_series(1, ${config.users}) g;
-      INSERT INTO perf_skus SELECT ((company_id - 1) * ${config.skus}) + g, company_id, 'SKU-' || lpad(g::text, 5, '0'), 'Product ' || g, 'ACTIVE' FROM generate_series(1, 2) company_id CROSS JOIN generate_series(1, ${config.skus}) g;
-      INSERT INTO perf_orders SELECT ((company_id - 1) * ${config.orders}) + g, company_id, 'SO-2607-' || lpad(g::text, 6, '0'), DATE '2024-01-01' + (g % 730)::integer, 'Customer ' || (g % 20000), (ARRAY['DRAFT','CONFIRMED','IN_PRODUCTION','DELIVERED'])[(1 + (g % 4))::integer], now() - (g % 730) * interval '1 day' FROM generate_series(1, 2) company_id CROSS JOIN generate_series(1, ${config.orders}) g;
-      INSERT INTO perf_order_lines SELECT ((company_id - 1) * ${config.lines}) + g, company_id, 'SO-2607-' || lpad((1 + ((g - 1) % ${config.orders}))::text, 6, '0'), 'SKU-' || lpad((1 + (g % ${config.skus}))::text, 5, '0'), 1 + (g % 5) FROM generate_series(1, 2) company_id CROSS JOIN generate_series(1, ${config.lines}) g;
-      ANALYZE perf_users; ANALYZE perf_skus; ANALYZE perf_orders; ANALYZE perf_order_lines;
-    `);
-    const plans = {};
-    plans.first_page = await sql.unsafe("EXPLAIN (FORMAT TEXT) SELECT id, doc_no FROM perf_orders WHERE company_id = 1 ORDER BY doc_date DESC, doc_no DESC LIMIT 50");
-    plans.detail_lines = await sql.unsafe("EXPLAIN (FORMAT TEXT) SELECT id FROM perf_order_lines WHERE company_id = 2 AND doc_no = 'SO-2607-000001'");
-    const first = await sql`SELECT id, company_id, doc_no FROM perf_orders WHERE company_id = 1 ORDER BY doc_date DESC, doc_no DESC LIMIT 50`;
-    const second = await sql`SELECT id, company_id, doc_no FROM perf_orders WHERE company_id = 1 ORDER BY doc_date DESC, doc_no DESC LIMIT 50 OFFSET 50`;
-    const narrow = await sql`SELECT id, company_id, doc_no FROM perf_orders WHERE company_id = 1 AND doc_no LIKE 'SO-2607-000001%' ORDER BY doc_date DESC, doc_no DESC LIMIT 6`;
+    // URL checks are not sufficient: a production tunnel can still appear as
+    // localhost. Refuse any migrated/live-looking catalogue before BEGIN/DDL.
+    assertDisposableCatalog(await readCatalogSnapshot(sql));
+    await sql.unsafe("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    transactionOpen = true;
+    await sql.unsafe("SET LOCAL lock_timeout = '5s'");
+    await sql.unsafe("SET LOCAL statement_timeout = '15min'");
+    await sql.unsafe("SET LOCAL idle_in_transaction_session_timeout = '20min'");
+    await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext('houzs-real-schema-scale-v1'))");
+    await sql.unsafe(PG_REAL_SCHEMA_DDL);
+    await sql.unsafe(pgSeedSql(config));
+
+    const run = (name, params) => sql.unsafe(PG_QUERY_SHAPES[name], params);
+    const first = await run("so_list_page", [1, PAGE_SIZE, 0]);
+    const second = await run("so_list_page", [1, PAGE_SIZE, PAGE_SIZE]);
+    const narrow = await run("so_search_page", [1, "%C1-SO-2607-000001%", 6]);
     validateRows("correctness:first-page", first, Math.min(PAGE_SIZE, config.orders), validateTenant(1));
     validateRows("correctness:second-page", second, Math.min(PAGE_SIZE, Math.max(0, config.orders - PAGE_SIZE)), validateTenant(1));
     validateRows("correctness:narrow-prefix", narrow, 1, (rows) => {
       validateTenant(1)(rows);
-      if (rows[0].doc_no !== "SO-2607-000001") throw new Error("narrow prefix returned the wrong order");
+      if (rows[0].doc_no !== "C1-SO-2607-000001") throw new Error("narrow search returned the wrong order");
     });
     validatePagination(first, second);
+
+    const counts = await sql.unsafe(`
+      SELECT company_id,
+             (SELECT count(*) FROM scm.mfg_sales_orders so2 WHERE so2.company_id = c.company_id)::integer AS orders,
+             (SELECT count(*) FROM scm.mfg_sales_order_items li WHERE li.company_id = c.company_id)::integer AS lines,
+             (SELECT count(*) FROM scm.mfg_products p WHERE p.company_id = c.company_id)::integer AS skus,
+             (SELECT count(*) FROM public.user_companies uc WHERE uc.company_id = c.company_id)::integer AS users
+        FROM (VALUES (1::bigint), (2::bigint)) c(company_id)
+       ORDER BY company_id
+    `);
+    for (const row of counts) {
+      if (
+        Number(row.orders) !== config.orders || Number(row.lines) !== config.lines ||
+        Number(row.skus) !== config.skus || Number(row.users) !== config.users
+      ) {
+        throw new Error(`fixture cardinality mismatch for tenant ${row.company_id}`);
+      }
+    }
+    const paid = await sql.unsafe(`
+      SELECT company_id, doc_no, local_total_centi, paid_total_centi, balance_centi_live
+        FROM scm.mfg_sales_orders_with_payment_totals
+       WHERE doc_no IN ('C1-SO-2607-000004', 'C2-SO-2607-000004')
+       ORDER BY company_id
+    `);
+    validateRows("correctness:payment-view", paid, 2, (rows) => {
+      if (rows.some((r) => Number(r.local_total_centi) !== 10_000 || Number(r.paid_total_centi) !== 1_000 || Number(r.balance_centi_live) !== 9_000)) {
+        throw new Error("payment totals view produced incorrect values");
+      }
+    });
+
     const correctness = {
       first_page_rows: first.length,
       second_page_rows: second.length,
       no_adjacent_duplicates: true,
-      prefix_narrowing: true,
+      search_narrowing: true,
+      exact_per_tenant_cardinality: true,
+      payment_view_totals: true,
+      tenant_scope: true,
     };
+
+    const expectedDetailRows = Math.floor((config.lines - 1) / config.orders) + 1;
+    const expectedSummaryRows = Math.min(500, config.orders - Math.floor(config.orders / 5));
     const cases = [
-      ["orders:first-page", () => sql`SELECT id, company_id, doc_no, doc_date, debtor_name, status FROM perf_orders WHERE company_id = 1 ORDER BY doc_date DESC, doc_no DESC LIMIT 50`, Math.min(PAGE_SIZE, config.orders)],
-      ["orders:deep-offset-page", () => sql`SELECT id, company_id, doc_no, doc_date, debtor_name, status FROM perf_orders WHERE company_id = 1 ORDER BY doc_date DESC, doc_no DESC LIMIT 50 OFFSET ${DEEP_OFFSET}`, Math.min(PAGE_SIZE, config.orders - DEEP_OFFSET)],
-      ["orders:one-char-prefix", () => sql`SELECT id, company_id, doc_no FROM perf_orders WHERE company_id = 1 AND doc_no LIKE 'S%' ORDER BY doc_date DESC, doc_no DESC LIMIT 6`, Math.min(6, config.orders)],
-      ["orders:detail-lines", () => sql`SELECT id, company_id, item_code, qty FROM perf_order_lines WHERE company_id = 1 AND doc_no = 'SO-2607-000001' ORDER BY id`, Math.floor((config.lines - 1) / config.orders) + 1],
-      ["users:typeahead", () => sql`SELECT id, company_id, name, email FROM perf_users WHERE company_id = 1 AND lower(name) LIKE 'user 0%' ORDER BY name LIMIT 20`, Math.min(20, config.users, 9_999)],
-      ["skus:typeahead", () => sql`SELECT id, company_id, code, name FROM perf_skus WHERE company_id = 1 AND lower(code) LIKE 'sku-0%' ORDER BY code LIMIT 20`, Math.min(20, config.skus, 9_999)],
+      ["so:summary", () => run("so_summary", [1]), expectedSummaryRows, validateTenant(1)],
+      ["so:list-first-page", () => run("so_list_page", [1, PAGE_SIZE, 0]), Math.min(PAGE_SIZE, config.orders), validateTenant(1)],
+      ["so:list-deep-offset", () => run("so_list_page", [1, PAGE_SIZE, DEEP_OFFSET]), Math.min(PAGE_SIZE, config.orders - DEEP_OFFSET), validateTenant(1)],
+      ["so:one-char-search", () => run("so_search_page", [1, "%C%", 6]), Math.min(6, config.orders), validateTenant(1)],
+      ["so:money-page", () => run("so_money_page", [1, 0]), Math.min(1000, config.orders), validateTenant(1)],
+      ["so:confirmed-count", () => run("so_status_count", [1, "CONFIRMED"]), 1, (rows) => {
+        const expected = Math.floor((config.orders + 4) / 5);
+        if (Number(rows[0]?.count) !== expected) throw new Error(`confirmed count mismatch; expected ${expected}`);
+      }],
+      ["so:detail-lines", () => run("so_detail_lines", [1, "C1-SO-2607-000001"]), expectedDetailRows, validateTenant(1)],
+      ["products:first-page", () => run("products_page", [1, 0]), Math.min(1000, config.skus), validateTenant(1)],
+      ["products:one-char-search", () => run("products_search", [1, "%C%"]), Math.min(1000, config.skus), validateTenant(1)],
+      ["users:typeahead", () => run("users_typeahead", ["%User 00001%"]), 2, undefined],
+      // Deliberately mirrors GET /api/users with no q: the production route is
+      // unbounded and not company-scoped, so this measures the full directory.
+      ["users:full-list", () => run("users_full_list"), config.users * 2, undefined],
     ];
     const benchmarks = [];
-    for (const [name, query, expectedRows] of cases) benchmarks.push(await measure(name, query, expectedRows));
+    for (const [name, query, expectedRows, validate] of cases) {
+      benchmarks.push(await measure(name, query, expectedRows, validate));
+    }
+    const plans = {
+      so_list_page: await sql.unsafe(`EXPLAIN (FORMAT JSON) ${PG_QUERY_SHAPES.so_list_page}`, [1, PAGE_SIZE, 0]),
+      so_search_page: await sql.unsafe(`EXPLAIN (FORMAT JSON) ${PG_QUERY_SHAPES.so_search_page}`, [1, "%Customer 00001%", 6]),
+      so_detail_lines: await sql.unsafe(`EXPLAIN (FORMAT JSON) ${PG_QUERY_SHAPES.so_detail_lines}`, [1, "C1-SO-2607-000001"]),
+      products_search: await sql.unsafe(`EXPLAIN (FORMAT JSON) ${PG_QUERY_SHAPES.products_search}`, [1, "%SKU-00001%"]),
+      users_typeahead: await sql.unsafe(`EXPLAIN (FORMAT JSON) ${PG_QUERY_SHAPES.users_typeahead}`, ["%User 00001%"]),
+    };
     return {
-      engine: "postgres-temp-tables",
+      engine: "postgres-real-schema-contract",
+      schema_contract: REAL_SCHEMA_CONTRACT_VERSION,
+      isolation: "dedicated-local-empty-db + transaction rollback",
       counts: {
         per_tenant: { orders: config.orders, lines: config.lines, skus: config.skus, users: config.users },
         total: { orders: config.orders * 2, lines: config.lines * 2, skus: config.skus * 2, users: config.users * 2 },
@@ -316,8 +376,14 @@ async function postgresHarness() {
       benchmarks,
     };
   } finally {
-    await sql.unsafe("ROLLBACK").catch(() => undefined);
-    await sql.end();
+    if (transactionOpen) await sql.unsafe("ROLLBACK").catch(() => undefined);
+    // Deterministic teardown is part of the evidence, not an assumption.
+    // The same protected-catalog assertion must pass again after rollback.
+    try {
+      assertDisposableCatalog(await readCatalogSnapshot(sql));
+    } finally {
+      await sql.end();
+    }
   }
 }
 
