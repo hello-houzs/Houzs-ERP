@@ -376,3 +376,24 @@ export function visibleFields<T extends readonly [unknown, string, ("cost" | und
   if (canViewProductCost(user)) return [...fields];
   return fields.filter((f) => f[2] !== "cost");
 }
+
+/**
+ * True when the caller holds ANY Supply Chain page grant (`scm.*` at a level
+ * other than "none"), or the `*` wildcard. Mirrors the backend requireScmAccess
+ * umbrella (index.ts: pass on any `scm*` page_access key !== "none").
+ *
+ * Admits a caller to an SCM HUB landing page (/scm and its sub-group hubs, all
+ * gated `ScmGuard area="scm"`). A hub is a navigation INDEX — it only lists the
+ * tiles the caller can already reach, and each real page still gates on its own
+ * area key. A position that grants a sub-area (a Sales Director's scm.sales=full)
+ * but NOT the broad `scm.access` permission or a bare `scm` page row would
+ * otherwise be 403'd at the hub door while its own modules sit one click away.
+ * Owner 2026-07-20: a Sales Director opens the hub and sees only their own modules.
+ */
+export function hasAnyScmPageAccess(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  if (Array.isArray(user.permissions) && user.permissions.includes("*")) return true;
+  const pa = user.page_access;
+  if (!pa) return false;
+  return Object.entries(pa).some(([key, level]) => key.startsWith("scm") && level !== "none");
+}
