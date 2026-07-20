@@ -1093,6 +1093,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 setBusy={setBusy}
                 notify={notify}
                 prompt={prompt}
+                confirm={confirm}
                 reload={reload}
               />
             )}
@@ -2371,7 +2372,7 @@ const SALES_DOC_TILES: ReadonlyArray<{
 ];
 
 function SalesDocsCard({
-  checklist, attachments, canTick, busy, setBusy, notify, prompt, reload,
+  checklist, attachments, canTick, busy, setBusy, notify, prompt, confirm, reload,
 }: {
   checklist?: ChecklistItem[];
   attachments?: TaskAttachment[];
@@ -2380,6 +2381,7 @@ function SalesDocsCard({
   setBusy: SetBusy;
   notify: NotifyFn;
   prompt: PromptFn;
+  confirm: ConfirmFn;
   reload: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -2392,16 +2394,15 @@ function SalesDocsCard({
         t.match.test((it.title || "").trim()) &&
         (!t.salesPicOnly || (it.role_label ?? "").trim().toUpperCase() === "SALES PIC")
     );
-    const files = item
-      ? (attachments ?? [])
-          .filter((a) => !a.archived_at && a.item_id === item.id)
-          .map((a): MediaItem => ({
-            r2_key: a.r2_key,
-            content_type: a.mime_type ?? mimeFromKey(a.r2_key),
-            caption: a.file_name,
-          }))
+    const atts = item
+      ? (attachments ?? []).filter((a) => !a.archived_at && a.item_id === item.id)
       : [];
-    return { ...t, item, files };
+    const files = atts.map((a): MediaItem => ({
+      r2_key: a.r2_key,
+      content_type: a.mime_type ?? mimeFromKey(a.r2_key),
+      caption: a.file_name,
+    }));
+    return { ...t, item, atts, files };
   }).filter((t) => t.item);
 
   if (tiles.length === 0) return null;
@@ -2454,6 +2455,20 @@ function SalesDocsCard({
     } finally {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const removeFile = async (t: (typeof tiles)[number], att: TaskAttachment) => {
+    if (t.readOnly || !canTick) return;
+    if (!(await confirm({ title: `Remove ${att.file_name || "this file"}?`, confirmLabel: "Remove", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/projects/checklist/attachments/${att.id}`);
+      reload();
+    } catch (e) {
+      await notify({ title: "Remove failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -2534,6 +2549,39 @@ function SalesDocsCard({
                     </span>
                   </div>
                 </div>
+                {/* Owner 2026-07-17: the editable photo tiles list every uploaded
+                    file by name — tap the name to VIEW it first; × removes it
+                    (confirm-guarded). Upload stays its own button below. */}
+                {!t.remarkTile && !t.readOnly && t.atts.length > 0 && (
+                  <div style={{ padding: "0 9px 6px", display: "flex", flexDirection: "column", gap: 5 }}>
+                    {t.atts.map((a, i) => (
+                      <span key={a.id} style={{ display: "inline-flex", alignItems: "stretch" }}>
+                        <button
+                          type="button"
+                          className="tinybtn"
+                          style={{ flex: 1, minWidth: 0, display: "inline-flex", alignItems: "center", gap: 5, ...(canTick ? { borderTopRightRadius: 0, borderBottomRightRadius: 0, borderRight: "none" } : {}) }}
+                          onClick={() => setView({ items: t.files, idx: i })}
+                          title={a.file_name ?? undefined}
+                        >
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.file_name || "File"}</span>
+                        </button>
+                        {canTick && (
+                          <button
+                            type="button"
+                            className="tinybtn"
+                            disabled={busy}
+                            style={{ flex: "none", padding: "0 8px", borderTopLeftRadius: 0, borderBottomLeftRadius: 0, color: "#a13a34", display: "inline-flex", alignItems: "center" }}
+                            onClick={() => void removeFile(t, a)}
+                            title="Remove file"
+                            aria-label="Remove file"
+                          >
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+                          </button>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {!t.remarkTile && canTick && !t.readOnly && (
                   <div style={{ padding: "0 9px 8px" }}>
                     <button className="tinybtn" style={{ width: "100%" }} disabled={busy} onClick={() => void startUpload(t)}>
@@ -2614,10 +2662,11 @@ function FloorPlans({
   };
   const unfilledFiles = (() => { const t = taskPlanFiles(/^blank\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[0]); })();
   const filledFiles = (() => { const t = taskPlanFiles(/^filled\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[1]); })();
-  // 3D banner (owner 2026-07-17): tap opens the "3D Design" / "3D render" task
-  // attachments in the lightbox (which carries a Download button) — it was a
-  // dead placeholder before, so sales couldn't view the render at all.
-  const threeDFiles = taskPlanFiles(/^3d\s/i);
+  // Black banner (owner 2026-07-17 v2): shows the "Display Floor Plan" task
+  // attachments in the lightbox (which carries a Download button). Was the 3D
+  // placeholder, then briefly wired to 3D Design; the owner wants the booth's
+  // display floorplan here instead.
+  const displayPlanFiles = taskPlanFiles(/^display\s*floor\s*plan/i);
   // Checklist task ids by title prefix — used to attach uploads to the right task.
   const taskIdByPrefix = (prefix: RegExp): number | null =>
     (checklist ?? []).find((it) => prefix.test((it.title || "").trim()))?.id ?? null;
@@ -2719,18 +2768,18 @@ function FloorPlans({
         <div
           role="button"
           tabIndex={0}
-          onClick={() => void openPlan(threeDFiles, "3D")}
-          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void openPlan(threeDFiles, "3D"); } }}
+          onClick={() => void openPlan(displayPlanFiles, "Display")}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void openPlan(displayPlanFiles, "Display"); } }}
           style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, background: "#15161a", borderRadius: 12, padding: "13px 14px", marginBottom: 9, cursor: "pointer" }}
         >
           <span style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(216,168,90,.18)", display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}>
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#d8a85a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8l-9-5-9 5v8l9 5Z" /><path d="M3 8l9 5 9-5M12 13v8" /></svg>
           </span>
           <span style={{ flex: 1, textAlign: "left", minWidth: 0 }}>
-            <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#fff" }}>3D floor plan</span>
-            <span style={{ display: "block", fontSize: 10.5, color: threeDFiles.length ? "#7ed6a7" : "#8c968a" }}>
-              {threeDFiles.length
-                ? `${threeDFiles.length} file${threeDFiles.length === 1 ? "" : "s"} · tap to view / download`
+            <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#fff" }}>Display floor plan</span>
+            <span style={{ display: "block", fontSize: 10.5, color: displayPlanFiles.length ? "#7ed6a7" : "#8c968a" }}>
+              {displayPlanFiles.length
+                ? `${displayPlanFiles.length} file${displayPlanFiles.length === 1 ? "" : "s"} · tap to view / download`
                 : "Not uploaded yet"}
             </span>
           </span>
