@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
-import { resolvePositionPolicy } from "../src/services/positionPolicy";
+import { resolvePositionPolicy, positionGrantsWildcard } from "../src/services/positionPolicy";
 import { scmAreaGuard } from "../src/scm/middleware/area-guard";
 import {
   PAGES,
@@ -701,5 +701,34 @@ describe("positionPolicy — the adjustment split is genuinely decoupled from in
     const app = warehouseAppFor(viewer);
     expect((await app.request("/inventory/")).status).toBe(200);
     expect((await app.request("/inventory/adjustments", { method: "POST" })).status).toBe(403);
+  });
+});
+
+/* Position ⇒ '*' (owner 2026-07-20). A god-tier POSITION (Super Admin / Owner) is
+   a full super admin with no roles.permissions grant — step 1 of merging role +
+   position onto one position-driven controller. The critical safety property is
+   EXACT-name membership: a substring match would let "Logistic Admin" / "Service
+   Admin" (real positions) or a free-text rename inject god-mode. */
+describe("positionGrantsWildcard — position ⇒ '*'", () => {
+  test("god positions grant the wildcard (exact name, case/space tolerant)", () => {
+    expect(positionGrantsWildcard("Super Admin")).toBe(true);
+    expect(positionGrantsWildcard("Owner")).toBe(true);
+    expect(positionGrantsWildcard("  super   admin ")).toBe(true);
+    expect(positionGrantsWildcard("OWNER")).toBe(true);
+  });
+
+  test("NON-god positions never grant it — anti-substring (the whole safety point)", () => {
+    expect(positionGrantsWildcard("Logistic Admin")).toBe(false);
+    expect(positionGrantsWildcard("Service Admin")).toBe(false);
+    expect(positionGrantsWildcard("Super Administrator")).toBe(false);
+    expect(positionGrantsWildcard("Assistant Super Admin")).toBe(false);
+    expect(positionGrantsWildcard("Sales Director")).toBe(false);
+    expect(positionGrantsWildcard("Owners")).toBe(false);
+  });
+
+  test("empty / null → false (fail closed)", () => {
+    expect(positionGrantsWildcard("")).toBe(false);
+    expect(positionGrantsWildcard(null)).toBe(false);
+    expect(positionGrantsWildcard("   ")).toBe(false);
   });
 });
