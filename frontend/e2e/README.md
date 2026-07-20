@@ -77,6 +77,11 @@ the authenticated SO/company/login proofs were skipped. The skip behavior is
 retained only for optional local exploration; local operators can set the same
 environment variable to request the fail-closed contract.
 
+For `workflow_run`, checkout is pinned to the triggering deploy's
+`workflow_run.head_sha`; scheduled and manual runs use their own event SHA.
+This keeps the browser proof and deployed application on the same source rather
+than accidentally testing newer default-branch specs against an older deploy.
+
 > Note: as observed on 2026-07-21, the current staging DB did not accept the
 > in-repo fixture account: the scheduled workflow reported success with three
 > skipped authenticated specs and only one unauthenticated assertion. After

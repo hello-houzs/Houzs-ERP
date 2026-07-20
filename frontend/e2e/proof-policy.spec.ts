@@ -44,12 +44,15 @@ test.describe("staging proof policy", () => {
     expect(missingCredentialsMaySkip(false, false)).toBe(true);
   });
 
-  test("the automated workflow cannot silently drop required-proof mode", () => {
+  test("the automated workflow cannot silently drop proof or test different source", () => {
     const workflowPath = resolve(
       __dirname,
       "../../.github/workflows/staging-e2e.yml",
     );
     const workflow = readFileSync(workflowPath, "utf8");
     expect(workflow).toContain('STAGING_E2E_REQUIRE_PROOF: "true"');
+    expect(workflow).toContain(
+      "ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}",
+    );
   });
 });

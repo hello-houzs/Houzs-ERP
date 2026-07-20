@@ -40,6 +40,13 @@ jobs:
         working-directory: frontend/e2e
     steps:
       - uses: actions/checkout@v7
+        with:
+          # workflow_run executes from the default branch by default. Pin the
+          # suite to the exact commit that Deploy (Staging) just shipped, or a
+          # later main commit could make the smoke result describe different
+          # source than the deployed frontend/Worker. Manual/nightly runs use
+          # the event's own SHA.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
