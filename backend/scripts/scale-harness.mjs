@@ -82,8 +82,16 @@ const validateTeamDirectoryAcrossTenants = (expectedPerTenant) => (rows) => {
 };
 
 function validatePagination(first, second) {
-  const firstIds = new Set(first.map((row) => String(row.id)));
-  if (second.some((row) => firstIds.has(String(row.id)))) {
+  // The production SO list projection is keyed by doc_no and deliberately has
+  // no synthetic `id`; the SQLite smoke uses id. Treat either canonical key as
+  // valid and fail closed if a future query shape exposes neither.
+  const identity = (row) => {
+    const key = row.id ?? row.doc_no;
+    if (key == null) throw new Error("pagination row has no id or doc_no identity");
+    return `${row.company_id ?? ""}:${String(key)}`;
+  };
+  const firstIds = new Set(first.map(identity));
+  if (second.some((row) => firstIds.has(identity(row)))) {
     throw new Error("pagination returned duplicate rows across adjacent pages");
   }
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import {
   PG_QUERY_SHAPES,
   PG_REAL_SCHEMA_DDL,
@@ -50,4 +51,10 @@ test("pins heavy route query shapes and wide SO list projection", () => {
   assert.match(PG_QUERY_SHAPES.users_typeahead, /company_ids_arr/);
   assert.doesNotMatch(PG_QUERY_SHAPES.users_full_list, /LIMIT|WHERE EXISTS/);
   assert.match(PG_QUERY_SHAPES.users_full_list, /LEFT JOIN public\.users m[\s\S]*LEFT JOIN public\.users ib/);
+});
+
+test("pagination correctness uses the real SO doc_no key when the list has no id", async () => {
+  const harness = await readFile(new URL("../scripts/scale-harness.mjs", import.meta.url), "utf8");
+  assert.match(harness, /row\.id \?\? row\.doc_no/);
+  assert.match(harness, /pagination row has no id or doc_no identity/);
 });
