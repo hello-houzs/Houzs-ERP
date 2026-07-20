@@ -247,6 +247,48 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     pending_supplier_return: "Pending Supplier Return",
   };
   const subStatusLabel = SUB_STATUS_LABEL[(cs as any).sub_status ?? ""] || null;
+
+  // Warehouse — auto-detected from the case's delivery area (location
+  // code) via the SCM State-to-Warehouse mapping (scm.state_warehouse_
+  // mappings, company-scoped, configurable in SCM settings), so the
+  // supplier copy shows which warehouse the item moves through. Falls
+  // back to the legacy public.warehouses code table, then em-dash.
+  // Wrapped in try/catch: the D1 test mirror has no scm schema.
+  const LOCATION_STATE: Record<string, string> = {
+    KL: "Kuala Lumpur",
+    PG: "Pulau Pinang",
+    SBH: "Sabah",
+    SRW: "Sarawak",
+  };
+  let warehouseLabel: string | null = null;
+  const locCode = String((cs as any).location || "").toUpperCase();
+  if (locCode) {
+    try {
+      const stateName = LOCATION_STATE[locCode] ?? null;
+      if (stateName) {
+        const row = await c.env.DB.prepare(
+          `SELECT w.name AS name
+             FROM scm.state_warehouse_mappings m
+             JOIN scm.warehouses w ON w.id = m.warehouse_id
+            WHERE m.state = ? AND m.company_id = ?
+            LIMIT 1`
+        )
+          .bind(stateName, Number((cs as any).company_id ?? 1))
+          .first<{ name: string }>();
+        warehouseLabel = row?.name ?? null;
+      }
+      if (!warehouseLabel) {
+        const row = await c.env.DB.prepare(
+          `SELECT name FROM warehouses WHERE code = ? LIMIT 1`
+        )
+          .bind(locCode)
+          .first<{ name: string }>();
+        warehouseLabel = row?.name ?? null;
+      }
+    } catch {
+      warehouseLabel = null;
+    }
+  }
   const generatedTs = fmtDateTime(new Date().toISOString());
 
   const html = `<!DOCTYPE html>
@@ -754,8 +796,8 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <div class="mgrid cols-4">
       <div class="lc">Customer</div><div class="vc">${esc(cs.customer_name || "—")}</div>
       <div class="lc">Delivery Area</div><div class="vc">${esc(cs.location || (cs as any).addr4 || "—")}</div>
-      <div class="lc">Coordinator</div><div class="vc">${esc((cs as any).assigned_to_name ? `${coShort} Ops · ${(cs as any).assigned_to_name}` : `${coShort} CS Team`)}</div>
-      <div class="lc">Warehouse</div><div class="vc">${esc((cs as any).delivery_order || "—")}</div>
+      <div class="lc">Service Admin (Purchasing)</div><div class="vc">${esc((cs as any).assigned_to_name || `${coShort} CS Team`)}</div>
+      <div class="lc">Warehouse</div><div class="vc">${esc(warehouseLabel || "—")}</div>
       <div class="lc">Note</div><div class="vc span3" style="font-weight: 400; color: #6a6a6a; font-size: 8.2pt;">Customer's direct phone &amp; full address are shared after dispatch is confirmed.</div>
     </div>
 
