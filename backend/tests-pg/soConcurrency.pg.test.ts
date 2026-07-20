@@ -123,7 +123,10 @@ async function callHeaderCas(
       `SELECT * FROM scm.apply_so_header_cas(
         $1, $2, NULL, $3::jsonb, false, NULL, NULL, NULL, $4, $5::uuid, false, NULL
       )`,
-      ['SO-PG-1', expectedVersion, JSON.stringify({ note, version: expectedVersion + 1 }), applyWarehouse, '00000000-0000-0000-0000-000000000001'],
+      // postgres.js receives the server-described jsonb OID and serializes a
+      // JavaScript object exactly once. Passing JSON.stringify here would be
+      // serialized a second time and turn the patch into a JSON string.
+      ['SO-PG-1', expectedVersion, { note, version: expectedVersion + 1 }, applyWarehouse, '00000000-0000-0000-0000-000000000001'],
     );
   });
 }
@@ -158,7 +161,7 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
         `SELECT * FROM scm.apply_so_header_cas(
           $1, 1, NULL, $2::jsonb, false, NULL, NULL, NULL, false, NULL, false, NULL
         )`,
-        ['SO-PG-1', JSON.stringify({ note: 'must not land', version: 2 })],
+        ['SO-PG-1', { note: 'must not land', version: 2 }],
       );
     })).rejects.toThrow(/permission denied/i);
     const result = await callHeaderCas(admin, 'service write');
@@ -201,7 +204,7 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
         `SELECT * FROM scm.apply_so_header_cas(
           $1, 1, NULL, $2::jsonb, false, NULL, NULL, NULL, false, NULL, false, NULL
         )`,
-        ['SO-PG-1', JSON.stringify({ note: null, version: 2 })],
+        ['SO-PG-1', { note: null, version: 2 }],
       );
     });
     const [saved] = await admin`SELECT note, company_id, version FROM scm.mfg_sales_orders WHERE doc_no = 'SO-PG-1'`;
