@@ -7,9 +7,9 @@ describe('SO concurrency domain migration', () => {
     expect(migration0161).toContain('CREATE OR REPLACE FUNCTION scm.apply_so_header_cas');
     expect(migration0161).toContain('FOR UPDATE');
     expect(migration0161).toContain('jsonb_populate_record');
-    expect(migration0161).toContain('NULL::scm.mfg_sales_orders');
-    expect(migration0161).toContain('to_jsonb(v_row) || p_patch');
-    expect(migration0161).toContain('($1::scm.mfg_sales_orders)');
+    expect(migration0161).toContain("jsonb_typeof(p_patch) IS DISTINCT FROM 'object'");
+    expect(migration0161).toContain('CASE WHEN $1 ?');
+    expect(migration0161).toContain('FROM jsonb_populate_record(NULL::scm.mfg_sales_orders, $1) AS p');
     expect(migration0161).not.toContain('jsonb_populate_record(t, $1)');
     expect(migration0161).toContain('mfg_sales_order_payments');
     expect(migration0161).toContain('ADD COLUMN IF NOT EXISTS version integer NOT NULL DEFAULT 1');

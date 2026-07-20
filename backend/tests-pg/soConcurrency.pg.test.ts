@@ -189,6 +189,25 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
     }
   });
 
+  test('header patch preserves omitted fields and treats explicit null as a clear', async () => {
+    await admin`TRUNCATE scm.mfg_sales_orders`;
+    await admin`
+      INSERT INTO scm.mfg_sales_orders (doc_no, note, company_id)
+      VALUES ('SO-PG-1', 'clear me', 7)
+    `;
+    await admin.begin(async (tx) => {
+      await tx.unsafe('SET LOCAL ROLE service_role');
+      await tx.unsafe(
+        `SELECT * FROM scm.apply_so_header_cas(
+          $1, 1, NULL, $2::jsonb, false, NULL, NULL, NULL, false, NULL, false, NULL
+        )`,
+        ['SO-PG-1', JSON.stringify({ note: null, version: 2 })],
+      );
+    });
+    const [saved] = await admin`SELECT note, company_id, version FROM scm.mfg_sales_orders WHERE doc_no = 'SO-PG-1'`;
+    expect(saved).toMatchObject({ note: null, company_id: 7, version: 2 });
+  });
+
   test('a follower exception rolls back the already-attempted header update', async () => {
     await admin`TRUNCATE scm.mfg_sales_order_items, scm.mfg_sales_orders`;
     await admin`INSERT INTO scm.mfg_sales_orders (doc_no, note) VALUES ('SO-PG-1', 'before failure')`;
