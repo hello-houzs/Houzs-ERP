@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 import {
   mfgCatalogHandler,
   productSizeVariantsHandler,
+  sofaCombosPosHandler,
   MFG_CATALOG_COLS,
 } from '../src/scm/routes/pos-pools';
 
@@ -34,6 +35,10 @@ class FakeQuery {
   in(col: string, vals: unknown[]) { const s = new Set(vals.map(String)); this.preds.push((r) => s.has(String(r[col]))); return this; }
   not(col: string, op: string, val: unknown) {
     if (op === 'is' && val === null) this.preds.push((r) => r[col] != null);
+    return this;
+  }
+  is(col: string, val: unknown) {
+    this.preds.push((r) => (val === null ? r[col] == null : String(r[col]) === String(val)));
     return this;
   }
   private apply() {
@@ -179,5 +184,68 @@ describe('GET /pos-pools/product-size-variants — legacy pool: mapping + scope'
   test('missing productId returns an empty list (no unscoped dump)', async () => {
     const { rows } = await variants(2, '');
     expect(rows).toEqual([]);
+  });
+});
+
+describe('GET /pos-pools/sofa-combos — cost-stripped POS combo pricing (#13)', () => {
+  const comboData: DataSet = {
+    sofa_combo_pricing: [
+      // company 1 — must never leak into a company-2 read
+      { id: 'c-h', company_id: 1, base_model: 'HB', modules: [['A']], tier: 'PRICE_1', customer_id: null, supplier_id: null,
+        selling_prices_by_height: { S: 900 }, prices_by_height: { S: 500 }, pwp_prices_by_height: null,
+        default_free_gifts: null, label: 'H', effective_from: '2020-01-01', created_at: '2020-01-01', updated_at: '2020-01-01', created_by: null, deleted_at: null },
+      // company 2 — active master combo. S has selling; M has ONLY cost (fallback path)
+      { id: 'c1', company_id: 2, base_model: 'XB', modules: [['A'], ['B']], tier: 'PRICE_1', customer_id: null, supplier_id: null,
+        selling_prices_by_height: { S: 2000, M: null }, prices_by_height: { S: 1200, M: 1500 }, pwp_prices_by_height: { S: 1800 },
+        default_free_gifts: [], label: 'X1', effective_from: '2020-01-01', created_at: '2020-06-01', updated_at: '2020-06-01', created_by: 'u1', deleted_at: null },
+      // company 2 — SAME scope tuple as c1 but OLDER effective_from → reduced out
+      // (fixture order mirrors the query's effective_from DESC — first per tuple wins)
+      { id: 'c1-old', company_id: 2, base_model: 'XB', modules: [['A'], ['B']], tier: 'PRICE_1', customer_id: null, supplier_id: null,
+        selling_prices_by_height: { S: 1 }, prices_by_height: { S: 1 }, pwp_prices_by_height: null,
+        default_free_gifts: [], label: 'old', effective_from: '2019-01-01', created_at: '2019-01-01', updated_at: '2019-01-01', created_by: null, deleted_at: null },
+      // company 2 — supplier-scoped row → EXCLUDED (POS reads master/sales combos only)
+      { id: 'c-sup', company_id: 2, base_model: 'XB', modules: [['C']], tier: 'PRICE_2', customer_id: null, supplier_id: 'sup-1',
+        selling_prices_by_height: { S: 3000 }, prices_by_height: { S: 2000 }, pwp_prices_by_height: null,
+        default_free_gifts: [], label: 'sup', effective_from: '2020-01-01', created_at: '2020-01-01', updated_at: '2020-01-01', created_by: null, deleted_at: null },
+    ],
+  };
+  function comboApp(companyId: number) {
+    const supabase = fakeSupabase(comboData);
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('supabase' as never, supabase as never);
+      c.set('companyId' as never, companyId as never);
+      c.set('allowedCompanyIds' as never, [1, 2] as never);
+      await next();
+    });
+    app.get('/sofa-combos', sofaCombosPosHandler as never);
+    return app;
+  }
+  async function combos(companyId: number): Promise<Array<Record<string, unknown>>> {
+    const res = await comboApp(companyId).request('/sofa-combos?customerId=__all__');
+    const body = (await res.json()) as { rules: Array<Record<string, unknown>> };
+    return body.rules;
+  }
+
+  test('company 2 gets only its own master combos — no company 1, no supplier rows, latest-effective per tuple', async () => {
+    const rules = await combos(2);
+    // c-h (co1) + c-sup (supplier) + c1-old (superseded) all excluded
+    expect(rules.map((r) => r.id)).toEqual(['c1']);
+  });
+
+  test('company 1 isolation — the other direction', async () => {
+    const rules = await combos(1);
+    expect(rules.map((r) => r.id)).toEqual(['c-h']);
+  });
+
+  test('cost is stripped and the charged price rides sellingPricesByHeight (selling ?? cost)', async () => {
+    const [r] = await combos(2);
+    expect(r.pricesByHeight).toEqual({});   // raw cost never ships
+    expect(r.supplierId).toBeNull();        // which supplier never ships
+    expect(r.notes).toBe('');               // internal notes withheld
+    // S: selling 2000 wins; M: selling null → falls back to cost 1500 — the exact
+    // merge the POS comboChargedPrices + the server recompute both apply.
+    expect(r.sellingPricesByHeight).toEqual({ S: 2000, M: 1500 });
+    expect(r.pwpPricesByHeight).toEqual({ S: 1800 });
   });
 });

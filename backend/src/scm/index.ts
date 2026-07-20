@@ -144,13 +144,20 @@ scm.use("/fabric-tier-addon/*", scmAreaGuard("scm.procurement.products", { openR
 scm.route("/fabric-tier-addon", fabricTierAddonConfig);
 // openRead (2026-07-20, POS cutover) — PWP (换购) is an in-cart SALE-flow read:
 // the POS reads eligibility rules + the seller's reserved codes for every
-// salesperson, same class as the SO-FLOW REFERENCE READS above. GET/HEAD pass
-// the coarse umbrella; the reserve/release WRITES stay edit-gated for now
-// (their writeLevel depends on the POS-role provisioning model — see task #13).
-// No cost/margin on these reads.
+// salesperson, same class as the SO-FLOW REFERENCE READS above. No cost/margin
+// on these reads.
+//
+// pwp-RULES = admin eligibility config the POS only READS → openRead on the
+// Products admin area (writes stay edit-gated for admins). pwp-CODES = the POS
+// CART surface (reserve / free / validate — "a salesperson owns their reserved
+// codes", pwp-codes.ts), so it is homed on scm.sales.orders with writeLevel
+// 'view': a Sales Executive (scm.sales = view) can reserve/free a 换购 voucher
+// for their own cart line — the same least-privilege hatch as /quotes + /slips.
+// This settles task #13's PWP write-gate under the L2 provisioning model; a flat
+// scm.access holder is unaffected (the guard falls through for non-L2 callers).
 scm.use("/pwp-rules/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/pwp-rules", pwpRules);
-scm.use("/pwp-codes/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.use("/pwp-codes/*", scmAreaGuard("scm.sales.orders", { writeLevel: "view" }));
 scm.route("/pwp-codes", pwpCodes);
 // SO-FLOW REFERENCE READS (openRead, 2026-07-04) — special-addons,
 // fabric-library, mfg-products, product-models, maintenance-config,

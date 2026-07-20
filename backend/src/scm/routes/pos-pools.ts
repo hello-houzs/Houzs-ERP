@@ -30,6 +30,8 @@ import { Hono, type Context } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { paginateAll } from '../lib/paginate-all';
 import { scopeToCompany } from '../lib/companyScope';
+import { comboSlotsKey, type ComboSlots } from '../shared';
+import { todayMyt } from '../lib/my-time';
 import type { Env, Variables } from '../env';
 
 export const posPools = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -254,3 +256,110 @@ export const bedframeOptionsHandler = async (c: AppContext) => {
   return c.json({ rows });
 };
 posPools.get('/bedframe-options', bedframeOptionsHandler);
+
+// ── GET /sofa-combos ─────────────────────────────────────────────────────
+// Cost-stripped Sofa Combo pricing for the POS. The admin /sofa-combos route is
+// DELIBERATELY not openRead — its GET returns prices_by_height (the PO-benchmark
+// COST) + supplier_id, a supplier-cost leak (class #625). The POS needs the
+// CHARGED price only: selling merged over cost — the SAME merge the server SO-time
+// recompute + drift gate use (comboChargedPrices). So we compute charged =
+// selling ?? cost SERVER-side and emit it as sellingPricesByHeight with
+// pricesByHeight = {}; the POS's own comboChargedPrices(selling, {}) resolves to
+// exactly that, so POS live total == server recompute (no false drift-reject),
+// and raw cost / supplierId / internal notes never leave the server. All 137
+// company_2 combos carry selling prices (verified 2026-07-20), so the merge only
+// ever surfaces the sell side. Master/sales combos only (supplier_id IS NULL);
+// reduced to the active row per scope tuple (same reducer as the admin GET /).
+type ComboPricingRow = {
+  id: string;
+  base_model: string;
+  modules: ComboSlots;
+  tier: 'PRICE_1' | 'PRICE_2' | 'PRICE_3' | null;
+  customer_id: string | null;
+  prices_by_height: Record<string, number | null> | null;
+  selling_prices_by_height: Record<string, number | null> | null;
+  pwp_prices_by_height: Record<string, number | null> | null;
+  default_free_gifts: unknown;
+  label: string | null;
+  effective_from: string;
+  created_at: string;
+  updated_at: string;
+  created_by: string | null;
+};
+
+// charged = selling ?? cost per height — mirrors @2990s/shared comboChargedPrices
+// so the POS sees the identical number the server recompute charges.
+function comboChargedByHeight(
+  selling: Record<string, number | null> | null,
+  cost: Record<string, number | null> | null,
+): Record<string, number | null> {
+  const out: Record<string, number | null> = {};
+  for (const h of new Set([...Object.keys(selling ?? {}), ...Object.keys(cost ?? {})])) {
+    const s = selling?.[h];
+    out[h] = s !== null && s !== undefined ? s : (cost?.[h] ?? null);
+  }
+  return out;
+}
+
+export const sofaCombosPosHandler = async (c: AppContext) => {
+  const supabase = c.get('supabase');
+  const baseModel = (c.req.query('baseModel') ?? '').trim();
+  const customerIdRaw = c.req.query('customerId');
+
+  let q = scopeToCompany(
+    supabase
+      .from('sofa_combo_pricing')
+      .select(
+        'id, base_model, modules, tier, customer_id, prices_by_height, ' +
+          'selling_prices_by_height, pwp_prices_by_height, default_free_gifts, label, ' +
+          'effective_from, created_at, updated_at, created_by',
+      )
+      .is('deleted_at', null)
+      .is('supplier_id', null),
+    c,
+  )
+    .order('base_model', { ascending: true })
+    .order('effective_from', { ascending: false })
+    .order('created_at', { ascending: false });
+
+  if (baseModel) q = q.eq('base_model', baseModel);
+  if (customerIdRaw !== undefined && customerIdRaw !== '' && customerIdRaw !== '__all__' && customerIdRaw !== 'null') {
+    q = q.eq('customer_id', customerIdRaw);
+  } else {
+    q = q.is('customer_id', null);
+  }
+
+  const { data, error } = await q;
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+
+  const today = todayMyt();
+  const seen = new Set<string>();
+  const rules: unknown[] = [];
+  for (const r of (data ?? []) as unknown as ComboPricingRow[]) {
+    if (r.effective_from > today) continue; // future-dated not yet active
+    const key = JSON.stringify([r.base_model, comboSlotsKey(r.modules ?? []), r.tier, r.customer_id]);
+    if (seen.has(key)) continue; // first (latest-effective) per tuple wins
+    seen.add(key);
+    rules.push({
+      id: r.id,
+      baseModel: r.base_model,
+      modules: r.modules ?? [],
+      tier: r.tier,
+      customerId: r.customer_id,
+      supplierId: null, // withheld — never reveal which supplier to the POS
+      pricesByHeight: {}, // cost stripped; the charged value rides sellingPricesByHeight
+      sellingPricesByHeight: comboChargedByHeight(r.selling_prices_by_height, r.prices_by_height),
+      pwpPricesByHeight: r.pwp_prices_by_height ?? {},
+      defaultFreeGifts: r.default_free_gifts ?? [],
+      label: r.label,
+      effectiveFrom: r.effective_from,
+      deletedAt: null,
+      notes: '', // internal notes withheld
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      createdBy: r.created_by,
+    });
+  }
+  return c.json({ rules });
+};
+posPools.get('/sofa-combos', sofaCombosPosHandler);
