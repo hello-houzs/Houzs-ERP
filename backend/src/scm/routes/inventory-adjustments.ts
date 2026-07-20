@@ -28,6 +28,7 @@ import {
   isAdjustmentReasonCode,
   computeVariantKey,
   adjustmentIncreaseErrors,
+  buildVariantSummary,
   type VariantAttrs,
 } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
@@ -112,6 +113,12 @@ inventoryAdjustments.post('/', async (c) => {
     // picked existing bucket. The FIFO trigger (0126) honours batch_no on
     // ADJUSTMENT: +qty creates a batched lot, −qty consumes the batch FIFO.
     variant_key: variantKey,
+    // Full variant bag + rendered Description 2 (incl. any SPECIAL order) so an
+    // adjustment records the same detail every other SCM document carries, not
+    // just the variant_key bucket (owner 2026-07-20). The create form already
+    // sends the bag; we were dropping everything but the key.
+    variants,
+    description2: buildVariantSummary(String(itemGroup ?? ''), variants) || null,
     batch_no: batchNo,
     product_name: (body.productName as string) ?? null,
     qty: qtyDelta,

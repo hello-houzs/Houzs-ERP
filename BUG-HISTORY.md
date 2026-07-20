@@ -1,5 +1,17 @@
 ## 2026-07-20
 
+### [MEDIUM] Stock Adjustment silently dropped the special order + variant detail the form collected — only a `variant_key` bucket was stored, so a special order on an adjustment vanished and never formed a Description 2
+- **Symptom (owner).** The Stock Adjustment create form shows the shared `SpecialOrders` + variant editor (#896); the owner's rule is that a special order forms the variants, which form Description 2, which rides into every document. But an adjustment persisted none of that special/variant detail.
+- **Root cause (traced; schema verified READ-ONLY against prod `anogrigyjbduyzclzjgn`).** `inventory-adjustments.ts` receives `body.variants` (the full bag) but used it ONLY to compute `variant_key` (mig 0095) for the FIFO bucket; the insert into `scm.inventory_movements` wrote `variant_key` / `batch_no` / `reason_code` / `notes` and dropped the bag. The table had no `variants` / `description2` column at all (only `variant_key text`), so `specials` / `specialChoices` / `extraAddonNote` were discarded on write.
+- **Fix.** Mig `0157` adds nullable `variants jsonb` + `description2 text` to `scm.inventory_movements` (no rewrite, no backfill — only ADJUSTMENT rows populate them, every other movement leaves them NULL; FIFO/allocation triggers untouched). `inventory-adjustments.ts` now writes the full bag + `description2 = buildVariantSummary(itemGroup, variants)` on the movement, exactly like every other SCM line. The form already sent the data — no frontend change.
+- **Ref:** `feat/scm-adjustment-variants`, 2026-07-20. Owner ruled the adjustment must carry these (not hide the block).
+
+### [LOW] Purchase-Consignment Return New-page create dropped `description2`, leaving its rows inconsistent with every sibling table (conversion-slot audit Gap 2)
+- **Symptom.** A PCRet raised from the New page persisted `variants` but `description2 = NULL`, unlike the server-convert paths (which set it) and every other line table.
+- **Root cause (traced).** `purchase-consignment-returns.ts` New-page row builder set `item_group` + `variants` but not `description2`; the convert paths (L599/L684) already compute it via `buildVariantSummary`. Display-safe (the FE recomputes the summary) but a stored-field inconsistency.
+- **Fix.** The New-page builder now sets `description2 = buildVariantSummary(itemGroup, variants) || null`, matching the convert paths.
+- **Ref:** `feat/scm-adjustment-variants`, 2026-07-20.
+
 ### [LOW] Projects calendar ordered a day's fairs differently on desktop vs mobile, and neither led with STATE — one fair's three brands scattered and states interleaved
 - **Symptom (owner).** A fair the company enters with three brands showed its three rows split apart in a day cell, and states did not read top-to-bottom; the mobile calendar ordered the same day differently from desktop. On 28 Jul the two KL fairs landed on rows 2 and 6 (non-adjacent).
 - **Root cause (traced, not guessed).** Desktop `Projects.tsx` sorted a week's project bars by `startCol` + length (greedy lane packing) then `venue -> organizer -> brand` — no STATE key, so within a day the order was venue-alphabetical and states scattered (e.g. IPOH sank below PENANG because "STADIUM" > "PWCC"). Mobile `MobileCalendar.tsx` `byDay` never sorted a day's events at all — it rendered them in raw API order. So the two surfaces diverged and neither led with state.
