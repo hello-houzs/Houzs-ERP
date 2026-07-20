@@ -1056,7 +1056,9 @@ app.post("/bulk/unarchive", requirePermission("service_cases.manage"), async (c)
 app.post("/bulk/assign", requirePermission("service_cases.manage"), async (c) => {
   const userId = (c as any).get?.("userId") ?? null;
   const body = await c.req.json<{ ids?: number[]; assigned_to?: number | null }>();
-  const ids = (body.ids || []).filter((n) => Number.isInteger(n));
+  // De-dupe: a repeated id would assign + notify the SAME case twice, posting
+  // two identical "reassigned" cards (owner 2026-07-20).
+  const ids = [...new Set((body.ids || []).filter((n) => Number.isInteger(n)))];
   if (!ids.length) return c.json({ error: "ids[] required" }, 400);
   const assigneeId = body.assigned_to ?? null;
   const result = await bulkRun(ids, async (id) => {

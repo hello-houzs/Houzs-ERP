@@ -44,14 +44,47 @@ export async function postPersonalNotice(
   },
 ): Promise<void> {
   try {
+    // Sorted so target_user_ids is a CANONICAL string — the same target set
+    // always serializes identically, which the idempotency probe below matches on.
     const ids = Array.from(
       new Set(
         (opts.userIds ?? [])
           .map((v) => Number(v))
           .filter((n) => Number.isFinite(n) && n > 0),
       ),
-    );
+    ).sort((a, b) => a - b);
     if (ids.length === 0) return; // no target → nothing to deliver
+    const targetJson = JSON.stringify(ids);
+
+    // Idempotency (owner 2026-07-20): the same event can fire this insert twice
+    // — a retried request, a bulk-assign that also patches, a duplicate id in a
+    // bulk ids[] — each of which used to add a SECOND identical card. Skip when
+    // an identical notice (same source + title + target set) is already active,
+    // unexpired, and NOBODY has acked it yet: that is exactly the double-post
+    // window (the fires land seconds apart, before anyone reads it). Once a
+    // target has acked, a later identical notice is a legitimate re-notify and
+    // still inserts. Fail OPEN — a probe error must never drop the notice, so it
+    // falls through to the insert rather than silently swallowing it.
+    try {
+      const dup = await env.DB.prepare(
+        `SELECT a.id FROM announcements a
+          WHERE a.source = ? AND a.title = ? AND a.target_type = 'USER_IDS'
+            AND a.target_user_ids = ? AND a.is_active = 1
+            AND (a.expires_at IS NULL OR a.expires_at > ?)
+            AND NOT EXISTS (
+              SELECT 1 FROM announcement_acks k WHERE k.announcement_id = a.id
+            )
+          LIMIT 1`,
+      )
+        .bind(opts.source, opts.title, targetJson, new Date().toISOString())
+        .first<{ id: string }>();
+      if (dup) return; // identical still-unread notice already delivered
+    } catch (e) {
+      console.error(
+        `[personal-notice] dedupe probe failed (source=${opts.source}); inserting anyway:`,
+        (e as Error).message,
+      );
+    }
 
     const id = `ann-${crypto.randomUUID().slice(0, 12).replace(/-/g, "")}`;
     const nowIso = new Date().toISOString();
@@ -71,7 +104,7 @@ export async function postPersonalNotice(
         opts.body,
         expiresIso,
         nowIso,
-        JSON.stringify(ids),
+        targetJson,
         opts.category,
         opts.source,
       )
