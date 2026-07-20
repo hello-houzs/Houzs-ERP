@@ -23,6 +23,7 @@ import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
 import { retryUnlessClientError } from '../../../lib/retryPolicy';
 import { prepareImageForUpload } from '../../../lib/imagePipeline';
+import { resolveLoadedSoVersion, runSoVersionedMutation } from './so-versioned-mutation';
 
 // The vendored authedFetch already handles FormData correctly (it omits the
 // JSON content-type for non-string bodies so the multipart boundary survives),
@@ -190,6 +191,8 @@ export type SoPayment = {
   note: string | null;
   created_at: string;
   created_by: string | null;
+  version: number;
+  updated_at?: string | null;
 };
 
 export const useSalesOrderPayments = (docNo: string | null) => useQuery({
@@ -242,10 +245,14 @@ export const useCreateMfgSalesOrder = () => {
 export const useUpdateMfgSalesOrderStatus = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, status }: { docNo: string; status: string }) =>
-      authedFetch<{ salesOrder: unknown }>(`/mfg-sales-orders/${docNo}/status`, {
-        method: 'PATCH', body: JSON.stringify({ status }),
-      }),
+    mutationFn: async ({ docNo, status }: { docNo: string; status: string }) => {
+      const version = await resolveLoadedSoVersion(qc, docNo);
+      const cached = qc.getQueryData<{ salesOrder?: { status?: string } }>(['mfg-sales-order-detail', docNo]);
+      return authedFetch<{ salesOrder: unknown; version: number }>(`/mfg-sales-orders/${docNo}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status, version, expectedStatus: cached?.salesOrder?.status }),
+      });
+    },
     onMutate: async ({ docNo, status }) => {
       const detailKey = ['mfg-sales-order-detail', docNo];
       await qc.cancelQueries({ queryKey: ['mfg-sales-orders'] });
@@ -321,12 +328,12 @@ export const useUpdateMfgSalesOrderHeader = () => {
 export const useAddMfgSalesOrderItem = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, idempotencyKey, leaseToken, ...item }: { docNo: string; idempotencyKey?: string; leaseToken?: string } & Record<string, unknown>) =>
+    mutationFn: ({ docNo, idempotencyKey, leaseToken, ...item }: { docNo: string; idempotencyKey?: string; leaseToken: string } & Record<string, unknown>) =>
       authedFetch<{ item: unknown }>(`/mfg-sales-orders/${docNo}/items`, {
         method: 'POST',
         headers: {
           ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
-          ...(leaseToken ? { 'X-SO-Edit-Lease': leaseToken } : {}),
+          'X-SO-Edit-Lease': leaseToken,
         },
         body: JSON.stringify(item),
       }),
@@ -342,10 +349,10 @@ export const useAddMfgSalesOrderItem = () => {
 export const useUpdateMfgSalesOrderItem = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, itemId, leaseToken, ...item }: { docNo: string; itemId: string; leaseToken?: string } & Record<string, unknown>) =>
+    mutationFn: ({ docNo, itemId, leaseToken, ...item }: { docNo: string; itemId: string; leaseToken: string } & Record<string, unknown>) =>
       authedFetch<{ ok: boolean }>(`/mfg-sales-orders/${docNo}/items/${itemId}`, {
         method: 'PATCH',
-        headers: leaseToken ? { 'X-SO-Edit-Lease': leaseToken } : undefined,
+        headers: { 'X-SO-Edit-Lease': leaseToken },
         body: JSON.stringify(item),
       }),
     onSuccess: (_, vars) => {
@@ -360,10 +367,10 @@ export const useUpdateMfgSalesOrderItem = () => {
 export const useDeleteMfgSalesOrderItem = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, itemId, leaseToken }: { docNo: string; itemId: string; leaseToken?: string }) =>
+    mutationFn: ({ docNo, itemId, leaseToken }: { docNo: string; itemId: string; leaseToken: string }) =>
       authedFetch<void>(`/mfg-sales-orders/${docNo}/items/${itemId}`, {
         method: 'DELETE',
-        headers: leaseToken ? { 'X-SO-Edit-Lease': leaseToken } : undefined,
+        headers: { 'X-SO-Edit-Lease': leaseToken },
       }),
     onSuccess: (_, vars) => {
       if (vars.leaseToken) return;
@@ -382,8 +389,13 @@ export const useDeleteMfgSalesOrderItem = () => {
 export const useDeleteMfgSalesOrder = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo }: { docNo: string }) =>
-      authedFetch<{ ok: boolean; docNo: string }>(`/mfg-sales-orders/${docNo}`, { method: 'DELETE' }),
+    mutationFn: async ({ docNo }: { docNo: string }) => {
+      const version = await resolveLoadedSoVersion(qc, docNo);
+      return authedFetch<{ ok: boolean; docNo: string }>(
+        `/mfg-sales-orders/${docNo}?version=${encodeURIComponent(String(version))}`,
+        { method: 'DELETE' },
+      );
+    },
     onSuccess: (_, vars) => {
       invalidateSoLists(qc);
       qc.removeQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
@@ -398,9 +410,15 @@ export const useOverrideMfgSoLinePrice = () => {
     mutationFn: async ({ docNo, itemId, overridePriceSen, reason }: {
       docNo: string; itemId: string; overridePriceSen: number; reason?: string;
     }) => {
-      await authedFetch<{ items: Array<{ id: string; unit_price_centi: number }> }>(
-        `/mfg-sales-orders/${docNo}/items/${itemId}/override`,
-        { method: 'POST', body: JSON.stringify({ overridePriceSen, reason }) },
+      await runSoVersionedMutation(qc, docNo, 'price-override', ({ leaseToken }) =>
+        authedFetch<{ items: Array<{ id: string; unit_price_centi: number }> }>(
+          `/mfg-sales-orders/${docNo}/items/${itemId}/override`,
+          {
+            method: 'POST',
+            headers: { 'X-SO-Edit-Lease': leaseToken },
+            body: JSON.stringify({ overridePriceSen, reason }),
+          },
+        ),
       );
       return { ok: true as const, itemId, newPrice: overridePriceSen };
     },
@@ -418,9 +436,15 @@ export const useUpdateSoItemStockStatus = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ docNo, itemId, status }: { docNo: string; itemId: string; status: 'PENDING' | 'READY' }) =>
-      authedFetch<{ ok: boolean; advancedTo?: string | null; unchanged?: boolean }>(
-        `/mfg-sales-orders/${docNo}/items/${itemId}/stock-status`,
-        { method: 'PATCH', body: JSON.stringify({ status }) },
+      runSoVersionedMutation(qc, docNo, 'stock-status', ({ leaseToken }) =>
+        authedFetch<{ ok: boolean; advancedTo?: string | null; unchanged?: boolean }>(
+          `/mfg-sales-orders/${docNo}/items/${itemId}/stock-status`,
+          {
+            method: 'PATCH',
+            headers: { 'X-SO-Edit-Lease': leaseToken },
+            body: JSON.stringify({ status }),
+          },
+        ),
       ),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
@@ -455,9 +479,11 @@ export const useUploadSoItemPhoto = () => {
       const fd = new FormData();
       fd.append('file', prepared.file);
       if (prepared.thumb) fd.append('thumb', prepared.thumb);
-      return authedFetch<UploadSoItemPhotoResult>(
-        `/mfg-sales-orders/${docNo}/items/${itemId}/photos`,
-        { method: 'POST', body: fd },
+      return runSoVersionedMutation(qc, docNo, 'photo-upload', ({ leaseToken }) =>
+        authedFetch<UploadSoItemPhotoResult>(
+          `/mfg-sales-orders/${docNo}/items/${itemId}/photos`,
+          { method: 'POST', headers: { 'X-SO-Edit-Lease': leaseToken }, body: fd },
+        ),
       );
     },
     onSuccess: (_, vars) => {
@@ -474,9 +500,11 @@ export const useDeleteSoItemPhoto = () => {
     mutationFn: ({ docNo, itemId, photoKey }: {
       docNo: string; itemId: string; photoKey: string;
     }) =>
-      authedFetch<{ ok: boolean }>(
-        `/mfg-sales-orders/${docNo}/items/${itemId}/photos/${encodeURIComponent(photoKey)}`,
-        { method: 'DELETE' },
+      runSoVersionedMutation(qc, docNo, 'photo-delete', ({ leaseToken }) =>
+        authedFetch<{ ok: boolean }>(
+          `/mfg-sales-orders/${docNo}/items/${itemId}/photos/${encodeURIComponent(photoKey)}`,
+          { method: 'DELETE', headers: { 'X-SO-Edit-Lease': leaseToken } },
+        ),
       ),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['mfg-sales-orders', vars.docNo] });
@@ -513,9 +541,9 @@ export const useAddSalesOrderPayment = () => {
 export const useEditSalesOrderPayment = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, id, ...body }: { docNo: string; id: string } & Record<string, unknown>) =>
+    mutationFn: ({ docNo, id, version, ...body }: { docNo: string; id: string; version: number } & Record<string, unknown>) =>
       authedFetch<{ payment: SoPayment }>(`/mfg-sales-orders/${docNo}/payments/${id}`, {
-        method: 'PATCH', body: JSON.stringify(body),
+        method: 'PATCH', body: JSON.stringify({ ...body, version }),
       }),
     // The ['mfg-sales-orders'] root prefix-covers this SO's payments ledger and
     // header sub-queries; the paged list carries the paid / outstanding
@@ -529,8 +557,11 @@ export const useEditSalesOrderPayment = () => {
 export const useDeleteSalesOrderPayment = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, id }: { docNo: string; id: string }) =>
-      authedFetch<{ ok: boolean }>(`/mfg-sales-orders/${docNo}/payments/${id}`, { method: 'DELETE' }),
+    mutationFn: ({ docNo, id, version }: { docNo: string; id: string; version: number }) =>
+      authedFetch<{ ok: boolean }>(
+        `/mfg-sales-orders/${docNo}/payments/${id}?version=${encodeURIComponent(String(version))}`,
+        { method: 'DELETE' },
+      ),
     // The ['mfg-sales-orders'] root prefix-covers this SO's payments ledger and
     // header sub-queries; the paged list carries the paid / outstanding
     // aggregates a payment moves.

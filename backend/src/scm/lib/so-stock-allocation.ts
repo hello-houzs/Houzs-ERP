@@ -35,6 +35,7 @@ import { summariseReadiness } from './so-readiness';
 import { loadSofaBatchStock, findCoveringBatch, claimSofaBatch } from './sofa-set-coverage';
 import { paginateAll, chunkIn } from './paginate-all';
 import { recordSoAudit } from './so-audit';
+import { advanceSoGeneration } from './so-generation';
 
 export type AllocationResult = {
   ok: boolean;
@@ -551,14 +552,14 @@ export async function recomputeSoStockAllocation(
         });
       };
       if (r.isMainReady && (cur === 'CONFIRMED' || cur === 'IN_PRODUCTION')) {
-        const { error } = await sb.from('mfg_sales_orders').update({ status: 'READY_TO_SHIP' }).eq('doc_no', docNo);
-        if (!error) {
+        const advanced = await advanceSoGeneration(sb, docNo, { status: 'READY_TO_SHIP' }, { status: cur });
+        if (advanced.applied) {
           ordersAdvanced += 1;
           await auditAutoStatus(cur, 'READY_TO_SHIP', 'Auto-advanced: every main product line is READY (stock allocation)');
         }
       } else if (!r.isMainReady && cur === 'READY_TO_SHIP') {
-        const { error } = await sb.from('mfg_sales_orders').update({ status: 'CONFIRMED' }).eq('doc_no', docNo);
-        if (!error) {
+        const regressed = await advanceSoGeneration(sb, docNo, { status: 'CONFIRMED' }, { status: cur });
+        if (regressed.applied) {
           ordersRegressed += 1;
           await auditAutoStatus(cur, 'CONFIRMED', 'Auto-regressed: a main product line is no longer READY (stock re-allocated)');
         }

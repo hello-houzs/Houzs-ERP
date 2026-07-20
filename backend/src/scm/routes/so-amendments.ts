@@ -57,7 +57,14 @@ async function gateActorStaffId(
   return (await resolveCallerStaffId(sb, houzsUserId)) ?? fallbackStaffId;
 }
 
-type AmendmentForWrite = { id: string; so_doc_no: string; status: AmendStatus };
+type AmendmentForWrite = {
+  id: string;
+  so_doc_no: string;
+  status: AmendStatus;
+  version: number;
+  apply_lease_token?: string | null;
+  apply_lease_expires_at?: string | null;
+};
 type AmendmentWriteLoad =
   // A Houzs-NATIVE amendment: apply locally, exactly as before.
   | { ok: true; mirrored: false; amendment: AmendmentForWrite }
@@ -92,7 +99,9 @@ async function loadAmendmentForWrite(
   c: Context<any>,
 ): Promise<AmendmentWriteLoad> {
   const { data } = await scopeToCompany(
-    sb.from('so_amendments').select('id, so_doc_no, status').eq('id', id),
+    sb.from('so_amendments')
+      .select('id, so_doc_no, status, version, apply_lease_token, apply_lease_expires_at')
+      .eq('id', id),
     c,
   ).maybeSingle();
   if (!data) return { ok: false, reason: 'not_found' };
@@ -358,6 +367,51 @@ soAmendments.patch('/:id/supplier-confirm', async (c) => {
   const to = nextStatus(amendment.status, action);
   if (!to) return c.json({ error: 'bad_transition' }, 409);
 
+  /* Serialize the alternate amendment writer before it touches an SO line.
+     The expiring claim is version-CAS protected; a second approver performs
+     zero apply writes and receives 409. The final state advance below also
+     proves this exact claim and version. */
+  const applyToken = crypto.randomUUID();
+  const applyVersion = Number(amendment.version ?? 1);
+  const { data: claimed, error: claimError } = await sb.from('so_amendments').update({
+    version: applyVersion + 1,
+    apply_lease_token: applyToken,
+    apply_lease_expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq('id', id)
+    .eq('status', amendment.status)
+    .eq('version', applyVersion)
+    .or(`apply_lease_token.is.null,apply_lease_expires_at.lt.${new Date().toISOString()}`)
+    .select('id, version')
+    .maybeSingle();
+  if (claimError) return c.json({ error: 'update_failed', reason: claimError.message }, 500);
+  if (!claimed) return c.json({ error: 'amendment_version_conflict' }, 409);
+
+  const { data: soGeneration, error: soGenerationError } = await sb.from('mfg_sales_orders')
+    .select('version, edit_lease_token, edit_lease_expires_at')
+    .eq('doc_no', amendment.so_doc_no)
+    .maybeSingle();
+  if (soGenerationError || !soGeneration) {
+    await sb.from('so_amendments').update({ apply_lease_token: null, apply_lease_expires_at: null })
+      .eq('id', id).eq('apply_lease_token', applyToken);
+    return c.json({ error: soGenerationError ? 'load_failed' : 'not_found', reason: soGenerationError?.message }, soGenerationError ? 500 : 404);
+  }
+  const soVersion = Number((soGeneration as { version?: number | string }).version ?? 1);
+  const { data: soClaimed, error: soClaimError } = await sb.from('mfg_sales_orders').update({
+    edit_lease_token: applyToken,
+    edit_lease_expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+  }).eq('doc_no', amendment.so_doc_no)
+    .eq('version', soVersion)
+    .or(`edit_lease_token.is.null,edit_lease_expires_at.lt.${new Date().toISOString()}`)
+    .select('doc_no')
+    .maybeSingle();
+  if (soClaimError || !soClaimed) {
+    await sb.from('so_amendments').update({ apply_lease_token: null, apply_lease_expires_at: null })
+      .eq('id', id).eq('apply_lease_token', applyToken);
+    if (soClaimError) return c.json({ error: 'update_failed', reason: soClaimError.message }, 500);
+    return c.json({ error: 'so_edit_lease_conflict' }, 409);
+  }
+
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:                               to,
     supplier_confirmed_by:                await gateActorStaffId(sb, c.get('houzsUser')?.id, user.id),
@@ -419,8 +473,16 @@ soAmendments.patch('/:id/approve-so', async (c) => {
      snapshot upsert is idempotent on (so_doc_no, revision). */
   let applied: { soDocNo: string; revision: number };
   try {
-    applied = await applySoAmendment(sb, id, user.id, c);
+    applied = await applySoAmendment(sb, id, user.id, c, { soVersion, leaseToken: applyToken });
   } catch (e) {
+    await sb.from('mfg_sales_orders').update({
+      edit_lease_token: null,
+      edit_lease_expires_at: null,
+    }).eq('doc_no', amendment.so_doc_no).eq('version', soVersion).eq('edit_lease_token', applyToken);
+    await sb.from('so_amendments').update({
+      apply_lease_token: null,
+      apply_lease_expires_at: null,
+    }).eq('id', id).eq('version', applyVersion + 1).eq('apply_lease_token', applyToken);
     // eslint-disable-next-line no-console
     console.error('[so-amendment] approve-so apply failed:', e);
     return c.json({
@@ -431,11 +493,20 @@ soAmendments.patch('/:id/approve-so', async (c) => {
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:         to,
+    version:        applyVersion + 2,
+    apply_lease_token: null,
+    apply_lease_expires_at: null,
     so_approved_by: await gateActorStaffId(sb, c.get('houzsUser')?.id, user.id),
     so_approved_at: new Date().toISOString(),
     updated_at:     new Date().toISOString(),
-  }).eq('id', id).select('id, so_doc_no, amendment_no, status').single();
+  }).eq('id', id)
+    .eq('status', amendment.status)
+    .eq('version', applyVersion + 1)
+    .eq('apply_lease_token', applyToken)
+    .select('id, so_doc_no, amendment_no, status, version')
+    .maybeSingle();
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
+  if (!updated) return c.json({ error: 'amendment_version_conflict' }, 409);
 
   return c.json({ amendment: updated, revision: applied.revision });
 });

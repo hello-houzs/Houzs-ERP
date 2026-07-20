@@ -222,6 +222,7 @@ export async function applySoAmendment(
   amendmentId: string,
   userId: string | null,
   c?: Context<any>,
+  concurrency?: { soVersion: number; leaseToken: string },
 ): Promise<{ soDocNo: string; revision: number }> {
   // (1) Load amendment + lines + SO header.
   const { data: amdRow, error: amdErr } = await sb
@@ -550,11 +551,24 @@ export async function applySoAmendment(
   }
 
   // (5) Bump the SO's revision + updated_at.
-  const { error: bumpErr } = await sb
+  let bump = sb
     .from('mfg_sales_orders')
-    .update({ revision: nextRevision, updated_at: new Date().toISOString() })
+    .update({
+      revision: nextRevision,
+      ...(concurrency ? {
+        version: concurrency.soVersion + 1,
+        edit_lease_token: null,
+        edit_lease_expires_at: null,
+      } : {}),
+      updated_at: new Date().toISOString(),
+    })
     .eq('doc_no', docNo);
+  if (concurrency) {
+    bump = bump.eq('version', concurrency.soVersion).eq('edit_lease_token', concurrency.leaseToken);
+  }
+  const { data: bumped, error: bumpErr } = await bump.select('doc_no').maybeSingle();
   if (bumpErr) throw new Error(`applySoAmendment: revision bump failed: ${bumpErr.message}`);
+  if (!bumped) throw new Error('applySoAmendment: Sales Order version changed during amendment apply');
 
   // (6) Audit — best-effort, keyed on the SO doc_no like every other SO mutation.
   await recordSoAudit(sb, {

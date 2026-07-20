@@ -90,12 +90,26 @@ function harness(options: { raceBeforeCas?: boolean; followerApplied?: boolean }
             }
           : undefined,
       ),
-      rpc: async (name: string) => {
+      rpc: async (name: string, args?: Record<string, unknown>) => {
         rpcCalls += 1;
-        if (name === 'apply_so_header_followers') {
+        if (name === 'apply_so_header_cas') {
+          if (options.raceBeforeCas && !raceInjected) {
+            raceInjected = true;
+            Object.assign(tables.mfg_sales_orders[0]!, { note: 'racing writer', version: 2 });
+          }
+          const row = tables.mfg_sales_orders[0]!;
+          const expected = Number(args?.p_expected_version);
+          if (Number(row.version) !== expected) {
+            return { data: [{ applied: false, current_version: row.version, conflict_reason: 'version' }], error: null };
+          }
+          if (options.followerApplied === false) {
+            return { data: [{ applied: false, current_version: row.version, conflict_reason: 'follower' }], error: null };
+          }
+          Object.assign(row, args?.p_patch as Row);
           return {
             data: [{
-              applied: options.followerApplied ?? true,
+              applied: true,
+              current_version: row.version,
               resolved_customer_id: 'customer-2',
             }],
             error: null,
@@ -199,7 +213,7 @@ describe('mandatory Sales Order header compare-and-swap', () => {
     });
     expect(response.status).toBe(409);
     expect(row).toMatchObject({ debtor_name: 'Original Customer', version: 2 });
-    expect(getRpcCalls()).toBe(0);
+    expect(getRpcCalls()).toBeGreaterThan(0);
   });
 
   test('line-write reservation is itself CAS-protected and does not mutate header fields', async () => {
@@ -259,7 +273,7 @@ describe('mandatory Sales Order header compare-and-swap', () => {
     expect(row).toMatchObject({ proceeded_at: '2026-07-20T01:00:00.000Z', version: 1 });
   });
 
-  test('a follower transaction that cannot prove the saved version performs no stale follow-up', async () => {
+  test('a follower failure rolls back the header CAS as one transaction', async () => {
     const { app, row } = harness({ followerApplied: false });
 
     const response = await patchHeader(app, {
@@ -269,6 +283,6 @@ describe('mandatory Sales Order header compare-and-swap', () => {
       version: 1,
     });
     expect(response.status).toBe(409);
-    expect(row).toMatchObject({ debtor_name: 'New Customer', version: 2 });
+    expect(row).toMatchObject({ debtor_name: 'Original Customer', version: 1 });
   });
 });

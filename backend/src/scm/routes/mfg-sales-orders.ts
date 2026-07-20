@@ -162,6 +162,7 @@ import { claimPwpForSingleLine, rollbackSinglePwpClaim } from '../lib/pwp-claim-
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { pickCrossCategoryMatch, type AutoMatchCandidate } from '../lib/cross-category-match';
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
+import { advanceSoGeneration } from '../lib/so-generation';
 import { creditFromCancelledSo, getCustomerCreditBalance } from '../lib/customer-credits';
 import { summariseReadiness, normCategory } from '../lib/so-readiness';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
@@ -5174,7 +5175,7 @@ mfgSalesOrders.post('/recompute-allocation', async (c) => {
 // roll back the status change).
 mfgSalesOrders.patch('/:docNo/status', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
-  let body: { status?: string; notes?: string };
+  let body: { status?: string; notes?: string; version?: number; expectedStatus?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
 
@@ -5191,9 +5192,22 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
      line-mutation endpoints' self-scope guard. */
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
-  const { data: prev } = await sb.from('mfg_sales_orders').select('status').eq('doc_no', docNo).maybeSingle();
+  const { data: prev } = await sb.from('mfg_sales_orders')
+    .select('status, version, edit_lease_token, edit_lease_expires_at')
+    .eq('doc_no', docNo).maybeSingle();
+  if (!prev) return c.json({ error: 'not_found' }, 404);
   const fromStatus = (prev as { status: string } | null)?.status ?? null;
   const fromNorm = fromStatus == null ? null : String(fromStatus).toUpperCase();
+  const currentVersion = Number((prev as { version?: number | string }).version ?? 1);
+  const expectedVersion = Number(body.version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+    return c.json({ ...SO_VERSION_REQUIRED, currentVersion }, 428);
+  }
+  if (expectedVersion !== currentVersion
+      || (body.expectedStatus && String(body.expectedStatus).toUpperCase() !== fromNorm)) {
+    return c.json(soVersionConflict(currentVersion), 409);
+  }
+  if (activeSoEditLease(prev as SoEditLeaseRow)) return c.json(SO_EDIT_LEASE_CONFLICT, 409);
 
   /* Audit 2026-06-11 C-1/H1 — a CANCELLED SO is FINAL (mirrors do_cancelled_final).
      Un-cancelling left the Edge #B SO_CANCEL_REFUND customer credit standing while
@@ -5233,7 +5247,14 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
      (or toggling status back and forth) never overwrites the original Proceed
      date the coordinator sees on the SO detail page. (Merged with main's
      CANCELLED downstream-lock guard above — both apply.) */
-  const patch: Record<string, unknown> = { status: toStatus, updated_at: new Date().toISOString() };
+  if (fromNorm === toStatus) {
+    return c.json({ salesOrder: prev, version: currentVersion, unchanged: true });
+  }
+  const patch: Record<string, unknown> = {
+    status: toStatus,
+    version: currentVersion + 1,
+    updated_at: new Date().toISOString(),
+  };
   if (toStatus === 'IN_PRODUCTION') {
     const { data: cur } = await sb.from('mfg_sales_orders')
       .select('proceeded_at, debtor_name, email, address1, postcode, customer_delivery_date')
@@ -5256,11 +5277,19 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
     }
   }
   const { data, error } = await sb.from('mfg_sales_orders').update(patch)
-    .eq('doc_no', docNo).select('doc_no, status, proceeded_at').maybeSingle();
+    .eq('doc_no', docNo)
+    .eq('version', currentVersion)
+    .eq('status', fromStatus)
+    .or(`edit_lease_token.is.null,edit_lease_expires_at.lt.${new Date().toISOString()}`)
+    .select('doc_no, status, proceeded_at, version').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   // Stale/missing docNo (deleted, wrong tab) matches 0 rows → a clean 404
   // ("no longer found, refresh") instead of an opaque 500 (bug-hunt 2026-06-20).
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) {
+    const { data: latest } = await sb.from('mfg_sales_orders').select('version').eq('doc_no', docNo).maybeSingle();
+    if (!latest) return c.json({ error: 'not_found' }, 404);
+    return c.json(soVersionConflict(Number((latest as { version?: number }).version ?? currentVersion)), 409);
+  }
 
   // Audit row — best-effort. We keep writing the legacy mfg_so_status_changes
   // row for now (the existing StatusTimeline panel still reads it) and ALSO
@@ -5320,7 +5349,7 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
     } catch (e) { /* eslint-disable-next-line no-console */ console.error('[customer-credit] so-cancel credit failed:', e); }
   }
 
-  return c.json({ salesOrder: data });
+  return c.json({ salesOrder: data, version: currentVersion + 1 });
 });
 
 // ── DELETE /mfg-sales-orders/:docNo — discard a DRAFT ───────────────────────
@@ -5359,7 +5388,7 @@ mfgSalesOrders.delete('/:docNo', async (c) => {
   // Load the SO in THIS company only. Missing OR another company's → same 404.
   const { data: soRow } = await scopeToCompanyId(
     sb.from('mfg_sales_orders')
-      .select('doc_no, status, slip_image_key, receipt_image_key'),
+      .select('doc_no, status, version, edit_lease_token, edit_lease_expires_at, slip_image_key, receipt_image_key'),
     co.companyId,
   ).eq('doc_no', docNo).maybeSingle();
   if (!soRow) return c.json(NOT_THIS_COMPANY, 404);
@@ -5371,6 +5400,13 @@ mfgSalesOrders.delete('/:docNo', async (c) => {
       reason: 'Only a draft can be discarded. A confirmed order must be cancelled, not deleted.',
     }, 409);
   }
+  const currentVersion = Number((soRow as { version?: number | string }).version ?? 1);
+  const expectedVersion = Number(c.req.query('version'));
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+    return c.json({ ...SO_VERSION_REQUIRED, currentVersion }, 428);
+  }
+  if (expectedVersion !== currentVersion) return c.json(soVersionConflict(currentVersion), 409);
+  if (activeSoEditLease(soRow as SoEditLeaseRow)) return c.json(SO_EDIT_LEASE_CONFLICT, 409);
 
   // Grab the R2 keys BEFORE the rows vanish (the DB rows cascade away): the
   // draft's scan slip + receipt and any per-line photos all live in the
@@ -5382,7 +5418,10 @@ mfgSalesOrders.delete('/:docNo', async (c) => {
   // Atomic, race-safe delete: doc_no + company + still-DRAFT. If a confirm landed
   // between the check above and here, this matches 0 rows → 409, nothing touched.
   const del = await scopeToCompanyId(
-    sb.from('mfg_sales_orders').delete().eq('status', 'DRAFT'),
+    sb.from('mfg_sales_orders').delete()
+      .eq('status', 'DRAFT')
+      .eq('version', currentVersion)
+      .or(`edit_lease_token.is.null,edit_lease_expires_at.lt.${new Date().toISOString()}`),
     co.companyId,
   ).eq('doc_no', docNo).select('doc_no').maybeSingle();
   if (del.error) return c.json({ error: 'delete_failed', reason: del.error.message }, 500);
@@ -5477,6 +5516,8 @@ mfgSalesOrders.get('/:docNo/price-overrides', async (c) => {
 mfgSalesOrders.post('/:docNo/items/:itemId/override', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId');
   const user = c.get('user');
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
   /* SO-SKU spec P4 (D4) — price overrides are admin-level only. Everyone else
      gets the SKU Master price (auto-filled in the UI, enforced by the server
      recompute on POST/PATCH); this audited side-door is the ONLY way to
@@ -6305,74 +6346,42 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
   updates.edit_lease_token = operationLeaseToken;
   updates.edit_lease_expires_at = leaseExpiryIso;
 
-  /* Atomic compare-and-swap. The pre-check above gives a fast, useful conflict;
-     this WHERE closes the race between that read and this write. */
-  let casQuery = sb.from('mfg_sales_orders')
-    .update(updates)
-    .eq('doc_no', docNo)
-    .eq('version', clientVersion);
-  if (requestedLeaseToken && !reserveForLineWrites) {
-    casQuery = casQuery.eq('edit_lease_token', requestedLeaseToken);
-  } else {
-    casQuery = casQuery.or(`edit_lease_token.is.null,edit_lease_expires_at.lt.${new Date().toISOString()}`);
+  /* The header CAS and every version-bound follower commit in ONE PostgreSQL
+     transaction. A follower exception rolls the header back as well; there is
+     no longer a committed-header / failed-cascade split brain. */
+  const { data: casRows, error: casError } = await sb.rpc('apply_so_header_cas', {
+    p_doc_no: docNo,
+    p_expected_version: clientVersion,
+    p_required_lease: requestedLeaseToken && !reserveForLineWrites ? requestedLeaseToken : null,
+    p_patch: updates,
+    p_recustomer: customerIdentityChanged,
+    p_customer_name: reNewName || null,
+    p_customer_phone: reNewPhone,
+    p_customer_email: typeof body['email'] === 'string' && (body['email'] as string).trim()
+      ? (body['email'] as string).trim()
+      : null,
+    p_apply_warehouse: Boolean(reboundWarehouseId),
+    p_warehouse_id: reboundWarehouseId,
+    p_apply_delivery_date: body['customerDeliveryDate'] !== undefined,
+    p_delivery_date: (body['customerDeliveryDate'] as string | null | undefined) ?? null,
+  });
+  if (casError) return c.json({ error: 'update_failed', reason: casError.message }, 500);
+  const cas = (Array.isArray(casRows) ? casRows[0] : casRows) as
+    | { applied?: boolean; current_version?: number; resolved_customer_id?: string | null; conflict_reason?: string | null }
+    | null;
+  if (!cas?.applied) {
+    if (cas?.conflict_reason === 'not_found') return c.json({ error: 'not_found' }, 404);
+    if (cas?.conflict_reason === 'lease') return c.json(SO_EDIT_LEASE_CONFLICT, 409);
+    return c.json(soVersionConflict(Number(cas?.current_version ?? currentVersion)), 409);
   }
-  const { data, error } = await casQuery
-    .select('doc_no, version')
-    .maybeSingle();
-  if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
-  if (!data) {
-    const { data: latest, error: latestError } = await sb.from('mfg_sales_orders')
-      .select('version, edit_lease_token, edit_lease_expires_at').eq('doc_no', docNo).maybeSingle();
-    if (latestError) return c.json({ error: 'load_failed', reason: latestError.message }, 500);
-    if (!latest) return c.json({ error: 'not_found' }, 404);
-    if (activeSoEditLease(latest as SoEditLeaseRow) !== (requestedLeaseToken || null)) {
-      return c.json(SO_EDIT_LEASE_CONFLICT, 409);
-    }
-    const latestVersion = Number((latest as { version?: number | string }).version ?? currentVersion);
-    return c.json(soVersionConflict(latestVersion), 409);
-  }
-
-  const savedVersion = Number((data as unknown as { version?: number | string }).version ?? clientVersion + 1);
+  const savedVersion = Number(cas.current_version ?? clientVersion + 1);
+  resolvedNewCustomerId = cas.resolved_customer_id ?? null;
 
   /* A reservation is deliberately only version+timestamp. It proves the
      editor still owns the loaded header token before any line call is sent,
      and must not run header followers/audit/allocation as if data changed. */
   if (!hasHeaderFieldChanges && reserveForLineWrites) {
     return c.json({ ok: true, docNo, version: savedVersion, reserved: true, leaseToken: operationLeaseToken });
-  }
-
-  /* Customer resolution, voucher re-point, warehouse rebound and delivery-date
-     cascade execute inside ONE PG transaction after locking + re-checking the
-     exact saved version. A newer writer yields applied=false and ZERO follower
-     writes; no stale cascade can land after it. */
-  const needsAtomicFollowers = customerIdentityChanged
-    || Boolean(reboundWarehouseId)
-    || body['customerDeliveryDate'] !== undefined;
-  if (needsAtomicFollowers) {
-    const { data: followerRows, error: followerError } = await sb.rpc('apply_so_header_followers', {
-      p_doc_no: docNo,
-      p_version: savedVersion,
-      p_recustomer: customerIdentityChanged,
-      p_customer_name: reNewName || null,
-      p_customer_phone: reNewPhone,
-      p_customer_email: typeof body['email'] === 'string' && (body['email'] as string).trim()
-        ? (body['email'] as string).trim()
-        : null,
-      p_apply_warehouse: Boolean(reboundWarehouseId),
-      p_warehouse_id: reboundWarehouseId,
-      p_apply_delivery_date: body['customerDeliveryDate'] !== undefined,
-      p_delivery_date: (body['customerDeliveryDate'] as string | null | undefined) ?? null,
-    });
-    if (followerError) {
-      return c.json({ error: 'so_follower_failed', message: 'The order saved, but its dependent rows could not be updated. Refresh before continuing.' }, 500);
-    }
-    const follower = (Array.isArray(followerRows) ? followerRows[0] : followerRows) as
-      | { applied?: boolean; resolved_customer_id?: string | null }
-      | null;
-    if (!follower?.applied) {
-      return c.json(soVersionConflict(savedVersion), 409);
-    }
-    resolvedNewCustomerId = follower.resolved_customer_id ?? null;
   }
 
   /* Customer identity changed → the minted vouchers follow the order, and the
@@ -7771,6 +7780,8 @@ const TBC_BUILD_SHARED_KEYS = ['fabricId', 'fabricCode', 'fabricLabel', 'colourI
 
 mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const patch = (body.variants ?? {}) as Record<string, unknown>;
@@ -7982,6 +7993,8 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
    bill downward. The composition guard keeps sofa exclusive on the SO. */
 mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const newCode = String(body.itemCode ?? '').trim();
@@ -8539,6 +8552,8 @@ async function planSofaRewardRevert(
    PWP reward sofa builds stay coordinator-only (the reward is combo-bound). */
 mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const item = (body.item ?? null) as { itemCode?: unknown; qty?: unknown; unitPriceCenti?: unknown; description?: unknown; variants?: Record<string, unknown> | null } | null;
@@ -9185,6 +9200,8 @@ mfgSalesOrders.post('/:docNo/items/:itemId/photos', async (c) => {
   const docNo = c.req.param('docNo');
   const itemId = c.req.param('itemId');
   const user = c.get('user');
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
@@ -9393,6 +9410,8 @@ mfgSalesOrders.delete('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
   const itemId = c.req.param('itemId');
   const photoKey = decodeURIComponent(c.req.param('photoKey'));
   const user = c.get('user');
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
@@ -9474,7 +9493,7 @@ function deriveAccountSheet(
 const PAYMENT_COLS =
   'id, so_doc_no, paid_at, method, merchant_provider, installment_months, ' +
   'online_type, approval_code, amount_centi, account_sheet, slip_key, collected_by, note, ' +
-  'created_at, created_by';
+  'created_at, created_by, version, updated_at';
 
 mfgSalesOrders.get('/:docNo/payments', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo');
@@ -9772,6 +9791,7 @@ mfgSalesOrders.post('/:docNo/payments', async (c) => {
    payment view sum amount_centi) — exactly as the DELETE path relies on — so no
    header recompute is needed here; the amended amount flows straight through. */
 const paymentPatchSchema = z.object({
+  version:           z.number().int().min(1),
   paidAt:            z.string().min(1).optional(),
   method:            z.enum(['merchant', 'transfer', 'cash', 'installment']).optional(),
   merchantProvider:  z.string().trim().min(1).optional().nullable(),
@@ -9794,6 +9814,7 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   if (!row) return c.json({ error: 'not_found' }, 404);
   const before = row as {
     so_doc_no: string; created_at: string; paid_at: string;
+    version: number;
     method: 'merchant' | 'transfer' | 'cash' | 'installment';
     merchant_provider: string | null; installment_months: number | null;
     online_type: string | null; approval_code: string | null;
@@ -9838,6 +9859,9 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   const parsed = paymentPatchSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400);
   const p = parsed.data;
+  if (p.version !== Number(before.version ?? 1)) {
+    return c.json({ error: 'payment_version_conflict', currentVersion: Number(before.version ?? 1) }, 409);
+  }
 
   // Effective (post-edit) method + its scoped sub-fields — mirror recordSoPaymentRow.
   const nextMethod = p.method ?? before.method;
@@ -9942,11 +9966,19 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
       amount_centi:       nextAmount,
       account_sheet:      nextAccountSheet,
       collected_by:       nextCollectedBy,
+      version:             p.version + 1,
+      updated_at:          new Date().toISOString(),
     })
     .eq('id', id)
+    .eq('so_doc_no', docNo)
+    .eq('version', p.version)
     .select(`${PAYMENT_COLS}, staff:collected_by ( name )`)
-    .single();
+    .maybeSingle();
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
+  if (!updated) {
+    const { data: latest } = await sb.from('mfg_sales_order_payments').select('version').eq('id', id).maybeSingle();
+    return c.json({ error: 'payment_version_conflict', currentVersion: Number(latest?.version ?? p.version) }, 409);
+  }
 
   /* UPDATE_PAYMENT audit — same ledger + shape as ADD/DELETE, listing only the
      fields that actually changed (from → to). Best-effort inside recordSoAudit. */
@@ -9982,8 +10014,16 @@ mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
   // mis-routed call from nuking another SO's payment.
   const { data: row } = await sb.from('mfg_sales_order_payments').select('*').eq('id', id).maybeSingle();
   if (!row) return c.json({ error: 'not_found' }, 404);
-  const rowTyped = row as { so_doc_no: string; paid_at: string; method: string; amount_centi: number; approval_code: string | null };
+  const rowTyped = row as { so_doc_no: string; paid_at: string; method: string; amount_centi: number; approval_code: string | null; version: number };
   if (rowTyped.so_doc_no !== docNo) return c.json({ error: 'payment_doc_mismatch' }, 400);
+  const expectedVersion = Number(c.req.query('version'));
+  const currentVersion = Number(rowTyped.version ?? 1);
+  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+    return c.json({ error: 'payment_version_required', currentVersion }, 428);
+  }
+  if (expectedVersion !== currentVersion) {
+    return c.json({ error: 'payment_version_conflict', currentVersion }, 409);
+  }
 
   /* SAME-DAY WINDOW (Owner 2026-07-19) — "删除只有在当天才行。正常情况下，他当天
      key in 的时候，因为还没有 lock 下来，所以当天都可以任意更改." A payment row may
@@ -10038,8 +10078,17 @@ mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
     }, 409);
   }
 
-  const { error } = await sb.from('mfg_sales_order_payments').delete().eq('id', id);
+  const { data: deleted, error } = await sb.from('mfg_sales_order_payments').delete()
+    .eq('id', id)
+    .eq('so_doc_no', docNo)
+    .eq('version', expectedVersion)
+    .select('id')
+    .maybeSingle();
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  if (!deleted) {
+    const { data: latest } = await sb.from('mfg_sales_order_payments').select('version').eq('id', id).maybeSingle();
+    return c.json({ error: 'payment_version_conflict', currentVersion: Number(latest?.version ?? expectedVersion) }, 409);
+  }
 
   /* Post-merge stitch — DELETE_PAYMENT audit row. Carries the typed reason as a
      field change so it renders in AuditHistoryPanel alongside the amount that
@@ -10126,6 +10175,8 @@ mfgSalesOrders.patch('/:docNo/items/:itemId/stock-status', async (c) => {
   const docNo = c.req.param('docNo');
   const itemId = c.req.param('itemId');
   const user = c.get('user');
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
@@ -10194,11 +10245,8 @@ mfgSalesOrders.patch('/:docNo/items/:itemId/stock-status', async (c) => {
       .maybeSingle();
     const cur = (header as { status?: string } | null)?.status ?? null;
     if (cur === 'CONFIRMED' || cur === 'IN_PRODUCTION') {
-      const { error: stUpdErr } = await sb
-        .from('mfg_sales_orders')
-        .update({ status: 'READY_TO_SHIP' })
-        .eq('doc_no', docNo);
-      if (!stUpdErr) {
+      const generation = await advanceSoGeneration(sb, docNo, { status: 'READY_TO_SHIP' }, { status: cur });
+      if (generation.applied) {
         advancedTo = 'READY_TO_SHIP';
         await recordSoAudit(sb, {
           docNo,

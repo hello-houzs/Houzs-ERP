@@ -70,6 +70,7 @@ import { summariseReadiness, type ReadinessLine } from '../lib/so-readiness';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
 import { activeCompanyId, scopeToAllowedCompanies, companyCodeMap } from '../lib/companyScope';
 import { recordSoAudit, type FieldChange } from '../lib/so-audit';
+import { advanceSoGeneration } from '../lib/so-generation';
 import { computeReleaseGate } from '../../services/agents/release-gate';
 import { mintDpNoForLorry } from '../lib/dp-no-mint';
 import { resolveDeliveryScope, scopeMatchesAssignment, type DeliveryScope, type CrewAssignment } from '../lib/deliveryScope';
@@ -1445,11 +1446,9 @@ deliveryPlanning.patch('/:type/:id/fields', async (c) => {
         .eq('doc_no', soDocNo).maybeSingle();
       beforeRow = (beforeData ?? {}) as unknown as Record<string, unknown>;
     } catch { /* best-effort */ }
-    soUpdates.updated_at = new Date().toISOString();
-    const { error } = await sb.from('mfg_sales_orders').update(soUpdates).eq('doc_no', soDocNo);
-    if (error) {
-      if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
-      return c.json({ error: 'update_failed', reason: error.message }, 500);
+    const generation = await advanceSoGeneration(sb, soDocNo, soUpdates);
+    if (!generation.applied) {
+      return c.json({ error: 'so_version_conflict', currentVersion: generation.currentVersion }, 409);
     }
     written.so = true;
     {
@@ -1616,8 +1615,17 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
         scheduleBefore = (b ?? {}) as Record<string, unknown>;
       } catch { /* best-effort */ }
     }
-    const res = await sb.from(table).update(updates).eq(keyCol, id).select(selectCols).single();
+    const res = type === 'so'
+      ? await (async () => {
+          const generation = await advanceSoGeneration(sb, id, updates);
+          if (!generation.applied) {
+            return { data: null, error: { code: 'SO409', message: 'Sales Order changed while scheduling.' } };
+          }
+          return sb.from('mfg_sales_orders').select(selectCols).eq('doc_no', id).single();
+        })()
+      : await sb.from(table).update(updates).eq(keyCol, id).select(selectCols).single();
     if (res.error) {
+      if (res.error.code === 'SO409') return c.json({ error: 'so_version_conflict', reason: res.error.message }, 409);
       if (res.error.code === '42501') return c.json({ error: 'forbidden', reason: res.error.message }, 403);
       return c.json({ error: 'update_failed', reason: res.error.message }, 500);
     }

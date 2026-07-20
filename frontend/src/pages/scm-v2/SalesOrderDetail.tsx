@@ -793,7 +793,7 @@ export const SalesOrderDetail = () => {
       .then(() => Promise.all(deleteEntries.map((it) => deleteItem.mutateAsync({
         docNo: header.doc_no,
         itemId: it.id,
-        leaseToken: leaseToken ?? undefined,
+        leaseToken: leaseToken!,
       }))))
       .then(() => Promise.all(lineEntries.map(([id, d]) => commitEditingDraft(id, d))))
       .then(() => (pendingAdd ? commitAddLine(pendingAdd) : Promise.resolve()))
@@ -1226,7 +1226,7 @@ export const SalesOrderDetail = () => {
     updateItem.mutateAsync({
       docNo: header!.doc_no,
       itemId: id,
-      leaseToken: activeLineLeaseRef.current ?? undefined,
+      leaseToken: activeLineLeaseRef.current!,
       itemCode:       d.itemCode,
       itemGroup:      d.itemGroup,
       description:    d.description,
@@ -1249,7 +1249,7 @@ export const SalesOrderDetail = () => {
     const res = await addItem.mutateAsync({
       docNo: header!.doc_no,
       idempotencyKey: addLineKeyRef.current ??= newIdempotencyKey(),
-      leaseToken: activeLineLeaseRef.current ?? undefined,
+      leaseToken: activeLineLeaseRef.current!,
       itemCode:       d.itemCode,
       itemGroup:      d.itemGroup,
       description:    d.description,
