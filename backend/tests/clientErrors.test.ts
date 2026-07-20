@@ -1,6 +1,7 @@
-import { SELF, env, fetchMock } from "cloudflare:test";
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { SELF, env } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runClientErrorDigest } from "../src/services/clientErrors";
+import { createOutboundFetchMock } from "./outboundFetchMock";
 
 // Self-hosted client error reporting (mig 0151 / D1 126, routes/clientErrors.ts,
 // services/clientErrors.ts). Three trust properties under test:
@@ -259,21 +260,18 @@ describe("GET /summary — super-admin only", () => {
 // test env leaves RESEND_API_KEY unset on purpose).
 
 const liveEnv = { ...env, RESEND_API_KEY: "re_test_key" } as typeof env;
+let outbound: ReturnType<typeof createOutboundFetchMock>;
 
 function mockResend(status: number, body: unknown) {
-  fetchMock
-    .get("https://api.resend.com")
-    .intercept({ path: "/emails", method: "POST" })
-    .reply(status, body as any);
+  outbound.replyOnce("https://api.resend.com/emails", "POST", status, body);
 }
 
-beforeAll(() => {
-  fetchMock.activate();
-  fetchMock.disableNetConnect();
+afterEach(() => {
+  outbound.assertDone();
 });
 
-afterEach(() => {
-  fetchMock.assertNoPendingInterceptors();
+beforeEach(() => {
+  outbound = createOutboundFetchMock();
 });
 
 async function seedErrorRow(p: {

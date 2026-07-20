@@ -1,6 +1,7 @@
-import { env, fetchMock } from "cloudflare:test";
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { env } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { drainEmailOutbox, sendEmail } from "../src/services/email";
+import { createOutboundFetchMock } from "./outboundFetchMock";
 
 // Durable email outbox (migrations 095 / 0005). sendEmail() enqueues a row and
 // tries an immediate Resend delivery; on failure the row stays 'pending' for the
@@ -9,12 +10,10 @@ import { drainEmailOutbox, sendEmail } from "../src/services/email";
 // a key set (the real test env leaves RESEND_API_KEY unset on purpose).
 
 const liveEnv = { ...env, RESEND_API_KEY: "re_test_key" } as typeof env;
+let outbound: ReturnType<typeof createOutboundFetchMock>;
 
 function mockResend(status: number, body: unknown) {
-  fetchMock
-    .get("https://api.resend.com")
-    .intercept({ path: "/emails", method: "POST" })
-    .reply(status, body as any);
+  outbound.replyOnce("https://api.resend.com/emails", "POST", status, body);
 }
 
 async function outbox(id: string) {
@@ -31,17 +30,13 @@ async function onlyOutboxRow() {
   ).first<{ id: string; status: string; attempts: number }>();
 }
 
-beforeAll(() => {
-  fetchMock.activate();
-  fetchMock.disableNetConnect();
-});
-
 afterEach(() => {
   // Surface any intercept that a test registered but didn't consume.
-  fetchMock.assertNoPendingInterceptors();
+  outbound.assertDone();
 });
 
 beforeEach(async () => {
+  outbound = createOutboundFetchMock();
   await env.DB.exec(`DELETE FROM email_outbox`);
   await env.DB.exec(`DELETE FROM email_log`);
 });
