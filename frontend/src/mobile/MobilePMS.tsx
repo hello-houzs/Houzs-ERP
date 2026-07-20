@@ -56,6 +56,12 @@ type ProjectListRow = {
   progress_pct?: number | null;
   pic_name: string | null;
   active_section_name?: string | null;
+  // Section-driven stage counters (mig 050). Already returned by the
+  // /api/projects list SELECT and consumed by the desktop Projects table; typed
+  // here so the mobile card can show the current section "done/total" instead of
+  // the retired coarse `stage` enum.
+  sections_total?: number;
+  sections_complete?: number;
 };
 
 type ListResponse = {
@@ -523,7 +529,7 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
                         stage badge right; branding/venue chips; dates · PIC meta. */}
                     <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 800, color: "var(--ink)", lineHeight: 1.3 }}>{r.name || "—"}</span>
-                      <StageBadge stage={r.stage} />
+                      <SectionStageBadge row={r} />
                     </div>
                     {(r.brand || where) && (
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
@@ -531,8 +537,11 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
                         {where && <ListChip>{where}</ListChip>}
                       </div>
                     )}
-                    <div className="tnum" style={{ fontSize: 11, color: "var(--mut)", marginTop: 8, paddingTop: 8, borderTop: "1px solid #f0f1ed" }}>
-                      {dates}{r.pic_name ? <> · PIC <b style={{ color: "#414539" }}>{r.pic_name}</b></> : ""}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 8, borderTop: "1px solid #f0f1ed" }}>
+                      <span className="tnum" style={{ flex: 1, minWidth: 0, fontSize: 11, color: "var(--mut)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {dates}{r.pic_name ? <> · PIC <b style={{ color: "#414539" }}>{r.pic_name}</b></> : ""}
+                      </span>
+                      {typeof r.progress_pct === "number" && <MiniProgress pct={r.progress_pct} />}
                     </div>
                   </div>
                 </div>
@@ -3009,6 +3018,46 @@ function StageBadge({ stage, dark }: { stage: string | null | undefined; dark?: 
       color: dark ? "#d8a85a" : tint.fg,
       border: dark ? "1px solid rgba(216,168,90,.4)" : "none",
     }}>{label}</span>
+  );
+}
+
+// Section-driven stage badge — the project's CURRENT active section
+// (active_section_name + done/total, mig 050), matching the desktop Projects
+// table's stage column, which retired the coarse legacy `stage` enum. Reuses the
+// StageBadge .spill shape; the active stage takes the "open" tint (in progress).
+// Falls back to the legacy StageBadge when the row has no open section (all done
+// or none defined) so the pill is never blank.
+function SectionStageBadge({ row }: { row: ProjectListRow }) {
+  const active = row.active_section_name?.trim() || null;
+  if (!active) return <StageBadge stage={row.stage} />;
+  const total = row.sections_total ?? 0;
+  const done = row.sections_complete ?? 0;
+  const tint = STAGE_TINT.open;
+  return (
+    <span
+      className="spill"
+      style={{ flex: "none", background: tint.bg, color: tint.fg, border: "none" }}
+      title={total > 0 ? `Current stage · ${done}/${total} sections complete` : "Current stage"}
+    >
+      {active}
+      {total > 0 ? <span style={{ opacity: 0.6 }}> {done}/{total}</span> : null}
+    </span>
+  );
+}
+
+// Thin inline progress rail + % for the list card footer — mirrors the desktop
+// Projects ProgressBar (green at 100%, brand otherwise) using the mobile tokens
+// and the same 4px-radius rail treatment as the Delivery header bar. Sized to
+// sit inline on the meta row, never a tall block.
+function MiniProgress({ pct }: { pct: number }) {
+  const c = Math.max(0, Math.min(100, Math.round(pct)));
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flex: "none" }}>
+      <span style={{ display: "block", width: 44, height: 5, borderRadius: 4, background: "var(--line)", overflow: "hidden" }}>
+        <span style={{ display: "block", height: "100%", width: `${c}%`, background: c >= 100 ? "var(--green)" : "var(--brand)", borderRadius: 4 }} />
+      </span>
+      <span className="tnum" style={{ fontSize: 11, fontWeight: 700, color: "var(--brand-d)" }}>{c}%</span>
+    </span>
   );
 }
 

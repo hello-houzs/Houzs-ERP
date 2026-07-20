@@ -678,6 +678,62 @@ function MetaChip({ children }: { children: ReactNode }) {
   );
 }
 
+/* HC "Remark 4" delivery sub-status → pill tone. Mirrors the desktop board's
+   SUBSTATUS_TONE (pages/scm-v2/DeliveryPlanning.tsx) verbatim. The VALUES are
+   already shared via HC_SUBSTATUS_VALUES, but the display tone is desktop-local,
+   so it is replicated here rather than pulling the whole desktop screen into the
+   mobile bundle. Unknown / blank → muted. */
+const SUBSTATUS_TONE: Record<string, string> = {
+  "Pending Pickup": "#767b6e",
+  "Done Shipout": "#2f5d4f",
+  "Arrives EM Warehouse": "#2f5d4f",
+  "Done Delivered": "#2e7d32",
+  Confirm: "#2f5d4f",
+  "House Not Ready": "#0c3f39",
+  "Request Hold": "#0c3f39",
+};
+
+// ── Sub-status chip — a MetaChip-shaped pill tinted with the desktop tone. ──
+function SubstatusChip({ value }: { value: string }) {
+  const tone = SUBSTATUS_TONE[value] ?? "#767b6e";
+  return (
+    <span
+      style={{
+        fontSize: 10,
+        fontWeight: 700,
+        color: tone,
+        background: "#f0f1ed",
+        border: `1px solid ${tone}`,
+        padding: "3px 8px",
+        borderRadius: 7,
+        whiteSpace: "nowrap",
+        flex: "none",
+      }}
+    >
+      {value}
+    </span>
+  );
+}
+
+// ── days_left urgency micro-pill — the desktop board shows days_left in a
+// column; here we raise only the URGENT states so a past-due History row reads
+// as overdue instead of just "Scheduled". Reuses the canonical .badge tints: red
+// for overdue, brand for today / due-soon. Delivered or far-out (>3d) → nothing.
+function DaysLeftChip({ days, done }: { days: number | null; done: boolean }) {
+  if (done || days == null || days > 3) return null;
+  const overdue = days < 0;
+  const label = overdue
+    ? `${Math.abs(days)}d overdue`
+    : days === 0
+      ? "today"
+      : `${days}d`;
+  return (
+    <span className={`badge ${overdue ? "b-red" : "b-brand"}`} style={{ flex: "none" }}>
+      {label}
+    </span>
+  );
+}
+
 function StopCard({
   o,
   seq,
@@ -792,6 +848,10 @@ function StopCard({
         }}
       >
         <StopPill o={o} isToday={isToday} />
+        <DaysLeftChip days={o.days_left} done={st === "done"} />
+        {o.delivery_substatus && o.delivery_substatus.trim() ? (
+          <SubstatusChip value={o.delivery_substatus.trim()} />
+        ) : null}
         {htype && <MetaChip>{htype}</MetaChip>}
         {hasDisposal && <MetaChip>Disposal</MetaChip>}
       </div>
