@@ -567,6 +567,14 @@ app.get("/banner", async (c) => {
     return c.json({ success: false, error: "Your session has expired. Please sign in again." }, 401);
   }
 
+  // Mobile's PERSISTENT Announcements list asks for human-authored posts only
+  // (source IS NULL), matching the desktop Announcements page — the system
+  // per-user notices (scan / service_case) do not belong in that list (owner
+  // 2026-07-20). Absent/true keeps the FULL feed so the desktop top-banner
+  // popup and every existing caller are unchanged.
+  const q = (c.req.query("includeSystem") ?? "").toLowerCase();
+  const includeSystem = !(q === "false" || q === "0");
+
   // PER-USER KV snapshot (inbox.ts pattern) — this payload is per-user three
   // times over (own ackedIds, dept/position/user-id targeting, the reader's
   // company grants), so it must NEVER enter a shared cache; the key's scope
@@ -576,8 +584,12 @@ app.get("/banner", async (c) => {
   // 60s TTL matches the frontend's poll and sessionCache's freshness window
   // for role/dept edits. Best-effort: any KV trouble serves the live build.
   const bannerVersion = await configCacheVersion(c.env, "banner");
+  // The human-only variant bypasses the snapshot (the cache key is not keyed on
+  // it) — a cheap live read + in-memory filter; the mobile list polls at 30s.
   const cacheKey =
-    bannerVersion == null ? null : bannerCacheKey(bannerVersion, user.id);
+    bannerVersion == null || !includeSystem
+      ? null
+      : bannerCacheKey(bannerVersion, user.id);
   if (cacheKey) {
     try {
       const cached = await c.env.SESSION_CACHE?.get(cacheKey);
@@ -596,6 +608,7 @@ app.get("/banner", async (c) => {
     .all<AnnouncementRow>();
   const active = (res.results ?? []).filter(
     (r) =>
+      (includeSystem || !r.source) &&
       isActiveFlag(r.isActive ?? r.is_active ?? null) &&
       notExpired(r.expiresAt ?? r.expires_at ?? null) &&
       companyCanSee(r, allowed) &&

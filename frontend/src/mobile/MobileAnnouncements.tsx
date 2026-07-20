@@ -27,8 +27,10 @@ import "./mobile.css";
 // publishers see READ RECEIPTS (GET /:id/acks), and the detail has an explicit
 // sticky "Got it — mark as read" acknowledgement bar wired to POST /:id/ack.
 //
-// The banner GET (/api/announcements/banner) returns the notices THIS user is
-// allowed to see plus the ids they've already acked; we use it for the list so
+// The banner GET (/api/announcements/banner?includeSystem=false) returns the
+// HUMAN-authored notices THIS user is allowed to see (source IS NULL — no scan /
+// service-case system notices, matching the desktop Announcements page; owner
+// 2026-07-20) plus the ids they've already acked; we use it for the list so
 // non-admins see their own feed and honest unread dots. Compose is gated on
 // announcements.write and hits POST /api/announcements. No emoji.
 // ---------------------------------------------------------------------------
@@ -401,8 +403,11 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
   const [openId, setOpenId] = useState<string | null>(null);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["mobile-announcements"],
-    queryFn: () => api.get<BannerResponse>("/api/announcements/banner"),
+    // Human-authored posts only — the persistent list mirrors the desktop
+    // Announcements page (source IS NULL). System scan / service-case notices
+    // are excluded here (owner 2026-07-20).
+    queryKey: ["mobile-announcements", "human-only"],
+    queryFn: () => api.get<BannerResponse>("/api/announcements/banner?includeSystem=false"),
     staleTime: 30_000,
   });
 
