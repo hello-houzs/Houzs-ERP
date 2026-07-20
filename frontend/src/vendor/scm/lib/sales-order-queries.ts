@@ -302,13 +302,15 @@ export const useUpdateMfgSalesOrderHeader = () => {
     // HOUZS VENDOR: verified-save dropped — strip the client-only `__verify`
     // map and fall through to the plain PATCH the source already used when no
     // verification was requested.
-    mutationFn: async ({ docNo, __verify: _v, ...body }: { docNo: string; __verify?: Record<string, unknown> } & Record<string, unknown>) => {
+    mutationFn: async ({ docNo, __verify: _v, __suppressInvalidate: _s, ...body }: { docNo: string; __verify?: Record<string, unknown>; __suppressInvalidate?: boolean } & Record<string, unknown>) => {
       void _v;
-      return authedFetch<{ ok: boolean }>(`/mfg-sales-orders/${docNo}`, {
+      void _s;
+      return authedFetch<{ ok: boolean; version: number }>(`/mfg-sales-orders/${docNo}`, {
         method: 'PATCH', body: JSON.stringify(body),
       });
     },
     onSuccess: (_, vars) => {
+      if (vars.reserveLineWrites === true || vars.__suppressInvalidate === true) return;
       invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });
@@ -319,11 +321,17 @@ export const useUpdateMfgSalesOrderHeader = () => {
 export const useAddMfgSalesOrderItem = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, ...item }: { docNo: string } & Record<string, unknown>) =>
+    mutationFn: ({ docNo, idempotencyKey, leaseToken, ...item }: { docNo: string; idempotencyKey?: string; leaseToken?: string } & Record<string, unknown>) =>
       authedFetch<{ item: unknown }>(`/mfg-sales-orders/${docNo}/items`, {
-        method: 'POST', body: JSON.stringify(item),
+        method: 'POST',
+        headers: {
+          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+          ...(leaseToken ? { 'X-SO-Edit-Lease': leaseToken } : {}),
+        },
+        body: JSON.stringify(item),
       }),
     onSuccess: (_, vars) => {
+      if (vars.leaseToken) return;
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
       invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });
@@ -334,11 +342,14 @@ export const useAddMfgSalesOrderItem = () => {
 export const useUpdateMfgSalesOrderItem = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, itemId, ...item }: { docNo: string; itemId: string } & Record<string, unknown>) =>
+    mutationFn: ({ docNo, itemId, leaseToken, ...item }: { docNo: string; itemId: string; leaseToken?: string } & Record<string, unknown>) =>
       authedFetch<{ ok: boolean }>(`/mfg-sales-orders/${docNo}/items/${itemId}`, {
-        method: 'PATCH', body: JSON.stringify(item),
+        method: 'PATCH',
+        headers: leaseToken ? { 'X-SO-Edit-Lease': leaseToken } : undefined,
+        body: JSON.stringify(item),
       }),
     onSuccess: (_, vars) => {
+      if (vars.leaseToken) return;
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
       invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });
@@ -349,9 +360,13 @@ export const useUpdateMfgSalesOrderItem = () => {
 export const useDeleteMfgSalesOrderItem = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, itemId }: { docNo: string; itemId: string }) =>
-      authedFetch<void>(`/mfg-sales-orders/${docNo}/items/${itemId}`, { method: 'DELETE' }),
+    mutationFn: ({ docNo, itemId, leaseToken }: { docNo: string; itemId: string; leaseToken?: string }) =>
+      authedFetch<void>(`/mfg-sales-orders/${docNo}/items/${itemId}`, {
+        method: 'DELETE',
+        headers: leaseToken ? { 'X-SO-Edit-Lease': leaseToken } : undefined,
+      }),
     onSuccess: (_, vars) => {
+      if (vars.leaseToken) return;
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
       invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });

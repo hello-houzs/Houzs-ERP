@@ -250,14 +250,80 @@ const SO_PROCESSING_LOCKED_RESPONSE = {
 /* Optimistic-lock rejection (WO-8 / GO-LIVE charter item 3). `error` is a CODE
    the frontend maps to a curated plain sentence (authed-fetch.ts humanApiError),
    so the wording can never drift; `message` carries the same sentence inline as
-   a fallback for any surface that reads the body raw. Fires only when a
-   version-aware editor (desktop SalesOrderDetail / mobile MobileNewSO) sends the
-   `version` it LOADED and the row has moved on since — a plain last-writer-wins
-   PATCH (no version sent) is unaffected. */
+   a fallback for any surface that reads the body raw. Desktop and mobile must
+   send the `version` they loaded for every real header mutation; a missing token
+   is rejected with 428 instead of silently falling back to last-writer-wins. */
 const SO_VERSION_CONFLICT = {
   error: 'so_version_conflict',
-  message: 'Someone else updated this order while you were editing. Reload to see the latest changes.',
+  message: 'Someone else updated this order while you were editing. Your changes are still on this screen; review the latest order before saving again.',
 } as const;
+
+const SO_VERSION_REQUIRED = {
+  error: 'so_version_required',
+  message: 'This order was opened with an older screen. Your changes are still here; refresh the order before saving again.',
+} as const;
+
+const soVersionConflict = (currentVersion: number) => ({
+  ...SO_VERSION_CONFLICT,
+  currentVersion,
+});
+
+const SO_EDIT_LEASE_CONFLICT = {
+  error: 'so_edit_lease_conflict',
+  message: 'This order is being saved on another screen. Your changes are still here; wait a moment and try again.',
+} as const;
+
+type SoEditLeaseRow = {
+  edit_lease_token?: string | null;
+  edit_lease_expires_at?: string | null;
+};
+
+const activeSoEditLease = (row: SoEditLeaseRow | null | undefined): string | null => {
+  const token = row?.edit_lease_token ?? null;
+  const expires = row?.edit_lease_expires_at ? Date.parse(row.edit_lease_expires_at) : NaN;
+  return token && Number.isFinite(expires) && expires > Date.now() ? token : null;
+};
+
+export const soLineWriteLeaseMatches = (
+  row: SoEditLeaseRow | null | undefined,
+  supplied: string,
+): boolean => Boolean(supplied) && activeSoEditLease(row) === supplied;
+
+/* Every direct line mutation belongs to an acquired header lease. This is the
+   enforceable half of the multi-request composite save: a caller cannot bypass
+   CAS by skipping the header request and writing lines directly. */
+async function requireSoLineWriteLease(sb: any, docNo: string, c: any): Promise<Response | null> {
+  const supplied = c.req.header('X-SO-Edit-Lease')?.trim() ?? '';
+  const { data, error } = await sb.from('mfg_sales_orders')
+    .select('edit_lease_token, edit_lease_expires_at')
+    .eq('doc_no', docNo)
+    .maybeSingle();
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!soLineWriteLeaseMatches(data as SoEditLeaseRow, supplied)) {
+    return c.json(SO_EDIT_LEASE_CONFLICT, 409);
+  }
+  return null;
+}
+
+/** A line id is never globally trusted: every read/write/delete also proves it
+ * belongs to the docNo in the route. Exported for the regression test. */
+type DocumentScopedQuery = {
+  eq: (column: string, value: string) => DocumentScopedQuery;
+};
+
+export function scopeSoItemToDocument<T>(
+  query: T,
+  docNo: string,
+  itemId: string,
+): T {
+  // Keep T unconstrained at the call-site. Recursively constraining Supabase's
+  // generic query builder makes TypeScript expand the full generated schema
+  // here and can hit TS2589 (excessively deep type instantiation).
+  return (query as T & DocumentScopedQuery)
+    .eq('doc_no', docNo)
+    .eq('id', itemId) as T;
+}
 
 function soProcessingLocked(
   header: { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null; status?: string | null } | null | undefined,
@@ -5512,15 +5578,6 @@ mfgSalesOrders.post('/:docNo/items/:itemId/override', async (c) => {
        customer_id is re-pointed to the new customer.
      • the cross-category DELIVERY fee (a SERVICE line whose rate depends on the
        customer's other orders) is RE-DETECTED — see redetectCrossCategoryDelivery. */
-async function repointMintedVouchers(sb: any, docNo: string, newCustomerId: string | null): Promise<number> {
-  if (!newCustomerId) return 0;
-  const { data } = await sb.from('pwp_codes')
-    .update({ customer_id: newCustomerId, updated_at: new Date().toISOString() })
-    .eq('source_doc_no', docNo)
-    .select('code');
-  return ((data ?? []) as Array<{ code: string }>).length;
-}
-
 /* Core delivery-fee recompute — re-derives the authoritative delivery FEE from
    the SO's CURRENT items, for a CALLER-SUPPLIED cross-category sourceDocNo. It
    does NOT auto-match a source: the caller decides whether to re-run the
@@ -5743,7 +5800,7 @@ export async function rederiveDeliveryFee(sb: any, docNo: string, c: any): Promi
   if (res === null) await recomputeTotals(sb, docNo, c);
 }
 
-mfgSalesOrders.patch('/:docNo', async (c) => {
+export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -5753,23 +5810,6 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      order by doc_no (customer fields, even salesperson_id reassignment). Mirror
      the line-mutation endpoints' self-scope guard. */
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
-
-  /* Owner 2026-06-03 (migration 0144) — phone is COMPULSORY on every SO. The
-     CREATE path blocks an empty phone (phone_required); the EDIT path must too,
-     or the compulsory-phone rule is bypassable by PATCHing phone to blank.
-     Only guard when phone is actually present in the body (a PATCH that doesn't
-     touch phone leaves the existing value untouched). */
-  if (body.phone !== undefined) {
-    const patchPhone = typeof body.phone === 'string' ? body.phone.trim() : '';
-    if (!patchPhone) {
-      return c.json({ error: 'phone_required', reason: 'A phone number is required on every sales order.' }, 400);
-    }
-  }
-
-  /* Loo 2026-06-05 — maintained-dropdown 409 gate on edit too, or the create
-     gate is bypassable by PATCHing a dirty value in afterwards. */
-  const dropdownErr = await validateSoDropdownFields(sb, body, activeCompanyId(c));
-  if (dropdownErr) return c.json(dropdownErr, 409);
 
   const map: Array<[string, string]> = [
     ['debtorCode', 'debtor_code'], ['debtorName', 'debtor_name'], ['agent', 'agent'],
@@ -5842,7 +5882,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      construction rather than by the frontend's current shape. A finance caller
      is unaffected. */
   const canFinance = canViewScmFinance(c);
-  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const updates: Record<string, unknown> = {};
   for (const [from, to] of map) {
     if (body[from] === undefined) continue;
     if (from === 'depositCenti' && !canFinance) continue;
@@ -5858,6 +5898,100 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
       updates[to] = body[from];
     }
   }
+
+  /* A PATCH is a real mutation only when at least one recognised, normalised
+     field differs from storage. Compare before validation or derivation so an
+     unchanged phone/dropdown/date cannot demand a version, bump it, or fire a
+     follower side effect. `reserveLineWrites` is the one explicit exception:
+     the desktop composite-save uses it to acquire a CAS token before lines. */
+  const beforeCols = map.map(([, snake]) => snake)
+    .concat(['status', 'processing_date', 'version', 'edit_lease_token', 'edit_lease_expires_at'])
+    .join(', ');
+  const { data: before, error: beforeError } = await sb.from('mfg_sales_orders').select(beforeCols).eq('doc_no', docNo).maybeSingle();
+  if (beforeError) return c.json({ error: 'load_failed', reason: beforeError.message }, 500);
+  if (!before) return c.json({ error: 'not_found' }, 404);
+  const beforeRecord = before as unknown as Record<string, unknown>;
+  for (const [from, to] of map) {
+    if (!(to in updates) || norm(updates[to]) !== norm(beforeRecord[to])) continue;
+    delete updates[to];
+    delete body[from];
+  }
+
+  /* Stamp-once filtering is part of normalisation, not an afterthought. A
+     repeated Proceed timestamp is a true no-op and must not demand/bump a
+     version merely because the incoming timestamp string differs. */
+  if (updates['proceeded_at'] !== undefined && updates['proceeded_at'] !== null
+      && beforeRecord['proceeded_at']) {
+    delete updates['proceeded_at'];
+    delete body['proceededAt'];
+  }
+
+  const reserveForLineWrites = body['reserveLineWrites'] === true;
+  const completeLineWrites = body['completeLineWrites'] === true;
+  const requestedLeaseToken = typeof body['lineWriteLeaseToken'] === 'string'
+    ? (body['lineWriteLeaseToken'] as string).trim()
+    : '';
+  const activeLeaseToken = activeSoEditLease(before as SoEditLeaseRow);
+  if ((reserveForLineWrites || completeLineWrites) && requestedLeaseToken.length < 16) {
+    return c.json({ error: 'so_edit_lease_invalid', message: 'The save lease is invalid. Refresh the order and try again.' }, 400);
+  }
+  const hasHeaderFieldChanges = Object.keys(updates).length > 0;
+  if (!hasHeaderFieldChanges && !reserveForLineWrites && !completeLineWrites) {
+    return c.json({ ok: true, changed: 0 });
+  }
+  if (activeLeaseToken && activeLeaseToken !== requestedLeaseToken) {
+    return c.json(SO_EDIT_LEASE_CONFLICT, 409);
+  }
+
+  const currentVersion = Number((before as unknown as { version?: number | string }).version ?? 1);
+  if (reserveForLineWrites && activeLeaseToken === requestedLeaseToken) {
+    return c.json({ ok: true, docNo, version: currentVersion, reserved: true, leaseToken: requestedLeaseToken });
+  }
+
+  if (body.version === undefined) {
+    return c.json({ ...SO_VERSION_REQUIRED, currentVersion }, 428);
+  }
+  const clientVersion = Number(body.version);
+  if (!Number.isInteger(clientVersion) || clientVersion < 1) {
+    return c.json({
+      error: 'so_version_invalid',
+      message: 'The order version is invalid. Refresh the order before saving again.',
+      currentVersion,
+    }, 400);
+  }
+  if (clientVersion !== currentVersion) {
+    return c.json(soVersionConflict(currentVersion), 409);
+  }
+
+  /* A line-only composite completes by releasing its matching lease without a
+     data/version bump. Both predicates make a stale/wrong release a no-op. */
+  if (!hasHeaderFieldChanges && completeLineWrites) {
+    const { data: released, error: releaseError } = await sb.from('mfg_sales_orders')
+      .update({ edit_lease_token: null, edit_lease_expires_at: null })
+      .eq('doc_no', docNo)
+      .eq('version', clientVersion)
+      .eq('edit_lease_token', requestedLeaseToken)
+      .select('version')
+      .maybeSingle();
+    if (releaseError) return c.json({ error: 'update_failed', reason: releaseError.message }, 500);
+    if (!released) return c.json(SO_EDIT_LEASE_CONFLICT, 409);
+    return c.json({ ok: true, docNo, version: clientVersion, released: true });
+  }
+
+  updates.updated_at = new Date().toISOString();
+
+  /* Phone is compulsory, but unchanged values were removed above: only a
+     genuine attempt to blank the stored phone is rejected. */
+  if (body.phone !== undefined) {
+    const patchPhone = typeof body.phone === 'string' ? body.phone.trim() : '';
+    if (!patchPhone) {
+      return c.json({ error: 'phone_required', reason: 'A phone number is required on every sales order.' }, 400);
+    }
+  }
+
+  /* Maintained-dropdown gate on genuine edits only. */
+  const dropdownErr = await validateSoDropdownFields(sb, body, activeCompanyId(c));
+  if (dropdownErr) return c.json(dropdownErr, 409);
   /* VENUE OVERRIDE (owner 2026-07-19, migration 0148) — the operator has just
      edited the venue on this order, so the value is now theirs, not the
      resolver's. Marking it MANUAL is the whole protection: canAutoResolveVenue()
@@ -5881,6 +6015,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      from my_localities so the SO snapshot follows the new state's country.
      A null state explicitly clears the snapshot (so an SO whose state is
      wiped doesn't keep a stale country). */
+  let reboundWarehouseId: string | null = null;
   if (body['customerState'] !== undefined) {
     updates['customer_country'] = await deriveCountryFromState(
       sb,
@@ -5904,18 +6039,8 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
        warehouse_id NULL → "—" in MRP. Backfill the warehouse onto lines that
        don't have one yet (NULL only — explicit per-line overrides untouched).
        Wei Siang 2026-06-16. */
-    const reboundWh = await deriveWarehouseIdFromState(sb, body['customerState'] as string | null, c);
-    if (reboundWh) {
-      await sb
-        .from('mfg_sales_order_items')
-        .update({ warehouse_id: reboundWh })
-        .eq('doc_no', docNo)
-        .eq('cancelled', false)
-        .is('warehouse_id', null);
-    }
+    reboundWarehouseId = await deriveWarehouseIdFromState(sb, body['customerState'] as string | null, c);
   }
-
-  if (Object.keys(updates).length === 1) return c.json({ ok: true, changed: 0 });
 
   /* Aggregate EVERY Processing-Date save gate into ONE response (owner
      2026-07-18) — the routes used to `return` on the FIRST failing gate, so the
@@ -5951,33 +6076,11 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     );
   }
 
-  // PR-D — snapshot the row before update so we can emit a field-level diff
-  // in the audit log. Only fields actually in the patch body are compared.
-  const beforeCols = map.map(([, snake]) => snake).concat(['status', 'processing_date', 'version']).join(', ');
-  const { data: before } = await sb.from('mfg_sales_orders').select(beforeCols).eq('doc_no', docNo).maybeSingle();
-
-  /* Optimistic locking (WO-8 / GO-LIVE charter item 3) — two operators can open
-     the SAME SO in the editor, both change header fields, both Save; without a
-     version token the second Save silently overwrites the first. OPT-IN, exactly
-     like the idempotency middleware: the check + the compare-and-swap below fire
-     ONLY when the client echoes back the `version` it loaded (desktop
-     SalesOrderDetail / mobile MobileNewSO). A version-unaware caller (2990 mirror,
-     Delivery-Planning `/fields`, any internal PATCH) keeps today's last-writer
-     behaviour — it simply doesn't send a version. Either way a real field change
-     BUMPS the token (below), so a version-aware editor that loaded an older value
-     will detect the drift on its next Save. `before` was just read for the audit
-     diff; piggyback on it rather than issuing a second round-trip. */
-  const clientVersion = body.version !== undefined ? Number(body.version) : null;
-  const currentVersion = before
-    ? Number((before as unknown as { version?: number | string }).version ?? 1)
-    : null;
-  if (
-    clientVersion !== null && !Number.isNaN(clientVersion) &&
-    currentVersion !== null && clientVersion !== currentVersion
-  ) {
-    return c.json(SO_VERSION_CONFLICT, 409);
-  }
-  if (currentVersion !== null) updates.version = currentVersion + 1;
+  /* HZ-C-02: every real human-editor header mutation carries the token returned
+     by the detail GET. Empty or unrecognised patches returned changed:0 above,
+     so they do not falsely trip this gate. Mirror ingestion and Delivery
+     Planning update the base table through their own routes, not this endpoint. */
+  updates.version = clientVersion + 1;
 
   /* Remove-Processing-Date gate (Owner 2026-07-09, port of 2990 #717) — clearing
      an already-set Processing Date pulls the SO back out of the Proceed lane (and,
@@ -6069,20 +6172,6 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     }
   }
 
-  /* proceeded_at is stamp-once for the FORWARD move (the POS "Proceed" marker):
-     once set, a later header edit / repeat proceed must NOT overwrite the
-     original sales-side timestamp, so a non-null re-stamp on an already-
-     proceeded row is dropped. An explicit `null`, though, is the POS
-     "Move to Order placed" un-proceed (Loo 2026-06-13) — it clears the marker
-     so the SO drops back to the editable Order-placed lane, so null passes
-     through. The processing-date lock above already 409s this once the
-     processing day has passed (a locked SO is what we PO to the supplier and
-     can't be pulled back). */
-  if (updates['proceeded_at'] !== undefined && updates['proceeded_at'] !== null
-      && before && (before as unknown as Record<string, unknown>)['proceeded_at']) {
-    delete updates['proceeded_at'];
-  }
-
   /* FIX 2 (2026-07-16) — gate a genuine forward Proceed on the header PATCH path
      too (mobile / API set proceededAt directly here). After the stamp-once drop
      above, a still-present non-null proceeded_at means the SO had NONE before →
@@ -6157,14 +6246,11 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     if (problems.length > 0) return c.json(validationFailedBody(problems), 422);
   }
 
-  /* Loo 2026-06-13 — POS "Save" opt-in (recustomer:true). Re-resolve customer_id
-     from the edited name+phone exactly as create does, and write it into
-     `updates` BEFORE the identity lock below so a DO/SI still freezes a customer
-     reassignment. PWP product lines are NOT touched (only an item swap re-prices
-     those). When the identity changed we re-detect the cross-category delivery
-     fee + re-point this SO's minted vouchers AFTER the write (see below). */
+  /* Loo 2026-06-13 — POS "Save" opt-in (recustomer:true). Detect the edited
+     identity here, but defer the write-producing customer resolution until the
+     header CAS wins. The changed name/phone already participate in the identity
+     lock; customer_id is attached in the post-CAS safe split below. */
   const beforeRowAll = before as unknown as Record<string, unknown> | null;
-  const oldCustomerId = (beforeRowAll?.['customer_id'] as string | null) ?? null;
   let resolvedNewCustomerId: string | null = null;
   let customerIdentityChanged = false; // name or phone changed → re-detect cross-category
   let reNewName = '';
@@ -6181,14 +6267,9 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
       customerIdentityChanged = true;
       reNewName = nm;
       reNewPhone = ph;
-      const { data: rid } = await sb.rpc('upsert_customer_by_name_phone', {
-        p_name: nm, p_phone: ph,
-        p_email: typeof body['email'] === 'string' && (body['email'] as string).trim() ? (body['email'] as string).trim() : null,
-      });
-      resolvedNewCustomerId = (rid as string | null) ?? null;
-      if (resolvedNewCustomerId) {
-        updates['customer_id'] = resolvedNewCustomerId; // visible to the identity lock below
-      }
+      /* Do not call the write-producing customer RPC here. The header CAS must
+         win first; otherwise a stale editor could create/update a customer and
+         still receive 409. Resolution is safely split after the CAS below. */
     }
   }
 
@@ -6216,22 +6297,82 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     }
   }
 
-  /* Compare-and-swap for version-aware callers: gate the write on the version we
-     loaded so a stale editor that slipped past the pre-check (a concurrent Save
-     landing in the millisecond gap since the `before` read) still cannot clobber
-     the newer row — it matches zero rows instead. Version-unaware callers write
-     unconditionally (today's behaviour). */
-  const casVersion = clientVersion !== null && !Number.isNaN(clientVersion) && currentVersion !== null;
-  let updQuery = sb.from('mfg_sales_orders').update(updates).eq('doc_no', docNo);
-  if (casVersion) updQuery = updQuery.eq('version', currentVersion);
-  const { data, error } = await updQuery.select('doc_no').maybeSingle();
+  const leaseExpiryIso = new Date(Date.now() + 5 * 60_000).toISOString();
+  /* Keep a durable lease through every post-CAS follower. Composite saves reuse
+     the caller token; a header-only save gets a short internal token. The lease
+     is released only after followers/audit/recompute finish below. */
+  const operationLeaseToken = requestedLeaseToken || crypto.randomUUID();
+  updates.edit_lease_token = operationLeaseToken;
+  updates.edit_lease_expires_at = leaseExpiryIso;
+
+  /* Atomic compare-and-swap. The pre-check above gives a fast, useful conflict;
+     this WHERE closes the race between that read and this write. */
+  let casQuery = sb.from('mfg_sales_orders')
+    .update(updates)
+    .eq('doc_no', docNo)
+    .eq('version', clientVersion);
+  if (requestedLeaseToken && !reserveForLineWrites) {
+    casQuery = casQuery.eq('edit_lease_token', requestedLeaseToken);
+  } else {
+    casQuery = casQuery.or(`edit_lease_token.is.null,edit_lease_expires_at.lt.${new Date().toISOString()}`);
+  }
+  const { data, error } = await casQuery
+    .select('doc_no, version')
+    .maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   if (!data) {
-    /* Existence was confirmed by the `before` read above. For a CAS write a null
-       row therefore means the version moved under us → conflict, not not-found;
-       for a plain write it is a genuine not-found. */
-    if (casVersion) return c.json(SO_VERSION_CONFLICT, 409);
-    return c.json({ error: 'not_found' }, 404);
+    const { data: latest, error: latestError } = await sb.from('mfg_sales_orders')
+      .select('version, edit_lease_token, edit_lease_expires_at').eq('doc_no', docNo).maybeSingle();
+    if (latestError) return c.json({ error: 'load_failed', reason: latestError.message }, 500);
+    if (!latest) return c.json({ error: 'not_found' }, 404);
+    if (activeSoEditLease(latest as SoEditLeaseRow) !== (requestedLeaseToken || null)) {
+      return c.json(SO_EDIT_LEASE_CONFLICT, 409);
+    }
+    const latestVersion = Number((latest as { version?: number | string }).version ?? currentVersion);
+    return c.json(soVersionConflict(latestVersion), 409);
+  }
+
+  const savedVersion = Number((data as unknown as { version?: number | string }).version ?? clientVersion + 1);
+
+  /* A reservation is deliberately only version+timestamp. It proves the
+     editor still owns the loaded header token before any line call is sent,
+     and must not run header followers/audit/allocation as if data changed. */
+  if (!hasHeaderFieldChanges && reserveForLineWrites) {
+    return c.json({ ok: true, docNo, version: savedVersion, reserved: true, leaseToken: operationLeaseToken });
+  }
+
+  /* Customer resolution, voucher re-point, warehouse rebound and delivery-date
+     cascade execute inside ONE PG transaction after locking + re-checking the
+     exact saved version. A newer writer yields applied=false and ZERO follower
+     writes; no stale cascade can land after it. */
+  const needsAtomicFollowers = customerIdentityChanged
+    || Boolean(reboundWarehouseId)
+    || body['customerDeliveryDate'] !== undefined;
+  if (needsAtomicFollowers) {
+    const { data: followerRows, error: followerError } = await sb.rpc('apply_so_header_followers', {
+      p_doc_no: docNo,
+      p_version: savedVersion,
+      p_recustomer: customerIdentityChanged,
+      p_customer_name: reNewName || null,
+      p_customer_phone: reNewPhone,
+      p_customer_email: typeof body['email'] === 'string' && (body['email'] as string).trim()
+        ? (body['email'] as string).trim()
+        : null,
+      p_apply_warehouse: Boolean(reboundWarehouseId),
+      p_warehouse_id: reboundWarehouseId,
+      p_apply_delivery_date: body['customerDeliveryDate'] !== undefined,
+      p_delivery_date: (body['customerDeliveryDate'] as string | null | undefined) ?? null,
+    });
+    if (followerError) {
+      return c.json({ error: 'so_follower_failed', message: 'The order saved, but its dependent rows could not be updated. Refresh before continuing.' }, 500);
+    }
+    const follower = (Array.isArray(followerRows) ? followerRows[0] : followerRows) as
+      | { applied?: boolean; resolved_customer_id?: string | null }
+      | null;
+    if (!follower?.applied) {
+      return c.json(soVersionConflict(savedVersion), 409);
+    }
+    resolvedNewCustomerId = follower.resolved_customer_id ?? null;
   }
 
   /* Customer identity changed → the minted vouchers follow the order, and the
@@ -6241,30 +6382,11 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
   let crossCategoryRedetect: { isFollowup: boolean; sourceDocNo: string | null; total: number } | null = null;
   if (customerIdentityChanged) {
     try {
-      if (resolvedNewCustomerId && resolvedNewCustomerId !== oldCustomerId) {
-        await repointMintedVouchers(sb, docNo, resolvedNewCustomerId);
-      }
       crossCategoryRedetect = await redetectCrossCategoryDelivery(sb, docNo, reNewName, reNewPhone, c);
     } catch (e) {
       /* eslint-disable-next-line no-console */
       console.error('[mfg-so] customer-change re-detect failed:', e);
     }
-  }
-
-  /* PR-E — Master-follower cascade. When the header's customer_delivery_date
-     changes, EVERY line picks up the new date and its per-line override flag is
-     cleared (Commander 2026-06-18 #4: the header delivery date is the source of
-     truth for ordering, so MRP — which derives each line's suggested PO/order-by
-     date from line_delivery_date — stays accurate after a header date edit,
-     including lines that were previously edited individually). Previously lines
-     with line_delivery_date_overridden=true were skipped, which left MRP showing
-     a stale order-by date. Best-effort: if the cascade UPDATE fails we still
-     report success for the header; the next refresh shows the divergence. */
-  if (body['customerDeliveryDate'] !== undefined) {
-    const newDate = body['customerDeliveryDate'] as string | null;
-    await sb.from('mfg_sales_order_items')
-      .update({ line_delivery_date: newDate, line_delivery_date_overridden: false })
-      .eq('doc_no', docNo);
   }
 
   /* PR-D — Audit log row capturing field-level from→to diff. */
@@ -6293,12 +6415,24 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
   try { await recomputeSoStockAllocation(sb); }
   catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] post-header-patch failed:', e); }
 
+  const { data: releasedLease, error: releaseLeaseError } = await sb.from('mfg_sales_orders')
+    .update({ edit_lease_token: null, edit_lease_expires_at: null })
+    .eq('doc_no', docNo)
+    .eq('version', savedVersion)
+    .eq('edit_lease_token', operationLeaseToken)
+    .select('version')
+    .maybeSingle();
+  if (releaseLeaseError) {
+    return c.json({ error: 'so_edit_lease_release_failed', message: 'The order saved, but the edit lock could not be released. Wait five minutes before editing again.' }, 500);
+  }
+  if (!releasedLease) return c.json(soVersionConflict(savedVersion), 409);
+
   return c.json({
     ok: true,
     docNo,
     /* The bumped token, so a version-aware editor can advance its pinned value
        after a successful Save without waiting for the detail refetch. */
-    ...(currentVersion !== null ? { version: currentVersion + 1 } : {}),
+    version: savedVersion,
     ...(crossCategoryRedetect ? {
       deliveryRedetected: true,
       crossCategory: crossCategoryRedetect.isFollowup,
@@ -6306,7 +6440,9 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
       deliveryFeeCenti: crossCategoryRedetect.total,
     } : {}),
   });
-});
+};
+
+mfgSalesOrders.patch('/:docNo', patchMfgSalesOrderHeaderHandler);
 
 // ── Item CRUD ─────────────────────────────────────────────────────────
 //
@@ -6552,6 +6688,8 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
   if (!it.itemCode) return c.json({ error: 'item_code_required' }, 400);
 
   /* Edge #4 — itemCode catalog guard. */
@@ -7080,6 +7218,8 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
 
   /* Edge #4 — itemCode catalog guard (only when caller is changing it). */
   if (it.itemCode !== undefined) {
@@ -7119,9 +7259,12 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
 
   // Re-derive totals if qty/price/discount changed. PR-D — also pull the
   // human-facing columns (item_code, description, uom) for the audit diff.
-  const { data: prev } = await sb.from('mfg_sales_order_items')
-    .select('qty, unit_price_centi, discount_centi, unit_cost_centi, item_code, item_group, description, description2, uom, variants, remark, cancelled')
-    .eq('id', itemId).maybeSingle();
+  const { data: prev } = await scopeSoItemToDocument(
+    sb.from('mfg_sales_order_items')
+      .select('qty, unit_price_centi, discount_centi, unit_cost_centi, item_code, item_group, description, description2, uom, variants, remark, cancelled'),
+    docNo,
+    itemId,
+  ).maybeSingle();
   if (!prev) return c.json({ error: 'not_found' }, 404);
   /* POS line quantity (Loo 2026-06-12) — same 422 gate as POST /. */
   const badQty = invalidQtyResponse(it.qty, prev.item_code);
@@ -7434,7 +7577,11 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
     updates['warehouse_id'] = it.warehouseId as string | null;
   }
 
-  const { error } = await sb.from('mfg_sales_order_items').update(updates).eq('id', itemId);
+  const { error } = await scopeSoItemToDocument(
+    sb.from('mfg_sales_order_items').update(updates),
+    docNo,
+    itemId,
+  );
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   // Default Free Gift (0170) — editing a line (code/qty) may add or drop a
   // trigger; reconcile auto-syncs the gift lines, then recomputes totals.
@@ -7484,6 +7631,8 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
 
 mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
 
   /* Tier 2 downstream-lock — line-delete is blocked once a DO / SI exists. */
   const childLock = await soHasDownstream(sb, docNo);
@@ -7505,9 +7654,12 @@ mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
   // Task #93 — also fetch photo_urls so we can clean up R2 orphans
   // after the DB row is gone. We grab them BEFORE the delete because
   // the row is the source of truth for which keys belong to this line.
-  const { data: prev } = await sb.from('mfg_sales_order_items')
-    .select('item_code, qty, unit_price_centi, total_centi, photo_urls, cancelled')
-    .eq('id', itemId).maybeSingle();
+  const { data: prev } = await scopeSoItemToDocument(
+    sb.from('mfg_sales_order_items')
+      .select('item_code, qty, unit_price_centi, total_centi, photo_urls, cancelled'),
+    docNo,
+    itemId,
+  ).maybeSingle();
   const prevTyped = prev as
     | { item_code: string; qty: number; unit_price_centi: number; total_centi: number; photo_urls: string[] | null; cancelled?: boolean }
     | null;
@@ -7524,7 +7676,11 @@ mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
     }, 422);
   }
 
-  const { error } = await sb.from('mfg_sales_order_items').delete().eq('id', itemId);
+  const { error } = await scopeSoItemToDocument(
+    sb.from('mfg_sales_order_items').delete(),
+    docNo,
+    itemId,
+  );
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   // Default Free Gift (0170) — removing a trigger line (e.g. a mattress) must
   // auto-delete its free gift; reconcile drops orphaned gifts, then recomputes.

@@ -220,10 +220,8 @@ const fmtRm = (centi: number, currency = 'MYR'): string => fmtMoneyCenti(centi, 
 type SoHeader = {
   doc_no: string;
   /* Optimistic-lock token (migration 0153) — loaded here and echoed back on the
-     header PATCH so a concurrent editor's Save can't silently overwrite this one.
-     Optional: absent on any pre-0153 cached payload, in which case the editor
-     simply sends no version and the PATCH stays last-writer-wins. */
-  version?: number;
+     header PATCH so a concurrent editor's Save can't silently overwrite this one. */
+  version: number;
   so_date: string;
   status: SoStatus;
   debtor_code: string | null;
@@ -521,15 +519,12 @@ export const SalesOrderDetail = () => {
   const header = (detail.data?.salesOrder as SoHeader | undefined) ?? null;
   const items = useMemo(() => (detail.data?.items as SoItem[] | undefined) ?? [], [detail.data]);
 
-  /* Optimistic-lock token, tracked in a ref so the header Save reads the value
-     the row was LOADED with (WO-8). It follows detail.data because a same-page
-     line commit refetches the detail — but a line PATCH never bumps `version`
-     (only a header PATCH does), so it stays the loaded value throughout an edit
-     session, and only advances after THIS user's own header Save. A concurrent
-     OTHER user's Save never moves it (refetchOnWindowFocus is off), which is
-     exactly what lets us detect their change and 409. */
+  /* Pinned when this document is loaded, then advanced only by this editor's
+     successful header Save. It must not be reassigned on every render: a line
+     mutation can refetch the detail while the form is open, and adopting a
+     concurrent writer's newer token would let the stale form overwrite it. */
   const loadedVersionRef = useRef<number | undefined>(undefined);
-  loadedVersionRef.current = header?.version;
+  const loadedVersionDocRef = useRef<string | undefined>(undefined);
   /* current_doc_no isn't on SoHeader — same cast this file has always used for
      it, kept inside a null guard so the shape TS sees is unchanged. */
   const currentDocNo = header
@@ -603,6 +598,17 @@ export const SalesOrderDetail = () => {
   const [isEditing, setIsEditing] = useState(
     editSearchParams.get('edit') === '1',
   );
+  useEffect(() => {
+    if (!header) return;
+    if (loadedVersionDocRef.current !== header.doc_no) {
+      loadedVersionDocRef.current = header.doc_no;
+      loadedVersionRef.current = header.version;
+      return;
+    }
+    if (!isEditing || loadedVersionRef.current == null) {
+      loadedVersionRef.current = Math.max(loadedVersionRef.current ?? 0, header.version);
+    }
+  }, [header, isEditing]);
   const [relMapOpen, setRelMapOpen] = useState(false);
   /* Relationship-map chain + destinations — SHARED with SalesOrderDetailV2 so the
      two SO detail surfaces can't drift again. Called here (not at the render site)
@@ -621,8 +627,15 @@ export const SalesOrderDetail = () => {
      one is a real duplicate). A later, genuinely separate amendment is a new
      edit session and therefore a new key. */
   const amendKeyRef = useRef<string | null>(null);
+  /* One key for the pending ADD intent. It survives a timeout/retry so the
+     app-wide Idempotency-Key middleware replays the first successful insert
+     instead of creating a second line. */
+  const addLineKeyRef = useRef<string | null>(null);
+  const activeLineLeaseRef = useRef<string | null>(null);
   const endEditSession = () => {
     amendKeyRef.current = null;
+    addLineKeyRef.current = null;
+    activeLineLeaseRef.current = null;
     setIsEditing(false);
   };
 
@@ -741,37 +754,66 @@ export const SalesOrderDetail = () => {
       }
       return true;
     });
+    const deleteEntries = items.filter((it) => !(it.id in editingDrafts));
     const pendingAdd = addingDraft;
 
-    /* Order matters: commit the line variants FIRST, then the header. The
-       backend's "Processing Date requires complete variants" guard reads the
-       LIVE line variants from the DB — if the header (with the processing
-       date) is saved before the line edits land, that guard sees the stale
-       empty variants and rejects with 409, even though the operator just
-       filled them in. Lines-then-header keeps the DB consistent at the moment
-       the guard runs. */
-    Promise.all(lineEntries.map(([id, d]) => commitEditingDraft(id, d)))
+    const saveHeader = () => new Promise<void>((resolve, rejectSave) => {
+      handle.save({
+        onSuccess: () => resolve(),
+        // Carry the raw Error's `.body` forward so the catch can pull the
+        // server's aggregated `problems` list off it.
+        onError: (msg, raw) => {
+          const err = new Error(msg) as Error & { body?: string };
+          if (raw && typeof raw === 'object' && 'body' in raw) {
+            err.body = (raw as { body?: string }).body;
+          }
+          rejectSave(err);
+        },
+      });
+    });
+    const hasLineWrites = lineEntries.length > 0 || deleteEntries.length > 0 || pendingAdd != null;
+    const leaseToken = hasLineWrites
+      ? (activeLineLeaseRef.current ??= newIdempotencyKey())
+      : null;
+    const reserveHeader = leaseToken
+      ? updateHeader.mutateAsync({
+          docNo: header.doc_no,
+          reserveLineWrites: true,
+          lineWriteLeaseToken: leaseToken,
+          version: loadedVersionRef.current,
+        }).then((result) => { loadedVersionRef.current = result.version; })
+      : Promise.resolve();
+
+    /* The version reservation is the first persisted operation. A stale
+       editor therefore stops at 409 before any line PATCH/POST. Existing-line
+       writes remain idempotent PATCHes; the pending ADD carries one stable
+       Idempotency-Key across retries. The real header patch follows the lines
+       so its Processing-Date gate can inspect the now-current variants. */
+    reserveHeader
+      .then(() => Promise.all(deleteEntries.map((it) => deleteItem.mutateAsync({
+        docNo: header.doc_no,
+        itemId: it.id,
+        leaseToken: leaseToken ?? undefined,
+      }))))
+      .then(() => Promise.all(lineEntries.map(([id, d]) => commitEditingDraft(id, d))))
       .then(() => (pendingAdd ? commitAddLine(pendingAdd) : Promise.resolve()))
-      .then(() => new Promise<void>((resolve, rejectSave) => {
-        handle.save({
-          onSuccess: () => resolve(),
-          // Carry the raw Error's `.body` forward so the catch can pull the
-          // server's aggregated `problems` list off it.
-          onError: (msg, raw) => {
-            const err = new Error(msg) as Error & { body?: string };
-            if (raw && typeof raw === 'object' && 'body' in raw) {
-              err.body = (raw as { body?: string }).body;
-            }
-            rejectSave(err);
-          },
-        });
-      }))
+      .then(saveHeader)
       .then(() => {
         setSavingOrder(false);
         endEditSession();
       })
       .catch((e) => {
         setSavingOrder(false);
+        const heldLease = activeLineLeaseRef.current;
+        if (heldLease && loadedVersionRef.current != null) {
+          void updateHeader.mutateAsync({
+            docNo: header.doc_no,
+            completeLineWrites: true,
+            lineWriteLeaseToken: heldLease,
+            version: loadedVersionRef.current,
+            __suppressInvalidate: true,
+          }).finally(() => { activeLineLeaseRef.current = null; });
+        }
         /* An aggregated save-gate failure (validation_failed) — show EVERY reason
            at once in a POPUP the owner can't miss (owner 2026-07-18: he wanted a
            modal listing all reasons, not a banner to scroll to). Anything else
@@ -974,7 +1016,8 @@ export const SalesOrderDetail = () => {
          and no refresh is skipped by doing so: every line mutation invalidates
          the detail / list / audit queries itself, and when no line committed
          either, there is nothing new to fetch. */
-      if (Object.keys(patch).length === 0) { cb?.onSuccess?.(); return; }
+      const lineLease = activeLineLeaseRef.current;
+      if (Object.keys(patch).length === 0 && !lineLease) { cb?.onSuccess?.(); return; }
       /* verified-save (Wei Siang 2026-06-08): confirm the customer-identity
          fields actually persisted, so a stale-cache overwrite can't silently
          discard the edit (BUG-2026-06-07-002 #5). Only verbatim-stored, readback-
@@ -990,24 +1033,26 @@ export const SalesOrderDetail = () => {
         {
           docNo: stableDocNo,
           ...patch,
-          // Optimistic-lock token the row was loaded with — the server 409s if
-          // another editor saved in the meantime (WO-8). Omitted when absent so
-          // a pre-0153 cached payload just stays last-writer-wins.
-          ...(loadedVersionRef.current != null ? { version: loadedVersionRef.current } : {}),
+          ...(lineLease ? {
+            lineWriteLeaseToken: lineLease,
+            ...(Object.keys(patch).length === 0 ? { completeLineWrites: true } : {}),
+          } : {}),
+          // The route rejects a real header mutation without this loaded token.
+          // The detail response is migration-backed, so absence is a load defect,
+          // not permission to fall back to last-writer-wins.
+          version: loadedVersionRef.current,
           ...(Object.keys(__verify).length ? { __verify } : {}),
         },
         {
-          onSuccess: () => cb?.onSuccess?.(),
+          onSuccess: (result) => {
+            loadedVersionRef.current = result.version;
+            if (lineLease) activeLineLeaseRef.current = null;
+            cb?.onSuccess?.();
+          },
           // Pass the raw Error too — its `.body` carries the aggregated problems.
           onError:   (e) => cb?.onError?.(e instanceof Error ? e.message : 'Something went wrong.', e),
         },
       );
-    },
-    [stableDocNo, updateHeader],
-  );
-  const handlePaymentSave = useCallback(
-    (patch: Record<string, unknown>) => {
-      updateHeader.mutate({ docNo: stableDocNo, ...patch });
     },
     [stableDocNo, updateHeader],
   );
@@ -1134,16 +1179,15 @@ export const SalesOrderDetail = () => {
               removeEditingLine(it.id);
               return;
             }
-            deleteItem.mutate(
-              { docNo: it.doc_no, itemId: it.id },
-              { onSuccess: () => removeEditingLine(it.id) },
-            );
+            /* Direct deletes are deferred to the page Save so they run under
+               the same header lease as add/update and remain cancellable. */
+            removeEditingLine(it.id);
           }
         },
       });
     }
     return map;
-  }, [items, patchEditingDraft, removeEditingLine, deleteItem, askConfirm,
+  }, [items, patchEditingDraft, removeEditingLine, askConfirm,
       header?.amendment_eligible, header?.has_open_amendment]);
 
   /* Add path — single inline SoLineCard appended below the table when
@@ -1151,6 +1195,7 @@ export const SalesOrderDetail = () => {
      header + line edits by the page-level Save (see saveEdit). */
   const startAddLine = () => {
     if (!header) return;
+    addLineKeyRef.current = newIdempotencyKey();
     setAddingDraft({
       ...emptySoLine(),
       // Seed the line delivery date from the SO header so the SoLineCard
@@ -1160,7 +1205,10 @@ export const SalesOrderDetail = () => {
     });
   };
 
-  const cancelAddLine = useCallback(() => setAddingDraft(null), []);
+  const cancelAddLine = useCallback(() => {
+    addLineKeyRef.current = null;
+    setAddingDraft(null);
+  }, []);
 
   /* Stable onChange for the lone "+ Add Line Item" SoLineCard at the bottom
      of the table. Kept standalone (not in rowCallbacks) because there is at
@@ -1178,6 +1226,7 @@ export const SalesOrderDetail = () => {
     updateItem.mutateAsync({
       docNo: header!.doc_no,
       itemId: id,
+      leaseToken: activeLineLeaseRef.current ?? undefined,
       itemCode:       d.itemCode,
       itemGroup:      d.itemGroup,
       description:    d.description,
@@ -1199,6 +1248,8 @@ export const SalesOrderDetail = () => {
     const pendingFiles = d.pendingPhotoFiles ?? [];
     const res = await addItem.mutateAsync({
       docNo: header!.doc_no,
+      idempotencyKey: addLineKeyRef.current ??= newIdempotencyKey(),
+      leaseToken: activeLineLeaseRef.current ?? undefined,
       itemCode:       d.itemCode,
       itemGroup:      d.itemGroup,
       description:    d.description,
