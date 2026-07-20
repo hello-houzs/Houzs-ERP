@@ -96,6 +96,9 @@ Change classes: `FE` frontend-only; `INFRA` CI/deploy/testing; `AUDIT` read-only
 |---|---|---|---|
 | 2026-07-20 | B01 first frontend batch | `bdd0ebb8`; frontend typecheck/build; 32 files / 408 tests | Awaiting real Claude Code review before merge. Backend diff: 0. |
 | 2026-07-20 | B01 search-consistency batch | `8e6b1161`; typecheck/build; 34 files / 413 tests | Independent review: P0=0, P1=0. Awaiting Claude Code review before merge. Backend diff: 0. |
+| 2026-07-20 | B01 search scope/cancellation/windowing | `92a0949c`; 39 files / 430 tests; build + bundle | Server-vs-loaded scope rendered; A→A1 cancellation reaches network/retry; 10k tail tests. Backend diff: 0. |
+| 2026-07-20 | B07 frontend release gates | `48171872`; CI source/build/bundle/SW/E2E discovery; exact-build deploy smoke | Frontend release consistency is executable. Merge still requires owner confirmation because existing deploy workflows may redeploy unchanged backend. Backend code/schema diff: 0. |
+| 2026-07-20 | B02 frontend hot paths/cache isolation | `e9a0c858`; 42 files / 447 tests; build 2,475 modules; initial 160.3/165.0 KB gzip; total 1,781.0/1,800.0 KB gzip; SW + smoke pass | Independent review P0=0/P1=0. Idle snapshot, tenant/session isolation, DataTable resize lifecycle, Projects Calendar memo/RAF/date boundaries and 10k structural tests. Backend diff: 0. |
 
 ## Mandatory close-out rules
 
