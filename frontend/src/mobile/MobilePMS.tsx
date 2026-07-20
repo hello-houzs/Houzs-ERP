@@ -876,7 +876,10 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 {archived ? "Restore" : "Archive"}
               </button>
             )}
-            {p && canWrite && !archived && (
+            {/* Owner 2026-07-20: project-level edits (status here, the Project
+                card's Edit below) require the PMS EDIT section — sales roles
+                (pms.canEdit=false) get the read-only badge instead. */}
+            {p && canWrite && access.canEdit && !archived && (
               <select
                 value={p.status ?? ""}
                 disabled={busy}
@@ -890,7 +893,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 <option value="cancelled">Cancelled</option>
               </select>
             )}
-            {p && (!canWrite || archived) && <StageBadge stage={p.stage} dark />}
+            {p && (!canWrite || !access.canEdit || archived) && <StageBadge stage={p.stage} dark />}
           </div>
         </div>
         {/* Title block — prototype #project header VERBATIM: gold eyebrow
@@ -936,7 +939,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
             <details className="pacc" open>
               <summary>
                 <span className="psec-t">Project</span>
-                {canWrite && !archived && (
+                {canWrite && access.canEdit && !archived && (
                   <span
                     role="button"
                     className="tinybtn"
