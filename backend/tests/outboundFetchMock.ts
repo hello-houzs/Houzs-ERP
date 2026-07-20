@@ -30,8 +30,13 @@ export function createOutboundFetchMock() {
       });
     },
     assertDone() {
-      expect(pending).toEqual([]);
-      spy.mockRestore();
+      try {
+        expect(pending).toEqual([]);
+      } finally {
+        // Teardown must restore fetch even when the pending-call assertion
+        // fails, otherwise one failed test poisons every later test in-file.
+        spy.mockRestore();
+      }
     },
   };
 }
