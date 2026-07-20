@@ -37,6 +37,8 @@ import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
+import { useBranding } from "../../hooks/useBranding";
+import { shortCompanyName } from "../../lib/branding";
 import {
   useMfgDeliveryOrdersPaged,
   useMfgDeliveryOrderDetail,
@@ -807,6 +809,9 @@ export function MfgDeliveryOrdersListV2() {
   const notify = useNotify();
   const askChoice = useChoice();
   const askConfirm = useConfirm();
+  // Active company (top-bar switcher) — the header subtitle reflects it so a
+  // per-company list is never mislabelled as another company's (e.g. Houzs).
+  const branding = useBranding();
   // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
   // DECLARED only for a finance-viewer; the backend also omits their keys from
   // the payload for everyone else (canViewScmFinance).
@@ -1539,7 +1544,7 @@ export function MfgDeliveryOrdersListV2() {
           <PageHeader
             eyebrow="Supply Chain"
             title="Delivery Orders"
-            description="Every Houzs delivery order — Loaded to Delivered. Click any row for the quick view; open the full page to edit."
+            description={`Every ${shortCompanyName(branding.companyName)} delivery order — Loaded to Delivered. Click any row for the quick view; open the full page to edit.`}
             primaryAction={
               canWriteDo ? (
                 <div className="flex items-stretch gap-2">

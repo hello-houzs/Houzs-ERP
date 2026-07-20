@@ -38,6 +38,8 @@ import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
+import { useBranding } from "../../hooks/useBranding";
+import { shortCompanyName } from "../../lib/branding";
 import {
   useSalesInvoicesPaged,
   useSalesInvoiceDetail,
@@ -753,6 +755,9 @@ export function SalesInvoicesListV2() {
   const askChoice = useChoice();
   const askConfirm = useConfirm();
   const { nameOf: salespersonNameOf } = useStaffLookup();
+  // Active company (top-bar switcher) — the header subtitle reflects it so a
+  // per-company list is never mislabelled as another company's (e.g. Houzs).
+  const branding = useBranding();
   // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
   // DECLARED only for a finance-viewer; the backend also omits their keys from
   // the payload for everyone else (canViewScmFinance).
@@ -1486,7 +1491,7 @@ export function SalesInvoicesListV2() {
           <PageHeader
             eyebrow="Supply Chain"
             title="Sales Invoices"
-            description="Every Houzs sales invoice — Sent to Paid. Click any row for the quick view; open the full page to edit or record a payment."
+            description={`Every ${shortCompanyName(branding.companyName)} sales invoice — Sent to Paid. Click any row for the quick view; open the full page to edit or record a payment.`}
             primaryAction={
               canWriteSi ? (
                 <div className="flex items-stretch gap-2">
