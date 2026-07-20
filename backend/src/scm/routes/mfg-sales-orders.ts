@@ -5050,12 +5050,21 @@ export async function createDraftSalesOrder(
   },
 ): Promise<SoCreateOutcome> {
   const svc = getSupabaseService(env);
-  const syntheticGet = (key: 'supabase' | 'user' | 'houzsUser' | 'companyId' | 'sessionOrigin'): unknown => {
+  const syntheticGet = (key: 'supabase' | 'user' | 'houzsUser' | 'companyId' | 'companyCode' | 'sessionOrigin'): unknown => {
     if (key === 'supabase') return svc;
     // Headless scan job — replay the company captured on the scan_jobs row at
     // enqueue time so the draft (header + lines + payments + audit) lands under
     // the uploader's company, not the 0091 HOUZS default.
     if (key === 'companyId') return opts.companyId ?? undefined;
+    // No company CODE is resolved in this reconstructed context (only the id was
+    // captured at enqueue). EXPLICIT branch, not a fallthrough: the default
+    // below returns houzsUser, so companyDocPrefix's `c.get('companyCode')`
+    // used to receive that object and stringify it into the doc number as
+    // "[object Object]-SO-YYMM-NNN" (surfaced in the "Sales order saved — …"
+    // scan announcement). Returning undefined makes companyDocPrefix fall back
+    // to bare HOUZS numbering honestly, at the source rather than only via its
+    // downstream typeof guard.
+    if (key === 'companyCode') return undefined;
     // There is no session here at all (this runs after the HTTP response, off
     // waitUntil), so the draft is NOT-POS and is never drift-rejected — its
     // prices come off a handwritten slip. EXPLICIT branch, not a fallthrough:
