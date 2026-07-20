@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
 // Idempotency keys for money-mutating requests — the CLIENT half.
 //
-// backend/src/middleware/idempotency.ts has been mounted on /api/* (after auth,
-// so user_id is set) since it was written, with a claim-then-replay store, an
+// backend/src/middleware/idempotency.ts is mounted on /api/* after auth and
+// companyContext, so principal + tenant scope are set before its claim store. It has an
 // in-flight 409 and a daily TTL sweep. It is OPT-IN: a pure pass-through unless
 // the client sends an `Idempotency-Key` header, and until this module NO client
 // ever sent one. A safety feature nobody switched on is not a safety feature —
@@ -50,8 +50,8 @@
 // ---------------------------------------------------------------------------
 import { useState } from "react";
 
-/** Mint a key for ONE payment intent. Opaque to the server, which only ever
- *  compares it for equality against the (key, scope) primary key. */
+/** Mint a key for ONE payment intent. Opaque to the server, which binds it to
+ *  the authenticated principal, company, route and exact request payload. */
 export function newIdempotencyKey(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();

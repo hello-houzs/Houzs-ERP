@@ -195,22 +195,23 @@ app.route("/api/assr-form-intake", assrFormIntake);
 // public API routes above so they stay unauthenticated.
 app.use("/api/*", auth);
 
-// Opt-in request idempotency (no-op unless the client sends an
-// `Idempotency-Key` header). Mounted after auth so `userId` is set, and
-// before the routes so it can replay a stored response. Fail-open.
-app.use("/api/*", idempotency);
-
 // Multi-company (Phase 0b): resolve the ACTIVE company + allowed companies per
 // request (X-Company-Id switcher header / hostname default) and stash them on
 // the context, so BOTH the SCM query-scoping helpers (scm/lib/companyScope.ts)
 // AND the native raw-SQL modules (sales / finance) can filter + stamp
-// company_id. Mounted on the whole authenticated /api/* surface: after auth +
-// idempotency, before every route. Reads only request headers + the companies
+// company_id. Mounted on the whole authenticated /api/* surface: after auth,
+// before idempotency and every route. Reads only request headers + the companies
 // master, so native routes without any company table simply ignore
 // c.get('companyId'), and it DEGRADES SAFELY (leaves companyId undefined) when
 // the companies master isn't resolvable yet — so single-company Houzs keeps
 // serving unchanged and the pre-auth public routes above are untouched.
 app.use("/api/*", companyContext);
+
+// Principal + company scoped request idempotency (no-op unless the client sends
+// an `Idempotency-Key` header). Mounted after auth AND companyContext so a key
+// can never replay another user's or another company's response. Bookkeeping
+// failures are fail-closed for callers that explicitly request idempotency.
+app.use("/api/*", idempotency);
 
 // Inbox snapshot self-heal — the /api/inbox GET caches a per-user aggregate of
 // ASSR + Projects + Trips for ~60s. After the acting user makes a successful

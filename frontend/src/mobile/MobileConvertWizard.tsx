@@ -321,10 +321,10 @@ export function MobileConvertWizard({
         const body = { picks: picks.map((l) => ({ soItemId: l.lineId, qty: clampQty(l.qty, l.remaining) })) };
         // authedFetch handles the short_stock 409 in-app (Ship anyway? → replay).
         /* The short_stock 409 replay authedFetch runs internally re-sends this
-           SAME key with confirmShortStock:true — correct and load-bearing: the
-           middleware DELETES the claim on any non-2xx (idempotency.ts:103-108),
-           so the 409'd first attempt leaves nothing to replay and the confirmed
-           retry runs for real. */
+           SAME key with confirmShortStock:true — correct and load-bearing. The
+           route explicitly marks this pre-write guard as Idempotency-Outcome:
+           no-write, so middleware releases only that proven-safe claim and the
+           confirmed retry runs for real. Other non-2xx outcomes stay protected. */
         const res = await authedFetch<{ doNumber?: string }>("/delivery-orders-mfg/from-sos",
           idempotentInit(idemKey, {
             method: "POST",

@@ -34,6 +34,7 @@ import {
   type StockLineRequest,
   type StockShortage,
 } from '../lib/check-stock-availability';
+import { markIdempotencyNoWrite } from '../../middleware/idempotency';
 
 export const purchaseReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseReturns.use('*', supabaseAuth);
@@ -597,7 +598,10 @@ purchaseReturns.post('/', async (c) => {
       })),
       grnId,
     );
-    if (shortages.length > 0) return c.json(shortStockResponse(shortages), 409);
+    if (shortages.length > 0) {
+      markIdempotencyNoWrite(c);
+      return c.json(shortStockResponse(shortages), 409);
+    }
   }
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
@@ -721,7 +725,10 @@ purchaseReturns.post('/from-grns', async (c) => {
       })),
       primaryGrnId,
     );
-    if (shortages.length > 0) return c.json(shortStockResponse(shortages), 409);
+    if (shortages.length > 0) {
+      markIdempotencyNoWrite(c);
+      return c.json(shortStockResponse(shortages), 409);
+    }
   }
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
@@ -828,7 +835,10 @@ purchaseReturns.post('/from-grn', async (c) => {
       })),
       g.id,
     );
-    if (shortages.length > 0) return c.json(shortStockResponse(shortages), 409);
+    if (shortages.length > 0) {
+      markIdempotencyNoWrite(c);
+      return c.json(shortStockResponse(shortages), 409);
+    }
   }
 
   const totalRefund = lines.reduce((s, it) => s + (it._remaining * it.unit_price_centi), 0);

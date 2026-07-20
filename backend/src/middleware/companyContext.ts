@@ -44,8 +44,8 @@ import type { Env } from "../types";
  * single-company / pre-migration state (no master, no grants) keeps the legacy
  * no-op, so single-company Houzs still serves unchanged.
  *
- * MOUNTING: mounted once on the whole authenticated /api/* surface (after auth +
- * idempotency, before every route — see index.ts). This covers both the SCM
+ * MOUNTING: mounted once on the whole authenticated /api/* surface (after auth,
+ * before idempotency and every route — see index.ts). This covers both the SCM
  * sub-app and the native raw-SQL modules (sales / finance). Routes without any
  * company table simply never read c.get('companyId'). Pre-auth public routes
  * (/api/auth, /api/track, /api/portal, /api/supplier-portal, /api/survey,
