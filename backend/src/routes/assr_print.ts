@@ -801,13 +801,6 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       <div class="lc">Note</div><div class="vc span3" style="font-weight: 400; color: #6a6a6a; font-size: 8.2pt;">Customer's direct phone &amp; full address are shared after dispatch is confirmed.</div>
     </div>
 
-    <!-- items -->
-    <div class="bar">Items</div>
-    <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
-      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">REMARK (IF ANY)</span>
-    </div>
-    ${supItems.join("") || `<div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;"><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span></div>`}
-
     <!-- reported issue -->
     <div class="bar">Reported Issue</div>
     <div class="boxed">
@@ -816,6 +809,13 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       <div style="font-size: 7.6pt; letter-spacing: .08em; text-transform: uppercase; color: #8a8578; margin-top: 2.4mm;">Issue Details</div>
       <div style="font-size: 8.8pt; color: #3a3a3a; margin-top: 0.8mm; line-height: 1.55;">${esc(cs.complaint_issue || "—")}${cs.issue_category ? ` &nbsp;·&nbsp; Category: ${esc(cs.issue_category)}` : ""}</div>
     </div>
+
+    <!-- items -->
+    <div class="bar">Items</div>
+    <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
+      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">REMARK (IF ANY)</span>
+    </div>
+    ${supItems.join("") || `<div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;"><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span></div>`}
 
     <!-- resolution plan -->
     <div class="bar">Resolution Plan</div>
