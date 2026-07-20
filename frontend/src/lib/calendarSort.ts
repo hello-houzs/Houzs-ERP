@@ -35,7 +35,7 @@ export const CALENDAR_STATE_ORDER: readonly string[] = [
   "SARAWAK",
 ];
 
-const STATE_RANK = new Map(CALENDAR_STATE_ORDER.map((s, i) => [s, i]));
+const STATE_RANK = new Map(CALENDAR_STATE_ORDER.map((s, i) => [s, i] as const));
 
 export function calendarStateRank(state: string | null | undefined): number {
   const key = (state ?? "").trim().toUpperCase();
