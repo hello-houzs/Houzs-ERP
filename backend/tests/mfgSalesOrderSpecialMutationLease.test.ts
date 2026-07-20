@@ -4,13 +4,16 @@ import { soLineWriteLeaseMatches } from '../src/scm/routes/mfg-sales-orders';
 
 const routes = [
   "post('/:docNo/items/:itemId/override'",
-  "post('/:docNo/items/:itemId/tbc-update'",
-  "post('/:docNo/items/:itemId/tbc-swap'",
-  "post('/:docNo/items/:itemId/tbc-swap-sofa'",
   "post('/:docNo/items/:itemId/photos'",
   "delete('/:docNo/items/:itemId/photos/:photoKey'",
   "patch('/:docNo/items/:itemId/stock-status'",
 ];
+
+const commandRoutes = [
+  ['tbcUpdateCommandHandler', "post('/:docNo/items/:itemId/tbc-update'"],
+  ['tbcSwapCommandHandler', "post('/:docNo/items/:itemId/tbc-swap'"],
+  ['tbcSwapSofaCommandHandler', "post('/:docNo/items/:itemId/tbc-swap-sofa'"],
+] as const;
 
 describe('special SO line mutation lease coverage', () => {
   test('runtime guard accepts only the current unexpired token', () => {
@@ -35,6 +38,20 @@ describe('special SO line mutation lease coverage', () => {
         block.indexOf('.put('), block.indexOf('recordSoAudit('),
       ].filter((index) => index >= 0).sort((a, b) => a - b)[0];
       if (firstWrite !== undefined) expect(guard).toBeLessThan(firstWrite);
+    });
+  }
+
+  for (const [handler, route] of commandRoutes) {
+    test(`${route} executes its guarded handler inside one PG command transaction`, () => {
+      const handlerStart = routeSource.indexOf(`export async function ${handler}`);
+      const registration = routeSource.indexOf(`mfgSalesOrders.${route}`);
+      expect(handlerStart).toBeGreaterThanOrEqual(0);
+      expect(registration).toBeGreaterThan(handlerStart);
+      const handlerBlock = routeSource.slice(handlerStart, registration);
+      expect(handlerBlock).toContain('requireSoLineWriteLease(sb, docNo, c)');
+      const routeBlock = routeSource.slice(registration, registration + 500);
+      expect(routeBlock).toContain('runScmPgCommand');
+      expect(routeBlock).toContain("leaseToken: c.req.header('X-SO-Edit-Lease')");
     });
   }
 });

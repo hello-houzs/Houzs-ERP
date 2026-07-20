@@ -176,6 +176,7 @@ import type { Env, Variables } from '../env';
 /* scan-bg-job — the headless createDraftSalesOrder below runs the create core
    without a request-scoped client; it uses the scm-scoped service client. */
 import { getSupabaseService } from '../../db/supabase';
+import { deferScmAfterCommit, runScmPgCommand } from '../lib/pg-supabase-transaction';
 
 export const mfgSalesOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
 mfgSalesOrders.use('*', supabaseAuth);
@@ -5730,7 +5731,10 @@ async function recomputeDeliveryFeeCore(
   // Replace the SVC-DELIVERY* lines: delete the old, insert the recomputed.
   const { error: delErr } = await sb.from('mfg_sales_order_items').delete()
     .eq('doc_no', docNo).in('item_code', [SVC_DELIVERY, SVC_DELIVERY_CROSS, SVC_DELIVERY_ADD]);
-  if (delErr) { /* eslint-disable-next-line no-console */ console.error('[so-redetect] delivery line delete failed:', delErr.message); }
+  if (delErr) {
+    if (sb?.__atomicCommand === true) throw new Error(`Delivery line delete failed: ${delErr.message}`);
+    /* eslint-disable-next-line no-console */ console.error('[so-redetect] delivery line delete failed:', delErr.message);
+  }
   if (specs.length > 0) {
     const lineDateToday = todayMyt();
     const rows = specs.map((spec, i) => ({
@@ -5770,14 +5774,20 @@ async function recomputeDeliveryFeeCore(
     // Multi-company: the rebuilt delivery-fee lines inherit the SO's company.
     const coRows = h.company_id != null ? rows.map((r) => ({ company_id: h.company_id, ...r })) : rows;
     const { error: insErr } = await sb.from('mfg_sales_order_items').insert(coRows);
-    if (insErr) { /* eslint-disable-next-line no-console */ console.error('[so-redetect] delivery line insert failed:', insErr.message); }
+    if (insErr) {
+      if (sb?.__atomicCommand === true) throw new Error(`Delivery line insert failed: ${insErr.message}`);
+      /* eslint-disable-next-line no-console */ console.error('[so-redetect] delivery line insert failed:', insErr.message);
+    }
   }
 
-  await sb.from('mfg_sales_orders').update({
+  const { error: headerFeeError } = await sb.from('mfg_sales_orders').update({
     cross_category_source_doc_no: sourceDocNo,
     delivery_fee_centi: fee.total,
     updated_at: new Date().toISOString(),
   }).eq('doc_no', docNo);
+  if (headerFeeError && sb?.__atomicCommand === true) {
+    throw new Error(`Delivery fee header update failed: ${headerFeeError.message}`);
+  }
   await recomputeTotals(sb, docNo, c);
   return { isFollowup, sourceDocNo, total: fee.total };
 }
@@ -6594,6 +6604,9 @@ export async function recomputeTotals(sb: any, docNo: string, c: any) {
              list, report and margin reads honest, and the spread is idempotent so
              the next successful edit re-rolls the whole group. */
           if (spreadErr) {
+            if (sb?.__atomicCommand === true) {
+              throw new Error(`SO combo cost spread failed: ${spreadErr.message}`);
+            }
             /* eslint-disable-next-line no-console */
             console.error('[so-recompute] combo cost spread failed — header left unchanged:', docNo, m.id, spreadErr.message);
             return;
@@ -6688,6 +6701,9 @@ export async function recomputeTotals(sb: any, docNo: string, c: any) {
      header STALE with nothing logged and every caller reporting success. Logged,
      not thrown: see the header note on why this roll-up never throws. */
   if (updErr) {
+    if (sb?.__atomicCommand === true) {
+      throw new Error(`SO totals update failed: ${updErr.message}`);
+    }
     /* eslint-disable-next-line no-console */
     console.error('[so-recompute] header update failed — totals left STALE:', docNo, updErr.message);
   }
@@ -7778,8 +7794,12 @@ const TBC_VARIANT_KEYS = [
 /* Picks shared by every module line of a sofa build. */
 const TBC_BUILD_SHARED_KEYS = ['fabricId', 'fabricCode', 'fabricLabel', 'colourId', 'colourLabel', 'colourHex', 'sofaLegHeight'] as const;
 
-mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
-  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+const throwAtomicCommandWrite = (sb: any, error: { message?: string } | null | undefined, label: string): void => {
+  if (error && sb?.__atomicCommand === true) throw new Error(`${label}: ${error.message ?? 'database write failed'}`);
+};
+
+export async function tbcUpdateCommandHandler(c: any, sb: any): Promise<Response> {
+  const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
   const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
   if (leaseBlocked) return leaseBlocked;
   let body: Record<string, unknown>;
@@ -7984,15 +8004,20 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
   });
 
   return c.json({ ok: true, unitPriceCenti: newUnit, deltaCenti: sellingDeltaCenti, totalCenti: newTotal });
-});
+}
+mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', (c) =>
+  runScmPgCommand(c, (sb) => tbcUpdateCommandHandler(c, sb), {
+    docNo: c.req.param('docNo'),
+    leaseToken: c.req.header('X-SO-Edit-Lease')?.trim() ?? null,
+  }));
 
 /* TBC product swap (Loo 2026-06-11) — exchange a line for a DIFFERENT product
    from My orders. Non-sofa ↔ non-sofa only (a sofa is a multi-line build).
    The new line reprices from the catalog (sell_price_sen) with every option
    reset to TBC; the floor rule keeps a POS sales caller from swapping the
    bill downward. The composition guard keeps sofa exclusive on the SO. */
-mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
-  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+export async function tbcSwapCommandHandler(c: any, sb: any): Promise<Response> {
+  const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
   const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
   if (leaseBlocked) return leaseBlocked;
   let body: Record<string, unknown>;
@@ -8259,12 +8284,14 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
     const { error: e1 } = await sb.from('pwp_codes')
       .update({ redeemed_item_code: newCode })
       .eq('code', rewardPwpCode).eq('redeemed_doc_no', docNo);
+    throwAtomicCommandWrite(sb, e1, 'TBC reward code restamp failed');
     if (e1) console.error('[tbc-swap] reward code restamp failed:', e1.message); // eslint-disable-line no-console
   }
   if (triggerCodesToRestamp.length > 0) {
     const { error: e2 } = await sb.from('pwp_codes')
       .update({ trigger_item_code: newCode, updated_at: new Date().toISOString() })
       .in('code', triggerCodesToRestamp);
+    throwAtomicCommandWrite(sb, e2, 'TBC trigger code restamp failed');
     if (e2) console.error('[tbc-swap] trigger code restamp failed:', e2.message); // eslint-disable-line no-console
   }
 
@@ -8279,6 +8306,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
       total_inc_centi: cols.total_centi,
       balance_centi: cols.total_centi,
     }).eq('id', uid);
+    throwAtomicCommandWrite(sb, error, `TBC sofa reward revert failed for ${uid}`);
     if (error) console.error('[tbc-swap] sofa reward revert failed for', uid, error.message); // eslint-disable-line no-console
   }
   if (rewardLinesToRevert.length > 0 || pwpDeleteCodes.length > 0 || pwpRevertCodes.length > 0 || pwpNewlyTriggered.length > 0) {
@@ -8323,12 +8351,14 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
         special_order_price_sen: rec.breakdown.specialsSurchargeSen,
         custom_specials: rec.custom_specials ?? null,
       }).eq('id', line.id);
+      throwAtomicCommandWrite(sb, error, `TBC reward revert failed for ${line.id}`);
       if (error) console.error('[tbc-swap] reward revert failed for', line.id, error.message); // eslint-disable-line no-console
     }
     // 2. Dead vouchers go (un-redeemed + reverted ones - Loo: delete).
     const toDelete = [...pwpDeleteCodes, ...pwpRevertCodes];
     if (toDelete.length > 0) {
       const { error } = await sb.from('pwp_codes').delete().in('code', toDelete);
+      throwAtomicCommandWrite(sb, error, 'TBC code delete failed');
       if (error) console.error('[tbc-swap] code delete failed:', error.message); // eslint-disable-line no-console
     }
     // 3. Newly-triggered rules mint fresh vouchers (AVAILABLE, customer-bound),
@@ -8372,7 +8402,10 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
               customer_id: customerId,
             });
             if (!error) { pwpMintedCodes.push(code); break; }
-            if (attempt === 4) console.error('[tbc-swap] voucher mint failed:', error.message); // eslint-disable-line no-console
+            if (attempt === 4) {
+              throwAtomicCommandWrite(sb, error, 'TBC voucher mint failed');
+              console.error('[tbc-swap] voucher mint failed:', error.message); // eslint-disable-line no-console
+            }
           }
         }
       }
@@ -8404,9 +8437,10 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
         ? [{ field: 'pwpCodesMinted', to: pwpMintedCodes.join(', ') } satisfies FieldChange] : []),
     ],
   });
-  /* Demand changed product → stock allocation may shift. Best-effort. */
-  try { await recomputeSoStockAllocation(sb); }
-  catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] post-tbc-swap failed:', e); }
+  /* Global allocation is derived work, not part of this SO's command. Run it
+     only after commit so it never lengthens the SO row lock or observes data
+     that later rolls back. */
+  deferScmAfterCommit(c, async () => { await recomputeSoStockAllocation(c.get('supabase')); });
 
   return c.json({
     ok: true,
@@ -8420,7 +8454,12 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
       minted: pwpMintedCodes,
     },
   });
-});
+}
+mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', (c) =>
+  runScmPgCommand(c, (sb) => tbcSwapCommandHandler(c, sb), {
+    docNo: c.req.param('docNo'),
+    leaseToken: c.req.header('X-SO-Edit-Lease')?.trim() ?? null,
+  }));
 
 /* ── Sofa-reward revert plan (Loo 2026-06-12) ──
    When a TRIGGER swap strands a SOFA reward on the same SO, the reward must
@@ -8548,12 +8587,12 @@ async function planSofaRewardRevert(
    add-ons, drift-gated for POS callers), splits it into per-module lines
    (P3) under the OLD buildKey, inserts the new set, then removes the old.
    The edit lease prevents another SO writer from interleaving, but these
-   PostgREST statements are not a database transaction: a mid-command failure
-   may require retry/reconciliation and must never be described as rollback.
+   The route wrapper executes the complete command on one PostgreSQL transaction;
+   any database failure rolls the old/new build and voucher writes back.
    Floor rule: the new build total may not sit below the old one (sales).
    PWP reward sofa builds stay coordinator-only (the reward is combo-bound). */
-mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
-  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
+export async function tbcSwapSofaCommandHandler(c: any, sb: any): Promise<Response> {
+  const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
   const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
   if (leaseBlocked) return leaseBlocked;
   let body: Record<string, unknown>;
@@ -8981,14 +9020,16 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
     return c.json({ error: 'swap_failed', reason: delErr.message }, 500);
   }
 
-  /* Old build photos → best-effort R2 cleanup (same as line DELETE). */
+  /* Old build photos are external R2 side effects. Defer until AFTER the DB
+     transaction commits; deleting them here would make rollback lose files. */
   if (c.env.SO_ITEM_PHOTOS) {
-    for (const l of oldLines) {
-      for (const key of (l.photo_urls ?? [])) {
+    const oldPhotoKeys = oldLines.flatMap((line) => line.photo_urls ?? []);
+    deferScmAfterCommit(c, async () => {
+      for (const key of oldPhotoKeys) {
         try { await c.env.SO_ITEM_PHOTOS.delete(key); }
         catch (e) { console.warn('[tbc-swap-sofa] photo cleanup failed for', key, e); } // eslint-disable-line no-console
       }
-    }
+    });
   }
 
   /* ── PWP mutations (classified above, applied after the build landed) ── */
@@ -9003,6 +9044,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
       total_inc_centi: cols.total_centi,
       balance_centi: cols.total_centi,
     }).eq('id', uid);
+    throwAtomicCommandWrite(sb, error, `TBC sofa reward revert failed for ${uid}`);
     if (error) console.error('[tbc-swap-sofa] sofa reward revert failed for', uid, error.message); // eslint-disable-line no-console
   }
   if (rewardCtx) {
@@ -9010,11 +9052,13 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
       const { error } = await sb.from('pwp_codes')
         .update({ redeemed_item_code: newLeadCode, updated_at: new Date().toISOString() })
         .eq('code', rewardCtx.code);
+      throwAtomicCommandWrite(sb, error, 'TBC sofa reward code re-point failed');
       if (error) console.error('[tbc-swap-sofa] reward code re-point failed:', error.message); // eslint-disable-line no-console
     } else {
       const { error } = await sb.from('pwp_codes')
         .update({ status: 'AVAILABLE', redeemed_doc_no: null, redeemed_item_code: null, updated_at: new Date().toISOString() })
         .eq('code', rewardCtx.code);
+      throwAtomicCommandWrite(sb, error, 'TBC sofa reward code release failed');
       if (error) console.error('[tbc-swap-sofa] reward code release failed:', error.message); // eslint-disable-line no-console
       else pwpVoucherReleased = rewardCtx.code;
     }
@@ -9025,6 +9069,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
       const { error } = await sb.from('pwp_codes')
         .update({ trigger_item_code: newLeadCode, updated_at: new Date().toISOString() })
         .in('code', pwpKeepCodes);
+      throwAtomicCommandWrite(sb, error, 'TBC sofa keep-code restamp failed');
       if (error) console.error('[tbc-swap-sofa] keep-code restamp failed:', error.message); // eslint-disable-line no-console
     }
     // 2. Rewards whose trigger is gone revert to their normal price (the PWP
@@ -9061,12 +9106,14 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
         special_order_price_sen: rec.breakdown.specialsSurchargeSen,
         custom_specials: rec.custom_specials ?? null,
       }).eq('id', line.id);
+      throwAtomicCommandWrite(sb, error, `TBC sofa reward revert failed for ${line.id}`);
       if (error) console.error('[tbc-swap-sofa] reward revert failed for', line.id, error.message); // eslint-disable-line no-console
     }
     // 3. Dead vouchers go (un-redeemed + the reverted ones — Loo: delete).
     const toDelete = [...pwpDeleteCodes, ...pwpRevertCodes];
     if (toDelete.length > 0) {
       const { error } = await sb.from('pwp_codes').delete().in('code', toDelete);
+      throwAtomicCommandWrite(sb, error, 'TBC sofa code delete failed');
       if (error) console.error('[tbc-swap-sofa] code delete failed:', error.message); // eslint-disable-line no-console
     }
     // 4. Newly-triggered rules mint fresh vouchers (AVAILABLE, customer-bound,
@@ -9108,7 +9155,10 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
               customer_id: customerId,
             });
             if (!error) { pwpMintedCodes.push(code); break; }
-            if (attempt === 4) console.error('[tbc-swap-sofa] voucher mint failed:', error.message); // eslint-disable-line no-console
+            if (attempt === 4) {
+              throwAtomicCommandWrite(sb, error, 'TBC sofa voucher mint failed');
+              console.error('[tbc-swap-sofa] voucher mint failed:', error.message); // eslint-disable-line no-console
+            }
           }
         }
       }
@@ -9144,8 +9194,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
         ? [{ field: 'pwpVoucherReleased', to: pwpVoucherReleased } satisfies FieldChange] : []),
     ],
   });
-  try { await recomputeSoStockAllocation(sb); }
-  catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] post-tbc-swap-sofa failed:', e); }
+  deferScmAfterCommit(c, async () => { await recomputeSoStockAllocation(c.get('supabase')); });
 
   return c.json({
     ok: true,
@@ -9160,7 +9209,12 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
       rewardReleased: pwpVoucherReleased,
     },
   });
-});
+}
+mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', (c) =>
+  runScmPgCommand(c, (sb) => tbcSwapSofaCommandHandler(c, sb), {
+    docNo: c.req.param('docNo'),
+    leaseToken: c.req.header('X-SO-Edit-Lease')?.trim() ?? null,
+  }));
 
 // ── Per-line photos — PR-F (migration 0076) ──────────────────────────
 //

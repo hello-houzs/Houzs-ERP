@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { lockSoCommandLease, pgTransactionSupabase } from '../src/scm/lib/pg-supabase-transaction';
 
 const url = process.env.TEST_DATABASE_URL ?? '';
 const enabled = Boolean(url);
@@ -46,6 +47,9 @@ async function resetFixture(sql: Sql): Promise<void> {
     CREATE TABLE scm.mfg_sales_order_items (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       doc_no text NOT NULL,
+      item_code text,
+      variants jsonb,
+      total_centi integer NOT NULL DEFAULT 0 CHECK (total_centi >= 0),
       cancelled boolean NOT NULL DEFAULT false,
       warehouse_id uuid,
       line_delivery_date date,
@@ -58,7 +62,11 @@ async function resetFixture(sql: Sql): Promise<void> {
       updated_at timestamptz
     );
     CREATE TABLE scm.mfg_sales_order_payments (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
-    CREATE TABLE scm.so_amendments (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
+    CREATE TABLE scm.so_amendments (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      so_doc_no text,
+      status text NOT NULL DEFAULT 'REQUESTED'
+    );
 
     CREATE OR REPLACE FUNCTION scm.upsert_customer_by_name_phone(text, text, text)
     RETURNS uuid LANGUAGE sql AS $$ SELECT gen_random_uuid() $$;
@@ -147,5 +155,95 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
     await expect(callHeaderCas(admin, 'must rollback', 1, true)).rejects.toThrow(/injected follower failure/);
     const [saved] = await admin`SELECT note, version FROM scm.mfg_sales_orders WHERE doc_no = 'SO-PG-1'`;
     expect(saved).toMatchObject({ note: 'before failure', version: 1 });
+    await admin`DROP TRIGGER fail_so_follower ON scm.mfg_sales_order_items`;
+  });
+
+  test('the command adapter rolls every line write back when a later statement fails', async () => {
+    await admin`TRUNCATE scm.mfg_sales_order_items, scm.mfg_sales_orders`;
+    await admin`
+      INSERT INTO scm.mfg_sales_orders
+        (doc_no, note, edit_lease_token, edit_lease_expires_at)
+      VALUES ('SO-PG-1', 'command', 'lease-a', now() + interval '5 minutes')
+    `;
+    const inserted = await admin`
+      INSERT INTO scm.mfg_sales_order_items (doc_no, item_code, total_centi)
+      VALUES ('SO-PG-1', 'A', 10), ('SO-PG-1', 'B', 10)
+      RETURNING id, item_code
+    `;
+    await expect(admin.begin(async (tx) => {
+      const lease = await lockSoCommandLease(tx as unknown as Sql, 'SO-PG-1', 'lease-a');
+      expect(lease.ok).toBe(true);
+      const sb = pgTransactionSupabase(tx as unknown as Sql);
+      await sb.from('mfg_sales_order_items').update({ total_centi: 20 }).eq('id', inserted[0]!.id);
+      // CHECK(total_centi >= 0) is a real mid-command database failure.
+      await sb.from('mfg_sales_order_items').update({ total_centi: -1 }).eq('id', inserted[1]!.id);
+    })).rejects.toThrow();
+    const rows = await admin`
+      SELECT item_code, total_centi FROM scm.mfg_sales_order_items
+      WHERE doc_no = 'SO-PG-1' ORDER BY item_code
+    `;
+    expect(rows).toMatchObject([{ item_code: 'A', total_centi: 10 }, { item_code: 'B', total_centi: 10 }]);
+  });
+
+  test('two command connections serialize on the SO lease row and stale lease gets zero writes', async () => {
+    await admin`TRUNCATE scm.mfg_sales_order_items, scm.mfg_sales_orders`;
+    await admin`
+      INSERT INTO scm.mfg_sales_orders
+        (doc_no, note, edit_lease_token, edit_lease_expires_at)
+      VALUES ('SO-PG-1', 'command', 'lease-a', now() + interval '5 minutes')
+    `;
+    await admin`INSERT INTO scm.mfg_sales_order_items (doc_no, item_code, total_centi) VALUES ('SO-PG-1', 'A', 10)`;
+    const left = postgres(url, { max: 1 });
+    const right = postgres(url, { max: 1 });
+    const attempt = (sql: Sql, amount: number) => sql.begin(async (tx) => {
+      const lease = await lockSoCommandLease(tx as unknown as Sql, 'SO-PG-1', 'lease-a');
+      if (!lease.ok) return false;
+      const sb = pgTransactionSupabase(tx as unknown as Sql);
+      await sb.from('mfg_sales_order_items').update({ total_centi: amount }).eq('doc_no', 'SO-PG-1');
+      // Models the composite command's final release: the waiting transaction
+      // must re-read after the row lock and reject the now-stale token.
+      await sb.from('mfg_sales_orders').update({ edit_lease_token: null, edit_lease_expires_at: null }).eq('doc_no', 'SO-PG-1');
+      return true;
+    });
+    try {
+      const outcomes = await Promise.all([attempt(left, 20), attempt(right, 30)]);
+      expect(outcomes.sort()).toEqual([false, true]);
+      const [row] = await admin`SELECT total_centi FROM scm.mfg_sales_order_items WHERE doc_no = 'SO-PG-1'`;
+      expect([20, 30]).toContain(row?.total_centi);
+    } finally {
+      await Promise.all([left.end(), right.end()]);
+    }
+  });
+
+  test('amendment version claim and all applied lines share one transaction', async () => {
+    await admin`TRUNCATE scm.so_amendments, scm.mfg_sales_order_items, scm.mfg_sales_orders`;
+    await admin`INSERT INTO scm.mfg_sales_orders (doc_no) VALUES ('SO-PG-1')`;
+    const [amendment] = await admin`
+      INSERT INTO scm.so_amendments (so_doc_no, status)
+      VALUES ('SO-PG-1', 'REQUESTED') RETURNING id
+    `;
+    await admin`INSERT INTO scm.mfg_sales_order_items (doc_no, item_code, total_centi) VALUES ('SO-PG-1', 'A', 10)`;
+    const left = postgres(url, { max: 1 });
+    const right = postgres(url, { max: 1 });
+    const attempt = (sql: Sql, amount: number) => sql.begin(async (tx) => {
+      const sb = pgTransactionSupabase(tx as unknown as Sql);
+      const { data: claimed } = await sb.from('so_amendments')
+        .update({ version: 2, status: 'SO_APPROVED' })
+        .eq('id', amendment!.id).eq('version', 1).eq('status', 'REQUESTED')
+        .select('id').maybeSingle();
+      if (!claimed) return false;
+      await sb.from('mfg_sales_order_items').update({ total_centi: amount }).eq('doc_no', 'SO-PG-1');
+      return true;
+    });
+    try {
+      const outcomes = await Promise.all([attempt(left, 20), attempt(right, 30)]);
+      expect(outcomes.sort()).toEqual([false, true]);
+      const [savedAmendment] = await admin`SELECT status, version FROM scm.so_amendments WHERE id = ${amendment!.id}`;
+      expect(savedAmendment).toMatchObject({ status: 'SO_APPROVED', version: 2 });
+      const [line] = await admin`SELECT total_centi FROM scm.mfg_sales_order_items WHERE doc_no = 'SO-PG-1'`;
+      expect([20, 30]).toContain(line?.total_centi);
+    } finally {
+      await Promise.all([left.end(), right.end()]);
+    }
   });
 });

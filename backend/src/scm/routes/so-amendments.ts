@@ -33,6 +33,7 @@ import {
 } from '../lib/amendment-command';
 import { readBridgeCommandConfig, probeBridge } from '../lib/bridge-2990-command';
 import type { Context } from 'hono';
+import { deferScmAfterCommit, runScmPgCommand } from '../lib/pg-supabase-transaction';
 
 export const soAmendments = new Hono<{ Bindings: Env; Variables: Variables }>();
 soAmendments.use('*', supabaseAuth);
@@ -166,8 +167,15 @@ async function dispatchMirroredCommand(
   // still PENDING — a duplicate decision that is already in-flight or resolved
   // (idempotency key) must not be re-fired.
   if (enq.row.status === 'PENDING') {
-    const p = dispatchOne(sb, cfg.config, enq.row);
-    try { c.executionCtx.waitUntil(p); } catch { void p; }
+    const dispatch = () => {
+      // The command adapter is valid only until commit. Use the request's
+      // normal service client after the durable enqueue and audit commit.
+      const p = dispatchOne(c.get('supabase'), cfg.config, enq.row);
+      try { c.executionCtx.waitUntil(p); } catch { void p; }
+      return Promise.resolve();
+    };
+    if (sb?.__atomicCommand === true) deferScmAfterCommit(c, dispatch);
+    else dispatch();
   }
 
   // Houzs-side audit of WHO dispatched — the real caller by name (requirement 3).
@@ -404,8 +412,8 @@ soAmendments.patch('/:id/supplier-confirm', async (c) => {
 
    If the SO has NO bound PO this is the TERMINAL step — the amendment rests at
    SO_APPROVED. */
-soAmendments.patch('/:id/approve-so', async (c) => {
-  const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+export async function approveSoCommandHandler(c: any, sb: any): Promise<Response> {
+  const id = c.req.param('id'); const user = c.get('user');
 
   if (!hasHouzsPerm(c, 'scm.amendment.approve_so')) {
     return c.json({
@@ -429,10 +437,10 @@ soAmendments.patch('/:id/approve-so', async (c) => {
   const to = nextStatus(amendment.status, action);
   if (!to) return c.json({ error: 'bad_transition' }, 409);
 
-  /* Claim BOTH the amendment and its SO before the first apply write. This is
-     serialization, not transaction rollback: the apply engine still uses
-     several PostgREST statements and therefore must keep every step retryable.
-     The claim prevents a second approver or line editor from interleaving. */
+  /* Claim BOTH the amendment and its SO before the first apply write. The
+     version predicates detect conflicts while runScmPgCommand keeps the claim,
+     snapshot, line mutations, totals, audit, and final status in one database
+     transaction. */
   const applyToken = crypto.randomUUID();
   const applyVersion = Number(amendment.version ?? 1);
   const claimNow = new Date().toISOString();
@@ -525,7 +533,9 @@ soAmendments.patch('/:id/approve-so', async (c) => {
   if (!updated) return c.json({ error: 'amendment_version_conflict' }, 409);
 
   return c.json({ amendment: updated, revision: applied.revision });
-});
+}
+soAmendments.patch('/:id/approve-so', (c) =>
+  runScmPgCommand(c, (sb) => approveSoCommandHandler(c, sb)));
 
 /* ── PATCH /:id/approve-po ─────────────────────────────────────────────────
    The second hard gate. Guard the transition (SO_APPROVED → PO_APPROVED), then

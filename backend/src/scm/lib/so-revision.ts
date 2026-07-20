@@ -506,6 +506,9 @@ export async function applySoAmendment(
         })
         .eq('doc_no', docNo);
       if (cascErr) {
+        if ((sb as unknown as { __atomicCommand?: boolean }).__atomicCommand === true) {
+          throw new Error(`applySoAmendment: delivery-date cascade failed: ${cascErr.message}`);
+        }
         // eslint-disable-next-line no-console
         console.error('[so-amendment] delivery-date line cascade failed (non-fatal):', cascErr.message);
       }
@@ -532,6 +535,9 @@ export async function applySoAmendment(
           .eq('doc_no', docNo)
           .eq('cancelled', false);
         if (whErr) {
+          if ((sb as unknown as { __atomicCommand?: boolean }).__atomicCommand === true) {
+            throw new Error(`applySoAmendment: warehouse rebind failed: ${whErr.message}`);
+          }
           // eslint-disable-next-line no-console
           console.error('[so-amendment] warehouse rebind failed (non-fatal):', whErr.message);
         }
@@ -542,10 +548,12 @@ export async function applySoAmendment(
   /* (4-continued) Re-derive the delivery fee (rebuilds SVC-DELIVERY* lines on
      the authoritative computeSoDeliveryFee) AND fold header totals — the same
      helper the create + add-line paths call after a line change; it internally
-     runs recomputeTotals. Best-effort (logs, never throws). */
+     runs recomputeTotals. Legacy callers are best-effort; atomic commands
+     rethrow so the enclosing transaction rolls back. */
   try {
     await rederiveDeliveryFee(sb, docNo, c);
   } catch (e) {
+    if ((sb as unknown as { __atomicCommand?: boolean }).__atomicCommand === true) throw e;
     // eslint-disable-next-line no-console
     console.error('[so-amendment] rederiveDeliveryFee failed (non-fatal):', e);
   }
