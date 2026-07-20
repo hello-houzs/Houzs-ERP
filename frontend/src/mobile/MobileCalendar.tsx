@@ -74,7 +74,11 @@ type CalEvent = {
   kind: "project" | "task" | "holiday";
   projectId: number; // tapping a project/task drills into this project (0 for holidays)
   date: string; // YYYY-MM-DD
-  label: string;
+  label: string; // day-sheet title (unchanged mobile design)
+  // Compact grid-bar caption. For a project this leads with the STATE
+  // (the desktop calendar's "SEL"/"JOH" pill), mirroring the desktop bar
+  // exactly; tasks/holidays reuse their label.
+  barLabel: string;
   color: string;
   brand: string | null;
   section: string | null;
@@ -98,6 +102,51 @@ const STATUS_COLOR: Record<string, string> = {
 const TASK_COLOR = "#a16a2e";
 const HOLIDAY_COLOR = "#7a5c86";
 const statusColor = (s: string | null) => STATUS_COLOR[(s ?? "").toLowerCase()] ?? "#5a6b7a";
+
+// Project bar caption — byte-for-byte the desktop Projects calendar's bar text
+// (pages/Projects.tsx: composeDefaultProjectName + the solo / non-solo split at
+// the bar render). A SOLO event is composed live as "{state} [{brand}] SOLO @
+// {venue}" so the bar leads with the STATE — the brown-tinted "SEL"/"JOH" pill
+// the owner sees on desktop; every other event shows its own project name,
+// which the New Project form already defaults to the same state-first shape.
+// Pure formatter over fields already on the shared /api/projects/calendar/events
+// row — it derives no new data and re-uses the exact desktop logic so the two
+// surfaces read identically.
+function composeDefaultProjectName(p: {
+  state?: string | null;
+  brand?: string | null;
+  organizer?: string | null;
+  venue?: string | null;
+  eventTypeSlug?: string | null;
+}): string {
+  const state = (p.state || "").trim();
+  const brand = (p.brand || "").trim();
+  const organizer = (p.organizer || "").trim();
+  const venue = (p.venue || "").trim();
+  const isSolo = (p.eventTypeSlug || "").toLowerCase() === "solo";
+  const orgSlot = isSolo ? "SOLO" : organizer;
+  const head: string[] = [];
+  if (state) head.push(state);
+  if (brand) head.push(`[${brand}]`);
+  if (orgSlot) head.push(orgSlot);
+  const left = head.join(" ");
+  if (!venue) return left;
+  if (!left) return `@ ${venue}`;
+  return `${left} @ ${venue}`;
+}
+
+function projectBarLabel(p: CalProject): string {
+  if ((p.event_type_name || "").toLowerCase() === "solo") {
+    return composeDefaultProjectName({
+      state: p.state,
+      brand: p.brand,
+      organizer: p.organizer,
+      venue: p.venue,
+      eventTypeSlug: "solo",
+    });
+  }
+  return p.name;
+}
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const iso = (y: number, m: number, d: number) => `${y}-${pad(m + 1)}-${pad(d)}`;
@@ -236,6 +285,7 @@ export function MobileCalendar({
         projectId: p.id,
         date: p.start_date.slice(0, 10),
         label: p.code ? `[${p.brand ?? "—"}] ${p.name}` : p.name,
+        barLabel: projectBarLabel(p),
         color: statusColor(p.status),
         brand: p.brand,
         section: p.active_section_name,
@@ -252,6 +302,7 @@ export function MobileCalendar({
           projectId: t.project_id,
           date: t.due_date.slice(0, 10),
           label: `Task · ${t.title}`,
+          barLabel: `Task · ${t.title}`,
           color: TASK_COLOR,
           brand: t.brand,
           section: null,
@@ -281,6 +332,7 @@ export function MobileCalendar({
             projectId: 0,
             date: h.date,
             label: h.name,
+            barLabel: h.name,
             color: HOLIDAY_COLOR,
             brand: null,
             section: null,
@@ -330,6 +382,9 @@ export function MobileCalendar({
   };
 
   const isThisMonth = year === today.getFullYear() && month === today.getMonth();
+  // Day-of-month to mark with the brown "today" badge — only when the grid is
+  // showing the current month (null otherwise so no cell is falsely marked).
+  const todayDay = isThisMonth ? today.getDate() : null;
   let weeks = monthWeeks(year, month);
   if (mode === "week") {
     const target = isThisMonth ? today.getDate() : 1;
@@ -425,7 +480,7 @@ export function MobileCalendar({
             uncapped, exactly as the prototype's calRender() does. No separate
             agenda list (the prototype has none). */}
         {!isLoading && !error && (
-          <MonthGrid weeks={weeks} byDay={byDay} expand={expand || mode === "week"} onExpandAll={() => setExpand(true)} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} focusProjectId={focusProjectId} />
+          <MonthGrid weeks={weeks} byDay={byDay} expand={expand || mode === "week"} onExpandAll={() => setExpand(true)} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} focusProjectId={focusProjectId} todayDay={todayDay} />
         )}
       </div>
 
@@ -446,7 +501,7 @@ export function MobileCalendar({
   );
 }
 
-function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen, focusProjectId }: {
+function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen, focusProjectId, todayDay }: {
   weeks: (number | null)[][];
   byDay: Record<number, CalEvent[]>;
   expand: boolean;
@@ -455,6 +510,8 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
   empty: boolean;
   onOpen?: (projectId: number) => void;
   focusProjectId?: number;
+  /** Day-of-month to badge as "today", or null when not viewing this month. */
+  todayDay: number | null;
 }) {
   return (
     <>
@@ -489,7 +546,8 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
           <div key={wi} className="wk" style={last ? { borderBottom: "1px solid var(--line-card)", borderRadius: "0 0 8px 8px" } : undefined}>
             <div className="nums">
               {w.map((d, i) => {
-                const hasEvents = d != null && (byDay[d]?.length ?? 0) > 0;
+                const hasEvents = d != null && !!byDay[d]?.length;
+                const isToday = d != null && d === todayDay;
                 return (
                   <div
                     key={i}
@@ -497,7 +555,7 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
                     className={hasEvents ? "cal-daynum has-ev" : undefined}
                     role={hasEvents ? "button" : undefined}
                     title={hasEvents ? "Tap to see this day's events" : undefined}
-                  >{d || ""}</div>
+                  >{d == null ? "" : isToday ? <span className="cal-today-badge">{d}</span> : d}</div>
                 );
               })}
             </div>
@@ -510,7 +568,7 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
                   title={e.sub || undefined}
                   onClick={() => { if (e.kind === "holiday") onOpenDay(dayOf(e.date)); else onOpen?.(e.projectId); }}
                   style={{ ["--bar" as string]: e.color, marginLeft: `${(idx * 14.2857).toFixed(3)}%` }}
-                >{e.label}</div>
+                >{e.barLabel}</div>
               );
             })}
             {overflow > 0 && (
