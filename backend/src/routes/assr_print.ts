@@ -796,7 +796,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <div class="mgrid cols-4">
       <div class="lc">Customer</div><div class="vc">${esc(cs.customer_name || "—")}</div>
       <div class="lc">Delivery Area</div><div class="vc">${esc(cs.location || (cs as any).addr4 || "—")}</div>
-      <div class="lc">Service Admin (Purchasing)</div><div class="vc">${esc((cs as any).assigned_to_name || `${coShort} CS Team`)}</div>
+      <div class="lc">Coordinator</div><div class="vc">Service Admin (Purchasing)</div>
       <div class="lc">Warehouse</div><div class="vc">${esc(warehouseLabel || "—")}</div>
       <div class="lc">Note</div><div class="vc span3" style="font-weight: 400; color: #6a6a6a; font-size: 8.2pt;">Customer's direct phone &amp; full address are shared after dispatch is confirmed.</div>
     </div>
