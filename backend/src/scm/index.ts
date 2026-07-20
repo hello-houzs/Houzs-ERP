@@ -414,7 +414,12 @@ scm.route("/staff", staff);
 scm.route("/fabric-colours", fabricColours);
 // Wired 2026-06-20 — Order Add-ons tab (Products page). CRUD over scm.addons,
 // replacing the supabase-direct read/write the 2990 UI used.
-scm.use("/addons/*", scmAreaGuard("scm.procurement.products"));
+// openRead (cutover audit 2026-07-21): GET is a SELLING-side handover picklist
+// (Dispose / Lift-&-carry add-on charges) the POS New-SO form reads for every
+// salesperson — same class as /special-addons + /so-dropdown-options, which are
+// openRead. A pure-L2 Sales Executive (scm.procurement.*=none) must read it to
+// build an order; writes (admin CRUD) stay edit-gated. No cost on these rows.
+scm.use("/addons/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/addons", addons);
 // Ported 2026-06-21 — vendored SCM consumers already shipped (404'd at runtime).
 // document-flow: read-only SAP-B1 relationship graph GET /document-flow/:type/:id

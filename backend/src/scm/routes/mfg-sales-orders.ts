@@ -2104,7 +2104,7 @@ mfgSalesOrders.get('/customer-search', async (c) => {
   const { data, error } = await scopeToCompany(
     sb
       .from('mfg_sales_orders')
-      .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, created_at')
+      .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, customer_id, customer_race, customer_birthday, customer_gender, created_at')
       .ilike('debtor_name', `%${esc}%`)
       .not('status', 'in', '("CANCELLED","DRAFT")'),
     c,
@@ -2120,6 +2120,8 @@ mfgSalesOrders.get('/customer-search', async (c) => {
     building_type: string | null;
     emergency_contact_name: string | null; emergency_contact_phone: string | null;
     emergency_contact_relationship: string | null;
+    customer_id: string | null;
+    customer_race: string | null; customer_birthday: string | null; customer_gender: string | null;
     created_at: string;
   };
   /* Per-identity COALESCE (Loo 2026-06-06 follow-up: "link them with address
@@ -2134,6 +2136,10 @@ mfgSalesOrders.get('/customer-search', async (c) => {
     ['address1', 'address1'], ['address2', 'address2'], ['city', 'city'],
     ['postcode', 'postcode'], ['customerState', 'customer_state'],
     ['buildingType', 'building_type'],
+    // Cutover #14 read-side: coalesce the SO-captured marketing demographics so
+    // picking a returning customer prefills race/birthday/gender (all required
+    // for a new customer) from their newest order that carries each.
+    ['race', 'customer_race'], ['birthday', 'customer_birthday'], ['gender', 'customer_gender'],
   ] as const;
   /* Emergency contact coalesces as a GROUP, not per field (Loo 2026-06-12:
      copy it over like the address) — name/phone/relationship describe ONE
@@ -2172,6 +2178,10 @@ mfgSalesOrders.get('/customer-search', async (c) => {
       postcode:      r.postcode,
       customerState: r.customer_state,
       buildingType:  r.building_type,
+      customerId:    r.customer_id,
+      race:          r.customer_race,
+      birthday:      r.customer_birthday,
+      gender:        r.customer_gender,
       ...emergencyOf(r),
       lastDocNo:     r.doc_no,
       lastOrderAt:   r.created_at,
