@@ -237,6 +237,16 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     return "—";
   })();
   const statusPillLabel = STAGE_LABEL[cs.stage] || cs.stage;
+  // Switchable sub-status (mig 0116) — the supplier copy shows it as a
+  // second pill so the workshop sees where inside the stage the case
+  // sits (e.g. Pending Supplier Return = bring it back).
+  const SUB_STATUS_LABEL: Record<string, string> = {
+    pending_inspection: "Pending Inspection",
+    qc_issue_result: "QC Issue Result",
+    pending_supplier_pickup: "Pending Supplier Pickup",
+    pending_supplier_return: "Pending Supplier Return",
+  };
+  const subStatusLabel = SUB_STATUS_LABEL[(cs as any).sub_status ?? ""] || null;
   const generatedTs = fmtDateTime(new Date().toISOString());
 
   const html = `<!DOCTYPE html>
@@ -619,7 +629,8 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
         <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>
       </div>` : `
       <div class="status-pills">
-        <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>
+        <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>${subStatusLabel ? `
+        <div class="status-pill"><span class="cap">Sub-Status</span><span class="val">${esc(subStatusLabel)}</span></div>` : ""}
       </div>`}
     </div>
 
