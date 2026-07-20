@@ -443,16 +443,23 @@ export const SalesInvoiceNew = () => {
     <div className="space-y-4">
       <PageHeader
         eyebrow="Supply Chain"
-        title={`New Sales Invoice${fromDo ? ' — from Delivery Order' : ''}`}
+        title={createdInvoice
+          ? `Complete Sales Invoice ${createdInvoice.number}`
+          : `New Sales Invoice${fromDo ? ' — from Delivery Order' : ''}`}
+        description={createdInvoice
+          ? 'The invoice already exists. Finish or remove the retained payment rows, then continue to its Detail page.'
+          : undefined}
         actions={
           <div className={styles.actions}>
             <Link to="/scm/sales-invoices" className={styles.backBtn}>
               <ArrowLeft {...ICON} /> <span>Sales Invoices</span>
             </Link>
             {/* Pull lines from a Delivery Order — mirrors the purchase-side New forms. */}
-            <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices/from-do')}>
-              <ArrowRightLeft {...ICON} /> From Delivery Order
-            </Button>
+            {!createdInvoice && (
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices/from-do')}>
+                <ArrowRightLeft {...ICON} /> From Delivery Order
+              </Button>
+            )}
             <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices')}>
               <X {...ICON} /> Cancel
             </Button>
@@ -462,7 +469,11 @@ export const SalesInvoiceNew = () => {
             </Button>
             <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={create.isPending}>
               <Save {...ICON} />
-              {create.isPending ? 'Saving…' : 'Create Sales Invoice'}
+              {create.isPending
+                ? 'Saving…'
+                : createdInvoice
+                  ? (paymentIntents().length > 0 ? 'Continue payment retry' : 'Open created invoice')
+                  : 'Create Sales Invoice'}
             </Button>
           </div>
         }
@@ -470,9 +481,11 @@ export const SalesInvoiceNew = () => {
 
       {createdInvoice && (
         <div role="status" className="mb-3 rounded-lg border border-warning-text/30 bg-warning-bg px-3 py-2 text-sm text-warning-text">
-          Invoice {createdInvoice.number} already exists. Only the payment rows are retained here; make any other changes on the Detail page.
+          Invoice {createdInvoice.number} already exists. This recovery view only keeps payment rows; customer, invoice and line-item fields are hidden so unsaved edits cannot be lost.
         </div>
       )}
+
+      {!createdInvoice && (<>
 
       {loadingPrefill && (
         <div className={styles.bannerWarn} style={{ background: 'var(--c-cream)', border: '1px solid var(--line)', color: 'var(--fg-muted)' }}>
@@ -683,6 +696,8 @@ export const SalesInvoiceNew = () => {
           </div>
         </div>
       </section>
+
+      </>)}
 
       {/* ── PAYMENTS (shared draft-mode ledger) ── */}
       <PaymentsTable

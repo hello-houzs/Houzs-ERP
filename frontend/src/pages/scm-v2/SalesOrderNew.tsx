@@ -1622,8 +1622,10 @@ export const SalesOrderNew = () => {
           validates and tells the operator EXACTLY what's missing. */}
       <PageHeader
         eyebrow="Sales order"
-        title="New Sales Order"
-        description="Customer, order info, delivery address, line items and payments — saved as one order."
+        title={createdDocNo ? `Complete Sales Order ${createdDocNo}` : 'New Sales Order'}
+        description={createdDocNo
+          ? 'The order already exists. Finish or remove the retained payment rows, then continue to its Detail page.'
+          : 'Customer, order info, delivery address, line items and payments — saved as one order.'}
         actions={
           <>
             {/* h-9 = the <Button> height — this link shares the rail with
@@ -1643,7 +1645,11 @@ export const SalesOrderNew = () => {
               disabled={create.isPending}
             >
               <Save {...ICON} />
-              {create.isPending ? 'Saving…' : 'Create Sales Order'}
+              {create.isPending
+                ? 'Saving…'
+                : createdDocNo
+                  ? (paymentIntents().length > 0 ? 'Continue payment retry' : 'Open created order')
+                  : 'Create Sales Order'}
             </Button>
             <Button
               variant={fromScan ? 'primary' : 'secondary'}
@@ -1660,9 +1666,10 @@ export const SalesOrderNew = () => {
       <div className="space-y-3">
       {createdDocNo && (
         <div role="status" className="rounded-lg border border-warning-text/30 bg-warning-bg px-3 py-2 text-sm text-warning-text">
-          Sales order {createdDocNo} already exists. Only the payment rows are retained here; make any other changes on the Detail page.
+          Sales order {createdDocNo} already exists. This recovery view only keeps payment rows; customer, order and line-item fields are hidden so unsaved edits cannot be lost.
         </div>
       )}
+      {!createdDocNo && (<>
       {/* ── SCAN BANNER (fromScan only) ───────────────────────────────
           Task #73 — the OCR review happens in THIS form now. Tell the operator
           to check every dropdown-bound field before saving. Changed fields show
@@ -2190,6 +2197,8 @@ export const SalesOrderNew = () => {
           </div>
         </div>
       </section>
+
+      </>)}
 
       {/* ── PAYMENTS (shared with Detail) ─────────────────────────────
           Task #105 — Same Houzs PaymentsTable rendered on Detail. In
