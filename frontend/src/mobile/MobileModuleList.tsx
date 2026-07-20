@@ -388,6 +388,7 @@ export function MobileModuleList({
      filtering (the pre-pagination behaviour). */
   const { base, params: baseParams } = useMemo(() => splitEndpoint(config.endpoint), [config.endpoint]);
   const wantsPagination = !config.core && SERVER_PAGINATED.has(base);
+  const endpointLimit = Number(baseParams.get("limit"));
 
   /* Scroll container + sentinel for the IntersectionObserver infinite scroll. */
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -457,6 +458,13 @@ export function MobileModuleList({
     ? ((data!.pages[0] as any).total as number)
     : undefined;
   const serverPaginated = wantsPagination && serverTotal != null;
+  const loadedSearchLimit = serverPaginated
+    ? undefined
+    : wantsPagination
+      ? undefined
+      : Number.isFinite(endpointLimit) && endpointLimit > 0
+        ? endpointLimit
+        : undefined;
 
   // Chip / chip2 / sort stay client-side over the LOADED rows (see report note).
   // Search: server-side for paginated lists (already applied via the `q` param),
@@ -555,6 +563,7 @@ export function MobileModuleList({
         </div>
         <SearchScopeHint
           scope={serverPaginated ? "server" : "loaded"}
+          loadedLimit={loadedSearchLimit}
           searching={searchTransition.isSearching}
           countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale}
           resultCount={serverPaginated ? serverTotal : undefined}

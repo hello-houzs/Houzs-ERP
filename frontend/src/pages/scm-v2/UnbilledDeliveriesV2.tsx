@@ -478,7 +478,7 @@ export function UnbilledDeliveriesV2() {
                 ? "Nothing this old is waiting to be billed — try a shorter time range."
                 : "Every delivery that has left the warehouse has an invoice against it."
             }
-            search={{ value: search, onChange: setSearch, placeholder: "Search DO, customer, salesperson, phone…" }}
+            search={{ value: search, onChange: setSearch, placeholder: "Search DO, customer, salesperson, phone…", scope: "server", totalRecords: filtered.length }}
             resetFilters={{ active: filtersActive, onReset: resetLayout, label: "Reset layout" }}
           />
         ) : (

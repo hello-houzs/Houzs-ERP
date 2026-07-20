@@ -24,6 +24,9 @@ import {
 import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
 import { StatCard } from '../../components/StatCard';
+import { SearchProgress } from '../../components/SearchProgress';
+import { SearchScopeHint } from '../../components/SearchScopeHint';
+import { useDebouncedSearchTerm, useSearchResultTransition } from '../../hooks/useServerSearch';
 import { formatVariantKey, fmtCenti, fmtDate, fmtQty } from '@2990s/shared';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -333,17 +336,32 @@ const BalancesTab = ({
   search: string;
   onDrilldown: (code: string, name: string) => void;
 }) => {
-  const { data, isLoading, error } = useInventoryProductTotals({
-    search: search.trim() || undefined,
+  const { requestTerm } = useDebouncedSearchTerm(search);
+  const { data, isLoading, isFetching, isPlaceholderData, error } = useInventoryProductTotals({
+    search: requestTerm.trim() || undefined,
     category: category === 'all' ? undefined : category,
   });
   const rows: InventoryProductTotal[] = useMemo(() => data ?? [], [data]);
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  // Category changes also change the query key. React Query deliberately keeps
+  // the previous category as placeholderData, so treat that payload as stale
+  // even when the search term itself did not change.
+  const resultsAreStale = searchTransition.resultsAreStale || isPlaceholderData;
+  const searching = searchTransition.isSearching || (isPlaceholderData && !error);
+  const visibleRows = resultsAreStale ? [] : rows;
 
   const stats = useMemo(() => ({
-    totalQty: rows.reduce((s, r) => s + (r.total_qty ?? 0), 0),
-    distinctSku: rows.length,
-    totalValue: rows.reduce((s, r) => s + (r.total_value_sen ?? 0), 0),
-  }), [rows]);
+    totalQty: visibleRows.reduce((s, r) => s + (r.total_qty ?? 0), 0),
+    distinctSku: visibleRows.length,
+    totalValue: visibleRows.reduce((s, r) => s + (r.total_value_sen ?? 0), 0),
+  }), [visibleRows]);
 
   return (
     <>
@@ -354,8 +372,16 @@ const BalancesTab = ({
       </div>
 
       <p className={styles.eyebrow}>
-        {isLoading ? 'Loading…' : `${rows.length} SKU rows · double-click a row to see per-warehouse breakdown`}
+        {isLoading || searching ? 'Loading…' : `${visibleRows.length} SKU rows · double-click a row to see per-warehouse breakdown`}
       </p>
+      <SearchProgress active={searching} label={search.trim() ? searchTransition.statusText : 'Loading inventory…'} />
+      <SearchScopeHint
+        scope="server"
+        searching={searching}
+        countPending={isLoading || Boolean(error) || resultsAreStale}
+        resultCount={visibleRows.length}
+        term={search}
+      />
 
       {error && !isLoading && (
         <div className={BANNER_ERR}>
@@ -365,7 +391,7 @@ const BalancesTab = ({
       )}
 
       <DataGrid<InventoryProductTotal>
-        rows={rows}
+        rows={visibleRows}
         columns={BALANCE_COLUMNS}
         storageKey="dg-inventory-balances"
         exportName="Inventory Balances"
@@ -373,7 +399,7 @@ const BalancesTab = ({
         searchPlaceholder="Search SKUs…"
         hideSearch
         groupBanner={false}
-        isLoading={isLoading}
+        isLoading={isLoading || searching}
         emptyMessage="No SKUs match the filters."
         onRowDoubleClick={(r) => onDrilldown(r.product_code, r.product_name)}
         rowStyle={() => ({ cursor: 'pointer' })}
@@ -682,6 +708,10 @@ const BatchesTab = ({
           />
         </div>
       </div>
+      <p className="text-[10px] text-ink-muted" data-search-scope>
+        Searches batches assembled from up to 1,000 loaded lot rows only
+        {q ? ` · ${batches.length.toLocaleString()} matches` : ''}
+      </p>
 
       <div className={STAT_GRID_3}>
         <StatCard label="Open Batches" value={stats.batchCount} />

@@ -6,6 +6,7 @@ import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { fmtCenti } from "../lib/scm";
 import { formatDate } from "../lib/utils";
+import { SearchScopeHint } from "../components/SearchScopeHint";
 import "./mobile.css";
 
 /* ---------------------------------------------------------------------------
@@ -570,9 +571,19 @@ export function MobileConvertWizard({
         </div>
         {/* Search (source step only) */}
         {step === 1 && (
-          <div className="searchbar" style={{ marginTop: 10 }}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Search ${meta.sourceNoun.toLowerCase()}`} />
+          <div style={{ marginTop: 10 }}>
+            <div className="searchbar">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Search ${meta.sourceNoun.toLowerCase()}`} />
+            </div>
+            <SearchScopeHint
+              scope="loaded"
+              loadedLimit={200}
+              countPending={sourceQuery.isLoading || sourceQuery.isError}
+              resultCount={sourceQuery.isSuccess ? sources.length : undefined}
+              term={q}
+              className="mt-1 px-1"
+            />
           </div>
         )}
         {/* GRN supplier chips (source step only) */}
