@@ -2,7 +2,10 @@ import { env, fetchMock } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { app } from "../src/index";
 import { getUserBySession } from "../src/services/auth";
-import { changePersonalMailboxAliasAtomically } from "../src/routes/users";
+import {
+  AliasMailboxCollisionError,
+  changePersonalMailboxAliasAtomically,
+} from "../src/routes/users";
 import type { Env } from "../src/types";
 
 const liveEnv = { ...env, RESEND_API_KEY: "re_test_key" } as unknown as Env;
@@ -132,7 +135,7 @@ afterAll(async () => {
 });
 
 describe("personal Mail Center alias revocation", () => {
-  test("the production users PATCH revokes the old mailbox before updating the user", () => {
+  test("the production users PATCH commits mailbox reconciliation before remaining user fields", () => {
     const start = usersRouteSource.indexOf('app.patch("/:id"');
     expect(start).toBeGreaterThan(-1);
     const handler = usersRouteSource.slice(start);
@@ -140,6 +143,137 @@ describe("personal Mail Center alias revocation", () => {
     const updateAt = handler.indexOf("await db.update(users).set(set)");
     expect(revokeAt).toBeGreaterThan(-1);
     expect(updateAt).toBeGreaterThan(revokeAt);
+    expect(handler).toContain("personal_mailbox_alias_change: personalMailboxAliasChange");
+  });
+
+  test("claims an inbound-created unowned mailbox and creates the self-grant atomically", async () => {
+    const inboundAlias = `alias-inbound-${crypto.randomUUID()}@houzscentury.com`;
+    const inboundMailboxId = crypto.randomUUID();
+    await env.DB.prepare(`UPDATE users SET email_alias = NULL WHERE id = ?`)
+      .bind(userId)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO email_addresses
+         (id, address, label, assigned_user_id, assigned_user_name, active, created_at, created_by)
+       VALUES (?, ?, 'Inbound mailbox', NULL, NULL, 0, ?, NULL)`,
+    )
+      .bind(inboundMailboxId, inboundAlias, new Date().toISOString())
+      .run();
+
+    const change = await changePersonalMailboxAliasAtomically(
+      liveEnv,
+      userId,
+      null,
+      inboundAlias,
+    );
+    const state = await env.DB.prepare(
+      `SELECT u.email_alias, ea.id AS mailbox_id, ea.assigned_user_id, ea.active,
+              EXISTS(SELECT 1 FROM email_address_access a
+                     WHERE a.address_id = ea.id AND a.user_id = u.id) AS self_grant
+         FROM users u
+         JOIN email_addresses ea ON lower(ea.address) = lower(u.email_alias)
+        WHERE u.id = ?`,
+    )
+      .bind(userId)
+      .first<{
+        email_alias: string;
+        mailbox_id: string;
+        assigned_user_id: number;
+        active: number;
+        self_grant: number;
+      }>();
+    expect(change).toMatchObject({
+      new_alias: inboundAlias,
+      mailbox_id: inboundMailboxId,
+    });
+    expect(state).toMatchObject({
+      email_alias: inboundAlias,
+      mailbox_id: inboundMailboxId,
+      assigned_user_id: userId,
+      active: 1,
+      self_grant: 1,
+    });
+
+    await changeAlias(inboundAlias, null);
+    await env.DB.prepare(`DELETE FROM email_address_access WHERE address_id = ?`)
+      .bind(inboundMailboxId)
+      .run();
+    await env.DB.prepare(`DELETE FROM email_addresses WHERE id = ?`)
+      .bind(inboundMailboxId)
+      .run();
+  });
+
+  test("rejects an alias owned by another user without revoking the current alias", async () => {
+    const suffix = crypto.randomUUID();
+    const oldAlias = `alias-collision-old-${suffix}@houzscentury.com`;
+    const collisionAlias = `alias-collision-new-${suffix}@houzscentury.com`;
+    const oldMailboxId = crypto.randomUUID();
+    const collisionMailboxId = crypto.randomUUID();
+    await env.DB.prepare(`UPDATE users SET email_alias = ? WHERE id = ?`)
+      .bind(oldAlias, userId)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO email_addresses
+         (id, address, label, assigned_user_id, assigned_user_name, active, created_at, created_by)
+       VALUES (?, ?, 'Current owner', ?, 'Alias Owner', 1, ?, ?),
+              (?, ?, 'Other owner', ?, 'Shared Grant User', 1, ?, ?)`,
+    )
+      .bind(
+        oldMailboxId,
+        oldAlias,
+        userId,
+        new Date().toISOString(),
+        userId,
+        collisionMailboxId,
+        collisionAlias,
+        otherUserId,
+        new Date().toISOString(),
+        otherUserId,
+      )
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO email_address_access (id, address_id, user_id, created_at, created_by)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+      .bind(crypto.randomUUID(), oldMailboxId, userId, new Date().toISOString(), userId)
+      .run();
+
+    await expect(changeAlias(oldAlias, collisionAlias)).rejects.toBeInstanceOf(
+      AliasMailboxCollisionError,
+    );
+
+    const user = await env.DB.prepare(`SELECT email_alias FROM users WHERE id = ?`)
+      .bind(userId)
+      .first<{ email_alias: string | null }>();
+    const current = await env.DB.prepare(
+      `SELECT assigned_user_id,
+              EXISTS(SELECT 1 FROM email_address_access a
+                     WHERE a.address_id = email_addresses.id AND a.user_id = ?) AS self_grant
+         FROM email_addresses WHERE id = ?`,
+    )
+      .bind(userId, oldMailboxId)
+      .first<{ assigned_user_id: number | null; self_grant: number }>();
+    const collision = await env.DB.prepare(
+      `SELECT assigned_user_id,
+              EXISTS(SELECT 1 FROM email_address_access a
+                     WHERE a.address_id = email_addresses.id AND a.user_id = ?) AS wrong_grant
+         FROM email_addresses WHERE id = ?`,
+    )
+      .bind(userId, collisionMailboxId)
+      .first<{ assigned_user_id: number | null; wrong_grant: number }>();
+    expect(user?.email_alias).toBe(oldAlias);
+    expect(current).toMatchObject({ assigned_user_id: userId, self_grant: 1 });
+    expect(collision).toMatchObject({ assigned_user_id: otherUserId, wrong_grant: 0 });
+
+    await env.DB.prepare(`DELETE FROM email_address_access WHERE address_id IN (?, ?)`)
+      .bind(oldMailboxId, collisionMailboxId)
+      .run();
+    await env.DB.prepare(`DELETE FROM email_addresses WHERE id IN (?, ?)`)
+      .bind(oldMailboxId, collisionMailboxId)
+      .run();
+    await env.DB.prepare(`UPDATE users SET email_alias = NULL WHERE id = ?`)
+      .bind(userId)
+      .run();
   });
 
   test("a D1 batch failure rolls back grant, assignment, and users.email_alias together", async () => {
@@ -203,6 +337,12 @@ describe("personal Mail Center alias revocation", () => {
     expect(user?.email_alias).toBe(oldAlias);
     expect(mailbox?.assigned_user_id).toBe(userId);
     expect(Number(grant?.n)).toBe(1);
+    const partialNew = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM email_addresses WHERE lower(address) = ?`,
+    )
+      .bind(nextAlias)
+      .first<{ n: number }>();
+    expect(Number(partialNew?.n)).toBe(0);
 
     await env.DB.prepare(`DELETE FROM email_address_access WHERE address_id = ?`)
       .bind(mailboxId)
@@ -294,20 +434,6 @@ describe("personal Mail Center alias revocation", () => {
 
     // Removal follows the same backend path: the last personal From disappears
     // immediately even though the AuthUser cache was warm.
-    const newMailboxId = crypto.randomUUID();
-    await env.DB.prepare(
-      `INSERT INTO email_addresses
-         (id, address, label, assigned_user_id, assigned_user_name, active, created_at, created_by)
-       VALUES (?, ?, 'Alias Owner', ?, 'Alias Owner', 1, ?, ?)`,
-    )
-      .bind(newMailboxId, newAlias, userId, new Date().toISOString(), userId)
-      .run();
-    await env.DB.prepare(
-      `INSERT INTO email_address_access (id, address_id, user_id, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?)`,
-    )
-      .bind(crypto.randomUUID(), newMailboxId, userId, new Date().toISOString(), userId)
-      .run();
     await changeAlias(newAlias, null);
     expect((await compose(token, newAlias)).status).toBe(403);
   });
