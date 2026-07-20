@@ -51,11 +51,14 @@ jobs:
         env:
           CI: "true"
           # Optional overrides. Absent -> the suite uses the in-repo public
-          # staging-seed account (hello@houzscentury.com); the auth-dependent
-          # specs skip gracefully if these AND the fallback resolve empty. Set
-          # these repo secrets to point the suite at a different staging account.
+          # staging-seed account (hello@houzscentury.com). The required-proof
+          # policy below fails when neither path authenticates.
           STAGING_E2E_EMAIL: ${{ secrets.STAGING_E2E_EMAIL }}
           STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          # A green automated smoke run must mean the authenticated proofs ran.
+          # An unavailable DB/API or an unseeded fallback fixture fails red
+          # instead of silently producing a green run with three skips.
+          STAGING_E2E_REQUIRE_PROOF: "true"
           # Targets. The config bakes in the same defaults; these repo VARIABLES
           # let an operator re-point the suite (e.g. at a preview) without a code
           # change.

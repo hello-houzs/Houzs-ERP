@@ -28,19 +28,26 @@ export const STAGING_API_URL =
 // staging-seed-account.mjs, _staging-setup.mjs and seed-user-management.mjs.
 //
 // To run secrets-only: set the two secrets and clear these fallbacks. When both
-// resolve empty, `credsConfigured` is false and the auth-dependent specs skip
-// with a clear annotation instead of failing.
+// resolve empty, `credsConfigured` is false. Optional local runs skip with a
+// clear annotation; automated required-proof runs fail closed.
 export const E2E_EMAIL = process.env.STAGING_E2E_EMAIL || "hello@houzscentury.com";
 export const E2E_PASSWORD = process.env.STAGING_E2E_PASSWORD || "houzs1234";
 export const credsConfigured = E2E_EMAIL.length > 0 && E2E_PASSWORD.length > 0;
 
 // True when BOTH credentials came from explicit secrets/env (not the in-repo
-// fallback). This decides how a 401 is treated: owner-supplied creds that fail
-// are a real problem (fail red); the fallback fixture failing just means this
-// staging DB has not been seeded with it (skip — see apiLogin).
+// fallback). This decides how a 401 is classified: owner-supplied credentials
+// always fail red; fallback failure becomes the typed setup error below, whose
+// disposition is controlled by the required-proof policy.
 export const credsFromSecret =
   (process.env.STAGING_E2E_EMAIL || "").length > 0 &&
   (process.env.STAGING_E2E_PASSWORD || "").length > 0;
+
+// Automated post-deploy/nightly runs set this to true. In that mode an
+// unavailable environment or an unprovisioned fixture is a failed proof, not
+// a passing run with the important tests skipped. Local exploratory runs keep
+// the historical skip behavior unless the operator opts in explicitly.
+export const stagingProofRequired =
+  (process.env.STAGING_E2E_REQUIRE_PROOF || "").toLowerCase() === "true";
 
 // ──────────────────────────────────────────────────────────────────────────
 // localStorage keys the frontend reads. Duplicated here (not imported from
@@ -52,25 +59,46 @@ export const AUTH_TOKEN_KEY = "auth:token";
 export const ACTIVE_COMPANY_KEY = "houzs.activeCompanyId";
 
 // Raised when staging answers with a transient/unavailable status (a paused
-// free-tier Supabase, a cold Worker, a 5xx). Callers turn this into a
-// test.skip so a sleeping staging environment reads as "not proven right now"
-// rather than a false "the app is broken" red.
+// free-tier Supabase, a cold Worker, a 5xx). Optional local runs may skip it;
+// an automated required proof fails because staging availability is evidence.
 export class StagingUnavailableError extends Error {}
 
 // Raised when the IN-REPO FALLBACK account (no owner-supplied secret) is not
 // provisioned on this staging DB — i.e. login returns 401/403 with the
 // fallback fixture. That is a setup gap (run the "Staging Seed (one-off)"
-// workflow, or set STAGING_E2E_* secrets), NOT an app bug, so callers skip
-// with a clear annotation. A 401 with OWNER-SUPPLIED secrets is NOT wrapped:
-// the owner asserted those are valid, so their failure surfaces red.
+// workflow, or set STAGING_E2E_* secrets). Optional local runs may skip it;
+// automated required proofs fail. A 401 with OWNER-SUPPLIED secrets is NOT
+// wrapped: the owner asserted those are valid, so their failure surfaces red.
 export class StagingAuthUnprovisionedError extends Error {}
 
-// Both are "skip, don't fail" signals for the auth-dependent specs.
-export function isSkippableStagingError(e: unknown): e is Error {
+// Both are skippable only for optional local exploration. Automated proofs
+// set proofRequired=true and therefore fail closed.
+export function isSkippableStagingErrorForPolicy(
+  e: unknown,
+  proofRequired: boolean,
+): e is Error {
   return (
-    e instanceof StagingUnavailableError ||
-    e instanceof StagingAuthUnprovisionedError
+    !proofRequired &&
+    (e instanceof StagingUnavailableError ||
+      e instanceof StagingAuthUnprovisionedError)
   );
+}
+
+export function isSkippableStagingError(e: unknown): e is Error {
+  return isSkippableStagingErrorForPolicy(e, stagingProofRequired);
+}
+
+export function missingCredentialsMaySkip(
+  configured: boolean,
+  proofRequired: boolean,
+): boolean {
+  if (configured) return false;
+  if (proofRequired) {
+    throw new Error(
+      "Required staging proof has no usable credentials. Configure STAGING_E2E_EMAIL / STAGING_E2E_PASSWORD or provision the documented staging fixture.",
+    );
+  }
+  return true;
 }
 
 // ──────────────────────────────────────────────────────────────────────────

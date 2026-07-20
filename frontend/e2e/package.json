@@ -8,6 +8,7 @@
     "test:headed": "playwright test --headed",
     "test:debug": "playwright test --debug",
     "test:list": "playwright test --list",
+    "test:policy": "playwright test proof-policy.spec.ts",
     "test:report": "playwright show-report",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "install-browsers": "playwright install chromium"
