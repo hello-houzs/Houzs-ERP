@@ -34,16 +34,16 @@ This file is the interruption-safe continuation record. The completion ledger co
 
 | Worktree | Branch / current head | Verified work | Blocking item / exact continuation |
 |---|---|---|---|
-| `C:\Users\User\Desktop\hz-d3-control-plane` | `fix/control-plane-privilege-boundary` / `d5285efe` | Rebased onto `c0e8d44d`; neutral preview/self-role/last-wildcard controls plus atomic PG/D1 hard delete and one staging+Owner-only impersonation route; focused tests 33/33 and typecheck pass | Independent final review is active. If P0/P1=0, push and open Draft PR; then regenerate #917 after the duplicate-route allowlist is removed during merge coordination. |
-| `C:\Users\User\Desktop\hz-so-cas-mandatory` | `fix/so-cas-mandatory` / `92167619` | Five-minute server lease, header CAS, core line mutation lease, D1/PG support; backend 13/13, frontend 4/4, typechecks and build pass | Independent review found P0=0/P1=6. Full route list, required fixes and acceptance tests: [`reviews/SO-CAS-COVERAGE-REVIEW.md`](reviews/SO-CAS-COVERAGE-REVIEW.md). Do not publish until a new review reports P1=0. |
+| `C:\Users\User\Desktop\hz-d3-control-plane` | `fix/control-plane-privilege-boundary` / `d5285efe` before active fix | Atomic PG/D1 hard delete and one staging+Owner-only impersonation route; focused tests 33/33 and typecheck pass | Review found P0=0/P1=2: it must stack on #918 authoritative sessions, and privilege-sensitive target/role checks must be revalidated inside the same boundary transaction to close promotion/grant TOCTOU races. Fix is active; do not publish yet. |
+| `C:\Users\User\Desktop\hz-so-cas-mandatory` | `fix/so-cas-mandatory` / `8baa8226` | First full-stack closure pass: special-route lease, versioned frontend coordinator, status/delete/system generations, 0161 header/follower RPC, payment row CAS and amendment serialization; focused tests and both typechecks pass | Independent re-review is active. Author-reported unresolved acceptance risks: amendment's TS multi-write apply is not one PG transaction; TBC/sofa/photo mutations are lease-serialized but not all command-RPC atomic; live PG/failure-injection proof is missing. Treat these as P1 until reviewer proves otherwise. |
 
 ## Database ordering and rollout
 
 The current migration chain is:
 
-`0158 idempotency phase 1 → deploy → 24-hour soak/telemetry → 0159 phase 2 constraints → 0160 SO edit lease/followers → application code`
+`0158 idempotency phase 1 → deploy → 24-hour soak/telemetry → 0159 phase 2 constraints → 0160 SO edit lease/followers → 0161 SO concurrency-domain closure → application code`
 
-If session consistency unexpectedly needs a migration, reserve `0161`; prefer no migration. Before applying any migration, re-read the branch against current `legacy/main`, run checksum/drift validation, take the documented restore point, and record the exact deployed commit.
+Session consistency required no migration. `0161` is now reserved exclusively for the SO concurrency-domain closure. Before applying any migration, re-read the branch against current `legacy/main`, run checksum/drift validation, take the documented restore point, and record the exact deployed commit.
 
 ## Merge conflict order
 
