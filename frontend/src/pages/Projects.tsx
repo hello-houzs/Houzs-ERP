@@ -1035,6 +1035,54 @@ function ProjectsListView() {
   // nullable for the DataTable's loading state).
   const cardRows = rows ?? [];
 
+  // Export = the FULL filtered project list (ALL pages), IGNORING the "My
+  // pending tasks" toggle — that's a screen-only view (owner 2026-07-20). Loops
+  // pages via `total` so neither pagination nor a server per_page cap truncates
+  // the file, and drops my_pending so a filtered export isn't limited to
+  // pending-task rows.
+  const [exporting, setExporting] = useState(false);
+  const exportProjects = async () => {
+    setExporting(true);
+    try {
+      const all: ProjectRow[] = [];
+      const per = 200;
+      for (let pg = 1; pg <= 500; pg++) {
+        const res = await api.get<Paginated<ProjectRow>>(
+          `/api/projects${buildQuery({
+            brand: brand || undefined,
+            year: year || undefined,
+            month: month || undefined,
+            section: section || undefined,
+            exclude_done: excludeDoneParam,
+            // my_pending intentionally OMITTED — export is the full filtered list.
+            search,
+            status: status || undefined,
+            page: pg,
+            per_page: per,
+            include_archived: showArchived ? 1 : undefined,
+            ...sortParams,
+          })}`
+        );
+        const batch = res.data ?? [];
+        all.push(...batch);
+        if (batch.length === 0 || all.length >= (res.total ?? all.length)) break;
+      }
+      const csvCols = columns
+        .filter((c) => typeof c.getValue === "function")
+        .map((c) => ({ key: c.key, label: c.label || c.key, getValue: c.getValue! }));
+      if (!csvCols.length || all.length === 0) {
+        toast.error(all.length === 0 ? "No projects match the current filter." : "Nothing to export.");
+        return;
+      }
+      const date = new Date().toISOString().slice(0, 10);
+      downloadCSV(`projects-${date}.csv`, toCSV(all, csvCols));
+    } catch (e: any) {
+      toast.error(e?.message || "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const summary = useQuery<{
     by_stage: { stage: string; count: number }[];
     upcoming_30d: number;
@@ -1401,20 +1449,12 @@ function ProjectsListView() {
             export too (same filtered rows + columns as the table). */}
         {listMode === "cards" && (
           <button
-            onClick={() => {
-              if (!cardRows.length) return;
-              const csvCols = columns
-                .filter((c) => typeof c.getValue === "function")
-                .map((c) => ({ key: c.key, label: c.label || c.key, getValue: c.getValue! }));
-              if (!csvCols.length) return;
-              const date = new Date().toISOString().slice(0, 10);
-              downloadCSV(`projects-${date}.csv`, toCSV(cardRows, csvCols));
-            }}
-            disabled={cardRows.length === 0}
+            onClick={() => void exportProjects()}
+            disabled={exporting}
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent disabled:opacity-40"
-            title="Download CSV of the current projects"
+            title="Download CSV of all projects matching the current filter (ignores 'My pending tasks')"
           >
-            <Download size={13} /> Export
+            <Download size={13} /> {exporting ? "Exporting…" : "Export"}
           </button>
         )}
         <div className="inline-flex overflow-hidden rounded-md border border-border bg-surface text-[11px] font-semibold">
@@ -1501,6 +1541,7 @@ function ProjectsListView() {
         <DataTable
           tableId="projects"
           exportName="projects"
+          onExport={() => void exportProjects()}
           search={{
             value: search,
             onChange: (v) => setSearch(v),

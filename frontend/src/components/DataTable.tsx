@@ -84,6 +84,9 @@ interface Props<T> {
   getRowClassName?: (row: T) => string | undefined;
   /** Filename stem for CSV export, e.g. "orders". A date suffix is appended automatically. */
   exportName?: string;
+  /** If provided, the Export button calls this instead of exporting the on-screen
+   *  rows — lets the caller export a fuller dataset (all pages, no view-only filter). */
+  onExport?: () => void;
   /** If provided, an Import button is shown that calls this with the parsed File. */
   onImport?: (file: File) => void;
   /** Optional eyebrow rendered next to the row count. */
@@ -352,6 +355,7 @@ export function DataTable<T>({
   getRowKey,
   getRowClassName,
   exportName,
+  onExport,
   onImport,
   caption,
   udfTable,
@@ -706,6 +710,9 @@ export function DataTable<T>({
   }
 
   function handleExport() {
+    // Optional override: the caller exports a broader/full dataset (e.g. all
+    // pages, ignoring a screen-only filter) instead of the on-screen rows.
+    if (onExport) { onExport(); return; }
     if (!sortedRows || sortedRows.length === 0) return;
     const csvCols: CSVColumn<T>[] = visibleColumns
       .filter((c) => typeof c.getValue === "function")
