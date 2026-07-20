@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { canOperateDeliveryOrders, canOperateSalesInvoices, canViewFairReport } from "../auth/salesAccess";
 import { capability, type CapabilityKey } from "../auth/capabilities";
@@ -92,6 +93,7 @@ type Screen =
      NOT a silent redirect to Orders — see mobileRoute.ts for what used to
      happen here. */
   | { t: "desktop-only"; path: string }
+  | { t: "not-found"; path: string }
   | { t: "stub"; title: string };
 
 /** Where a menu destination goes, as a PURE mapping. Shared by the menu tap
@@ -100,7 +102,7 @@ type Screen =
  *  one destination that is a bottom tab rather than an overlay. */
 type DestinationTarget = Screen | { t: "orders-tab" };
 
-function destinationScreen(to: string, label: string): DestinationTarget {
+export function destinationScreen(to: string, label: string): DestinationTarget {
   const path = (to || "").split("?")[0];
   if (path === "/scm/sales-orders") return { t: "orders-tab" };
   if (path === "/scm/sales-orders/maintenance") return { t: "so-maintenance" };
@@ -139,6 +141,8 @@ function initialScreenFor(route: MobileRoute): Screen {
       return { t: "locked", label: route.label };
     case "desktop-only":
       return { t: "desktop-only", path: route.path };
+    case "not-found":
+      return { t: "not-found", path: route.path };
     case "menu": {
       const target = destinationScreen(route.to, route.label);
       // The Orders destination lands on the default tab, which is already
@@ -431,6 +435,7 @@ export function MobileApp() {
 }
 
 function MobileAppInner() {
+  const navigate = useNavigate();
   const { user, can, pageAccess, logout } = useAuth();
   const notify = useNotify();
   const qc = useQueryClient();
@@ -521,6 +526,10 @@ function MobileAppInner() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [screen, setScreen] = useState<Screen>(() => initialScreenFor(initialRoute));
   const back = () => setScreen({ t: "tab" });
+  const leaveUrlDeadEnd = () => {
+    navigate("/", { replace: true });
+    setScreen({ t: "tab" });
+  };
 
   // Search → calendar jump target. When a project search hit is tapped we route
   // to the Calendar tab and snap it to the project's start-date month, with the
@@ -725,8 +734,9 @@ function MobileAppInner() {
   else if (screen.t === "mail") overlay = <MobileMailCenter onBack={back} />;
   else if (screen.t === "announcements") overlay = <MobileAnnouncements onBack={back} />;
   else if (screen.t === "inbox") overlay = <MobileInbox onBack={back} onOpen={(n) => { const doc = (n as { doc_no?: string }).doc_no; if (doc) setScreen({ t: "so-detail", docNo: doc }); }} />;
-  else if (screen.t === "locked") overlay = <UrlLocked label={screen.label} onHome={back} />;
-  else if (screen.t === "desktop-only") overlay = <DesktopOnly path={screen.path} onHome={back} />;
+  else if (screen.t === "locked") overlay = <UrlLocked label={screen.label} onHome={leaveUrlDeadEnd} />;
+  else if (screen.t === "desktop-only") overlay = <DesktopOnly path={screen.path} onHome={leaveUrlDeadEnd} />;
+  else if (screen.t === "not-found") overlay = <MobileNotFound path={screen.path} onHome={leaveUrlDeadEnd} />;
   else if (screen.t === "stub") overlay = <Stub title={screen.title} onBack={back} />;
   if (overlay !== null) return (
     <>
@@ -916,6 +926,17 @@ function DesktopOnly({ path, onHome }: { path: string; onHome: () => void }) {
     <UrlDeadEnd
       title="Not available on mobile"
       body={`${path} hasn't been built for phones yet. Open it on a computer to use this page.`}
+      onHome={onHome}
+    />
+  );
+}
+
+/** A genuine typo/retired URL, distinct from a real desktop-only page. */
+function MobileNotFound({ path, onHome }: { path: string; onHome: () => void }) {
+  return (
+    <UrlDeadEnd
+      title="Page not found"
+      body={`${path} isn't a page in Houzs ERP. Check the link or return to the app.`}
       onHome={onHome}
     />
   );

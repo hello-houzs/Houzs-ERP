@@ -1,5 +1,5 @@
 import { useEffect, useState, lazy, Suspense, type ReactNode } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "./AuthContext";
 import { signInErrorMessage } from "./loginErrors";
@@ -548,6 +548,7 @@ export function BootstrapScreen() {
 // ──────────────────────────────────────────────────────────
 export function AcceptInviteScreen() {
   const { acceptInvite } = useAuth();
+  const navigate = useNavigate();
   // Token arrives via the real public route (/invite/:token); the old
   // email links used a #invite= hash, still accepted for backward-compat.
   const { token: routeToken } = useParams<{ token: string }>();
@@ -604,6 +605,9 @@ export function AcceptInviteScreen() {
     setBusy(true);
     try {
       await acceptInvite(token, name, password);
+      // RootApp reads the live Router location, so this crosses from the
+      // invite-only tree into the authenticated staff/mobile shell.
+      navigate("/", { replace: true });
     } catch (e: any) {
       setErr(e?.message || "Couldn't accept invitation");
     } finally {

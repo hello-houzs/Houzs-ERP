@@ -61,9 +61,13 @@ describe("resolveMobileRoute", () => {
       .toEqual({ t: "desktop-only", path: "/scm/lorry-capacity" });
     expect(resolveMobileRoute("/scm/hr/settings", ALL, ALL))
       .toEqual({ t: "desktop-only", path: "/scm/hr/settings" });
-    // A path that exists nowhere must also NOT fall through to a document list.
+    // A path that exists nowhere must also NOT fall through to a document list
+    // or claim that a desktop page exists.
     expect(resolveMobileRoute("/nonsense", ALL, ALL))
-      .toEqual({ t: "desktop-only", path: "/nonsense" });
+      .toEqual({ t: "not-found", path: "/nonsense" });
+    // Dynamic desktop routes are recognised from the executable manifest.
+    expect(resolveMobileRoute("/scm/purchase-orders/PO-2607-001", ALL, ALL))
+      .toEqual({ t: "desktop-only", path: "/scm/purchase-orders/PO-2607-001" });
   });
 
   it("locks a real destination the user's position may not open", () => {
@@ -155,5 +159,10 @@ describe("resolveMobileRoute", () => {
   it("decodes an escaped document number", () => {
     expect(resolveMobileRoute("/scm/sales-orders/SO%2F2607%2F001", ALL, ALL))
       .toEqual({ t: "so-detail", docNo: "SO/2607/001" });
+  });
+
+  it("fails a malformed escaped document number into 404 instead of throwing", () => {
+    expect(resolveMobileRoute("/scm/sales-orders/%E0%A4%A", ALL, ALL))
+      .toEqual({ t: "not-found", path: "/scm/sales-orders/%E0%A4%A" });
   });
 });

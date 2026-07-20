@@ -22,6 +22,7 @@
  */
 
 import { resolveAlias } from "../lib/routeAliases";
+import { isKnownStaffLocation } from "../routing/routeManifest";
 
 /** Where a URL points, once resolved. */
 export type MobileRoute =
@@ -41,7 +42,9 @@ export type MobileRoute =
   /** A real destination that this user's position may not open. */
   | { t: "locked"; label: string }
   /** No mobile screen exists for this path. The honest dead end. */
-  | { t: "desktop-only"; path: string };
+  | { t: "desktop-only"; path: string }
+  /** The URL exists on neither mobile nor desktop. */
+  | { t: "not-found"; path: string };
 
 export type MobileDestination = { to: string; label: string };
 
@@ -143,8 +146,14 @@ export function resolveMobileRoute(
   if (soDeep && !SO_RESERVED_SEGMENTS.has(soDeep[1])) {
     const canSo = visible.some((d) => mobileDestinationMatches("/scm/sales-orders", d.to));
     if (!canSo) return { t: "locked", label: "Sales Orders" };
-    return { t: "so-detail", docNo: decodeURIComponent(soDeep[1]) };
+    try {
+      return { t: "so-detail", docNo: decodeURIComponent(soDeep[1]) };
+    } catch {
+      return { t: "not-found", path };
+    }
   }
 
-  return { t: "desktop-only", path };
+  return isKnownStaffLocation(path)
+    ? { t: "desktop-only", path }
+    : { t: "not-found", path };
 }
