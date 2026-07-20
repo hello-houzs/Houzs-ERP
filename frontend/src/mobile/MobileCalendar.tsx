@@ -85,6 +85,11 @@ type CalEvent = {
   organizer: string | null;
   status: string | null;
   sub: string | null;
+  // Task-only presentation extras, mirroring the desktop task chip: is_overdue
+  // reds the bar, project_status colours a status dot, owner_name -> initials.
+  overdue?: boolean;
+  dot?: string;
+  initials?: string;
 };
 
 const MONTHS = [
@@ -102,6 +107,13 @@ const STATUS_COLOR: Record<string, string> = {
 const TASK_COLOR = "#a16a2e";
 const HOLIDAY_COLOR = "#7a5c86";
 const statusColor = (s: string | null) => STATUS_COLOR[(s ?? "").toLowerCase()] ?? "#5a6b7a";
+// Overdue task bar colour — the mobile "cancelled / late" red token (--red),
+// reused so a late task reads in the same family as a cancelled bar.
+const OVERDUE_COLOR = "#b23a3a";
+
+// Up-to-two-letter owner initials for the task-bar badge (desktop task chip).
+const ownerInitials = (name: string | null): string =>
+  (name || "").split(/\s+/).filter(Boolean).slice(0, 2).map((s) => s[0]).join("").toUpperCase();
 
 // Project bar caption — byte-for-byte the desktop Projects calendar's bar text
 // (pages/Projects.tsx: composeDefaultProjectName + the solo / non-solo split at
@@ -214,8 +226,10 @@ export function MobileCalendar({
   const [showTasks, setShowTasks] = useState(false);
   // My-holidays toggle — overlays Malaysian federal public holidays from the
   // local src/lib/holidays.ts table (same source as the desktop calendar); no
-  // backend feed needed. Injected as purple bars in the events memo below.
-  const [showHolidays, setShowHolidays] = useState(false);
+  // backend feed needed. Rendered as a day-cell tint + name (see MonthGrid).
+  // Defaults ON to match the desktop Projects calendar, which always overlays
+  // federal holidays.
+  const [showHolidays, setShowHolidays] = useState(true);
   const [expand, setExpand] = useState(false);
   // Day-detail sheet — opened by tapping a date cell or a "+N more" overflow
   // link, mirroring the desktop CalendarDayModal. Holds the tapped day (1-31)
@@ -309,6 +323,9 @@ export function MobileCalendar({
           organizer: t.organizer,
           status: t.status,
           sub: t.project_code || t.project_name || null,
+          overdue: t.is_overdue === 1,
+          dot: statusColor(t.project_status),
+          initials: ownerInitials(t.owner_name),
         });
       }
     }
@@ -530,10 +547,13 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
 
       {!empty && weeks.map((w, wi) => {
         const last = wi === weeks.length - 1;
-        // Flatten this week's events with their weekday index for left-offset.
+        // Flatten this week's PROJECT/TASK events with their weekday index for
+        // the left-offset. Holidays are rendered as a day-cell tint + name
+        // (below), not a bar, so they never consume a lane or hide under
+        // "+N more" — mirroring the desktop calendar's holiday treatment.
         const cells: { e: CalEvent; idx: number }[] = [];
         w.forEach((d, idx) => {
-          if (d && byDay[d]) byDay[d].forEach((e) => cells.push({ e, idx }));
+          if (d && byDay[d]) byDay[d].forEach((e) => { if (e.kind !== "holiday") cells.push({ e, idx }); });
         });
         // v7 shows up to 4 event bars per week (all when Expand-all is on); the
         // overflow "+N more" expands every bar inline.
@@ -546,29 +566,46 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
           <div key={wi} className="wk" style={last ? { borderBottom: "1px solid var(--line-card)", borderRadius: "0 0 8px 8px" } : undefined}>
             <div className="nums">
               {w.map((d, i) => {
-                const hasEvents = d != null && !!byDay[d]?.length;
+                const dayEvents = d != null ? byDay[d] : undefined;
+                const hasEvents = !!dayEvents?.length;
                 const isToday = d != null && d === todayDay;
+                const dayHols = dayEvents ? dayEvents.filter((e) => e.kind === "holiday") : [];
+                const cls = [hasEvents ? "cal-daynum has-ev" : "", dayHols.length ? "holiday" : ""]
+                  .filter(Boolean).join(" ") || undefined;
                 return (
                   <div
                     key={i}
                     onClick={hasEvents ? () => onOpenDay(d as number) : undefined}
-                    className={hasEvents ? "cal-daynum has-ev" : undefined}
+                    className={cls}
                     role={hasEvents ? "button" : undefined}
                     title={hasEvents ? "Tap to see this day's events" : undefined}
-                  >{d == null ? "" : isToday ? <span className="cal-today-badge">{d}</span> : d}</div>
+                  >
+                    {d != null && (isToday ? <span className="cal-today-badge">{d}</span> : d)}
+                    {dayHols.length > 0 && (
+                      <span className="cal-hol" title={dayHols.map((h) => h.label).join(", ")}>
+                        {dayHols[0].label}{dayHols.length > 1 ? ` +${dayHols.length - 1}` : ""}
+                      </span>
+                    )}
+                  </div>
                 );
               })}
             </div>
             {cells.slice(0, cap).map(({ e, idx }, i) => {
               const focused = focusProjectId != null && e.kind === "project" && e.projectId === focusProjectId;
+              const isTask = e.kind === "task";
+              const overdue = isTask && !!e.overdue;
+              const cls = "cal-bar" + (focused ? " cal-bar-focus" : "") + (overdue ? " overdue" : "");
               return (
                 <div
                   key={`${e.key}-${i}`}
-                  className={focused ? "cal-bar cal-bar-focus" : "cal-bar"}
+                  className={cls}
                   title={e.sub || undefined}
-                  onClick={() => { if (e.kind === "holiday") onOpenDay(dayOf(e.date)); else onOpen?.(e.projectId); }}
-                  style={{ ["--bar" as string]: e.color, marginLeft: `${(idx * 14.2857).toFixed(3)}%` }}
-                >{e.barLabel}</div>
+                  onClick={() => onOpen?.(e.projectId)}
+                  style={{ ["--bar" as string]: overdue ? OVERDUE_COLOR : e.color, marginLeft: `${(idx * 14.2857).toFixed(3)}%` }}
+                >
+                  {isTask && e.dot && <span className="cal-bar-dot" style={{ background: e.dot }} aria-hidden />}
+                  <span className="cal-bar-lbl">{e.barLabel}</span>
+                </div>
               );
             })}
             {overflow > 0 && (
@@ -626,16 +663,17 @@ function DaySheet({ year, month, day, events, onClose, onOpen }: {
                 key={`${e.key}-${i}`}
                 className="card"
                 onClick={() => onOpen(e.projectId)}
-                style={{ padding: "11px 13px", borderLeft: `4px solid ${e.color}`, cursor: "pointer" }}
+                style={{ padding: "11px 13px", borderLeft: `4px solid ${e.kind === "task" && e.overdue ? OVERDUE_COLOR : e.color}`, cursor: "pointer" }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <span style={{ fontSize: 13.5, fontWeight: 800, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.label}</span>
+                  <span style={{ fontSize: 13.5, fontWeight: 800, color: e.kind === "task" && e.overdue ? "var(--red)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.label}</span>
                   {e.status && (
                     <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 20, background: `color-mix(in srgb, ${e.color} 16%, white)`, color: "var(--brand-d)", flex: "none" }}>{e.status}</span>
                   )}
                 </div>
-                {(e.sub || e.organizer) && (
+                {(e.sub || e.organizer || (e.kind === "task" && e.initials)) && (
                   <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5, fontSize: 11.5, color: "var(--mut)", minWidth: 0 }}>
+                    {e.kind === "task" && e.initials && <span className="badge b-grey" style={{ flex: "none" }}>{e.initials}</span>}
                     {e.sub && <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{e.sub}</span>}
                     {e.sub && e.organizer && <span style={{ opacity: .4, flex: "none" }}>·</span>}
                     {e.organizer && <span style={{ whiteSpace: "nowrap", flex: "none" }}>{e.organizer}</span>}
