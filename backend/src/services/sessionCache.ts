@@ -12,10 +12,13 @@ import type { AuthUser } from "./auth";
 // today's behaviour. The binding is OPTIONAL, so the vitest suite (no KV bound)
 // exercises the fallback and must stay green.
 //
-// Freshness: 60s TTL. A role/permission edit or a disable takes effect within
-// 60s without explicit busting; logout busts immediately (deleteSession). The
-// cached points/streak fields can be up to 60s stale — acceptable (display-only;
-// the notifications poll carries the live balance).
+// Freshness: 60s TTL for the hydrated permission/page/brand envelope and
+// display-only fields. Session validity plus every DB value that shapes authz
+// (user/mail identity, role permissions/scope, page rows, position/department
+// identity, the user+manager brand sets, and the code policy revision) is
+// fingerprinted authoritatively on every request.
+// A mismatch rehydrates immediately, so KV invalidation is only an efficiency
+// aid and can never extend revoked access.
 
 const TTL_SECONDS = 60;
 const keyFor = (token: string) => `sess:${token}`;
@@ -57,11 +60,12 @@ export async function bustCachedUser(env: Env, token: string): Promise<void> {
 // Bust the cached user for EVERY live session of a user. Disable / password
 // reset / role change delete session ROWS in bulk (DELETE ... WHERE user_id=?)
 // but bypass deleteSession(), so the per-token `sess:<token>` cache entries
-// survived up to the 60s TTL — a disabled user kept working for a minute. Call
-// this BEFORE the bulk delete (it reads the live tokens), then bust each key.
+// would otherwise survive until TTL. Call this BEFORE the bulk delete (it reads
+// the live tokens), then bust each key to avoid retaining useless KV entries.
 // `exceptToken` keeps the caller's own session cached (self password-change
-// revokes only the others). Best-effort: any DB/KV trouble just falls back to
-// the 60s TTL expiry.
+// revokes only the others). Best-effort: an invalidation failure affects cache
+// efficiency only; getUserBySession still rejects deleted/disabled sessions via
+// its authoritative D1 gate.
 export async function bustUserSessions(env: Env, userId: number, exceptToken?: string): Promise<void> {
   if (!env.SESSION_CACHE) return;
   try {

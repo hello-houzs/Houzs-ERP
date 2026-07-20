@@ -38,6 +38,7 @@ async function activeCompanyEmailIdentity(
   return { companyCode, productName: erpProductName(branding) };
 }
 import { getDb } from "../db/client";
+import { resolveDatabaseUrl } from "../db/pg";
 import {
   departments,
   invitations,
@@ -125,6 +126,116 @@ async function ensurePersonalMailbox(
     .bind(crypto.randomUUID(), addressId, userId, new Date().toISOString(), userId)
     .run()
     .catch(() => {});
+}
+
+interface PersonalMailboxRevocation {
+  old_alias: string;
+  mailbox_id: string | null;
+}
+
+// Reconcile the DERIVED personal-mailbox ownership created by
+// ensurePersonalMailbox before users.email_alias changes. The address row stays
+// active and every OTHER user's grant stays intact: an old personal address may
+// have become a shared inbox, so deleting/deactivating the mailbox would revoke
+// legitimate access. Only this user's redundant self-grant and canonical owner
+// assignment are removed. The cleanup and users.email_alias update are one
+// atomic unit: a failure preserves both the old entitlement and old identity.
+export async function changePersonalMailboxAliasAtomically(
+  env: Env,
+  userId: number,
+  previousAlias: string | null,
+  nextAlias: string | null,
+): Promise<PersonalMailboxRevocation | null> {
+  const oldAddr = (previousAlias ?? "").trim().toLowerCase();
+  const newAddr = (nextAlias ?? "").trim().toLowerCase();
+  if (oldAddr === newAddr) return null;
+
+  const mailbox = await env.DB.prepare(
+    `SELECT id FROM email_addresses
+       WHERE lower(address) = ? AND assigned_user_id = ? LIMIT 1`,
+  )
+    .bind(oldAddr, userId)
+    .first<{ id: string }>();
+
+  if (resolveDatabaseUrl(env)) {
+    // PostgreSQL path: one statement = one real transaction. Data-modifying
+    // CTEs make the self-grant delete, owner unassign, and canonical alias
+    // update all-or-nothing without relying on the d1Compat batch shim.
+    const result = await env.DB.prepare(
+      `WITH current_user AS (
+         SELECT id, email_alias
+           FROM users
+          WHERE id = ? AND lower(COALESCE(email_alias, '')) = ?
+          FOR UPDATE
+       ), old_mailbox AS (
+         SELECT ea.id
+           FROM email_addresses ea
+           JOIN current_user cu ON ea.assigned_user_id = cu.id
+          WHERE lower(ea.address) = ? AND ? <> ''
+       ), deleted_grant AS (
+         DELETE FROM email_address_access a
+          USING old_mailbox om, current_user cu
+          WHERE a.address_id = om.id AND a.user_id = cu.id
+          RETURNING a.address_id
+       ), cleared_owner AS (
+         UPDATE email_addresses ea
+            SET assigned_user_id = NULL, assigned_user_name = NULL
+           FROM old_mailbox om, current_user cu
+          WHERE ea.id = om.id AND ea.assigned_user_id = cu.id
+          RETURNING ea.id
+       ), updated_user AS (
+         UPDATE users u
+            SET email_alias = ?
+           FROM current_user cu
+          WHERE u.id = cu.id
+          RETURNING u.id
+       )
+       SELECT (SELECT id FROM updated_user LIMIT 1) AS user_id,
+              (SELECT id FROM old_mailbox LIMIT 1) AS mailbox_id,
+              (SELECT COUNT(*) FROM deleted_grant) AS grants_removed,
+              (SELECT COUNT(*) FROM cleared_owner) AS owners_cleared`
+    )
+      .bind(userId, oldAddr, oldAddr, oldAddr, nextAlias)
+      .first<{ user_id: number | null; mailbox_id: string | null }>();
+    if (result?.user_id == null) {
+      throw new Error("email alias changed concurrently; reload and try again");
+    }
+  } else {
+    // Native D1 path. Cloudflare D1 batch is transaction-bound: any statement
+    // failure rolls the whole batch back. This branch is selected only when no
+    // PG/HYPERDRIVE URL exists, so d1Compat.batch is never trusted here.
+    const expectedUser = `EXISTS (
+      SELECT 1 FROM users
+       WHERE id = ? AND lower(COALESCE(email_alias, '')) = ?
+    )`;
+    const results = await env.DB.batch([
+      env.DB.prepare(
+        `DELETE FROM email_address_access
+          WHERE user_id = ?
+            AND ? <> ''
+            AND address_id IN (
+              SELECT id FROM email_addresses
+               WHERE lower(address) = ? AND assigned_user_id = ?
+            )
+            AND ${expectedUser}`,
+      ).bind(userId, oldAddr, oldAddr, userId, userId, oldAddr),
+      env.DB.prepare(
+        `UPDATE email_addresses
+            SET assigned_user_id = NULL, assigned_user_name = NULL
+          WHERE ? <> '' AND lower(address) = ? AND assigned_user_id = ?
+            AND ${expectedUser}`,
+      ).bind(oldAddr, oldAddr, userId, userId, oldAddr),
+      env.DB.prepare(
+        `UPDATE users SET email_alias = ?
+          WHERE id = ? AND lower(COALESCE(email_alias, '')) = ?`,
+      ).bind(nextAlias, userId, oldAddr),
+    ]);
+    if (Number(results[2]?.meta?.changes ?? 0) !== 1) {
+      throw new Error("email alias changed concurrently; reload and try again");
+    }
+  }
+
+  return { old_alias: oldAddr, mailbox_id: mailbox?.id ?? null };
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -1145,7 +1256,12 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
   // Current primary department doubles as an existence check (the membership
   // reconciliation below can run with an otherwise-empty column update).
   const current = await db
-    .select({ id: users.id, email: users.email, department_id: users.department_id })
+    .select({
+      id: users.id,
+      email: users.email,
+      email_alias: users.email_alias,
+      department_id: users.department_id,
+    })
     .from(users)
     .where(eq(users.id, id))
     .limit(1);
@@ -1381,6 +1497,22 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
     return c.json({ error: "No fields to update" }, 400);
   }
 
+  // Alias ownership is derived data in the mail tables. Atomically revoke the
+  // previous assignment/self-grant AND change users.email_alias so neither half
+  // can commit without the other.
+  const auditedSet = { ...set };
+  const personalMailboxRevocation = body.email_alias !== undefined
+    ? await changePersonalMailboxAliasAtomically(
+        c.env,
+        id,
+        current[0].email_alias ?? null,
+        (set.email_alias as string | null | undefined) ?? null,
+      )
+    : null;
+  // The atomic helper already wrote users.email_alias together with the mail
+  // entitlement rows. Keep the remaining Drizzle update from writing it again.
+  if (body.email_alias !== undefined) delete set.email_alias;
+
   if (Object.keys(set).length > 0) {
     const result = await db.update(users).set(set).where(eq(users.id, id));
     if (!result.count) return c.json({ error: "User not found" }, 404);
@@ -1390,10 +1522,10 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
   // member's personal Mail Center mailbox + access grant (owner ask). Non-fatal.
   if (
     body.email_alias !== undefined &&
-    typeof set.email_alias === "string" &&
-    set.email_alias
+    typeof auditedSet.email_alias === "string" &&
+    auditedSet.email_alias
   ) {
-    await ensurePersonalMailbox(c.env, id, set.email_alias).catch((e) =>
+    await ensurePersonalMailbox(c.env, id, auditedSet.email_alias).catch((e) =>
       console.error("[users] ensurePersonalMailbox failed:", e),
     );
   }
@@ -1455,7 +1587,7 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
   }
 
   const changedKeys = [
-    ...Object.keys(set),
+    ...Object.keys(auditedSet),
     ...(finalDeptIds !== null ? ["department_ids"] : []),
     ...(finalCompanyIds !== null ? ["company_ids"] : []),
   ];
@@ -1465,7 +1597,10 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
     entityId: id,
     summary: `Updated user #${id} (${changedKeys.join(", ")})`,
     meta: {
-      changed: set,
+      changed: auditedSet,
+      ...(personalMailboxRevocation
+        ? { personal_mailbox_revocation: personalMailboxRevocation }
+        : {}),
       ...(finalDeptIds !== null ? { department_ids: finalDeptIds } : {}),
       ...(finalCompanyIds !== null ? { company_ids: finalCompanyIds } : {}),
     },
