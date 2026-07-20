@@ -1,14 +1,11 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-const { recompute } = vi.hoisted(() => ({ recompute: vi.fn() }));
-vi.mock('../src/scm/lib/so-stock-allocation', () => ({
-  recomputeSoStockAllocation: recompute,
-}));
-
 import {
   drainStockAllocationRecomputeWithClient,
   enqueueStockAllocationRecompute,
 } from '../src/scm/lib/stock-allocation-job';
+
+const recompute = vi.fn();
 
 type Row = {
   job_key: string;
@@ -77,7 +74,7 @@ describe('durable stock-allocation recompute queue', () => {
   test('keeps and unlocks the job when recompute reports ok=false', async () => {
     const state = queueClient(pending());
     recompute.mockResolvedValue({ ok: false, reason: 'injected allocation failure' });
-    const result = await drainStockAllocationRecomputeWithClient(state.client);
+    const result = await drainStockAllocationRecomputeWithClient(state.client, recompute);
     expect(result).toMatchObject({ processed: true, completed: false, reason: 'injected allocation failure' });
     expect(state.row).toMatchObject({ attempts: 1, last_error: 'injected allocation failure', locked_by: null, locked_until: null });
   });
@@ -93,7 +90,7 @@ describe('durable stock-allocation recompute queue', () => {
       });
       return { ok: true };
     });
-    const result = await drainStockAllocationRecomputeWithClient(state.client);
+    const result = await drainStockAllocationRecomputeWithClient(state.client, recompute);
     expect(result).toMatchObject({ processed: true, completed: false, deferred: true, reason: 'new_work_arrived' });
     expect(state.row).toMatchObject({
       request_token: '00000000-0000-4000-8000-000000000002',
@@ -107,7 +104,7 @@ describe('durable stock-allocation recompute queue', () => {
     const state = queueClient();
     await enqueueStockAllocationRecompute(state.client, 'tbc-swap:SO-1');
     recompute.mockResolvedValue({ ok: true });
-    expect(await drainStockAllocationRecomputeWithClient(state.client)).toMatchObject({ processed: true, completed: true });
+    expect(await drainStockAllocationRecomputeWithClient(state.client, recompute)).toMatchObject({ processed: true, completed: true });
     expect(state.row).toBeNull();
   });
 });

@@ -40,7 +40,10 @@ export async function enqueueStockAllocationRecompute(sb: any, reason: string): 
  * recompute gets a new token, so the old worker can never delete the new work,
  * even when two enqueues share one clock millisecond.
  */
-export async function drainStockAllocationRecomputeWithClient(sb: any): Promise<AllocationDrainResult> {
+export async function drainStockAllocationRecomputeWithClient(
+  sb: any,
+  recompute: typeof recomputeSoStockAllocation = recomputeSoStockAllocation,
+): Promise<AllocationDrainResult> {
   const { data: pending, error: loadError } = await sb.from('stock_allocation_recompute_queue')
     .select('job_key, request_token, requested_at, attempts')
     .eq('job_key', JOB_KEY)
@@ -64,7 +67,7 @@ export async function drainStockAllocationRecomputeWithClient(sb: any): Promise<
 
   let failure: string | null = null;
   try {
-    const result = await recomputeSoStockAllocation(sb);
+    const result = await recompute(sb);
     if (!result.ok) failure = result.reason ?? 'stock allocation returned ok=false';
     else if (result.reason === 'another_recompute_in_progress') failure = result.reason;
   } catch (error) {
