@@ -2571,6 +2571,10 @@ function EditMemberPanel({
   // this set; extra chips add/remove the others.
   const [deptIds, setDeptIds] = useState<number[]>(() => deptIdsOf(user));
   const [positionId, setPositionId] = useState<number | "">(user.position_id ?? "");
+  // Role editor re-added to the panel (owner 2026-07-20). Seeded from the
+  // member's current role_id (never null in prod — invites default to the neutral
+  // "Position Preview" role).
+  const [roleId, setRoleId] = useState<number | "">(user.role_id ?? "");
   const [managerId, setManagerId] = useState<number | "">(user.manager_id ?? "");
   const [division, setDivision] = useState(user.division || "");
   // Company grants (Phase 0e). Seeded from the member's current grant set; an
@@ -2607,6 +2611,19 @@ function EditMemberPanel({
     [],
     { staleTime: 300_000 },
   );
+  // Roles list for the Role editor. Role = what the member can DO (action
+  // permissions + the "*" wildcard); Position (above) = what they can SEE. The
+  // backend PATCH /api/users/:id already accepts + validates role_id (gated on
+  // users.manage), so this is a frontend-only re-exposure of that control.
+  const rolesQ = useQuery<{ roles: Role[] }>(
+    "/api/roles",
+    () => api.get("/api/roles"),
+    [],
+    { staleTime: 60_000 },
+  );
+  const roleList = (rolesQ.data?.roles ?? [])
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name));
   /* The scm.staff row is joined by user_id — migration 0066's deterministic
      link between a Houzs user and their sales profile. No row means this
      member has no sales profile and cannot be parked; the UI says so rather
@@ -2687,6 +2704,10 @@ function EditMemberPanel({
       finalDeptIds.every((d) => initialDeptIds.includes(d));
     if (!sameDeptSet) patch.department_ids = finalDeptIds;
     if ((positionId || null) !== (user.position_id ?? null)) patch.position_id = positionId || null;
+    // Role — send only when changed to a real role. A member always has a role
+    // (never cleared to none from here), so an empty roleId (roles still loading)
+    // is never written.
+    if (roleId !== "" && roleId !== (user.role_id ?? "")) patch.role_id = roleId;
     if ((managerId || null) !== (user.manager_id ?? null)) patch.manager_id = managerId || null;
     if ((division.trim() || null) !== (user.division ?? null))
       patch.division = division.trim() || null;
@@ -2927,6 +2948,25 @@ function EditMemberPanel({
           </select>
           <div className="mt-1 text-[10px] text-ink-muted">
             Controls which pages this member can see (least-privilege per position).
+          </div>
+        </div>
+        <div>
+          <label className={labelCls}>Role</label>
+          <select
+            value={roleId}
+            onChange={(e) => setRoleId(e.target.value ? Number(e.target.value) : "")}
+            className={inputCls}
+            disabled={roleList.length === 0}
+          >
+            {roleList.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+          <div className="mt-1 text-[10px] text-ink-muted">
+            Controls what this member can DO (actions + admin). Position above
+            controls what they can SEE. "Super Admin" grants everything.
           </div>
         </div>
         <div>
