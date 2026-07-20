@@ -9,7 +9,12 @@ import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
-import { consumeCorrelated, correlatedFetch } from "../lib/requestCorrelation";
+import {
+  consumeCorrelated,
+  correlateError,
+  correlatedFetch,
+  requestIdFromResponse,
+} from "../lib/requestCorrelation";
 
 /**
  * Public reset-password screen — lives at /reset/:token. Bypasses the
@@ -23,6 +28,30 @@ import { consumeCorrelated, correlatedFetch } from "../lib/requestCorrelation";
 const baseUrl =
   (import.meta.env.VITE_API_URL as string) ||
   (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
+
+class ResetPasswordDisplayError extends Error {}
+
+/** Build the public reset screen's friendly HTTP error without dropping the
+ * response's correlation id. A malformed error body keeps the plain fallback;
+ * support can still resolve the exact Worker request through
+ * requestIdFromError(). */
+export async function resetPasswordResponseError(
+  response: Response,
+  fallback: string,
+): Promise<Error> {
+  let message = fallback;
+  try {
+    const body = await consumeCorrelated(
+      response,
+      () => response.json() as Promise<{ error?: unknown }>,
+    );
+    if (typeof body.error === "string" && body.error.trim()) message = body.error;
+  } catch {
+    // Non-JSON/undecodable error response: retain the friendly fallback. The
+    // correlated error returned below still carries this response's id.
+  }
+  return correlateError(new ResetPasswordDisplayError(message), requestIdFromResponse(response));
+}
 
 function AuthShell({
   eyebrow,
@@ -81,17 +110,31 @@ export function ResetPassword() {
     correlatedFetch(`${baseUrl}/api/auth/reset/${encodeURIComponent(token)}`)
       .then(async (r) => {
         if (r.ok) {
-          const d = await consumeCorrelated(
-            r,
-            () => r.json() as Promise<{ email: string; name: string | null }>,
-          );
+          let d: { email: string; name: string | null };
+          try {
+            d = await consumeCorrelated(
+              r,
+              () => r.json() as Promise<{ email: string; name: string | null }>,
+            );
+          } catch {
+            throw correlateError(
+              new ResetPasswordDisplayError(
+                "We couldn't read the server response. Please try the link again.",
+              ),
+              requestIdFromResponse(r),
+            );
+          }
           setState({ kind: "ready", ...d });
         } else {
-          const d = await r.json().catch(() => ({ error: "Invalid link" }));
-          setState({ kind: "error", message: d.error || "Invalid link" });
+          throw await resetPasswordResponseError(r, "Invalid link");
         }
       })
-      .catch(() => setState({ kind: "error", message: "We couldn't reach the server. Please check your connection and try again." }));
+      .catch((error: unknown) => setState({
+        kind: "error",
+        message: error instanceof ResetPasswordDisplayError
+          ? error.message
+          : "We couldn't reach the server. Please check your connection and try again.",
+      }));
   }, [token]);
 
   async function submit(e: React.FormEvent) {
@@ -117,11 +160,9 @@ export function ResetPassword() {
         body: JSON.stringify({ password }),
       });
       if (!r.ok) {
-        // Prefer the server's own plain reason; otherwise a plain fallback —
-        // never a raw status code or response body.
-        const d = await r.json().catch(() => ({} as { error?: string }));
-        throw new Error(
-          d.error || "We couldn't reset your password. The link may have expired — please request a new one.",
+        throw await resetPasswordResponseError(
+          r,
+          "We couldn't reset your password. The link may have expired — please request a new one.",
         );
       }
       setState({ kind: "done" });

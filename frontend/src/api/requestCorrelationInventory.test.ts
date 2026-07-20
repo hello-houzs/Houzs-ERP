@@ -3,26 +3,36 @@ import { relative, resolve } from "node:path";
 import ts from "typescript";
 import { describe, expect, test } from "vitest";
 
-type InventoryEntry = { kind: "transport" | "static-asset"; reason: string };
-
-// Deliberately tiny. API traffic must go through correlatedFetch; the only raw
-// fetch exemptions are non-API static assets where adding X-Request-Id could
-// create a cross-origin preflight. Any new call site makes this gate fail until
-// it is either routed through the transport or explicitly justified here.
-const RAW_FETCH_INVENTORY: Record<string, InventoryEntry> = {
-  "lib/requestCorrelation.ts": {
-    kind: "transport",
-    reason: "the single primitive that stamps and retains request ids",
-  },
-  "hooks/useVersionCheck.ts": {
-    kind: "static-asset",
-    reason: "same-origin index.html service-worker version probe",
-  },
-  "vendor/scm/lib/pdf-common.ts": {
-    kind: "static-asset",
-    reason: "bundled font asset fetch; may be cross-origin and is not an API request",
-  },
+type FetchCall = {
+  file: string;
+  functionName: string;
+  callee: string;
+  argument: string;
 };
+
+// Exact callsites, not whole-file exemptions. A second raw fetch in one of
+// these files is therefore a failure too. API traffic belongs behind
+// correlatedFetch; the other two calls are fixed same-origin static assets.
+const EXPECTED_RAW_FETCH_CALLS: FetchCall[] = [
+  {
+    file: "hooks/useVersionCheck.ts",
+    functionName: "check",
+    callee: "fetch",
+    argument: "`/index.html?_=${Date.now()}`",
+  },
+  {
+    file: "lib/requestCorrelation.ts",
+    functionName: "correlatedFetch",
+    callee: "fetch",
+    argument: "input",
+  },
+  {
+    file: "vendor/scm/lib/pdf-common.ts",
+    functionName: "fetchFaceBase64",
+    callee: "fetch",
+    argument: "url",
+  },
+];
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -32,47 +42,121 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-function hasRawFetch(path: string): boolean {
+function enclosingFunctionName(node: ts.Node): string {
+  for (let current = node.parent; current; current = current.parent) {
+    if (ts.isFunctionDeclaration(current) && current.name) return current.name.text;
+    if (
+      (ts.isArrowFunction(current) || ts.isFunctionExpression(current))
+      && ts.isVariableDeclaration(current.parent)
+      && ts.isIdentifier(current.parent.name)
+    ) return current.parent.name.text;
+  }
+  return "<module>";
+}
+
+function isFetchProperty(node: ts.Node): boolean {
+  return (
+    ts.isPropertyAccessExpression(node)
+    && node.name.text === "fetch"
+  ) || (
+    ts.isElementAccessExpression(node)
+    && ts.isStringLiteral(node.argumentExpression)
+    && node.argumentExpression.text === "fetch"
+  );
+}
+
+function isDirectFetchCallee(node: ts.Node): boolean {
+  return (ts.isIdentifier(node) && node.text === "fetch") || isFetchProperty(node);
+}
+
+function inventory(path: string, srcRoot: string, sourceText?: string): {
+  calls: FetchCall[];
+  unsafeReferences: string[];
+} {
   const source = ts.createSourceFile(
     path,
-    readFileSync(path, "utf8"),
+    sourceText ?? readFileSync(path, "utf8"),
     ts.ScriptTarget.Latest,
     true,
     path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
-  let found = false;
+  const file = sourceText === undefined
+    ? relative(srcRoot, path).replaceAll("\\", "/")
+    : path.replaceAll("\\", "/");
+  const calls: FetchCall[] = [];
+  const unsafeReferences: string[] = [];
+
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
-      const callee = node.expression;
-      if (
-        (ts.isIdentifier(callee) && callee.text === "fetch")
-        || (ts.isPropertyAccessExpression(callee) && callee.name.text === "fetch")
-      ) found = true;
+    if (ts.isCallExpression(node) && isDirectFetchCallee(node.expression)) {
+      calls.push({
+        file,
+        functionName: enclosingFunctionName(node),
+        callee: node.expression.getText(source),
+        argument: node.arguments[0]?.getText(source) ?? "<missing>",
+      });
     }
-    if (!found) ts.forEachChild(node, visit);
+
+    // Reject aliases and indirect access (`const f = fetch`, `fetch.bind(...)`,
+    // `window["fetch"]`, destructuring, etc.). Otherwise a new transport could
+    // bypass the exact direct-call inventory without making this test fail.
+    if (ts.isIdentifier(node) && node.text === "fetch") {
+      const parent = node.parent;
+      const isBareDirect = ts.isCallExpression(parent) && parent.expression === node;
+      const isNamedDirect =
+        ts.isPropertyAccessExpression(parent)
+        && parent.name === node
+        && ts.isCallExpression(parent.parent)
+        && parent.parent.expression === parent;
+      if (!isBareDirect && !isNamedDirect) {
+        const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
+        unsafeReferences.push(`${file}:${line + 1}:${character + 1}:${node.getText(source)}`);
+      }
+    }
+    if (
+      ts.isElementAccessExpression(node)
+      && ts.isStringLiteral(node.argumentExpression)
+      && node.argumentExpression.text === "fetch"
+      && !(ts.isCallExpression(node.parent) && node.parent.expression === node)
+    ) {
+      const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
+      unsafeReferences.push(`${file}:${line + 1}:${character + 1}:${node.getText(source)}`);
+    }
+
+    ts.forEachChild(node, visit);
   };
   visit(source);
-  return found;
+  return { calls, unsafeReferences };
 }
 
 describe("request correlation transport inventory", () => {
-  test("every raw fetch is the shared transport or an explicit static-asset exemption", () => {
+  test("every raw fetch is one exact transport/static-asset callsite", () => {
     const src = resolve(process.cwd(), "src");
-    const actual = sourceFiles(src)
-      .filter(hasRawFetch)
-      .map((path) => relative(src, path).replaceAll("\\", "/"))
-      .sort();
+    const result = sourceFiles(src).map((path) => inventory(path, src));
+    const calls = result.flatMap((entry) => entry.calls)
+      .sort((a, b) => `${a.file}:${a.functionName}`.localeCompare(`${b.file}:${b.functionName}`));
 
-    expect(actual).toEqual(Object.keys(RAW_FETCH_INVENTORY).sort());
+    expect(calls).toEqual(EXPECTED_RAW_FETCH_CALLS);
+    expect(result.flatMap((entry) => entry.unsafeReferences)).toEqual([]);
   });
 
-  test("static exemptions cannot silently become API calls", () => {
-    for (const [path, entry] of Object.entries(RAW_FETCH_INVENTORY)) {
-      if (entry.kind !== "static-asset") continue;
-      expect(readFileSync(resolve(process.cwd(), "src", path), "utf8")).not.toMatch(
-        /fetch\s*\([^)]*(?:\/api\/|API_URL|VITE_API_URL)/,
-      );
-      expect(entry.reason.length).toBeGreaterThan(20);
-    }
+  test("the two non-API exemptions remain compile-time-constrained static assets", () => {
+    const versionSource = readFileSync(resolve(process.cwd(), "src/hooks/useVersionCheck.ts"), "utf8");
+    expect(versionSource).toContain('fetch(`/index.html?_=${Date.now()}`, { cache: "no-store" })');
+
+    const fontSource = readFileSync(resolve(process.cwd(), "src/vendor/scm/lib/pdf-common.ts"), "utf8");
+    expect(fontSource).toContain('type FontAssetUrl = `/fonts/${string}.ttf`;');
+    expect(fontSource).toContain("fetchFaceBase64(TIER_FACES[tier].normal)");
+    expect(fontSource).toContain("fetchFaceBase64(TIER_FACES[tier].bold)");
+    expect(fontSource.match(/fetchFaceBase64\(/g)).toHaveLength(2);
+  });
+
+  test.each([
+    "const raw = fetch; raw('/api/private')",
+    "const raw = window.fetch; raw('/api/private')",
+    "const raw = window['fetch']; raw('/api/private')",
+    "fetch.bind(window)('/api/private')",
+    "const { fetch: raw } = window; raw('/api/private')",
+  ])("fetch aliases cannot bypass the gate: %s", (source) => {
+    expect(inventory("alias-probe.ts", "", source).unsafeReferences).not.toEqual([]);
   });
 });

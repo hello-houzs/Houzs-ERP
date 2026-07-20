@@ -28,7 +28,11 @@ export function requestIdFromError(error: unknown): string | undefined {
     // A hostile/frozen browser error may expose a throwing getter. The WeakMap
     // fallback below still preserves its identity and instanceof semantics.
   }
-  return normalizeRequestId(attached) ?? errorRequestIds.get(error);
+  // A WeakMap entry is written by correlateError for the physical attempt we
+  // are currently handling. It must outrank an older public property: frozen
+  // and non-writable Error objects can carry a valid stale requestId that the
+  // assignment below cannot replace.
+  return errorRequestIds.get(error) ?? normalizeRequestId(attached);
 }
 
 export function correlateError(error: unknown, requestId: unknown): Error {

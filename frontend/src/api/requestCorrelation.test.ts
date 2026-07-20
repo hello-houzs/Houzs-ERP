@@ -109,6 +109,25 @@ describe("API request correlation", () => {
     expect(requestIdFromError(correlated)).toBe("frozen-trace-1234");
   });
 
+  test.each(["frozen", "non-writable"] as const)(
+    "the current attempt overrides a stale id on a %s Error",
+    (kind) => {
+      const error = new TypeError("offline") as TypeError & { requestId?: string };
+      Object.defineProperty(error, "requestId", {
+        value: "stale-trace-1234",
+        writable: false,
+        configurable: false,
+      });
+      if (kind === "frozen") Object.freeze(error);
+
+      const correlated = correlateError(error, "current-trace-1234");
+
+      expect(correlated).toBe(error);
+      expect(correlated).toBeInstanceOf(TypeError);
+      expect(requestIdFromError(correlated)).toBe("current-trace-1234");
+    },
+  );
+
   test("the current physical attempt overrides a stale pre-attached id", () => {
     const error = Object.assign(new Error("offline"), { requestId: "old-trace-1234" });
     correlateError(error, "current-trace-1234");
