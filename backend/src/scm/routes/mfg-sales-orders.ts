@@ -71,7 +71,7 @@ import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { warehouseLabel } from '../lib/warehouse-label';
 import {
   scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
-  isMirroredDocNo, mintsIntoMirroredNamespace,
+  isMirroredDocNo, mintsIntoMirroredNamespace, houzsOwns2990,
   MIRRORED_SO_READONLY, MIRRORED_SO_CREATE_BLOCKED,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY,
 } from '../lib/companyScope';
@@ -206,7 +206,9 @@ mfgSalesOrders.use('*', async (c, next) => {
     try { s = decodeURIComponent(seg); } catch { /* not encoded — test the raw segment */ }
     return isMirroredDocNo(s);
   });
-  if (touchesMirrored) return c.json(MIRRORED_SO_READONLY, 409);
+  // Flip-gated (task #15): pre-flip a 2990- doc is a read-only mirror; once
+  // HOUZS_OWNS_2990 the POS writes them natively, so the readonly wall lifts.
+  if (touchesMirrored && !houzsOwns2990(c.env)) return c.json(MIRRORED_SO_READONLY, 409);
   return next();
 });
 
@@ -2861,7 +2863,11 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      overwrites this order's header and delete-then-reinserts its lines as 2990's
      — a real order, silently gone. Refuse the create instead: the collision has
      to be impossible, not merely detected. */
-  if (mintsIntoMirroredNamespace(c as unknown as Context<any>)) {
+  // Flip-gated (task #15): pre-flip Houzs must not mint into 2990's namespace;
+  // post-flip (HOUZS_OWNS_2990) Houzs IS the minter, so the create-block lifts.
+  // The 2990 SO outbox must be fully drained + its minter stopped BEFORE the
+  // flip so the two systems can never both hand out the same number.
+  if (mintsIntoMirroredNamespace(c as unknown as Context<any>) && !houzsOwns2990(c.env)) {
     return c.json(MIRRORED_SO_CREATE_BLOCKED, 409);
   }
   /* PR #46 — accept customerName as alias for debtorName (rename in flight).
