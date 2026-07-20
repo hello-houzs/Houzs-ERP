@@ -45,4 +45,11 @@ describe('SCM atomic command wiring', () => {
     expect(cleanup).toBeGreaterThanOrEqual(0);
     expect(salesOrderSource.slice(cleanup, cleanup + 500)).toContain('deferScmAfterCommit');
   });
+
+  test('every atomic line/amendment command transactionally queues allocation reconciliation', () => {
+    for (const reason of ['tbc-update:', 'tbc-swap:', 'tbc-swap-sofa:']) {
+      expect(salesOrderSource).toContain('scheduleStockAllocationAfterCommand(c, sb, `' + reason);
+    }
+    expect(amendmentSource).toContain('scheduleStockAllocationAfterCommand(c, sb, `amendment-approve-so:');
+  });
 });

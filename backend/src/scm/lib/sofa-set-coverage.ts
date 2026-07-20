@@ -64,7 +64,7 @@ export async function loadSofaBatchStock(
     .select('warehouse_id, product_code, variant_key, batch_no, qty_remaining, received_at')
     .not('batch_no', 'is', null)
     .gt('qty_remaining', 0);
-  if (error) return { remaining, receivedAt, batches };
+  if (error) throw new Error(`sofa batch stock load failed: ${error.message}`);
 
   for (const r of (lots ?? []) as Array<{
     warehouse_id: string; product_code: string; variant_key: string | null;

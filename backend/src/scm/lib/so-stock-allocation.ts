@@ -70,12 +70,14 @@ export async function recomputeSoStockAllocation(
      mostly benign. */
   let lockHeld = false;
   try {
-    const { data: gotLock } = await sb.rpc('pg_try_advisory_lock', { key: ALLOCATION_LOCK_KEY });
+    const { data: gotLock, error: lockError } = await sb.rpc('pg_try_advisory_lock', { key: ALLOCATION_LOCK_KEY });
+    if (lockError) console.warn('[so-allocation] advisory lock unavailable:', lockError.message); // eslint-disable-line no-console
     if (gotLock === false) {
       return { ok: true, linesFlipped: 0, ordersAdvanced: 0, ordersRegressed: 0, reason: 'another_recompute_in_progress' };
     }
     if (gotLock === true) lockHeld = true;
-  } catch {
+  } catch (error) {
+    console.warn('[so-allocation] advisory lock unavailable:', error); // eslint-disable-line no-console
     /* RPC not configured — proceed without the lock. */
   }
   try {
@@ -84,13 +86,14 @@ export async function recomputeSoStockAllocation(
             b) created_at ASC  — tiebreaker so order is deterministic */
     // Page through — PostgREST's default 1000-row cap would truncate the active
     // SO set, silently DROPPING orders from allocation (their lines never flip).
-    const { data: orderRows } = await paginateAll<{ doc_no: string; status: string; created_at: string; customer_delivery_date: string | null; company_id: number | null }>((from, to) => sb
+    const { data: orderRows, error: orderError } = await paginateAll<{ doc_no: string; status: string; created_at: string; customer_delivery_date: string | null; company_id: number | null }>((from, to) => sb
       .from('mfg_sales_orders')
       .select('doc_no, status, created_at, customer_delivery_date, company_id')
       .not('status', 'in', '(CANCELLED,CLOSED,SHIPPED,DELIVERED,INVOICED,DRAFT)')
       .order('customer_delivery_date',  { ascending: true, nullsFirst: false })
       .order('created_at',              { ascending: true })
       .range(from, to));
+    if (orderError) throw new Error(`allocation order load failed: ${orderError.message}`);
     const orders = (orderRows ?? []) as Array<{
       doc_no: string; status: string; created_at: string;
       customer_delivery_date: string | null; company_id: number | null;
@@ -104,12 +107,13 @@ export async function recomputeSoStockAllocation(
     // chunkIn — docNos can exceed 1000 (un-truncated SO set) and lines across
     // them can exceed the 1000-row cap; batch the .in() and page each batch so
     // no SO line is dropped from the allocation walk.
-    const { data: lineRows } = await chunkIn(docNos, (batch, from, to) => sb
+    const { data: lineRows, error: lineError } = await chunkIn(docNos, (batch, from, to) => sb
       .from('mfg_sales_order_items')
       .select('id, doc_no, item_code, item_group, variants, qty, warehouse_id, stock_status, stock_qty_ready, cancelled')
       .in('doc_no', batch)
       .eq('cancelled', false)
       .range(from, to));
+    if (lineError) throw new Error(`allocation line load failed: ${lineError.message}`);
     const lines = (lineRows ?? []) as Array<{
       id: string; doc_no: string; item_code: string; item_group: string | null;
       variants: VariantAttrs | null; qty: number; warehouse_id: string | null;
@@ -127,8 +131,9 @@ export async function recomputeSoStockAllocation(
        FIFO and is NOT batched. */
     // Page through — mfg_products is >1000 rows (1141 live), so the default cap
     // would DROP catalog rows → SOFA/SERVICE codes past row 1000 misclassified.
-    const { data: catRows } = await paginateAll<{ code: string; category: string | null }>((from, to) =>
+    const { data: catRows, error: categoryError } = await paginateAll<{ code: string; category: string | null }>((from, to) =>
       sb.from('mfg_products').select('code, category').order('code').range(from, to));
+    if (categoryError) throw new Error(`allocation product load failed: ${categoryError.message}`);
     const batchedCodes = new Set<string>();
     /* P1 SO-SKU spec — SERVICE SKUs (delivery fee / dispose / lift) are not
        goods. Collect their codes here (same catalog pull) so the needs walk
@@ -158,8 +163,12 @@ export async function recomputeSoStockAllocation(
           for (const r of (bRows ?? []) as Array<{ id: string; allocated_batch_no: string | null }>) {
             curBatchByLine.set(r.id, r.allocated_batch_no ?? null);
           }
+        } else if (!/allocated_batch_no|column .* does not exist/i.test(bErr.message ?? '')) {
+          throw new Error(`allocation sofa-batch binding load failed: ${bErr.message}`);
         }
-      } catch { /* column absent pre-0121 — leave map empty */ }
+      } catch (error) {
+        if (!/allocated_batch_no|column .* does not exist/i.test(error instanceof Error ? error.message : String(error))) throw error;
+      }
     }
 
     // 3. Compute deliverable_remaining per line — = qty − Σ delivered (via
@@ -168,18 +177,20 @@ export async function recomputeSoStockAllocation(
     const lineIds = lines.map((l) => l.id);
     // chunkIn — lineIds can exceed 1000 (un-truncated SO set); batch + page so
     // delivered qty isn't understated by a dropped DO line.
-    const { data: doLines } = await chunkIn<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>(lineIds, (batch, from, to) => sb
+    const { data: doLines, error: doLineError } = await chunkIn<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>(lineIds, (batch, from, to) => sb
       .from('delivery_order_items')
       .select('id, so_item_id, qty, delivery_order_id')
       .in('so_item_id', batch)
       .range(from, to));
+    if (doLineError) throw new Error(`allocation DO-line load failed: ${doLineError.message}`);
     const doLineRows = (doLines ?? []) as Array<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>;
     const doIds = [...new Set(doLineRows.map((l) => l.delivery_order_id).filter(Boolean))];
     const activeDoIds = new Set<string>();
     const doLineToSoItem = new Map<string, string>();
     if (doIds.length > 0) {
-      const { data: dos } = await chunkIn<{ id: string; status: string | null }>(doIds, (batch, from, to) =>
+      const { data: dos, error: doError } = await chunkIn<{ id: string; status: string | null }>(doIds, (batch, from, to) =>
         sb.from('delivery_orders').select('id, status').in('id', batch).range(from, to));
+      if (doError) throw new Error(`allocation DO load failed: ${doError.message}`);
       for (const d of (dos ?? []) as Array<{ id: string; status: string | null }>) {
         if ((d.status ?? '').toUpperCase() !== 'CANCELLED') activeDoIds.add(d.id);
       }
@@ -193,17 +204,19 @@ export async function recomputeSoStockAllocation(
     const returnedBySoItem = new Map<string, number>();
     const activeDoLineIds = [...doLineToSoItem.keys()];
     if (activeDoLineIds.length > 0) {
-      const { data: drLines } = await chunkIn<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>(activeDoLineIds, (batch, from, to) => sb
+      const { data: drLines, error: drLineError } = await chunkIn<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>(activeDoLineIds, (batch, from, to) => sb
         .from('delivery_return_items')
         .select('do_item_id, qty_returned, delivery_return_id')
         .in('do_item_id', batch)
         .range(from, to));
+      if (drLineError) throw new Error(`allocation return-line load failed: ${drLineError.message}`);
       const drLineRows = (drLines ?? []) as Array<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>;
       const drIds = [...new Set(drLineRows.map((l) => l.delivery_return_id).filter(Boolean))];
       const activeDrIds = new Set<string>();
       if (drIds.length > 0) {
-        const { data: drs } = await chunkIn<{ id: string; status: string | null }>(drIds, (batch, from, to) =>
+        const { data: drs, error: drError } = await chunkIn<{ id: string; status: string | null }>(drIds, (batch, from, to) =>
           sb.from('delivery_returns').select('id, status').in('id', batch).range(from, to));
+        if (drError) throw new Error(`allocation return load failed: ${drError.message}`);
         for (const d of (drs ?? []) as Array<{ id: string; status: string | null }>) {
           if ((d.status ?? '').toUpperCase() !== 'CANCELLED') activeDrIds.add(d.id);
         }
@@ -296,11 +309,12 @@ export async function recomputeSoStockAllocation(
     }).filter(Boolean))];
     // chunkIn — productCodes can exceed 1000 and balances can exceed the 1000-row
     // cap; batch + page so on-hand isn't understated → lines wrongly PENDING.
-    const { data: balRows } = await chunkIn<{ warehouse_id: string; product_code: string; variant_key: string | null; qty: number }>(productCodes, (batch, from, to) => sb
+    const { data: balRows, error: balanceError } = await chunkIn<{ warehouse_id: string; product_code: string; variant_key: string | null; qty: number }>(productCodes, (batch, from, to) => sb
       .from('inventory_balances')
       .select('warehouse_id, product_code, variant_key, qty')
       .in('product_code', batch)
       .range(from, to));
+    if (balanceError) throw new Error(`allocation balance load failed: ${balanceError.message}`);
     const onHandByBucket = new Map<string, number>();
     for (const r of (balRows ?? []) as Array<{ warehouse_id: string; product_code: string; variant_key: string | null; qty: number }>) {
       const v = r.variant_key ?? '';
@@ -394,9 +408,10 @@ export async function recomputeSoStockAllocation(
       // Chunk the id list so the UPDATE's .in() never builds a >1000-element IN
       // (a full re-allocation can flip thousands of lines into one bucket).
       for (let i = 0; i < batch.ids.length; i += 200) {
-        await sb.from('mfg_sales_order_items')
+        const { error } = await sb.from('mfg_sales_order_items')
           .update({ stock_status: batch.status, stock_qty_ready: batch.qtyReady })
           .in('id', batch.ids.slice(i, i + 200));
+        if (error) throw new Error(`allocation line update failed: ${error.message}`);
       }
       linesFlipped += batch.ids.length;
     }
@@ -426,9 +441,12 @@ export async function recomputeSoStockAllocation(
           .update({ stock_status: f.status, stock_qty_ready: f.qtyReady, allocated_batch_no: f.batchNo })
           .in('id', idChunk);
         if (error && (error.message ?? '').includes('allocated_batch_no')) {
-          await sb.from('mfg_sales_order_items')
+          const { error: fallbackError } = await sb.from('mfg_sales_order_items')
             .update({ stock_status: f.status, stock_qty_ready: f.qtyReady })
             .in('id', idChunk);
+          if (fallbackError) throw new Error(`allocation sofa-line fallback update failed: ${fallbackError.message}`);
+        } else if (error) {
+          throw new Error(`allocation sofa-line update failed: ${error.message}`);
         }
       }
       linesFlipped += f.ids.length;
@@ -503,12 +521,11 @@ export async function recomputeSoStockAllocation(
     //    or the scoped SO if any). all-READY → READY_TO_SHIP (when previously
     //    CONFIRMED / IN_PRODUCTION). any-PENDING → CONFIRMED (when previously
     //    READY_TO_SHIP).
-    const touchedDocs = new Set<string>();
-    for (const id of [...toReady, ...toPending, ...toPartial]) {
-      const ln = lines.find((l) => l.id === id);
-      if (ln) touchedDocs.add(ln.doc_no);
-    }
-    if (scopeToDocNo) touchedDocs.add(scopeToDocNo);
+    // Re-evaluate every loaded header during a global run. If a prior attempt
+    // flipped lines but lost a header CAS, the retry has no fresh line flip to
+    // rediscover that SO; walking all loaded headers is what makes convergence
+    // durable. Scoped runs retain their single-document bound.
+    const touchedDocs = new Set<string>(scopeToDocNo ? [scopeToDocNo] : orders.map((order) => order.doc_no));
 
     let ordersAdvanced = 0, ordersRegressed = 0;
     for (const docNo of touchedDocs) {
@@ -556,12 +573,16 @@ export async function recomputeSoStockAllocation(
         if (advanced.applied) {
           ordersAdvanced += 1;
           await auditAutoStatus(cur, 'READY_TO_SHIP', 'Auto-advanced: every main product line is READY (stock allocation)');
+        } else {
+          throw new Error(`allocation header advance deferred: ${docNo}:${advanced.reason}`);
         }
       } else if (!r.isMainReady && cur === 'READY_TO_SHIP') {
         const regressed = await advanceSoGeneration(sb, docNo, { status: 'CONFIRMED' }, { status: cur });
         if (regressed.applied) {
           ordersRegressed += 1;
           await auditAutoStatus(cur, 'CONFIRMED', 'Auto-regressed: a main product line is no longer READY (stock re-allocated)');
+        } else {
+          throw new Error(`allocation header regression deferred: ${docNo}:${regressed.reason}`);
         }
       }
     }
@@ -573,8 +594,12 @@ export async function recomputeSoStockAllocation(
     return { ok: false, linesFlipped: 0, ordersAdvanced: 0, ordersRegressed: 0, reason: e instanceof Error ? e.message : String(e) };
   } finally {
     if (lockHeld) {
-      try { await sb.rpc('pg_advisory_unlock', { key: ALLOCATION_LOCK_KEY }); }
-      catch { /* best-effort */ }
+      try {
+        const { error } = await sb.rpc('pg_advisory_unlock', { key: ALLOCATION_LOCK_KEY });
+        if (error) console.warn('[so-allocation] advisory unlock failed:', error.message); // eslint-disable-line no-console
+      } catch (error) {
+        console.warn('[so-allocation] advisory unlock failed:', error); // eslint-disable-line no-console
+      }
     }
   }
 }

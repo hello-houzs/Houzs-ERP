@@ -65,14 +65,64 @@ const JSON_COLUMNS = new Set([
   'snapshot', 'sub_assemblies', 'trigger_combo_ids', 'variants',
 ]);
 
-const boundValue = (value: unknown, column?: string): unknown => {
-  // postgres.js maps a JS array to a PostgreSQL array. That is correct for
-  // columns such as photo_urls (text[]) but not for JSON arrays. PostgREST
-  // normally performs this distinction from schema metadata; this focused
-  // transaction adapter keeps an explicit JSON-column catalogue instead.
-  if (value !== null && typeof value === 'object' && !(value instanceof Date)
-      && (!Array.isArray(value) || (column != null && JSON_COLUMNS.has(column)))) {
-    return JSON.stringify(value);
+const NATIVE_TEXT_ARRAY_COLUMNS = new Set(['photo_urls']);
+const TEXT_ARRAY_OID = 1009;
+
+const encodePgTextArray = (values: unknown[]): string => `{${values.map((value) => {
+  if (value === null) return 'NULL';
+  const escaped = String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}).join(',')}}`;
+
+const parsePgTextArray = (value: unknown): unknown => {
+  if (Array.isArray(value) || typeof value !== 'string' || !value.startsWith('{') || !value.endsWith('}')) return value;
+  if (value === '{}') return [];
+  const out: Array<string | null> = [];
+  let token = '';
+  let quoted = false;
+  let escaped = false;
+  let tokenWasQuoted = false;
+  const push = () => {
+    out.push(!tokenWasQuoted && token === 'NULL' ? null : token);
+    token = '';
+    tokenWasQuoted = false;
+  };
+  for (const char of value.slice(1, -1)) {
+    if (escaped) { token += char; escaped = false; continue; }
+    if (char === '\\') { escaped = true; continue; }
+    if (char === '"') { quoted = !quoted; tokenWasQuoted = true; continue; }
+    if (char === ',' && !quoted) { push(); continue; }
+    token += char;
+  }
+  push();
+  return out;
+};
+
+const normalizeReturnedRows = (rows: unknown[]): unknown[] => rows.map((row) => {
+  if (row == null || typeof row !== 'object' || Array.isArray(row)) return row;
+  const normalized = { ...(row as Record<string, unknown>) };
+  for (const column of NATIVE_TEXT_ARRAY_COLUMNS) {
+    if (column in normalized) normalized[column] = parsePgTextArray(normalized[column]);
+  }
+  return normalized;
+});
+
+const commandParameter = (sql: Sql, column: string, value: unknown): unknown => {
+  if (value === undefined || value === null || value instanceof Date) return value;
+  if (JSON_COLUMNS.has(column)) {
+    // Explicit OID 3802 is essential with postgres.js unsafe(): PostgreSQL's
+    // describe phase otherwise discovers jsonb and JSON.stringify's an already
+    // stringified value a second time.
+    return sql.json(value as never);
+  }
+  if (NATIVE_TEXT_ARRAY_COLUMNS.has(column)) {
+    if (!Array.isArray(value)) throw new Error(`${column} must be a text array`);
+    // fetch_types:false deliberately does not discover array serializers. Send
+    // a correctly escaped text[] literal with the explicit built-in text[] OID.
+    return sql.typed(encodePgTextArray(value), TEXT_ARRAY_OID);
+  }
+  if (typeof value === 'object') {
+    throw new Error(`Unsupported structured value for PostgreSQL column ${column}`);
   }
   return value;
 };
@@ -180,7 +230,7 @@ class PgPostgrestQuery implements PromiseLike<QueryResult<any>> {
       let local = predicate.sql;
       for (const value of predicate.values) {
         local = local.replace('$$', `$${next++}`);
-        values.push(boundValue(value));
+        values.push(value);
       }
       return local;
     });
@@ -205,7 +255,7 @@ class PgPostgrestQuery implements PromiseLike<QueryResult<any>> {
     } else if (this.operation === 'update') {
       const patch = this.payload as Record<string, unknown>;
       const entries = Object.entries(patch).filter(([, value]) => value !== undefined);
-      values = entries.map(([column, value]) => boundValue(value, column));
+      values = entries.map(([column, value]) => commandParameter(this.sql, column, value));
       const where = this.compilePredicates(values.length + 1);
       values.push(...where.values);
       text = `UPDATE ${table} SET ${entries.map(([key], index) => `${ident(key)} = $${index + 1}`).join(', ')}${where.text}${this.returning()}`;
@@ -219,7 +269,7 @@ class PgPostgrestQuery implements PromiseLike<QueryResult<any>> {
       let index = 1;
       const tuples = rows.map((row) => `(${columns.map((column) => {
         if (row[column] === undefined) return 'DEFAULT';
-        values.push(boundValue(row[column], column));
+        values.push(commandParameter(this.sql, column, row[column]));
         return `$${index++}`;
       }).join(', ')})`);
       text = `INSERT INTO ${table} (${columns.map(ident).join(', ')}) VALUES ${tuples.join(', ')}`;
@@ -238,7 +288,8 @@ class PgPostgrestQuery implements PromiseLike<QueryResult<any>> {
       const savepoint = `scm_cmd_${++savepointSequence}`;
       await this.sql.unsafe(`SAVEPOINT ${savepoint}`);
       try {
-        const rows = await this.sql.unsafe(text, values as never[]);
+        const rawRows = await this.sql.unsafe(text, values as never[]);
+        const rows = normalizeReturnedRows(rawRows as unknown[]);
         await this.sql.unsafe(`RELEASE SAVEPOINT ${savepoint}`);
         return { rows, error: null as { message: string } | null };
       } catch (error) {

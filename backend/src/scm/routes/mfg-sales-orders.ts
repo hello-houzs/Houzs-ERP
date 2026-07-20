@@ -177,6 +177,7 @@ import type { Env, Variables } from '../env';
    without a request-scoped client; it uses the scm-scoped service client. */
 import { getSupabaseService } from '../../db/supabase';
 import { deferScmAfterCommit, runScmPgCommand } from '../lib/pg-supabase-transaction';
+import { scheduleStockAllocationAfterCommand } from '../lib/stock-allocation-job';
 
 export const mfgSalesOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
 mfgSalesOrders.use('*', supabaseAuth);
@@ -8003,6 +8004,7 @@ export async function tbcUpdateCommandHandler(c: any, sb: any): Promise<Response
     ],
   });
 
+  await scheduleStockAllocationAfterCommand(c, sb, `tbc-update:${docNo}`);
   return c.json({ ok: true, unitPriceCenti: newUnit, deltaCenti: sellingDeltaCenti, totalCenti: newTotal });
 }
 mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', (c) =>
@@ -8437,10 +8439,9 @@ export async function tbcSwapCommandHandler(c: any, sb: any): Promise<Response> 
         ? [{ field: 'pwpCodesMinted', to: pwpMintedCodes.join(', ') } satisfies FieldChange] : []),
     ],
   });
-  /* Global allocation is derived work, not part of this SO's command. Run it
-     only after commit so it never lengthens the SO row lock or observes data
-     that later rolls back. */
-  deferScmAfterCommit(c, async () => { await recomputeSoStockAllocation(c.get('supabase')); });
+  /* Persist the invalidation in this transaction; an after-commit attempt gives
+     low latency and the cron-backed singleton queue guarantees retry. */
+  await scheduleStockAllocationAfterCommand(c, sb, `tbc-swap:${docNo}`);
 
   return c.json({
     ok: true,
@@ -9194,7 +9195,7 @@ export async function tbcSwapSofaCommandHandler(c: any, sb: any): Promise<Respon
         ? [{ field: 'pwpVoucherReleased', to: pwpVoucherReleased } satisfies FieldChange] : []),
     ],
   });
-  deferScmAfterCommit(c, async () => { await recomputeSoStockAllocation(c.get('supabase')); });
+  await scheduleStockAllocationAfterCommand(c, sb, `tbc-swap-sofa:${docNo}`);
 
   return c.json({
     ok: true,

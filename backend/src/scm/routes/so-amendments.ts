@@ -34,6 +34,7 @@ import {
 import { readBridgeCommandConfig, probeBridge } from '../lib/bridge-2990-command';
 import type { Context } from 'hono';
 import { deferScmAfterCommit, runScmPgCommand } from '../lib/pg-supabase-transaction';
+import { scheduleStockAllocationAfterCommand } from '../lib/stock-allocation-job';
 
 export const soAmendments = new Hono<{ Bindings: Env; Variables: Variables }>();
 soAmendments.use('*', supabaseAuth);
@@ -532,6 +533,7 @@ export async function approveSoCommandHandler(c: any, sb: any): Promise<Response
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
   if (!updated) return c.json({ error: 'amendment_version_conflict' }, 409);
 
+  await scheduleStockAllocationAfterCommand(c, sb, `amendment-approve-so:${amendment.so_doc_no}`);
   return c.json({ amendment: updated, revision: applied.revision });
 }
 soAmendments.patch('/:id/approve-so', (c) =>

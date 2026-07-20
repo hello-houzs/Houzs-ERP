@@ -3,6 +3,9 @@ import { fileURLToPath } from 'node:url';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { lockSoCommandLease, pgTransactionSupabase } from '../src/scm/lib/pg-supabase-transaction';
+import { recordSoAudit } from '../src/scm/lib/so-audit';
+import { snapshotSo } from '../src/scm/lib/so-revision';
+import { enqueueStockAllocationRecompute } from '../src/scm/lib/stock-allocation-job';
 
 const url = process.env.TEST_DATABASE_URL ?? '';
 const enabled = Boolean(url);
@@ -29,26 +32,32 @@ async function resetFixture(sql: Sql): Promise<void> {
     CREATE SCHEMA scm;
     DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
-        CREATE ROLE service_role NOLOGIN;
+        CREATE ROLE service_role NOLOGIN BYPASSRLS;
       END IF;
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'untrusted_test') THEN
         CREATE ROLE untrusted_test NOLOGIN;
       END IF;
     END $$;
+    ALTER ROLE service_role BYPASSRLS;
     GRANT USAGE ON SCHEMA scm TO service_role;
     GRANT USAGE ON SCHEMA scm TO untrusted_test;
 
     CREATE TABLE scm.mfg_sales_orders (
       doc_no text PRIMARY KEY,
       version integer NOT NULL DEFAULT 1,
+      revision integer NOT NULL DEFAULT 1,
       note text,
-      customer_id uuid
+      customer_id uuid,
+      company_id bigint
     );
     CREATE TABLE scm.mfg_sales_order_items (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       doc_no text NOT NULL,
       item_code text,
       variants jsonb,
+      custom_specials jsonb,
+      photo_urls text[] NOT NULL DEFAULT '{}',
+      line_no integer,
       total_centi integer NOT NULL DEFAULT 0 CHECK (total_centi >= 0),
       cancelled boolean NOT NULL DEFAULT false,
       warehouse_id uuid,
@@ -62,6 +71,32 @@ async function resetFixture(sql: Sql): Promise<void> {
       updated_at timestamptz
     );
     CREATE TABLE scm.mfg_sales_order_payments (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
+    CREATE TABLE scm.purchase_order_items (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      so_item_id uuid
+    );
+    CREATE TABLE scm.so_revisions (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      so_doc_no text NOT NULL,
+      revision integer NOT NULL,
+      snapshot jsonb NOT NULL,
+      amendment_id uuid,
+      created_by uuid,
+      company_id bigint,
+      UNIQUE (so_doc_no, revision)
+    );
+    CREATE TABLE scm.mfg_so_audit_log (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      so_doc_no text NOT NULL,
+      company_id bigint,
+      action text NOT NULL,
+      actor_id uuid,
+      actor_name_snapshot text,
+      field_changes jsonb NOT NULL DEFAULT '[]'::jsonb,
+      status_snapshot text,
+      source text,
+      note text
+    );
     CREATE TABLE scm.so_amendments (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       so_doc_no text,
@@ -73,6 +108,7 @@ async function resetFixture(sql: Sql): Promise<void> {
   `);
   await sql.unsafe(await migration('0160_scm_so_edit_lease_and_followers.sql'));
   await sql.unsafe(await migration('0161_scm_so_concurrency_domain_closure.sql'));
+  await sql.unsafe(await migration('0162_scm_stock_allocation_recompute_queue.sql'));
 }
 
 async function callHeaderCas(
@@ -245,5 +281,68 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
     } finally {
       await Promise.all([left.end(), right.end()]);
     }
+  });
+
+  test('real snapshot/audit helpers round-trip JSONB objects, JSON arrays, and text arrays', async () => {
+    await admin`TRUNCATE scm.so_revisions, scm.mfg_so_audit_log, scm.purchase_order_items, scm.mfg_sales_order_items, scm.mfg_sales_orders`;
+    await admin`INSERT INTO scm.mfg_sales_orders (doc_no, note, company_id) VALUES ('SO-JSON-1', 'json proof', 7)`;
+    // Match getSql's production protocol settings exactly. In particular,
+    // fetch_types:false means postgres.js has no discovered text[] serializer
+    // or parser; the command adapter must supply both sides of that contract.
+    const productionLike = postgres(url, { max: 1, prepare: false, fetch_types: false });
+    try {
+      await productionLike.begin(async (tx) => {
+        const sb = pgTransactionSupabase(tx as unknown as Sql);
+        await sb.from('mfg_sales_order_items').insert({
+          doc_no: 'SO-JSON-1',
+          item_code: 'SOFA-A',
+          variants: { buildKey: 'BUILD-1', cells: [{ moduleId: 'LHF' }] },
+          custom_specials: [{ code: 'ZIP', amount: 12 }],
+          photo_urls: ['so/a"quote.jpg', 'so/back\\slash.jpg'],
+          line_no: 1,
+        });
+        await recordSoAudit(sb as never, {
+          docNo: 'SO-JSON-1',
+          action: 'UPDATE_LINE',
+          actorName: 'PG integration',
+          fieldChanges: [{ field: 'variants', from: null, to: { buildKey: 'BUILD-1' } }],
+        });
+        expect(await snapshotSo(sb, 'SO-JSON-1')).toBe(2);
+      });
+    } finally {
+      await productionLike.end();
+    }
+
+    const [line] = await admin`
+      SELECT variants, custom_specials, photo_urls
+      FROM scm.mfg_sales_order_items WHERE doc_no = 'SO-JSON-1'
+    `;
+    expect(line?.variants).toEqual({ buildKey: 'BUILD-1', cells: [{ moduleId: 'LHF' }] });
+    expect(line?.custom_specials).toEqual([{ code: 'ZIP', amount: 12 }]);
+    expect(line?.photo_urls).toEqual(['so/a"quote.jpg', 'so/back\\slash.jpg']);
+
+    const [audit] = await admin`SELECT field_changes FROM scm.mfg_so_audit_log WHERE so_doc_no = 'SO-JSON-1'`;
+    expect(audit?.field_changes).toEqual([{ field: 'variants', from: null, to: { buildKey: 'BUILD-1' } }]);
+    const [revision] = await admin`SELECT snapshot FROM scm.so_revisions WHERE so_doc_no = 'SO-JSON-1'`;
+    expect(typeof revision?.snapshot).toBe('object');
+    expect(revision?.snapshot.lines[0].variants).toEqual({ buildKey: 'BUILD-1', cells: [{ moduleId: 'LHF' }] });
+    expect(revision?.snapshot.lines[0].custom_specials).toEqual([{ code: 'ZIP', amount: 12 }]);
+    expect(revision?.snapshot.lines[0].photo_urls).toEqual(['so/a"quote.jpg', 'so/back\\slash.jpg']);
+  });
+
+  test('service role can transactionally enqueue the durable allocation invalidation', async () => {
+    await admin`TRUNCATE scm.stock_allocation_recompute_queue`;
+    await admin.begin(async (tx) => {
+      await tx.unsafe('SET LOCAL ROLE service_role');
+      await enqueueStockAllocationRecompute(
+        pgTransactionSupabase(tx as unknown as Sql),
+        'pg-integration',
+      );
+    });
+    const [job] = await admin`
+      SELECT job_key, reason, attempts, last_error
+      FROM scm.stock_allocation_recompute_queue
+    `;
+    expect(job).toMatchObject({ job_key: 'GLOBAL', reason: 'pg-integration', attempts: 0, last_error: null });
   });
 });
