@@ -1679,6 +1679,29 @@ async function nextTripNo(sb: any): Promise<string> {
   return mintMonthlyDocNo(sb, 'trips', 'trip_no', `TRIP-${yymm}`);
 }
 
+/* NO resolveDeliveryScope HERE — DELIBERATE, NOT AN OVERSIGHT (owner ruling
+   2026-07-22). Scheduling is a ONE-PERSON function: a single dispatcher assigns
+   driver / lorry / trip for the WHOLE operation. Narrowing this handler to the
+   caller's own assignments would lock that dispatcher out of every job they did
+   not already own — i.e. out of essentially the entire board — which is the
+   exact opposite of what the business needs. The handler is meant to serve the
+   whole board, and the area guard's `edit` level on
+   `scm.transportation.drivers` (index.ts:436) is the intended and complete gate.
+
+   THE ASYMMETRY WITH `/fields` (:1553) IS THE POINT, NOT AN INCONSISTENCY TO
+   RESTORE. `/fields` narrows because editing a job's OWN data (steps, POD,
+   execution timestamps) is a per-owner act — the field crew touching their own
+   job. Assignment is the opposite act: deciding WHOSE job it becomes. One is
+   scoped by ownership; the other creates ownership, so it cannot be scoped by
+   it. Adding the scope call here to make the two routes "match" would be a
+   behaviour change against a standing ruling, not a consistency fix.
+
+   WHAT WOULD JUSTIFY REVISITING: if scheduling ever stops being one person —
+   per-region or per-depot dispatchers, each owning their own slice of the board
+   — then resolveDeliveryScope is the mechanism to reach for, extended with a
+   region/depot mode rather than the existing `self` (which keys on crew
+   assignment and would still be the wrong axis). Until the operation actually
+   splits, unscoped is correct. */
 deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
   const type = c.req.param('type').toLowerCase();
   const id = c.req.param('id');
