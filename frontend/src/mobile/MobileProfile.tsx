@@ -15,7 +15,7 @@ function appFooterLabel(): string {
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { useSystemNoticeUnread } from "./useSystemNoticeUnread";
+import { useAnnouncementUnread } from "./useAnnouncementUnread";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { fmtCenti } from "../lib/scm";
 import {
@@ -191,11 +191,11 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
     [roster, user?.id],
   );
 
-  // Un-acked SYSTEM-notice count (scan / service-case) — the actionable notices
-  // the Announcements list excludes after B1. Drives the red pill on the
-  // Organisation > Announcements row; the SAME hook badges the Profile bottom
-  // tab (MobileApp) so the two agree and share one poll (owner B2 global badge).
-  const annUnread = useSystemNoticeUnread();
+  // Un-acked announcement count — human broadcasts AND the actionable system
+  // notices (scan / service-case). Drives the red pill on the Organisation >
+  // Announcements row; the SAME hook badges the Profile bottom tab (MobileApp)
+  // so the two agree and share one poll (owner B2 global badge).
+  const annUnread = useAnnouncementUnread();
 
   // Salesperson MTD scoreboard (Orders MTD / Sales MTD) — the caller's OWN
   // sales orders this Malaysia-calendar month, from the SCM backend.
