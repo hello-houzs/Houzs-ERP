@@ -646,17 +646,29 @@ export const NAV_TABS: NavTab[] = [
   },
 
   // ── Announcements — office-wide notices + read receipts (ported from Hookka).
-  // Flat entry; the page hosts the composer + list inline. A Sales Director is
-  // shown the entry even without announcements.read (code-keyed off position);
-  // they post to their Sales department / a specific salesperson, enforced
-  // server-side (requirePermissionOrSalesDirector).
+  // Flat entry; the page hosts the composer + list inline.
+  //
+  // UNGATED (owner approved 2026-07-21), like Overview: no perm / anyPerm /
+  // pageAccess, so navVisible admits every signed-in user. It used to carry
+  // anyPerm: ["announcements.read"] + showForSalesDirector, which was the
+  // ADMIN verb — no ordinary salesperson holds it, so the entry was invisible
+  // to exactly the people the notices are written for. #957 opened the PAGE to
+  // every authed user but left this nav row behind, which meant a rep could
+  // reach it from the notice pop-up's CTA or by URL and then never find it
+  // again. The mobile shell has always shown it to everyone (MobileApp's row
+  // carries alwaysShow), so this closes the last half of that divergence.
+  //
+  // Nothing is exposed by showing the row: GET /api/announcements is audience-
+  // filtered server-side (a plain reader sees only live rows addressed to
+  // them — the same set /banner already showed them), and the composer / edit
+  // / remind / delete controls on the page stay behind announcements.write.
+  // showForSalesDirector is gone because it is now redundant, not revoked —
+  // a Sales Director is a signed-in user and passes on that alone.
   {
     section: "operations",
     to: "/announcements",
     label: "Announcements",
     icon: Megaphone,
-    anyPerm: ["announcements.read"],
-    showForSalesDirector: true,
   },
 
   // ══ SYSTEM ═══════════════════════════════════════════════════
