@@ -42,7 +42,7 @@ export type RegionKey = 'ALL' | RegionCode;
    long-standing SO rows (the backend now stamps it explicitly on every row). */
 export type PlanningRowType = 'so' | 'assr' | 'dp';
 /* ASSR job kind (only meaningful when row_type === 'assr'). */
-export type AssrJobKind = 'customer_pickup' | 'delivery';
+export type AssrJobKind = 'customer_pickup' | 'delivery' | 'inspection';
 
 export type PlanningOrder = {
   /* SO rows: 'so' (default). ASSR (service-case) rows: 'assr'. DP-Order jobs
