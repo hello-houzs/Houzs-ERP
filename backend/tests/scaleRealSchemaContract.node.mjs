@@ -66,3 +66,22 @@ test("PR CI executes and retains the full 100k PostgreSQL evidence run", async (
   assert.match(workflow, /--json=artifacts\/scale-pg-100k\.json/);
   assert.match(workflow, /uses: actions\/upload-artifact@v4[\s\S]*if-no-files-found: error/);
 });
+
+// The backend suite is sharded across four runners with
+// `npm test -- --shard=i/n` (see ci.yml). npm appends run arguments to the LAST
+// command in the script, so any `&&` chain inside `test` sends `--shard` to the
+// wrong binary and leaves vitest unsharded — four runners each executing the
+// whole 112-file suite, green, at roughly 2.5x the wall time sharding was
+// introduced to remove. This runs as `pretest` for exactly that reason.
+test("backend test script stays a single command so CI sharding still reaches vitest", async () => {
+  const pkg = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  assert.equal(pkg.scripts.test, "vitest run");
+  assert.equal(pkg.scripts.pretest, "npm run test:scale-contract");
+  const workflow = await readFile(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.match(
+    workflow,
+    /npm test -- --shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ strategy\.job-total \}\}/,
+  );
+});

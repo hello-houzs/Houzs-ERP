@@ -60,10 +60,25 @@ Run the schema/query contract and route-drift checks before measuring:
 npm run test:scale-contract
 ```
 
-Pull-request CI also executes a small fixture against an ephemeral PostgreSQL
-service. That smoke job proves the DDL, seed SQL, correctness checks, queries,
-rollback and post-rollback catalogue assertion are executable. It is not the
-100k-row acceptance measurement.
+Pull-request CI also executes the full 100k fixture against an ephemeral
+PostgreSQL service container and uploads the JSON report as a build artifact.
+That job proves the DDL, seed SQL, correctness checks, queries, rollback and
+post-rollback catalogue assertion are executable at the acceptance cardinality.
+It is still database-contract evidence only — see the Boundary section.
+
+It runs on the `pull_request` event only. The same commit also fires a `push`
+run of the same workflow, where this job is skipped by design: a second
+ephemeral PostgreSQL container on the same runner image is not an independent
+environment, so running it twice buys nothing. The skip is therefore never the
+only report — every PR has one execution of this job on the merge ref.
+
+`npm run test:scale-contract` is wired as `pretest`, not chained inside `test`.
+`npm test -- --shard=i/n` appends its arguments to the LAST command in the
+script, so `"test": "vitest run && npm run test:scale-contract"` would hand
+`--shard` to the contract runner (which ignores it) and leave vitest unsharded —
+silently making all four CI shards run the whole 112-file suite. `pretest` runs
+first with no arguments and leaves `test` a single command, so the shard flag
+still reaches vitest.
 
 Then run the required scale and retain its report as a CI/local artifact:
 
