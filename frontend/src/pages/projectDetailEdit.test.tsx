@@ -20,6 +20,7 @@ import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ProjectDetail } from "./Projects";
 
 const PROJECT = {
   id: 157,
@@ -139,8 +140,7 @@ vi.mock("../hooks/useDialog", () => ({
   DialogProvider: ({ children }: any) => children,
 }));
 
-async function renderDetail() {
-  const { ProjectDetail } = await import("./Projects");
+function renderDetail() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: Infinity } },
   });
