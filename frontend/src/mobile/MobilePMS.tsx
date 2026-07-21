@@ -6,7 +6,7 @@ import { MobileVirtualList } from "./MobileVirtualList";
 import { MobileGantt } from "./MobileGantt";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
 import { useAuth } from "../auth/AuthContext";
-import { isSalesDirectorUser } from "../auth/salesAccess";
+import { isSalesNonDirector, isSalesDirectorUser } from "../auth/salesAccess";
 import { capability } from "../auth/capabilities";
 import { readProjectAccess, projectAccessUnresolved } from "../auth/projectAccess";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -62,6 +62,11 @@ type ProjectListRow = {
   // the retired coarse `stage` enum.
   sections_total?: number;
   sections_complete?: number;
+  // Sales-only progress (owner 2026-07-21): counts over role_label
+  // 'SALES PIC' tasks — done = status done/na OR carries a live attachment.
+  // Drives the sales cohort's list pill + % instead of the admin sections.
+  sales_tasks_total?: number;
+  sales_tasks_done?: number;
 };
 
 type ListResponse = {
@@ -379,6 +384,11 @@ const STAGE_FILTERS: [string, string][] = [
 const PMS_PAGE_SIZE = 30;
 
 function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onBack?: () => void }) {
+  const { user } = useAuth();
+  // Owner 2026-07-21: the sales cohort's list rows show progress over THEIR
+  // OWN deliverables (SALES PIC tasks) — the admin section chip ("CONTRACT
+  // 2/6") and all-task % meant nothing to a salesperson.
+  const salesList = isSalesNonDirector(user);
   const [q, setQ] = useState("");
   const [stageFilter, setStageFilter] = useState<string>("all");
   // "My events" — drivers/helpers (tick-only, no projects.write) land on the
@@ -539,7 +549,21 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
                         stage badge right; branding/venue chips; dates · PIC meta. */}
                     <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 800, color: "var(--ink)", lineHeight: 1.3 }}>{r.name || "—"}</span>
-                      <SectionStageBadge row={r} />
+                      {salesList ? (
+                        (r.sales_tasks_total ?? 0) > 0 ? (
+                          <span
+                            className="spill"
+                            style={{ flex: "none", background: STAGE_TINT.open.bg, color: STAGE_TINT.open.fg, border: "none" }}
+                            title={`Your tasks · ${r.sales_tasks_done ?? 0}/${r.sales_tasks_total} done`}
+                          >
+                            MY TASKS <span style={{ opacity: 0.6 }}>{r.sales_tasks_done ?? 0}/{r.sales_tasks_total}</span>
+                          </span>
+                        ) : (
+                          <StageBadge stage={r.stage} />
+                        )
+                      ) : (
+                        <SectionStageBadge row={r} />
+                      )}
                     </div>
                     {(r.brand || where) && (
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
@@ -551,7 +575,11 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
                       <span className="tnum" style={{ flex: 1, minWidth: 0, fontSize: 11, color: "var(--mut)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {dates}{r.pic_name ? <> · PIC <b style={{ color: "#414539" }}>{r.pic_name}</b></> : ""}
                       </span>
-                      {typeof r.progress_pct === "number" && <MiniProgress pct={r.progress_pct} />}
+                      {salesList
+                        ? (r.sales_tasks_total ?? 0) > 0 && (
+                            <MiniProgress pct={(100 * (r.sales_tasks_done ?? 0)) / (r.sales_tasks_total as number)} />
+                          )
+                        : typeof r.progress_pct === "number" && <MiniProgress pct={r.progress_pct} />}
                     </div>
                   </div>
                 </div>

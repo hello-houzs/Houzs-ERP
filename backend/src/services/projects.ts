@@ -1657,7 +1657,23 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                    WHERE c.project_id = p.id
                      AND c.section_id = s.id
                      AND c.status NOT IN ('done', 'na')
-                )) as sections_complete
+                )) as sections_complete,
+            -- Sales-only progress (owner 2026-07-21): the sales cohort's list
+            -- row shows progress over THEIR deliverables (role_label
+            -- 'SALES PIC'), not the admin sections. A task counts as done when
+            -- its status is done/na OR it already carries a live attachment —
+            -- the same signal as the mobile tile badges (sales have no tick
+            -- circles; uploads ARE their completion signal).
+            (SELECT COUNT(*) FROM project_checklist c
+              WHERE c.project_id = p.id
+                AND c.role_label = 'SALES PIC') as sales_tasks_total,
+            (SELECT COUNT(*) FROM project_checklist c
+              WHERE c.project_id = p.id
+                AND c.role_label = 'SALES PIC'
+                AND (c.status IN ('done', 'na')
+                     OR EXISTS (SELECT 1 FROM project_checklist_attachments a
+                                 WHERE a.item_id = c.id
+                                   AND a.archived_at IS NULL))) as sales_tasks_done
        FROM projects p
        LEFT JOIN project_event_types et ON et.id = p.event_type_id
        LEFT JOIN project_finance pf ON pf.project_id = p.id
