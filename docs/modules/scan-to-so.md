@@ -4,9 +4,11 @@ Per-module technical doc — a phone photo of a handwritten showroom slip become
 a DRAFT Sales Order, and the operator's corrections train the next scan. Same
 structure as [`sales-order.md`](./sales-order.md).
 
-> Verified against `main` @ `8f8427ed`. Where `docs/ocr-self-evolution.md`
-> describes something that is not in the tree at this commit, §5 says so
-> explicitly — that document mixes shipped and unshipped.
+> Verified against `main` @ `8f8427ed`, then updated for
+> `feat/ocr-relearn-from-corrections` (2026-07-22), which reconnected the
+> correction feed in §4. Where `docs/ocr-self-evolution.md` describes something
+> that is not in the tree, §5 says so explicitly — that document mixes shipped
+> and unshipped.
 
 > Convention: the module lives in the **`scm` Postgres schema**
 > (`scm.so_scan_samples`, `scm.so_scan_rules`, `scm.scan_jobs`) and is reached
@@ -264,35 +266,82 @@ There is **no TypeScript function anywhere that computes an
 
 ### How a correction is captured
 
-Two paths write a sample review, and both land in the same pool:
+Two paths *can* write a sample review. Only the second one runs today (see
+"There is no live UI path…" below), and it writes **both** outcomes:
 
 1. **Interactive** — the operator reviews inside the New SO form (desktop or
    mobile) and the form POSTs `/scan-so/samples/:id/confirm` on save
    (`:4718`). `accepted: true` in the body means "I changed nothing" → status
-   `ACCEPTED`; absent/false → `CONFIRMED`.
+   `ACCEPTED`; absent/false → `CONFIRMED`. **No live caller.**
 2. **Background** — nothing confirms the sample, because the operator's review is
    the DRAFT they open later. `backend/src/scm/lib/scan-sample-review.ts`
-   (`noteScanDraftAccepted`, `:63-126`) listens to the **DRAFT → CONFIRMED status
-   transition** on the SO and, if the operator changed nothing, promotes the
-   sample `EXTRACTED → ACCEPTED` with `corrected = extracted`. Before this module
-   existed the main scan route fed the loop **nothing** (`scan-sample-review.ts:1-12`).
+   (`noteScanDraftAccepted`) listens to the **DRAFT → CONFIRMED status
+   transition** on the SO and records the operator's verdict:
+   - confirmed **unchanged** → `EXTRACTED → ACCEPTED` with `corrected = extracted`;
+   - confirmed **with edits** → `EXTRACTED → CONFIRMED` with `corrected` rebuilt
+     from the final SO by `buildCorrectedSlipFromSo`.
 
-Two guards worth knowing:
+   Before this module existed the main scan route fed the loop **nothing**; until
+   the edited branch landed it fed the *distillers* nothing.
 
-- **Only the accepted-as-is case is captured on the background path.** If the
-  operator *edited* the draft, the honest `corrected` blob would require reversing
-  the lossy slip → SO mapper (itemGroup collapsed to `others`, dates nulled,
-  rawText folded into the line remark). Writing `corrected = extracted` for an
-  edited draft would assert "the AI read this correctly" about a reading a human
-  had just fixed — teaching the model to repeat the mistake *and* displacing a
-  real correction from the distill window. A wrong pair is worse than no pair, so
-  an edited draft is left alone (`scan-sample-review.ts:19-28`).
+**The edited branch is an OVERLAY on `extracted`, not a reversal of the lossy
+slip → SO mapper.** That distinction is the entire safety argument, and the
+reason no new review screen was needed. It starts from the AI's own blob and
+overwrites a curated set of faithfully-invertible fields, **and only where the
+value genuinely moved** — comparing on trimmed text, on an OptionMatch's
+`value`, on a code set, never by blind assignment. Re-stamping an unchanged
+`skuMatch` with `reason:'operator-confirmed'` would make every line of every
+sample "differ", and the distillers turn every difference into a rule.
+
+Everything whose forward mapping is lossy, derived or overwritten downstream is
+carried across untouched and contributes **no diff**. The list is in code as
+`CARRIED_NOT_INVERTED`, each entry with its reason:
+
+| Carried, never inverted | Because |
+|---|---|
+| `locationMatch` / `location` | the create core's venue-by-active-project autofill resolves a venue the slip never named |
+| `remarks` | the dedup path prefixes the note with `POSSIBLE DUPLICATE of <doc_no>` |
+| `processingDate` | pinned to today by owner rule (`:3795-3806`), never the slip's date |
+| `priceRmGuess` | the create core **reprices** every goods line — `unit_price_centi` is the catalog's figure, not a correction |
+| `installmentPlanMatch` | the header stores an integer month count; the pool's label spelling is unrecoverable, and inventing one breaks the never-invent rule |
+| `onlineTypeMatch` | there is no `online_type` column on the SO header (it lives on the payment ledger row) |
+| `totalRm`, `salesRep`, `paymentMethod`, `images`, `payments` | no SO column is the slip's written total / the rep's signature / the raw payment words / extraction metadata |
+| `rawText`, `rawSpec`, `notes`, the inch hints | the line REMARK is deliberately kept CLEAN, so the raw transcription is never on the SO line; the inch hints collapse into snapped Maintenance-pool strings |
+
+Service lines (`item_group='service'`), free-gift lines (`variants.freeGift`) and
+cancelled lines are excluded — they are not slip lines.
+
+**Line pairing refuses to guess** (`alignSoLinesToSlip`). It anchors
+monotonically on unchanged item codes, then fills each gap between anchors
+positionally **only when both sides of the gap are the same length**. An unequal
+gap is genuinely ambiguous — which slip row was deleted, which item was added? —
+and mis-pairing `rawText` with a code would teach the alias distiller a
+handwriting → SKU mapping nobody wrote. There the line keeps the operator's code
+and qty and asserts **no** slip provenance (`rawText: ''`). Losing signal is
+acceptable; a wrong pair is not.
+
+Guards worth knowing:
+
+- **A wrong pair is still worse than no pair.** `corrected = extracted` is never
+  written for an edited draft. And when the edit touched only things the OCR does
+  not emit, the rebuilt blob *equals* `extracted`: storing it would be a zero-diff
+  `CONFIRMED` row (teaches nothing, and evicts a real correction from the distill
+  window), while downgrading it to `ACCEPTED` would assert the AI was right about
+  a draft a human had just edited. That case writes **nothing**.
 - **No downgrade.** An `ACCEPTED` write can never bury a sample already
-  `CONFIRMED` (`:4753`); the reverse is an upgrade and rides through. Edit
+  `CONFIRMED` (`:4753`); on the background path the same guarantee comes free
+  from writing only `WHERE status='EXTRACTED'`, which also keeps a scan counted
+  exactly once across repeated re-confirms. Edit
   detection reads `mfg_so_audit_log`, excluding only `CREATE` and `UPDATE_STATUS`
   by name so that a mutation action added later counts as an edit by default —
   and `source IS NULL` counts as an edit, because unknown provenance must fail
-  toward *not* learning (`scan-sample-review.ts:44-49`, `:90-101`).
+  toward *not* learning.
+- **Best-effort and silent.** The whole function is inside one `try` and never
+  throws: a sample failing to record must not cost the operator their confirm.
+- **The salesperson's workflow is unchanged.** There is no review screen, no
+  extra click and no new prompt. The server already knew both "this came from a
+  scan" and "a human corrected it"; the edited branch only reads what those two
+  facts already imply.
 
 ### There is no live UI path that produces a `CONFIRMED` sample
 
@@ -321,21 +370,25 @@ guard, `if (!fromScan || !scanSampleId || !scanAiOriginal) return;`
   (`MobileNewSO.tsx:415`, its only caller is `MobileScan.tsx:826`), which POSTs
   `/mfg-sales-orders` and nothing else (`MobileNewSO.tsx:464-476`).
 
-So the only live writer into the learning pool is `noteScanDraftAccepted`, and
-it writes **`ACCEPTED` only** — it deliberately refuses to write anything for an
-edited draft. Every distiller filters `status = 'CONFIRMED'`. **Net: no new
-operator correction can enter any distill pool through the shipped UI.** The
-distillers still run and still work; they re-chew whatever `CONFIRMED` rows
-already exist. The few-shot pool, which accepts `ACCEPTED`, does keep growing.
+So the only live writer into the learning pool is `noteScanDraftAccepted`.
 
-> Unverifiable from the tree: whether any `CONFIRMED` rows exist in the live DB.
-> That is runtime data.
->
-> This is a stated observation, not a bug report — do not file it as one without
-> checking with the owner whether the enqueue-only modal was the intended end
-> state. `08975b9d feat(scan): feed the OCR learning loop from the path that
-> actually runs (#656)` is the commit that added `noteScanDraftAccepted`, so the
-> gap was at least partly known.
+> **Both halves of the above were true until `feat/ocr-relearn-from-corrections`
+> (2026-07-22).** At `8f8427ed`, `noteScanDraftAccepted` wrote **`ACCEPTED` only**
+> and refused to write anything for an edited draft, while every distiller filters
+> `status='CONFIRMED'` — so no new operator correction could enter any distill
+> pool at all, and the distillers were re-chewing whatever `CONFIRMED` rows
+> already existed. The endpoint's unreachability is unchanged; what changed is
+> that the background writer now covers both outcomes, so the `CONFIRMED` pool
+> has a live feed again **without** the review screen the two dead callers needed.
+> `08975b9d feat(scan): feed the OCR learning loop from the path that actually
+> runs (#656)` added `noteScanDraftAccepted`; the edited half was the gap it left.
+
+> Still unverifiable from the tree: whether any `CONFIRMED` rows exist in the live
+> DB, and how many. That is runtime data.
+
+The two dead callers and `POST /samples/:id/confirm` itself are **left in place**.
+They are unreachable, not harmful, and nothing above depends on them; removing
+them is a separate change so it can be reverted alone.
 
 ### The rule layers that exist in code today
 
@@ -367,7 +420,17 @@ for everyone including a brand-new rep with no rules of their own
   rules, then `__GLOBAL__`, then `__GLOBAL_RULES__` — sequential, to keep it to
   one Anthropic call at a time. Each cheap-skips below its sample threshold
   (2 for the rep, 3 for the global rules) without an API call, so firing on every
-  confirm is safe. Never blocks the confirm. This is the primary fast path.
+  confirm is safe. Never blocks the confirm. This *was* the primary fast path —
+  it hangs off `POST /samples/:id/confirm`, which has no live caller, so today it
+  never fires.
+- **NOT on the background writer.** `noteScanDraftAccepted` deliberately does not
+  trigger a distill. It runs on the SO status transition, and hanging three
+  sequential billed Anthropic calls off every DRAFT → CONFIRMED would put API
+  traffic on a hot order path — and would need an import of `scan-so.ts`, which
+  imports `mfg-sales-orders.ts`, which imports that module: a cycle. **So today:
+  corrections land immediately, distilled rules refresh weekly.** The few-shot
+  pool reads `corrected` live at extract time, so a new sample still takes effect
+  on the very next scan.
 - **Weekly**, Sunday-gated inside the daily 02:00 UTC cron slot
   (`backend/src/index.ts:536-545`) — `distillAllSalespersonRules` rebuilds every
   rep plus both global rows in bulk. There is deliberately **no dedicated cron
@@ -415,7 +478,7 @@ Audited feature by feature at `8f8427ed`:
 | Global shared rules layer (cross-rep distill + store + inject for every rep) | **SHIPPED** | `'__GLOBAL_RULES__'`, `:1723`, `:2058`, injected `:2718` |
 | Fire-and-forget distill on confirm | **SHIPPED** | `:4775-4812` |
 | Weekly Sunday cron rebuild | **SHIPPED** | `backend/src/index.ts:536-545` |
-| `/samples/:id/confirm` is "edit-gated: only when actually edited" | **STALE.** The edit gate was deliberately removed; confirm now always fires and `accepted` is a **label**, not a gate (`SalesOrderNew.tsx:1230-1234`; vocabulary `scan-so.ts:1658-1682`) — and see the reachability note in §4 |
+| `/samples/:id/confirm` is "edit-gated: only when actually edited" | **STALE, twice over.** The edit gate was deliberately removed (`accepted` became a **label**, not a gate — `SalesOrderNew.tsx:1230-1234`; vocabulary `scan-so.ts:1658-1682`), and the endpoint then lost both its callers. The edited/unedited split now lives server-side in `noteScanDraftAccepted` — see §4 |
 | Injection order "personal first, then global" | **NOT AS DESCRIBED** — code injects global before per-rep | `:2717-2720` |
 | **Manual technique upload** — a rep types their own quirks ("my K = King", "my 7 has a slash") | **NOT FOUND IN CODE** | grep for `manual_rules` / `manualRules` / `so_scan_manual` over `backend/src` and `frontend/src` returns nothing |
 | A `so_scan_manual_rules` table, or a manual-rules column on `so_scan_rules` | **NOT FOUND** | `so_scan_rules` is `(salesperson, rules, sample_count, updated_at)` — `0023_so_scan_samples.sql`; no later migration adds a column |
@@ -487,10 +550,13 @@ the venue-by-active-project auto-fill *and* is the notice target),
 `duplicate_of`, `retry_count`, `created_at`, `updated_at`.
 
 Known gap, flagged in code: `scan_jobs.so_doc_no` is **not indexed**
-(`scan-sample-review.ts:66-73`). `noteScanDraftAccepted` is the only lookup
+(`scan-sample-review.ts`). `noteScanDraftAccepted` is the only lookup
 travelling that direction and it fires only on DRAFT → CONFIRMED, so it is fine
 at today's volume — but an index on `so_doc_no` is the right follow-up, and it
-needs a staging-first migration.
+needs a staging-first migration. Its cost is now: **1** read for a non-scan SO —
+the usual case, and unchanged — **3 + 1 write** for a scan confirmed as-is, and
+**5 + 1 write** for a scan confirmed with edits (the SO header and its items are
+read in parallel). All inside `waitUntil`; none blocks the operator.
 
 The completion notice writes to **`public.announcements`** via the D1-compat
 Postgres shim (`personalNotice.ts:94-111`), not to any scm table.
@@ -605,8 +671,10 @@ cross-company isolation here.
 - `scan_jobs.so_doc_no` unindexed (see §6).
 - Both poll endpoints run the stale-job reaper on **every** call, so reaper cost
   scales with the number of open Scan screens.
-- Test coverage is thin: `backend/tests/scanReceiptPlan.test.ts` is the only scan
-  test, and `e2e/specs/` has no scan spec.
+- Test coverage is thin: `backend/tests/scanReceiptPlan.test.ts` and
+  `backend/src/scm/lib/scan-sample-review.test.ts` (the learning-loop feed) are
+  the only scan tests, and `e2e/specs/` has no scan spec. Nothing covers the
+  pipeline itself — `runScanJob`, `buildDraftSoBodyFromSlip`, `validateSlip`.
 
 The only measured numbers in the tree are the compression figure above and the
 catalog size. The "60-110s real-slip OCR calls" range quoted throughout comes
