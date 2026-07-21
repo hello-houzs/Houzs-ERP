@@ -608,7 +608,16 @@ function CasesView({
       key: "assr_no",
       filterable: true,
       label: "ASSR No",
-      render: (r) => <span className="font-mono text-xs font-medium">{r.assr_no}</span>,
+      render: (r) => (
+        <span className="font-mono text-xs font-medium">
+          {r.assr_no}
+          {r.company_code && r.company_code !== "HOUZS" && (
+            <span className="ml-1.5 rounded bg-bg px-1 py-0.5 font-sans text-[10px] font-semibold text-ink-muted">
+              {r.company_code}
+            </span>
+          )}
+        </span>
+      ),
       getValue: (r) => r.assr_no,
     },
     {
@@ -2201,7 +2210,7 @@ function CreatePanel({
   // suggestion — used to suppress the dropdown once a selection is
   // committed (re-typing reopens it).
   const [soSuggestions, setSoSuggestions] = useState<
-    { doc_no: string; ref: string | null; debtor_name: string | null; phone: string | null; doc_date: string | null; sales_agent: string | null }[]
+    { doc_no: string; ref: string | null; debtor_name: string | null; phone: string | null; doc_date: string | null; sales_agent: string | null; company_code?: string | null }[]
   >([]);
   const [pickedDocNo, setPickedDocNo] = useState<string | null>(null);
   const [searchingSO, setSearchingSO] = useState(false);
@@ -2556,6 +2565,9 @@ function CreatePanel({
               >
                 <div className="flex items-center gap-2">
                   <span className="font-mono font-semibold text-ink">{s.doc_no}</span>
+                  {s.company_code && s.company_code !== "HOUZS" && (
+                    <span className="rounded bg-bg px-1.5 py-0.5 text-[10px] font-semibold text-ink-muted">{s.company_code}</span>
+                  )}
                   {s.ref && <span className="rounded bg-bg px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">ref: {s.ref}</span>}
                   {s.doc_date && <span className="ml-auto text-[10px] text-ink-muted">{s.doc_date}</span>}
                 </div>

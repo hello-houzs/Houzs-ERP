@@ -149,6 +149,9 @@ export interface AssrCase {
   closed_at: string | null;
   created_by: number | null;
   created_by_name?: string | null;
+  /** Owning company's code ("HOUZS" / "2990") — joined by the list endpoint;
+   *  the cross-company portal tags non-HOUZS rows with it. */
+  company_code?: string | null;
   satisfaction_rating: number | null;
   satisfaction_notes: string | null;
   // AutoCount-derived creditor (procurement supplier). Auto-resolved
