@@ -736,6 +736,12 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
   const [runningKey, setRunningKey] = useState<string | null>(null);
 
   const mayOperate = useMayOperateDoc(moduleKey);
+  /* POD confirms a delivery (stock + SO sync) → an operate action, gated on the
+     SAME helper as the status actions (mirrors DeliveryOrderDetailV2's
+     canWriteDo). MobileApp already withholds onPOD for a view-only user; this is
+     defence-in-depth so the button, the early-return, the error offset and the
+     scroll padding all agree. */
+  const podEnabled = !!onPOD && mayOperate;
   const statusActions = useMemo(() => statusActionsFor(moduleKey, id, header, mayOperate), [moduleKey, id, header, mayOperate]);
   const payKind = paymentKind(moduleKey, header);
 
@@ -780,16 +786,16 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
   };
 
   const hasRow = statusActions.length > 0 || !!payKind;
-  if (!hasRow && !onPOD) return null;
+  if (!hasRow && !podEnabled) return null;
   const busy = mutation.isPending;
 
   return (
     <>
       {error && (
-        <div style={{ position: "absolute", left: 0, right: 0, bottom: hasRow && onPOD ? 130 : 76, padding: "0 16px", textAlign: "center", fontSize: 11.5, color: "#b23a3a", zIndex: 1, maxWidth: "calc(100% - 32px)" }}>{error}</div>
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: hasRow && podEnabled ? 130 : 76, padding: "0 16px", textAlign: "center", fontSize: 11.5, color: "#b23a3a", zIndex: 1, maxWidth: "calc(100% - 32px)" }}>{error}</div>
       )}
       <footer className="actbar" style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}>
-        {onPOD && (
+        {podEnabled && (
           <button className="btn" onClick={onPOD} style={{ marginBottom: hasRow ? 9 : 0 }}>Proof of Delivery</button>
         )}
         {hasRow && (
@@ -868,8 +874,11 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
   // Whether a sticky footer will render — used to reserve scroll padding so it
   // never covers the last line item. A POD button (delivery orders) also counts.
   const mayOperate = useMayOperateDoc(moduleKey);
+  // POD entry is gated on the operate helper (same as DocActionFooter) so a
+  // view-only user gets no POD button — and the footer/scroll padding agree.
+  const podEnabled = !!onPOD && mayOperate;
   const hasStatusActions = !!id && (statusActionsFor(moduleKey, id, header, mayOperate).length > 0 || paymentKind(moduleKey, header) !== null);
-  const hasFooter = hasStatusActions || !!onPOD;
+  const hasFooter = hasStatusActions || podEnabled;
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ["mobile-module-detail", map.path, id] }); };
 
   return (
@@ -883,7 +892,7 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
         onEdit={onEdit}
         onPdf={onPdf}
       />
-      <div className="scroll hz-scroll" style={hasFooter ? { ...scrollStyle, paddingBottom: onPOD && hasStatusActions ? 150 : 96 } : scrollStyle}>
+      <div className="scroll hz-scroll" style={hasFooter ? { ...scrollStyle, paddingBottom: podEnabled && hasStatusActions ? 150 : 96 } : scrollStyle}>
         {!id && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't identify this record.</div>}
 
         {!!id && cancelled && <CancelledRibbon header={header} />}

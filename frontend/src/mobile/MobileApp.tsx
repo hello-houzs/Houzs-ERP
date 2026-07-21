@@ -672,10 +672,16 @@ function MobileAppInner() {
   }
   else if (screen.t === "module-detail") {
     const doNo = screen.key === "delivery-orders-mfg" ? (screen.row?.do_number ?? screen.row?.doNumber) : null;
+    /* POD confirms a delivery — DEDUCTS STOCK + SYNCS THE SO — so it is an
+       operate action, gated on the SAME canOperateDeliveryOrders helper as the
+       Dispatch/Cancel status actions and the desktop DO controls. A view-only
+       user (the Sales cohort) gets NO POD entry (off, not hide); MobilePOD also
+       gates its Confirm action defensively for any other entry path. */
+    const canPod = !!doNo && canOperateDeliveryOrders(user, can, pageAccess);
     overlay = <MobileModuleDetail moduleKey={screen.key} row={screen.row} title={screen.title}
       onBack={() => setScreen({ t: "module", key: screen.key, title: screen.title })}
       onEdit={() => setScreen({ t: "module-form", key: screen.key, mode: "edit", row: screen.row })}
-      onPOD={doNo ? () => setScreen({ t: "pod", docNo: String(doNo) }) : undefined} />;
+      onPOD={canPod ? () => setScreen({ t: "pod", docNo: String(doNo) }) : undefined} />;
   }
   else if (screen.t === "module-form") {
     const cfg = MODULE_CONFIGS[screen.key];
