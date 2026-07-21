@@ -46,10 +46,24 @@ async function main() {
     console.log(`categories deleted: ${del.count}`);
   }
 
+  // --- psv DIAGNOSTIC: the real dangling dimension is size_id, not product_id ---
+  // (the first cleanup run proved every psv.product_id resolves to a company_2
+  // product, so the 132->264 growth must differ on the OTHER half of the PK)
+  const sizeDangle = await dst`SELECT count(*)::int AS n FROM scm.product_size_variants v
+    WHERE v.company_id = ${cid}
+      AND NOT EXISTS (SELECT 1 FROM scm.size_library s WHERE s.id = v.size_id AND s.company_id = ${cid})`;
+  console.log(`psv rows whose size_id is NOT a company_${cid} size_library entry: ${sizeDangle[0].n}`);
+  const perProduct = await dst`SELECT n_variants, count(*)::int AS n_products FROM (
+      SELECT product_id, count(*)::int AS n_variants FROM scm.product_size_variants
+      WHERE company_id = ${cid} GROUP BY product_id) t GROUP BY n_variants ORDER BY n_variants`;
+  console.log(`psv variants-per-product histogram: ${perProduct.map(r => `${r.n_variants}x:${r.n_products}`).join(" ")}`);
+
   // --- series: REPORT ONLY (no read path in backend; shared seeded rows make predicates unsafe) ---
-  const series = await dst`SELECT id, name FROM scm.series WHERE company_id = ${cid} ORDER BY name`;
-  console.log(`series rows (company_${cid}, report only): ${series.length}`);
-  for (const s of series) console.log(`  ${s.id}  ${s.name}`);
+  const seriesCols = await dst`SELECT column_name FROM information_schema.columns
+    WHERE table_schema='scm' AND table_name='series' ORDER BY ordinal_position`;
+  console.log(`series columns: ${seriesCols.map(c => c.column_name).join(",")}`);
+  const seriesRows = await dst`SELECT count(*)::int AS n FROM scm.series WHERE company_id = ${cid}`;
+  console.log(`series rows (company_${cid}, report only): ${seriesRows[0].n}`);
 
   // --- after-state ---
   const after = await dst`SELECT
