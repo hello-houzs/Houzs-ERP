@@ -384,7 +384,7 @@ const STAGE_FILTERS: [string, string][] = [
 const PMS_PAGE_SIZE = 30;
 
 function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onBack?: () => void }) {
-  const { user } = useAuth();
+  const { can, user } = useAuth();
   // Owner 2026-07-21: the sales cohort's list rows show progress over THEIR
   // OWN deliverables (SALES PIC tasks) — the admin section chip ("CONTRACT
   // 2/6") and all-task % meant nothing to a salesperson.
@@ -395,7 +395,6 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
   // events they're crewed on (setup/dismantle assignment, FK or crew JSON;
   // owner 2026-07-16) with "All" one tap away. Everyone else sees the normal
   // full list with no extra chip.
-  const { can, user } = useAuth();
   const tickOnly = can("projects.checklist.tick") && !can("projects.write");
   const [assignedOnly, setAssignedOnly] = useState<boolean | null>(null);
   const showAssigned = tickOnly && (assignedOnly ?? true);
