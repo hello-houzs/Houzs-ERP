@@ -261,4 +261,24 @@ pos.get("/sales-stats", auth, companyContext, async (c) => {
   });
 });
 
+// ── AUTHED: exchange a POS session for a desktop web session ────────────────
+// The POS opens Houzs backend pages in a new browser tab (Manual SO create,
+// Service Case, etc.) — SSO handoff so the salesperson doesn't have to remember
+// a Houzs password. Flow: POS calls this endpoint, gets back a fresh full
+// desktop session token for the SAME user, opens
+//   https://erp.houzscentury.com/#sso=<token>&next=<path>
+// in a new tab. The Houzs frontend bootstrap (src/main.tsx) reads the fragment,
+// stores the token in sessionStorage, strips the fragment, navigates to `next`.
+// Mint deliberately drops the `origin='pos'` marker so the drift gate treats
+// this like an ordinary desktop session (SO edits from Houzs UI aren't
+// drift-checked against POS tablet rules). The original POS session is
+// unaffected — this is an additive mint, not a swap.
+pos.post("/exchange-web-session", auth, async (c) => {
+  const uid = c.get("user")?.id;
+  if (uid == null) return c.json({ error: "not_authenticated" }, 401);
+  // origin=undefined → desktop session (no drift-gate on office edits).
+  const token = await createSession(c.env, Number(uid));
+  return c.json({ token, userId: Number(uid) });
+});
+
 export default pos;

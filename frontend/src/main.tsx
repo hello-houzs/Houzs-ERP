@@ -92,6 +92,24 @@ if (LOGIN_AS_HOSTS.has(window.location.hostname)) {
     tokenStore.set(decodeURIComponent(m[1]), false);
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
   }
+
+  // POS→Houzs SSO handoff (2026-07-22): a POS button opens
+  //   https://erp.houzscentury.com/#sso=<token>&next=<path>
+  // where <token> came from POST /api/pos/exchange-web-session (mints a fresh
+  // desktop session for the same user). Store the token session-only, jump to
+  // <next>, and scrub the hash — so the salesperson lands on the Houzs page
+  // (Manual SO / Service Case) already logged in, no email+password prompt.
+  // Same tokenStore + `persistent: false` semantics as the login-as flow above.
+  const sso = /[#&]sso=([^&]+)/.exec(window.location.hash);
+  if (sso) {
+    tokenStore.set(decodeURIComponent(sso[1]), false);
+    const next = /[#&]next=([^&]+)/.exec(window.location.hash);
+    // Safe next: same-origin path only (starts with a single '/', not '//' to
+    // rule out protocol-relative). Falls back to '/' otherwise.
+    const rawNext = next ? decodeURIComponent(next[1]) : "/";
+    const safeNext = /^\/(?!\/)/.test(rawNext) ? rawNext : "/";
+    window.history.replaceState(null, "", safeNext);
+  }
 }
 
 // Public routes that must bypass the staff AuthGate entirely:
