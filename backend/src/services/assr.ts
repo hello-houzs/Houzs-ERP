@@ -747,6 +747,42 @@ const PATCH_FIELDS = [
   "sub_status",
 ] as const;
 
+// Human labels for the append-only per-field timeline audit. Anything not
+// listed falls back to a prettified column name.
+const FIELD_LABELS: Record<string, string> = {
+  doc_no: "SO No", customer_name: "Customer Name", customer_email: "Customer Email",
+  phone: "Phone", location: "Location", sales_agent: "Sales Agent", item_code: "Item Code",
+  complaint_issue: "Complaint", action_remark: "Action Remark", service_category: "Service Category",
+  completion_date: "Completion Date", po_no: "PO No", resolution_method: "Resolution Method",
+  issue_category: "Issue Category", priority: "Priority", ref_no: "Reference No",
+  delivery_order: "Delivery Order", do_date: "DO Date",
+  satisfaction_rating: "Satisfaction Rating", satisfaction_notes: "Satisfaction Notes",
+  addr1: "Address 1", addr2: "Address 2", addr3: "Address 3", addr4: "Address 4",
+  ncr_category: "NCR Category", quality_review_passed: "Quality Review Passed",
+  po_amount: "PO Amount", customer_amount: "Customer Amount",
+  supplier_invoice_ref: "Supplier Invoice Ref", cost_notes: "Cost Notes",
+  sla_hours: "SLA Hours", deadline_at: "Deadline",
+  supplier_pickup_at: "Supplier Pickup Date", items_ready_at: "Supplier Return / Item Ready Date",
+  customer_pickup_at: "Customer Pickup Date",
+  inspection_result: "Inspection Result", email_for_survey: "Survey Email",
+  verification_outcome: "Verification Outcome", verified_root_cause: "Verified Root Cause",
+  qc_receipt_date: "QC Receipt Date", goods_returned_note: "Goods Returned Note",
+  supplier_service_note: "Supplier Service Note", inspection_by: "Inspection By",
+  qc_issue_result: "QC Result",
+};
+// Fields that already emit their own richer timeline entry below — excluded
+// from the generic per-field audit so nothing is logged twice.
+const FIELD_LOG_SKIP = new Set<string>([
+  "assigned_to", "assigned_to_2", "sub_status", "doc_no", "complaint_issue",
+]);
+const fieldLabel = (k: string): string =>
+  FIELD_LABELS[k] ?? k.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+const fieldDisplay = (v: any): string => {
+  if (v === null || v === undefined || v === "") return "(empty)";
+  const s = String(v);
+  return s.length > 120 ? s.slice(0, 117) + "..." : s;
+};
+
 export async function patchAssrCase(
   env: Env,
   id: number,
@@ -790,6 +826,16 @@ export async function patchAssrCase(
     // ignore rather than null the linkage.
     delete body.doc_no;
   }
+
+  // Snapshot the pre-update values of every auditable field, so each actual
+  // change can be written to the timeline as an append-only entry. A later
+  // edit or removal never erases the earlier recorded value — the history
+  // stays fully reviewable.
+  const beforeSnapshot = await env.DB.prepare(
+    `SELECT ${PATCH_FIELDS.join(", ")} FROM assr_cases WHERE id = ?`
+  )
+    .bind(id)
+    .first<Record<string, any>>();
 
   for (const k of PATCH_FIELDS) {
     if (k in body) {
@@ -918,6 +964,27 @@ export async function patchAssrCase(
         { category: "customer" }
       );
     }
+  }
+
+  // Append-only per-field audit — every other changed field (stage-action
+  // dates, notes, product/resolution info, costs, addresses, etc.) lands on
+  // the timeline so the case keeps a full reviewable history. Fields with a
+  // dedicated entry above are skipped so nothing is double-logged.
+  for (const k of PATCH_FIELDS) {
+    if (!(k in body) || FIELD_LOG_SKIP.has(k)) continue;
+    const before = beforeSnapshot ? beforeSnapshot[k] ?? null : null;
+    const after = body[k] ?? null;
+    if (String(before ?? "") === String(after ?? "")) continue;
+    await logActivity(
+      env,
+      id,
+      "field_change",
+      before === null ? null : String(before),
+      after === null ? null : String(after),
+      `${fieldLabel(k)}: ${fieldDisplay(before)} → ${fieldDisplay(after)}`,
+      userId,
+      { category: "service", source_channel: "app" }
+    );
   }
 
   // When the case's item_code changes, re-resolve the creditor so the

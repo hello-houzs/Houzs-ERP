@@ -1956,6 +1956,16 @@ app.post("/:id/logistics/:logId/archive", requirePermission("service_cases.write
     true
   );
   if (!ok) return c.json({ error: "Not found" }, 404);
+  await logActivity(
+    c.env,
+    id,
+    "logistics_removed",
+    null,
+    null,
+    "Logistics entry removed",
+    userId || null,
+    { category: "service", source_channel: "app" }
+  );
   return c.json({ ok: true });
 });
 
@@ -1964,6 +1974,13 @@ app.post("/attachments/:attId/archive", requirePermission("service_cases.write")
   const attId = parseInt(c.req.param("attId"), 10);
   if (isNaN(attId)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
+  // Resolve the owning case + file so the removal is recorded on the right
+  // timeline (append-only — the record survives the file being archived).
+  const att = await c.env.DB.prepare(
+    `SELECT assr_id, category, file_name FROM assr_attachments WHERE id = ?`
+  )
+    .bind(attId)
+    .first<{ assr_id: number | null; category: string | null; file_name: string | null }>();
   const ok = await setArchived(
     c.env,
     "assr_attachments",
@@ -1973,6 +1990,18 @@ app.post("/attachments/:attId/archive", requirePermission("service_cases.write")
     true
   );
   if (!ok) return c.json({ error: "Not found" }, 404);
+  if (att?.assr_id != null) {
+    await logActivity(
+      c.env,
+      att.assr_id,
+      "attachment_removed",
+      att.file_name ?? null,
+      null,
+      `Removed ${att.category ?? "attachment"}${att.file_name ? ` (${att.file_name})` : ""}`,
+      userId || null,
+      { category: "service", source_channel: "app" }
+    );
+  }
   return c.json({ ok: true });
 });
 
@@ -2782,13 +2811,44 @@ app.post("/:id/items", requirePermission("service_cases.write"), async (c) => {
   }>();
   if (!body.items?.length) return c.json({ error: "items required" }, 400);
   await addItems(c.env, id, body.items);
+  const addUserId = (c as any).get?.("userId") ?? null;
+  for (const it of body.items) {
+    await logActivity(
+      c.env,
+      id,
+      "item_added",
+      null,
+      it.item_code,
+      `Added item ${it.item_code}${it.qty && it.qty > 1 ? ` (qty ${it.qty})` : ""}`,
+      addUserId,
+      { category: "service", source_channel: "app" }
+    );
+  }
   return c.json({ ok: true });
 });
 
 app.delete("/:id/items/:itemId", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const itemId = parseInt(c.req.param("itemId"), 10);
+  const prevItem = await c.env.DB.prepare(
+    `SELECT item_code, remark FROM assr_items WHERE id = ? AND assr_id = ?`
+  )
+    .bind(itemId, id)
+    .first<{ item_code: string | null; remark: string | null }>();
   await removeItem(c.env, id, itemId);
+  if (prevItem) {
+    const delUserId = (c as any).get?.("userId") ?? null;
+    await logActivity(
+      c.env,
+      id,
+      "item_removed",
+      prevItem.item_code,
+      null,
+      `Removed item ${prevItem.item_code ?? `#${itemId}`}${prevItem.remark ? ` (remark was "${prevItem.remark}")` : ""}`,
+      delUserId,
+      { category: "service", source_channel: "app" }
+    );
+  }
   return c.json({ ok: true });
 });
 
@@ -2800,8 +2860,32 @@ app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async 
   if (isNaN(id) || isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
   const body = await c.req.json<{ remark?: string | null }>();
   const remark = body.remark == null ? null : String(body.remark).trim() || null;
+  // Capture the prior remark so the change is recorded append-only on the
+  // timeline: removing a remark logs a "cleared" event while the earlier
+  // recorded remark stays in the history.
+  const prevItem = await c.env.DB.prepare(
+    `SELECT item_code, remark FROM assr_items WHERE id = ? AND assr_id = ?`
+  )
+    .bind(itemId, id)
+    .first<{ item_code: string | null; remark: string | null }>();
   const ok = await setItemRemark(c.env, id, itemId, remark);
   if (!ok) return c.json({ error: "Not found" }, 404);
+  if ((prevItem?.remark ?? null) !== remark) {
+    const userId = (c as any).get?.("userId") ?? null;
+    const code = prevItem?.item_code ?? `#${itemId}`;
+    await logActivity(
+      c.env,
+      id,
+      "item_remark",
+      prevItem?.remark ?? null,
+      remark,
+      remark
+        ? `Product remark on ${code}: ${prevItem?.remark ? `"${prevItem.remark}" → ` : ""}"${remark}"`
+        : `Product remark on ${code} cleared${prevItem?.remark ? ` (was "${prevItem.remark}")` : ""}`,
+      userId,
+      { category: "service", source_channel: "app" }
+    );
+  }
   return c.json({ ok: true });
 });
 
@@ -2838,6 +2922,17 @@ app.put("/:id/attachments", requirePermission("service_cases.write"), async (c) 
   const key = assrAttachmentKey(id, category, ext);
   await c.env.POD_BUCKET.put(key, body, { httpMetadata: { contentType } });
   const attachId = await saveAttachment(c.env, id, key, fileName, contentType, category, userId);
+
+  await logActivity(
+    c.env,
+    id,
+    "attachment_added",
+    null,
+    fileName ?? key,
+    `Added ${category} attachment${fileName ? ` (${fileName})` : ""}`,
+    userId || null,
+    { category: "service", source_channel: "app" }
+  );
 
   return c.json({ id: attachId, key }, 201);
 });
@@ -2981,6 +3076,17 @@ app.post("/:id/logistics", requirePermission("service_cases.write"), async (c) =
   }>();
   if (!body.type) return c.json({ error: "type is required" }, 400);
   const logId = await createLogistics(c.env, id, body);
+  const logUserId = (c as any).get?.("userId") ?? null;
+  await logActivity(
+    c.env,
+    id,
+    "logistics_added",
+    null,
+    body.type,
+    `Scheduled ${body.type}${body.scheduled_date ? ` for ${body.scheduled_date}` : ""}`,
+    logUserId,
+    { category: "service", source_channel: "app" }
+  );
   return c.json({ id: logId }, 201);
 });
 
@@ -2990,6 +3096,20 @@ app.patch("/:id/logistics/:logId", requirePermission("service_cases.write"), asy
   const body = await c.req.json<Record<string, any>>();
   const ok = await patchLogistics(c.env, id, logId, body);
   if (!ok) return c.json({ error: "Not found" }, 404);
+  const logUserId = (c as any).get?.("userId") ?? null;
+  const changed = Object.keys(body).filter((k) =>
+    ["scheduled_date", "scheduled_time_range", "assigned_to", "status", "notes", "completed_at"].includes(k)
+  );
+  await logActivity(
+    c.env,
+    id,
+    "logistics_updated",
+    null,
+    null,
+    `Logistics updated${changed.length ? ` (${changed.join(", ")})` : ""}`,
+    logUserId,
+    { category: "service", source_channel: "app" }
+  );
   return c.json({ ok: true });
 });
 

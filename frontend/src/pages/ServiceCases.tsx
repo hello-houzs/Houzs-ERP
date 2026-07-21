@@ -4649,6 +4649,17 @@ function DetailContent({
                         title = "Photo uploaded";
                         if (a.note) body = a.note;
                         break;
+                      default:
+                        // Backend-logged audit actions we don't special-case
+                        // (field_change, item_remark, item_added/removed,
+                        // attachment_*, logistics_*, …). Their note is a full
+                        // human sentence — show it so the timeline is a
+                        // complete, reviewable history of everything done.
+                        if (a.note) {
+                          title = null;
+                          body = a.note;
+                        }
+                        break;
                     }
                     const actorRole = roleOf(a);
                     return (
