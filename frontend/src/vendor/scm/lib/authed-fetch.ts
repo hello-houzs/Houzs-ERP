@@ -91,7 +91,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, path: string): P
         );
         throw correlateError(new Error(
           hasIdemKey
-            ? "That took too long and didn't go through. Please try saving again."
+            ? "That took too long, so we couldn't confirm whether it saved. Please retry this same action once; its safety key will check the original request instead of creating a duplicate."
             : "That took too long and we couldn't confirm whether it saved. Please refresh and check before trying again — saving twice may create a duplicate.",
         ), requestId);
       }
@@ -370,6 +370,18 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   // re-read this if a surface ever needs a subject-specific line.
   idempotency_in_flight:
     "This is already going through — give it a moment, then refresh to check. Please don't send it again.",
+  idempotency_key_reused:
+    'This request key was already used with different details. Refresh before trying again.',
+  idempotency_key_conflict:
+    'This request key is already owned by another operation. Refresh and try again.',
+  idempotency_unavailable:
+    "We couldn't safely record this yet. Nothing was sent — wait a moment and try again.",
+  idempotency_outcome_unknown:
+    "We couldn't confirm whether this was recorded. Don't submit it again — refresh and check first.",
+  invalid_idempotency_key:
+    "This action couldn't be submitted safely. Refresh the page and try again.",
+  idempotency_payload_too_large:
+    'This upload is too large for safe retry. Upload the file separately.',
   duplicate_code:   'That code is already in use. Please choose a different one.',
   phone_required:   'A phone number is required.',
   not_found:        'That item could no longer be found. Please refresh.',

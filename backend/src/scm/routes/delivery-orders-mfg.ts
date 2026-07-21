@@ -43,6 +43,7 @@ import { currentDocNoByKey, type CurrentEvent } from '../lib/current-doc';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { recordSoAudit, type FieldChange } from '../lib/so-audit';
 import { recordEntityAudit, diffFields, compactChanges, fieldChange } from '../lib/entity-audit';
+import { markIdempotencyNoWrite } from '../../middleware/idempotency';
 
 export const deliveryOrdersMfg = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryOrdersMfg.use('*', supabaseAuth);
@@ -2656,7 +2657,10 @@ deliveryOrdersMfg.post('/', async (c) => {
         qty: Number(it.qty ?? 0),
       }));
       const shortages = await checkStockAvailability(sb, targetWh, stockLines);
-      if (shortages.length > 0) return c.json(shortStockResponse(shortages), 409);
+      if (shortages.length > 0) {
+        markIdempotencyNoWrite(c);
+        return c.json(shortStockResponse(shortages), 409);
+      }
     }
   }
 
@@ -2713,6 +2717,7 @@ deliveryOrdersMfg.post('/', async (c) => {
       const dropship = await buildDropshipOffenders(sb, sofaOffenders);
       const allHavePo = dropship.length > 0 && dropship.every((o) => !!o.poNumber);
       if (body.dropShip !== true || !allHavePo) {
+        markIdempotencyNoWrite(c);
         return c.json(sofaNoCompleteBatchResponse(sofaOffenders, dropship), 409);
       }
       dropShipped = true;
@@ -2721,7 +2726,10 @@ deliveryOrdersMfg.post('/', async (c) => {
        only part of an SO's sofa set and leaves the rest behind (orphan dye lot).
        NEVER waived by drop-ship — half a set must never ship. */
     const partial = await findIncompleteSofaSets(sb, items.map((it) => (it.soItemId as string | null) ?? null));
-    if (partial.length > 0) return c.json(sofaIncompleteSetResponse(partial), 409);
+    if (partial.length > 0) {
+      markIdempotencyNoWrite(c);
+      return c.json(sofaIncompleteSetResponse(partial), 409);
+    }
   }
 
   const phoneRaw = (body.phone as string | undefined) ?? null;
@@ -3071,6 +3079,7 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
       const dropship = await buildDropshipOffenders(sb, sofaOffenders);
       const allHavePo = dropship.length > 0 && dropship.every((o) => !!o.poNumber);
       if (body.dropShip !== true || !allHavePo) {
+        markIdempotencyNoWrite(c);
         return c.json(sofaNoCompleteBatchResponse(sofaOffenders, dropship), 409);
       }
       dropShipped = true;
@@ -3078,7 +3087,10 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
     /* Type B — whole sofa set must ship together (no partial set / orphan).
        NEVER waived by drop-ship. */
     const partial = await findIncompleteSofaSets(sb, sortedPicks.map((line) => line.soItemId));
-    if (partial.length > 0) return c.json(sofaIncompleteSetResponse(partial), 409);
+    if (partial.length > 0) {
+      markIdempotencyNoWrite(c);
+      return c.json(sofaIncompleteSetResponse(partial), 409);
+    }
   }
 
   // Edge #1+#2 — soft stock check at the target warehouse, gated by
@@ -3094,7 +3106,10 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
         qty: pickQtyById.get(line.soItemId) ?? 0,
       }));
       const shortages = await checkStockAvailability(sb, targetWh, stockLines);
-      if (shortages.length > 0) return c.json(shortStockResponse(shortages), 409);
+      if (shortages.length > 0) {
+        markIdempotencyNoWrite(c);
+        return c.json(shortStockResponse(shortages), 409);
+      }
     }
   }
 

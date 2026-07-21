@@ -28,6 +28,45 @@ describe("humanHttpMessage", () => {
     expect(humanHttpMessage(409, body)).toBe("The warehouse is on hold.");
   });
 
+  test("idempotency safety failures explain whether the write ran", () => {
+    expect(
+      humanHttpMessage(
+        503,
+        JSON.stringify({ error: "idempotency_unavailable", message: "fallback" }),
+      ),
+    ).toMatch(/nothing was sent/i);
+    expect(
+      humanHttpMessage(
+        409,
+        JSON.stringify({ error: "idempotency_key_reused", message: "fallback" }),
+      ),
+    ).toMatch(/different details/i);
+    expect(
+      humanHttpMessage(
+        400,
+        JSON.stringify({ error: "invalid_idempotency_key", message: "fallback" }),
+      ),
+    ).toMatch(/refresh the page/i);
+    expect(
+      humanHttpMessage(
+        503,
+        JSON.stringify({ error: "idempotency_outcome_unknown", message: "fallback" }),
+      ),
+    ).toMatch(/don't submit it again/i);
+    expect(
+      humanHttpMessage(
+        409,
+        JSON.stringify({ error: "idempotency_key_conflict", message: "fallback" }),
+      ),
+    ).toMatch(/another operation/i);
+    expect(
+      humanHttpMessage(
+        413,
+        JSON.stringify({ error: "idempotency_payload_too_large", message: "fallback" }),
+      ),
+    ).toMatch(/upload the file separately/i);
+  });
+
   test("an uncurated code with no message falls through to the status map", () => {
     const msg = humanHttpMessage(409, JSON.stringify({ error: "some_unmapped_code" }));
     expect(msg).not.toContain("some_unmapped_code");
