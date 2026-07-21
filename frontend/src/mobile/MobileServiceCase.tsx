@@ -7,6 +7,7 @@ import { uploadAssrAttachment } from "../lib/assrAttachmentUpload";
 import { loadThumbFirst } from "../lib/imagePipeline";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesStaff } from "../auth/salesAccess";
+import { capability } from "../auth/capabilities";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -333,11 +334,27 @@ function CaseList({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
-  // Same capability the desktop Service-Cases nav uses: service_cases.read OR
-  // any Sales staff (showForSales). Gate the /api/assr read so it never fires a
-  // 403 for a user without access (OFF, not hide) — defence-in-depth on top of
-  // the shell's tab gating. Applied to the infinite query's `enabled` below.
-  const canViewCases = can("service_cases.read") || isSalesStaff(user);
+  /* The THREE terms `requireServiceCaseAccess` admits on, read from the server's
+     answer set rather than re-derived here. Backend gate
+     (`routes/assr.ts:66-74`): the flat permission OR `isSalesUser` OR
+     `isDirectorUser`. This site carried only the first two, so a DIRECTOR with no
+     `service_cases.read` grant and no Sales department — a Finance Manager, a
+     Super Admin — got `enabled: false` and an empty mobile list over an API that
+     would have returned every case (`assrUnrestricted`, `routes/assr.ts:139-146`).
+     Desktop never had the hole: the board's nav entry carries `showForDirector`
+     (`Sidebar.tsx:263-268`) and the route's `<PageGuard allowSales>` reads
+     `org.sales.staff` off the same capability set (`PageGuard.tsx:70`).
+
+     `org.sales.staff` / `org.director` ARE the backend gates (capabilities.ts
+     names `pmsAccess.isSalesUser` / `isDirectorUser`), so no director check is
+     hand-written on this side and the two cannot drift. Both fail CLOSED when
+     /auth/me carried no capability set. Gate the /api/assr read so it never fires
+     a 403 for a user without access (OFF, not hide) — defence-in-depth on top of
+     the shell's tab gating. Applied to the infinite query's `enabled` below. */
+  const canViewCases =
+    can("service_cases.read") ||
+    capability(user, "org.sales.staff") ||
+    capability(user, "org.director");
 
   const isMine = (r: Any) => {
     const uid = user?.id;

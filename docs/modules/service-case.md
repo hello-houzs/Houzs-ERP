@@ -82,12 +82,16 @@ at `ServiceCases.tsx:5241-5252`), stored on `assr_cases.sub_status`, and
 `assrSubStatusAddsInfo()` (`stages.ts:156-161`) hides one that merely restates
 its stage label.
 
-> `frontend/src/components/ServiceProgressTracker.tsx` carries its OWN 7-stage
-> copy (`:27-35`) and applies **no** resolution filter. It is imported at
-> `ServiceCases.tsx:84` but never rendered — there is no `<ServiceProgressTracker`
-> JSX anywhere in the tree at this commit. Treat it as dead until someone wires
-> it; if you do wire it, it must go through `stages.ts` or the 7-vs-5 rule
-> regresses.
+> `frontend/src/components/ServiceProgressTracker.tsx` **was DELETED** (with its
+> unused `ServiceCases.tsx` import) after this audit: it was never rendered
+> anywhere in the tree, and it carried its own 7-stage copy with **no** resolution
+> filter, so wiring it up would have regressed the 7-vs-5 rule. Any future stepper
+> must derive its stages from `stages.ts`.
+>
+> `backend/src/services/printTracker.ts` still carries the same unfiltered
+> 7-stage copy for the PDF stepper. It has **no importer** either at this commit,
+> so it is inert — but it is the next place the rule would break, and it is not
+> covered by that deletion.
 
 ### Required fields at create
 

@@ -44,7 +44,11 @@ export function invalidateConvertShared(qc: QueryClient) {
   invalidateSoShared(qc);
   invalidateDoShared(qc);
   invalidateInventoryShared(qc);
-  bump(qc, ["sales-invoices", "sales-invoices-paged", "mfg-purchase-orders", "grns", "grns-paged"]);
+  /* Same `-paged` omission as MODULE_SHARED_ROOTS' PO entry had, in the second
+     caller: SI and GRN list both roots here, PO listed only the bare one. Fixed
+     in the same change so the two callers cannot disagree about which PO keys a
+     write touches. */
+  bump(qc, ["sales-invoices", "sales-invoices-paged", "mfg-purchase-orders", "mfg-purchase-orders-paged", "grns", "grns-paged"]);
 }
 
 /* Roots for a module whose actions write inventory_movements. Every stock-moving
@@ -68,7 +72,12 @@ const STOCK_ROOTS = ["inventory", ...SO_ROOTS];
 const MODULE_SHARED_ROOTS: Record<string, string[]> = {
   "delivery-orders-mfg": [...DO_ROOTS, ...STOCK_ROOTS],
   "sales-invoices":      ["sales-invoices", "sales-invoices-paged", "sales-invoice-detail"],
-  "mfg-purchase-orders": ["mfg-purchase-orders", "mfg-purchase-order-detail"],
+  /* `-paged` is the key the DESKTOP list actually reads
+     (vendor/scm/lib/suppliers-queries.ts:533); the bare root is a different
+     query. Omitting it here - alone among the five document modules on either
+     side of it - meant a mobile PO status write left the desktop PO list showing
+     the old status until a manual refresh. */
+  "mfg-purchase-orders": ["mfg-purchase-orders", "mfg-purchase-orders-paged", "mfg-purchase-order-detail"],
   "grns":                ["grns", "grns-paged", "grn-detail", ...STOCK_ROOTS],
   "delivery-returns":    ["delivery-returns", "delivery-return-detail", ...STOCK_ROOTS],
   "purchase-returns":    ["purchase-returns", "purchase-return-detail", ...STOCK_ROOTS],

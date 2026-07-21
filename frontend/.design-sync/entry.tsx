@@ -62,7 +62,6 @@ export * from '../src/components/QuickActionsFAB';
 export * from '../src/components/ResetFiltersButton';
 export * from '../src/components/RouteFallback';
 export * from '../src/components/RowActionsMenu';
-export * from '../src/components/ServiceProgressTracker';
 export * from '../src/components/Sidebar';
 export * from '../src/components/Skeleton';
 export * from '../src/components/StatCard';

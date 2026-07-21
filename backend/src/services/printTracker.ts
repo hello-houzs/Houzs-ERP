@@ -1,16 +1,21 @@
 /**
  * Print-friendly Workflow Progress Tracker for ASSR cases.
  *
- * The React `ServiceProgressTracker` in the frontend can't render in
- * the Workers runtime (Tailwind classes, hover states, Lucide icons,
- * animate-pulse). This module emits a static inline SVG version that
- * survives PDF rasterisation cleanly and keeps the visual language
- * intact: 9 numbered nodes, coloured connectors green/amber/red by
- * the prior stage's health, current stage solid-coloured by elapsed
- * vs target, completed stages green with a check.
+ * This module emits a static inline SVG stepper that survives PDF
+ * rasterisation cleanly: numbered nodes, coloured connectors
+ * green/amber/red by the prior stage's health, current stage
+ * solid-coloured by elapsed vs target, completed stages green with a
+ * check.
  *
- * Mirrors the React component at
- * `frontend/src/components/ServiceProgressTracker.tsx`.
+ * It used to say it mirrored `frontend/src/components/ServiceProgressTracker.tsx`.
+ * That component was DELETED (never rendered anywhere, and its stage copy was
+ * unfiltered), so the pointer is gone rather than left dangling. The canonical
+ * stage table now lives in `frontend/src/vendor/scm/lib/assr/stages.ts`, and the
+ * `STAGES` list below is another copy that applies no internal-resolution filter
+ * — an internal-resolution case skips the two supplier-only stages, so this would
+ * print 7 nodes where the UI shows 5 (`docs/modules/service-case.md`). Nothing
+ * imports this module at present; wire it up only after the filter comes from
+ * the shared rule.
  */
 
 export interface StageHistoryRow {

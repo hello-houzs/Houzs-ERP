@@ -81,7 +81,6 @@ import { ServiceMetrics } from "./ServiceMetrics";
 import { ServiceSettingsView } from "./ServiceSettings";
 import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
 import { Forbidden } from "./Forbidden";
-import { ServiceProgressTracker } from "../components/ServiceProgressTracker";
 import { resolutionRoute, isStageActive, assrSubStatus, assrSubStatusAddsInfo, assrSubStatusLabel, ASSR_SUB_STATUSES } from "../vendor/scm/lib/assr/stages";
 import type {
   Paginated,
