@@ -560,6 +560,12 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     }
     .pill-cat { font-size: 8.5pt; font-weight: 700; border: 0.7pt solid #141414; padding: 0.6mm 2.8mm; border-radius: 3.2mm; }
     .status-pills { display: flex; gap: 2.4mm; flex-shrink: 0; }
+    /* Customer/office header: Status sits beside Service, Sub-Status stacks
+       under Status (col 2, row 2). Supplier copy keeps the plain flex row. */
+    .status-pills.stacked { display: grid; grid-template-columns: auto auto; align-items: start; }
+    .status-pills.stacked .p-service   { grid-column: 1; grid-row: 1; }
+    .status-pills.stacked .p-status    { grid-column: 2; grid-row: 1; }
+    .status-pills.stacked .p-substatus { grid-column: 2; grid-row: 2; }
     .status-pill {
       min-width: 40mm; padding: 1.6mm 3.2mm; border-radius: 1.8mm;
       border: 1.1pt solid #141414; background: #fff;
@@ -670,10 +676,10 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
         <div class="ref">Report No. <b>${esc(cs.assr_no)}</b> · Generated ${generatedTs}</div>
       </div>
       ${!isSupplier ? `
-      <div class="status-pills">
-        <div class="status-pill"><span class="cap">Service</span><span class="val">${esc(servicePillLabel)}</span></div>
-        <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>${subStatusLabel ? `
-        <div class="status-pill"><span class="cap">Sub-Status</span><span class="val">${esc(subStatusLabel)}</span></div>` : ""}
+      <div class="status-pills stacked">
+        <div class="status-pill p-service"><span class="cap">Service</span><span class="val">${esc(servicePillLabel)}</span></div>
+        <div class="status-pill p-status"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>${subStatusLabel ? `
+        <div class="status-pill p-substatus"><span class="cap">Sub-Status</span><span class="val">${esc(subStatusLabel)}</span></div>` : ""}
       </div>` : `
       <div class="status-pills">
         <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>${subStatusLabel ? `
