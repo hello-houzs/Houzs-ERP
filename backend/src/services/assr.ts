@@ -884,12 +884,28 @@ export async function patchAssrCase(
       .first<{ doc_no: string | null }>();
     prevDocNo = prev?.doc_no ?? null;
     if (prevDocNo !== body.doc_no) {
-      const so = await env.DB.prepare(
+      let so = await env.DB.prepare(
         `SELECT ref, debtor_name, phone, sales_agent
            FROM sales_orders WHERE LOWER(doc_no) = LOWER(?)`
       )
         .bind(body.doc_no)
         .first<{ ref: string | null; debtor_name: string | null; phone: string | null; sales_agent: string | null }>();
+      // 2990 / SCM-native SOs never reach the HOUZS AutoCount `sales_orders`
+      // mirror, so a re-match to a 2990 doc found nothing and left the customer
+      // blank. Fall back to the scm order table — the same source createAssrCase
+      // hydrates from — so re-matching a 2990 SO fills the identity too. Same
+      // "only fields the caller didn't send" rule applies below.
+      if (!so) {
+        const scm = await fetchScmSoContext(env, body.doc_no);
+        if (scm) {
+          so = {
+            ref: (scm.context.Ref as string | null) ?? null,
+            debtor_name: (scm.context.DebtorName as string | null) ?? null,
+            phone: (scm.context.Phone1 as string | null) ?? null,
+            sales_agent: (scm.context.SalesAgent as string | null) ?? null,
+          };
+        }
+      }
       if (so) {
         if (!("customer_name" in body) && so.debtor_name) body.customer_name = so.debtor_name;
         if (!("phone" in body) && so.phone) body.phone = cleanPhone(so.phone);
