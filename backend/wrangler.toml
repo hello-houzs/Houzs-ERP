@@ -168,6 +168,18 @@ dataset = "houzs_erp_metrics"
 #   AE_QUERY_TOKEN       — Cloudflare API token, Account Analytics:Read
 #   CF_ACCOUNT_ID        — Cloudflare account id
 # Other worker secrets:
+#   SENTRY_DSN           — error tracking. NOT SET, deliberately: while it is
+#                          absent the reporter (src/services/errorTracking.ts)
+#                          makes no network call and no log line, so production
+#                          behaves exactly as it did before it was added. One
+#                          command turns it on for BOTH the Worker and relayed
+#                          browser crashes:
+#                            wrangler secret put SENTRY_DSN
+#                          Accepts a Sentry DSN or a self-hosted GlitchTip DSN
+#                          (same wire protocol) — the choice of who holds the
+#                          data is the DSN, not the code. Full rationale, cost
+#                          and the exact list of fields that leave the building:
+#                          docs/error-tracking-options.md.
 #   AUTOCOUNT_API_KEY
 #   DASHBOARD_API_KEY
 #   GOOGLE_MAPS_API_KEY  — used by the planner geocoder (Phase 2)
@@ -239,6 +251,12 @@ HOUZS_OWNS_2990 = "true"
 PUBLIC_APP_URL = "https://houzs-erp-staging.pages.dev"
 EMAIL_FROM = "Houzs ERP Staging <no-reply@houzscentury.com>"
 EMAIL_REPLY_TO = "Houzs Century <hello@houzscentury.com>"
+# Environment label stamped on every reported error (services/errorTracking.ts).
+# Inert on its own — nothing is reported until SENTRY_DSN is set. It exists so
+# that if staging ever gets a DSN, its noise lands under environment=staging and
+# can be excluded from the production alert rule instead of paging someone at
+# 2am for a rehearsal. Prod needs no counterpart: the default is "production".
+SENTRY_ENVIRONMENT = "staging"
 # Admin "login as member" on the Team page (routes/users.ts). Staging-only:
 # the flag must never be added to the prod vars block.
 IMPERSONATION_ENABLED = "true"

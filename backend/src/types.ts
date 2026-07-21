@@ -81,6 +81,23 @@ export type Env = {
   // regression). Parsed once via scm/lib/costing-enabled.isCostingDisplayEnabled.
   // Mirrors the FE build-time COSTING_DISPLAY_ENABLED, but THIS is authoritative.
   COSTING_DISPLAY_ENABLED?: string;
+  /** Error tracking (services/errorTracking.ts). The ONE switch: while unset —
+   *  the default on every environment — the reporter makes no network call, no
+   *  log line and no allocation, so the ERP behaves exactly as it did before it
+   *  existed. Set once with `wrangler secret put SENTRY_DSN` to turn on BOTH
+   *  backend throws and relayed browser crashes. A Sentry DSN or a self-hosted
+   *  GlitchTip DSN both work — same wire protocol. See
+   *  docs/error-tracking-options.md. */
+  SENTRY_DSN?: string;
+  /** Environment label on every reported event. Defaults to "production";
+   *  [env.staging.vars] sets "staging" so one project can hold both without the
+   *  two polluting each other's alert rules. Plain var, not a secret. */
+  SENTRY_ENVIRONMENT?: string;
+  /** Fraction of errors to report, "0".."1". Absent / unparseable = 1 (report
+   *  everything), which is the right default at this volume — the per-isolate
+   *  storm brake, not sampling, is what protects the free quota. Dial down only
+   *  if the monthly quota is genuinely being spent on steady-state noise. */
+  SENTRY_SAMPLE_RATE?: string;
   // CUTOVER FLIP SWITCH (task #15). "true" = Houzs owns the 2990- doc namespace
   // (post-flip) so the mirror guards stop blocking; unset/"false" = pre-flip
   // read-only mirror. Parsed via scm/lib/companyScope.houzsOwns2990. Flip in the
