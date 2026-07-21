@@ -1,0 +1,380 @@
+# Module: Announcements
+
+Per-module technical doc — office notices and system per-user notices, from the
+screen down to the database. Same structure as
+[`sales-order.md`](./sales-order.md).
+
+> Verified against `main` @ `8f8427ed`. Three commits landed on **2026-07-21**
+> and changed the permission model; read §6 before you reason about who can see
+> what.
+
+> Convention: the row is one table, `public.announcements`. Timestamps are
+> stored as **ISO text**, `is_active` is an **integer 0/1** (not boolean), and
+> every audience list is a **JSON string** holding an integer array.
+
+---
+
+## 0. The one distinction that explains the module
+
+`announcements.source` splits the table in two, and almost every rule below
+keys off it:
+
+| `source` | Called | Written by | Where it surfaces |
+|---|---|---|---|
+| `NULL` | **human post** | the composer, `POST /api/announcements` | desktop page + list, mobile list, both pop-ups, `?scope=human` |
+| `'scan'` / `'service_case'` | **system notice** | `services/personalNotice.ts` | `?scope=system` only — the mobile bell + the unread badge |
+
+A system notice is a *private* announcement (`target_type='USER_IDS'`,
+`created_by NULL`) riding the announcements machinery so it inherits the unread
+dot, the banner and the ack — there is no separate notification table
+(`backend/src/services/personalNotice.ts:1-16`). `GET /api/announcements`
+filters `source IS NULL` in SQL (`backend/src/routes/announcements.ts:545`) so
+system notices never clutter the office composer list.
+
+---
+
+## 1. Frontend
+
+### Screens
+
+| Surface | File | Notes |
+|---|---|---|
+| Desktop page (list + composer) | `frontend/src/pages/Announcements.tsx` (1,468 lines) | `Announcements()` at `:210`; `canWrite` at `:219` gates the composer CTA, the modal and every row action |
+| Desktop composer modal | same file — `Composer` `:459`, `ComposerModal` `:1073`, rendered `:287-300` | |
+| **Desktop pop-up** | `frontend/src/components/AnnouncementBanner.tsx` | mounted **once**, at the app root: `frontend/src/App.tsx:353` |
+| **Phone pop-up** | `frontend/src/mobile/MobileAnnouncementPopup.tsx` | mounted above the tab shell AND above any overlay: `frontend/src/mobile/MobileApp.tsx:600-604` |
+| Shared pop-up logic | `frontend/src/components/useAnnouncementBanner.ts` | the feed read, the ack, the dismiss rules — **both** shells consume it |
+| Mobile list + system bell | `frontend/src/mobile/MobileAnnouncements.tsx` | human list `:275-282`, bell `:286-292` |
+| Media renderers | `frontend/src/components/AnnouncementMedia.tsx` (lazy) / `frontend/src/mobile/MobileAnnouncementMedia.tsx` | |
+| Unread badge hook | `frontend/src/mobile/useAnnouncementUnread.ts` | |
+
+### The two pop-ups differ in exactly one argument
+
+Desktop takes the **unscoped** feed — human posts *and* the caller's own system
+notices (`AnnouncementBanner.tsx:132-134`). The phone takes `scope: "human"`
+only (`MobileAnnouncementPopup.tsx:54-57`): a `scan` notice is addressed to the
+person who scanned, so popping that scope would throw a sheet at the operator
+every time their own upload finished. The system half already has its own phone
+surface (the bell inside the Announcements screen, plus the badge). It is a
+one-line change if that ruling is revisited.
+
+### Pop-up trigger logic (all in `useAnnouncementBanner.ts`)
+
+- **Current notice** = the first feed row that is neither session-dismissed nor
+  locally acked — or that *is* locally acked but whose `remindedAt` is newer
+  than the local ack stamp, i.e. the office pressed **Remind** since you
+  acknowledged (`:203-212`, `isRemindedSince` `:107-115`).
+- **Local ack memo**: `localStorage["announcements:localAcks"]`, a
+  `{ id: ackedAtMs }` map (`:76-96`). The server's `ackedIds` are merged into it
+  additively (`:183-198`) so the pop-up stays down across a reload before the
+  next poll lands.
+- **Session dismiss**: a *module-level* `Set` (`:103`), not component state and
+  not persisted — the phone unmounts the pop-up on every shell navigation, and a
+  just-waved-away notice must not spring back on the next mount. It re-surfaces
+  on the next visit.
+- **Secondary button semantics by category** (`:121-125`): `WARNING`/`SOP` →
+  navigate to `/announcements`; `GENERAL`/`LEARNING` → session-dismiss (no ack).
+  The desktop navigates with `window.location.assign` rather than `useNavigate`
+  on purpose — `.design-sync/previews/AnnouncementBanner.tsx` mounts the
+  component without a `<Router>`, and `useNavigate()` throws outside one
+  (`AnnouncementBanner.tsx:139-146`).
+- Backdrop tap **never** acks.
+
+### The unread badge is computed client-side
+
+There is no unread endpoint. The badge is `data` minus `ackedIds` from the same
+`/banner` payload (`useAnnouncementUnread.ts:25-26`), summed over the **human**
+and **system** scopes (`:43-47`). Before 2026-07-21 it counted `system` only, so
+an ordinary office broadcast contributed nothing — no pop-up, no dot, no way to
+learn it existed.
+
+Render sites: the mobile Profile bottom tab (`MobileApp.tsx:440`, pill at
+`:805-809`), the Profile > Announcements row (`MobileProfile.tsx:198`, `:345`),
+and the in-screen bell (`MobileAnnouncements.tsx:343`). **The desktop sidebar
+has no badge** at this commit (`Sidebar.tsx:666-672` carries only
+`section/to/label/icon`); no comment says whether that is deliberate.
+
+### Caching / polling
+
+One React Query key namespace covers every `/banner` read, dimensioned by scope
+(`useAnnouncementBanner.ts:67-70`):
+
+```
+ANNOUNCEMENT_FEED_KEY = ["announcements-feed"]
+announcementFeedKey(scope) = ["announcements-feed", scope]
+```
+
+so each scope is fetched **once** no matter how many surfaces are mounted, and
+the phone's pop-up costs no extra request over the badge it already feeds.
+
+| Consumer | Key | staleTime | Poll | Cite |
+|---|---|---|---|---|
+| Desktop pop-up | `…"all"` | 60s | 60s, **including while the tab is hidden** | `useAnnouncementBanner.ts:159-175` |
+| Phone pop-up | `…"human"` | 30s | 30s | `MobileAnnouncementPopup.tsx:54-57` |
+| Unread badge (×2) | `…"human"`, `…"system"` | 30s | 30s | `useAnnouncementUnread.ts:17-24` |
+| Mobile list / bell | `…"human"` / `…"system"` | 30s | none (mount/focus) | `MobileAnnouncements.tsx:275-292` |
+| Desktop page list | `["uq","/api/announcements"]` | app default | none | `Announcements.tsx:225` |
+
+Acking anywhere invalidates the **bare prefix**
+(`useAnnouncementBanner.ts:237`, `MobileAnnouncements.tsx:359`), so every scope
+refreshes at once and the badge drops immediately instead of a poll later.
+
+Note the desktop page uses the app's own `useQuery` wrapper
+(`frontend/src/hooks/useQuery.ts`), a different key family from the banner — the
+page does not refresh when the banner polls; it calls `listQ.reload()` after its
+own writes (`Announcements.tsx:294`, `:325`).
+
+---
+
+## 2. API surface
+
+Mounted at `backend/src/index.ts:275`, inside the authed `/api/*` wall.
+For the machine-generated inventory (auth boundary, company boundary, gate,
+source line) see
+[`docs/generated/route-capability-matrix.csv`](../generated/route-capability-matrix.csv)
+— its **gate** column is authoritative; its line numbers drift between regens.
+
+| Method | Path | Line | Gate |
+|---|---|---|---|
+| GET | `/api/announcements` | `:530` | **none** — explicit 401 on missing session (`:535-538`) |
+| GET | `/api/announcements/banner` | `:584` | **none** — explicit 401 (`:585-588`) |
+| POST | `/api/announcements/:id/ack` | `:1194` | **none** — explicit 401 (`:1195-1198`) |
+| GET | `/api/announcements/:id/attachments/:key{.+}` | `:1308` | none as middleware; audience checked in-handler (`:1325-1333`) |
+| GET | `/api/announcements/:id/acks` | `:698` | `announcements.write` (or Sales Director) |
+| POST | `/api/announcements` | `:785` | `announcements.write` (or Sales Director) |
+| PATCH | `/api/announcements/:id` | `:920` | `announcements.write` (or Sales Director) |
+| POST | `/api/announcements/:id/remind` | `:1104` | `announcements.write` (or Sales Director) |
+| DELETE | `/api/announcements/:id` | `:1164` | `announcements.write` (or Sales Director) |
+| PUT | `…/:id/attachments/upload` · `…/upload-thumb` | `:1231`, `:1274` | `announcements.write` (or Sales Director) |
+
+`requirePermissionOrSalesDirector` is `backend/src/middleware/auth.ts:195-208`:
+401 with no user, pass if the permission is held **or** `isSalesDirectorUser`,
+else 403.
+
+### `?scope=` on `/banner`
+
+Parsed at `announcements.ts:596-598`, applied at `:633`:
+
+| `scope` | Returns |
+|---|---|
+| `human` | `source` NULL — human-authored posts |
+| `system` | `source` NOT NULL — the per-user `scan` / `service_case` notices |
+| absent / anything else | **the full feed** (both halves) |
+
+Response is `{ success, data: Announcement[], ackedIds: string[] }` (`:672-676`).
+Both scoped variants **bypass the KV snapshot** (`:611-614`) because the cache
+key is not scope-dimensioned — see §5.
+
+---
+
+## 3. Backend
+
+`backend/src/routes/announcements.ts` (1,355 lines).
+
+### Read path — two cohorts, one company gate
+
+Both readers run through `companyCanSee` first (`:555`), then split:
+
+1. **Manager** — holds `*` or `announcements.write` (`:550-551`). Gets
+   everything, including inactive and expired rows and other people's audiences.
+2. **Everyone else** (`:565-574`) — `is_active` AND not expired AND
+   `userCanSee(row, userId, deptId, positionId)`. A Sales Director additionally
+   always sees rows they authored, whatever their state (`:562-564`), so their
+   page is not empty.
+
+`userCanSee` (`:376-393`): `ALL_USERS` → true; otherwise the user's
+`department_id` must be in `target_dept_ids`, or their `position_id` in
+`target_position_ids`, or their `id` in `target_user_ids`.
+
+`companyCanSee` (`:366-371`): empty `target_company_ids` → visible to all;
+**unresolved** allow-list (`undefined`) → fail-open, which is what keeps
+single-company Houzs and the D1 test mirror running unchanged; otherwise set
+intersection. `allowed === []` is *not* the unresolved case — it means the
+reader holds no active company and a company-targeted notice stays hidden.
+
+`GET /banner` (`:631-643`) applies the same predicates **with no manager
+bypass** — a manager's own banner is still only their own audience.
+
+Both queries `SELECT *` with no `WHERE` beyond `source IS NULL` and no `LIMIT`;
+all filtering happens in JS in the Worker (`:543-547`, `:628-630`).
+
+### Write path
+
+- **Create** `:785` — inserts at `:873`, auto-translates via
+  `backend/src/lib/translate-announcement.ts`, then bumps the banner cache
+  family version (`:908`).
+- **Sales Director restriction** — `salesDirectorScope()` `:412-425`,
+  `enforceSalesDirectorScope()` `:431-497`. A Sales Director may address only
+  their own Sales department as a whole, or named people inside it. Position
+  targets are rejected (`:452-458`) and company targets are rejected
+  (`:459-464`). This is enforced server-side; the composer's picker is UX only.
+- **Row ownership** — `sdBlockedFromRow()` `:502-506`, applied to acks-readout
+  `:705`, patch `:928`, remind `:1111`, delete `:1173`. A Sales Director can only
+  manage notices they authored, and the refusal is a **404, not a 403** (it does
+  not confirm the row exists).
+- **Acknowledgement** `:1194` — `INSERT … ON CONFLICT (announcement_id, user_id)
+  DO NOTHING` (`:1213-1219`), so a fire-and-forget double-POST is safe. Requires
+  the notice to be active and not expired (`:1201-1207`). Busts only that user's
+  banner snapshot (`:1222`).
+- **Read receipts** `GET /:id/acks` `:698` — builds the roster from active users
+  filtered through `userCanSee` (`:713-726`), so the denominator is the notice's
+  real audience, not the whole company.
+
+### System notices — the only two producers
+
+Single insert path: `postPersonalNotice()`,
+`backend/src/services/personalNotice.ts:34-123` (insert `:94-111`). It never
+throws — a notice failure must not fail the operation that triggered it — and
+de-dupes an identical still-unread notice (`:68-87`).
+
+| Producer | Call site | `source` | Expiry |
+|---|---|---|---|
+| Slip-scan completion | `backend/src/scm/routes/scan-so.ts:3581` (wrapper `postScanNotice`) | `'scan'` | 7 days |
+| Service-case create / reassign | `backend/src/services/assrNotify.ts:148-155` | `'service_case'` | 14 days (default) |
+
+Grep confirms exactly three `INSERT INTO announcements` sites in the tree: these
+two (via one helper) and the human composer at `announcements.ts:873`.
+
+---
+
+## 4. Database
+
+`public.announcements` is **not** in `backend/src/db/schema.pg.ts` (grep:
+zero hits) — this module is raw SQL, defined entirely in the migration tree.
+There is also no announcements migration in the D1 tree.
+
+| Migration | Effect |
+|---|---|
+| `0058_announcements.sql` | creates `announcements` + `announcement_acks` + 2 indexes |
+| `0071_announcements_source.sql` | `+ source text` — the human/system split |
+| `0093_native_tables_company_id.sql:76,79` | `+ company_id bigint NOT NULL DEFAULT <HOUZS>` + FK + index on both tables |
+| `0113_announcement_target_company.sql` | `+ target_company_ids text` + one-time backfill from `company_id` |
+| `0140_announcement_media_layout.sql` | `+ media_layout text` (no backfill; NULL = derive default) |
+
+Columns that matter:
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | text PK | `'ann-' + 12 hex` |
+| `is_active` | integer NOT NULL DEFAULT 1 | 0/1, **not** boolean |
+| `expires_at` | text | ISO string, NULL = never |
+| `reminded_at` | text | drives the "re-pop after Remind" rule |
+| `created_by` | integer | `users.id`; **NULL** for system notices |
+| `target_type` | text | CHECK ∈ `ALL_USERS`/`DEPARTMENT_IDS`/`POSITION_IDS`/`USER_IDS`/`MIXED` |
+| `target_dept_ids`, `target_position_ids`, `target_user_ids` | text | JSON integer arrays |
+| `target_company_ids` | text | JSON integer array; NULL/empty = all companies |
+| `category` | text | CHECK ∈ `GENERAL`/`WARNING`/`SOP`/`LEARNING` — this is the closest thing to a priority; there is **no** `priority` column |
+| `source` | text | NULL = human, `'scan'`/`'service_case'` = system |
+| `company_id` | bigint NOT NULL | **authoring** company; no longer the visibility gate (that is `target_company_ids`) |
+| `translations`, `attachments`, `media_layout` | text | JSON blobs |
+
+`announcement_acks`: `(announcement_id, user_id)` composite **primary key** — the
+idempotency guard for the fire-and-forget ack — plus `acked_at` and
+`company_id`. No FK back to `announcements`; deletes clean up in app code
+(`announcements.ts:1179-1183`).
+
+Indexes: `idx_announcements_active_created (is_active, created_at DESC)`,
+`idx_announcement_acks_user (user_id)` (both `0058`), plus the two `company_id`
+indexes from `0093`. Note neither read query uses the leading column of
+`idx_announcements_active_created` — `GET /` filters on `source`, which has no
+index, and `/banner` filters nothing in SQL at all.
+
+---
+
+## 5. Who can see / do what, and where it is enforced
+
+This changed on **2026-07-21**. Three merged commits: `0f8be097` (#957) opened
+the page and the list endpoint, `6ca71259` (#959) added the phone pop-up and
+made the badge count human posts, `2060378b` (#960) opened the sidebar row.
+
+**Reading is authentication-only and audience-filtered server-side. Composing is
+`announcements.write`.**
+
+| Actor | Can | Enforced at |
+|---|---|---|
+| Unauthenticated | nothing | `/api/*` auth wall + explicit 401s at `announcements.ts:536, 586, 1196, 1310` |
+| Any signed-in user | open the desktop page | `frontend/src/App.tsx:481` — a bare `<Route>`, no `<Guard>` |
+| Any signed-in user | see the desktop sidebar row | `frontend/src/components/Sidebar.tsx:666-672` — no `perm`/`anyPerm`/`pageAccess` |
+| Any signed-in user | see the mobile menu row | `frontend/src/mobile/MobileApp.tsx:360` — `alwaysShow: true`, pinned by `frontend/src/mobile/mobileMenuGates.test.ts:78-83` |
+| Any signed-in user | list live, non-expired, audience- and company-matching **human** posts | `announcements.ts:530` (no gate) + `:545` + `:555` + `:565-574` |
+| Any signed-in user | read their own banner feed, any scope | `announcements.ts:584` + `:631-643` |
+| Any signed-in user | ack, and stream an attachment of a notice targeted at them | `:1194`; attachment audience `:1325-1333`, key ownership `:1340-1344` |
+| `announcements.write` / `*` | see every notice incl. drafts + expired (still company-gated); create, edit, retarget, remind, delete, read receipts, upload media | `:550-556`; `:698, 785, 920, 1104, 1164, 1231, 1274` |
+| Sales Director (position-derived, holds no flat verb) | the same write doors, but may address only their own Sales dept or named people in it, and may manage only rows they authored | admittance `middleware/auth.ts:202`; scope `:412-425`, `:431-497`; ownership `:502-506` |
+| `announcements.read` holder | **nothing extra** | the key is still declared at `backend/src/services/permissions.ts:138` but gates no route, guard or nav row at this commit |
+
+`announcements.read` was the ADMIN list/composer verb. Positions get no
+permission-matrix backfill, so no ordinary salesperson ever held it — which is
+exactly why the ungated pop-up could offer a "Read SOP" button that landed the
+reader on a 403. Opening the page leaks nothing, because the list a plain reader
+gets is byte-for-byte the set `/banner` already showed them.
+
+Regression coverage: `backend/tests/announcementsListAccess.test.ts` — a caller
+with no `announcements.read` gets 200 and exactly the live rows addressed to
+them (`:112`); a manager still gets drafts and other audiences (`:118`); a
+missing user is 401 (`:130`); and create / patch / remind / delete / acks all
+still 403 for that reader (`:146, 157, 164, 171, 180`).
+
+> Asymmetry worth knowing: `POST /:id/ack` applies `companyCanSee` and the
+> active/expiry check but **not** `userCanSee` (`:1201-1207`). A user can
+> therefore ack a live notice they are not targeted by. Nothing is returned, so
+> the practical impact is a stray `announcement_acks` row.
+
+### Desktop and mobile files that must change together
+
+| Change | Desktop | Mobile |
+|---|---|---|
+| Pop-up behaviour (feed, ack, dismiss, remind rule) | **`components/useAnnouncementBanner.ts`** — the shared file; editing it hits both shells and the badge hook | — |
+| Pop-up markup / CTA wording | `components/AnnouncementBanner.tsx` | `mobile/MobileAnnouncementPopup.tsx` |
+| Composer (audience picker, media layout, company target) | `pages/Announcements.tsx:459` | `mobile/MobileAnnouncements.tsx:355-362` |
+| Media rendering (mig 0140 layout hint) | `components/AnnouncementMedia.tsx` | `mobile/MobileAnnouncementMedia.tsx` |
+| Nav visibility | `components/Sidebar.tsx:666-672` | `mobile/MobileApp.tsx:360` (test-pinned) |
+| Read gate | `frontend/src/App.tsx:481` | — must agree with `backend/src/routes/announcements.ts:530`; the #957 bug was these two disagreeing |
+| Badge | — (none today) | `mobile/MobileApp.tsx:440`+`:805`, `mobile/MobileProfile.tsx:198`+`:345` |
+
+---
+
+## 6. Performance summary
+
+In place:
+- **Per-user KV snapshot** of `/banner` in `SESSION_CACHE`, key
+  `banner:v{version}:u{userId}`, TTL 60s
+  (`backend/src/services/configCache.ts:186-188`, `:55`), applied at
+  `announcements.ts:608-625` / `:677-687`. Response carries
+  `x-config-cache: hit|miss|bypass`.
+- **Family-version invalidation** on every broadcast-shaped write — create
+  `:908`, patch `:1089`, remind `:1155`, delete `:1185`; per-user busts on ack
+  (`:1222`) and on a private notice (`personalNotice.ts:114-116`).
+- **One query per scope** app-wide via `announcementFeedKey` — the phone's
+  pop-up, list, bell and badge share four cache entries between them.
+- **Windowed desktop list** past 40 rows (`Announcements.tsx:355-357`,
+  rAF-throttled scroll `:383-419`). Known limitation stated at `:349-353`: row
+  heights vary, so the scrollbar thumb drifts on tall rows and self-corrects.
+- **Lazy media** so a text-only notice pulls no gallery bundle
+  (`AnnouncementBanner.tsx:21-26`); the mobile pop-up chunk stays off the wire
+  entirely while the unread count is 0 (`MobileApp.tsx:600`).
+- Lookup queries on the desktop page are `enabled: canWrite`
+  (`Announcements.tsx:236-249`) — an ordinary reader lacks `users.read`, so this
+  avoids three guaranteed 403s (each retried) per page load.
+- Upload caps: 25 MB per attachment (`:1253`), 1 MB per thumbnail (`:1287-1289`).
+
+Watch as data grows:
+- **`scope=human` and `scope=system` bypass the KV snapshot**
+  (`announcements.ts:611-614`) because the cache key is not scope-dimensioned.
+  Every phone hits the DB every 30s, twice (badge = two scopes). Dimensioning
+  the key by scope is the obvious fix.
+- **No `LIMIT` on any read.** `GET /` and `/banner` both select the whole table
+  and filter in JS. `Announcements.tsx:222-224` already acknowledges this
+  ("Capping it server-side is a separate follow-up"). `GET /:id/acks` and
+  `POST /:id/remind` likewise read the full active-user roster (`:713-716`,
+  `:1124-1126`).
+- The desktop pop-up polls with `refetchIntervalInBackground: true`
+  (`useAnnouncementBanner.ts:173`) — deliberate, to preserve the pre-refactor
+  `setInterval`, but it means a backgrounded tab keeps requesting every 60s.
+- `docs/perf-optimization-plan.md` carries two open items for this module:
+  **D5** (`Announcements.tsx:705` rebuilds the user/dept/position Maps inside
+  every row) and **M2** (the read-only viewer's org-directory fetch — partly
+  addressed by the `enabled: canWrite` above).
+
+No load test, benchmark or measured latency exists for this module anywhere in
+the tree; every figure above is structural, read from the code.
