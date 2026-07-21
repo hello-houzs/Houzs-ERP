@@ -18,7 +18,7 @@ import { X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import {
   useCreateDpOrder,
-  DP_JOB_TYPES,
+  DP_CREATABLE_JOB_TYPES,
   DP_JOB_TYPE_LABEL,
   type DpOrderCreate,
 } from '../lib/delivery-planning-queries';
@@ -47,7 +47,7 @@ export const NewDpOrderDrawer = ({ onClose }: { onClose: () => void }) => {
   const notify = useNotify();
 
   const [form, setForm] = useState({
-    jobType: 'DELIVERY' as DpOrderCreate['jobType'],
+    jobType: 'SETUP' as DpOrderCreate['jobType'],
     source: '',
     partyName: '', contactName: '', contactPhone: '',
     address1: '', address2: '', address3: '', address4: '',
@@ -108,7 +108,7 @@ export const NewDpOrderDrawer = ({ onClose }: { onClose: () => void }) => {
             <div className={styles.eyebrow} style={{ marginBottom: 'var(--space-1)' }}>Job type</div>
             <select className={styles.searchInput} style={inputStyle}
               value={form.jobType} onChange={(e) => set('jobType', e.target.value as DpOrderCreate['jobType'])}>
-              {DP_JOB_TYPES.map((t) => <option key={t} value={t}>{DP_JOB_TYPE_LABEL[t]}</option>)}
+              {DP_CREATABLE_JOB_TYPES.map((t) => <option key={t} value={t}>{DP_JOB_TYPE_LABEL[t]}</option>)}
             </select>
           </label>
 

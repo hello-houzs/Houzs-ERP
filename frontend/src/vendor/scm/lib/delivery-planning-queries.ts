@@ -276,6 +276,15 @@ export const DP_JOB_TYPE_LABEL: Record<DpJobType, string> = {
   SUPPLIER_PICKUP: 'Supplier Pickup',
 };
 
+/* The job types the New-DP-Order drawer OFFERS to create. DELIVERY / PICKUP /
+   SERVICE are deliberately EXCLUDED: they are represented natively by SO / DO /
+   ASSR board rows, and a source-backed DP order of those types is suppressed by
+   the board's anti-double-count union guard — so it would silently vanish (a data
+   sink). The drawer's real job is the "extra" fleet jobs with no native document.
+   DP_JOB_TYPES (the full set) is still used to LABEL any existing/legacy dp_order
+   the board renders. */
+export const DP_CREATABLE_JOB_TYPES = ['SETUP', 'DISMANTLE', 'SUPPLIER_PICKUP'] as const;
+
 /* The label the board / dropdown show for a DP job type. Reads the canonical map;
    falls back to a Title-Cased prettify for any value not in the set (defensive —
    the board's Type chip previously prettified inline, so unknown/legacy stored
