@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "perf:scale": "node scripts/scale-harness.mjs",
+    "audit:routes": "node scripts/generate-route-capability-matrix.mjs --check",
     "db:reset": "wrangler d1 execute autocount-sync --file=./src/db/schema.sql --remote",
     "db:reset:local": "wrangler d1 execute autocount-sync --local --file=./src/db/schema.sql",
     "db:migrate": "node scripts/migrate.mjs",
