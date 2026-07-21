@@ -21,7 +21,14 @@ Total time: ~15 minutes. Best window: before the workday starts.
    `DATABASE_URL="postgresql://postgres.ctbaifabbzghtsrmpirm:<PW>@<pooler>:5432/postgres"`
    then:
    ```bash
-   node scripts/load-d1-dump-to-pg.mjs      # creates all 111 tables (schema + stale data)
+   # --experimental-transform-types is REQUIRED (Node 22.7+/24): the loader
+   # imports the app's own SQLite->Postgres date rules from src/db/d1-compat.ts
+   # so column DEFAULTs are carried across. Without the flag it aborts at
+   # startup with an explanatory error, before touching the database.
+   node --experimental-transform-types scripts/load-d1-dump-to-pg.mjs   # creates all 111 tables (schema + stale data)
+   # ^ ends with "DEFAULTs carried: N, skipped with a warning: M".
+   #   M should be 1 (client_errors.created_at, a strftime() default that
+   #   cannot be carried safely). Anything more means read the WARNING lines.
    node scripts/apply-indexes-to-pg.mjs     # 194 B-tree indexes
    node scripts/apply-sql-file.mjs src/db/migrations-pg/0001_search_trgm.sql
    ```

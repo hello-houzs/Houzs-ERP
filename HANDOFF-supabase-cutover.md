@@ -97,7 +97,7 @@ Re-export D1 and reload so nothing is lost at cutover:
 ```bash
 cd backend
 wrangler d1 export autocount-sync --remote --output=houzs-d1-full.sql
-node scripts/load-d1-dump-to-pg.mjs     # rebuilds + reloads all tables (reads .dev.vars)
+node --experimental-transform-types scripts/load-d1-dump-to-pg.mjs   # rebuilds + reloads all tables (reads .dev.vars)
 node scripts/verify-load.mjs             # row counts must match
 ```
 `houzs-d1-full.sql` is gitignored (live data — never commit it). This reload
