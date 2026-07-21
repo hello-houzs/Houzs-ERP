@@ -1,17 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
-import { fmtAmt } from "../lib/scm";
-import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
 import {
-  useDeliveryOrderPayments,
   useMfgDeliveryOrderDetail,
   useMfgDeliveryOrdersPaged,
 } from "../vendor/scm/lib/delivery-order-queries";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull, ALLOWED_SLIP_MIMES } from "../vendor/scm/lib/slip";
-import { todayMyt } from "../vendor/scm/lib/dates";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useAuth } from "../auth/AuthContext";
 import { canOperateDeliveryOrders } from "../auth/salesAccess";
@@ -25,11 +21,8 @@ import "./mobile.css";
        resolves the docNo (a DO NUMBER like "DO-2406-0188") to the DO's UUID —
        every detail/status route keys on the UUID (:id), never the number.
      • The detail      GET  /delivery-orders-mfg/:id   → { deliveryOrder, items }
-       gives the header (debtor, city/state, status, local_total_centi) and the
-       line items to tick off.
-     • Payments        GET  /delivery-orders-mfg/:id/payments → { payments }
-       give the paid total; balance = order total − Σ payments (the DO header
-       carries no balance column, unlike the SO).
+       gives the header (debtor, city/state, status) and the line items to
+       tick off.
      • Deliver         PATCH /delivery-orders-mfg/:id/status  body { status:
        "DELIVERED" }  flips the DO delivered (deducts stock + syncs the SO).
 
@@ -48,7 +41,6 @@ type DoHeader = {
   city: string | null;
   state: string | null;
   customer_state: string | null;
-  local_total_centi: number | null;
 };
 type DoItem = {
   id: string;
@@ -65,10 +57,6 @@ type DoItem = {
    row (a `ref` that cites it, say). do_number itself is unique, so the exact
    match below is what decides; this is only the window that match must land in. */
 const DOC_NO_LOOKUP_ROWS = 20;
-
-// Bare 2dp amount; callers print their own "RM " prefix. The shared fmtAmt
-// keeps a non-finite from reaching the user as "RM NaN".
-const rm = fmtAmt;
 
 /* A DO whose status is already a terminal delivered/invoiced state is done —
    the primary action is hidden and the header pill reads accordingly. */
@@ -87,7 +75,7 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
      (canOperateDeliveryOrders) and the SAME gate the delivery-planning board +
      MobileModuleDetail status actions use. Confirming a delivery DEDUCTS STOCK +
      SYNCS THE SO, so a view-only user (the Sales cohort) must not reach it — the
-     Confirm action AND the collect-balance panel are gated on this; reads stay
+     Confirm action is gated on this; reads stay
      open (off, not hide). MobileApp already withholds the POD entry for these
      users, so this is the defence-in-depth layer on the actions themselves. */
   const { user, can, pageAccess } = useAuth();
@@ -117,7 +105,6 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
   }, [listQ.data, docNo]);
 
   const detailQ = useMfgDeliveryOrderDetail(doId);
-  const paymentsQ = useDeliveryOrderPayments(doId);
 
   const h = detailQ.data?.deliveryOrder as DoHeader | undefined;
   /* CANCELLED lines are excluded from the driver checklist AND the "delivered
@@ -126,64 +113,6 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
      fully-delivered DO could never read 100%. Filtering here fixes both the
      render and `deliveredCount`/`items.length` below in one place. */
   const items = ((detailQ.data?.items ?? []) as DoItem[]).filter((l) => !l.cancelled);
-
-  /* MONEY IS EITHER KNOWN OR UNKNOWN — never "assume zero".
-     `paymentsQ.data ?? []` folded a FAILED payments read into "no payments"
-     → paid 0 → balance = the FULL order total. That number was not only shown,
-     it was WRITTEN as the collected amount, so one Hyperdrive cold-start (a
-     documented RECURRING condition here — project_houzs_db_coldstart_503) could
-     tell a driver an already-paid order still owed RM 3,888 and book it a second
-     time. This is reference_houzs_nullish_hides_ignorance exactly: "the read
-     failed" became "nothing was paid".
-
-     HOW "UNKNOWN" IS TOLD APART FROM A GENUINE ZERO — the whole point, because
-     a fully-paid order legitimately shows 0 and the driver correctly collects
-     nothing. `data` is set ONLY by a successful fetch; react-query leaves it
-     undefined while pending and on a failure with no prior success. So:
-       • error !== null  → we asked and did not learn      → UNKNOWN
-       • data not an array (pending) → we have not finished asking → UNKNOWN
-       • data === []     → we asked and LEARNED there are no payments
-                           → GENUINELY ZERO PAID → balance = the full total,
-                             and collecting it is CORRECT.
-     An empty array is an ANSWER. Absence of an array is not. */
-  const paidCenti: number | null = (() => {
-    if (paymentsQ.error !== null) return null;
-    const rows = paymentsQ.data;
-    if (!Array.isArray(rows)) return null;
-    let sum = 0;
-    for (const p of rows) {
-      /* A row whose amount is not a real number makes the SUM indefensible.
-         `?? 0` here would silently under-count what was paid and over-state the
-         balance — the same double-collection, one layer down. */
-      if (typeof p.amount_centi !== "number" || !Number.isFinite(p.amount_centi)) return null;
-      sum += p.amount_centi;
-    }
-    return sum;
-  })();
-
-  /* The order total is the other half of the subtraction and gets the SAME rule.
-     `?? 0` on a null total renders "No balance — fully paid" in green and sends
-     the driver home without collecting — the owner's other loss, not a safe
-     default. Unknown total → unknown balance. */
-  const totalCenti: number | null =
-    h && typeof h.local_total_centi === "number" && Number.isFinite(h.local_total_centi)
-      ? h.local_total_centi
-      : null;
-
-  const balanceCenti: number | null =
-    totalCenti === null || paidCenti === null ? null : Math.max(0, totalCenti - paidCenti);
-
-  /* "Still asking" and "asked and failed" are different things to say to a
-     driver: one is a spinner, the other is a decision he has to act on. Any read
-     in flight (including a Try-again refetch, which leaves status 'error' while
-     it runs) reads as checking. */
-  const moneyFetching = paymentsQ.isFetching || detailQ.isFetching;
-  const balanceUnknown: "checking" | "failed" | null =
-    balanceCenti !== null ? null : moneyFetching ? "checking" : "failed";
-  const retryMoney = () => {
-    void paymentsQ.refetch();
-    void detailQ.refetch();
-  };
 
   // Checklist — which line items the driver has ticked as delivered.
   const [ticked, setTicked] = useState<Record<string, boolean>>({});
@@ -197,50 +126,13 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
   const [gpsState, setGpsState] = useState<"idle" | "asking" | "ok" | "denied">("idle");
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoError, setPhotoError] = useState<string | null>(null);
-  const [payMethod, setPayMethod] = useState<"Cash" | "Online" | "Card">("Cash");
-  const [collectBalance, setCollectBalance] = useState(false);
   const photoName = photoFile?.name ?? null;
-
-  // Design toggle labels → the DO payment endpoint's method enum
-  // (POST /delivery-orders-mfg/:id/payments accepts cash | transfer |
-  // merchant | installment).
-  const PAY_METHOD_API: Record<"Cash" | "Online" | "Card", "cash" | "transfer" | "merchant"> = {
-    Cash: "cash",
-    Online: "transfer",
-    Card: "merchant",
-  };
 
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  /* One key for the balance this delivery collects (lib/idempotency.ts).
-     This screen is the sharpest case in the app: confirmDelivered records the
-     payment FIRST and only then uploads the photo + PATCHes the status, so a
-     failure in that tail (bad signal in a customer's driveway is the norm, not
-     the exception) leaves the money booked and the DO still undelivered — and
-     the driver's only move is to press Confirm again, which posted a SECOND
-     payment for the same balance. With the key the re-press replays the first
-     payment's stored response and carries on to the status PATCH.
-     The key is retired by leaving the screen. Re-using this screen for a
-     DIFFERENT DO cannot collide even without a remount: the middleware's key is
-     scoped by "METHOD /path", and the doId is in the path. */
-  const idemKey = useIdempotencyKey();
-
   const delivered = h ? isDelivered(h.status) : false;
   const cancelled = h ? isCancelled(h.status) : false;
-
-  /* THE COLLECTABLE AMOUNT, OR NULL — the single gate on recording money.
-     Carrying the AMOUNT (not a boolean "will collect") is what makes an
-     indefensible balance unsubmittable BY CONSTRUCTION: the POST body reads
-     this binding, and TypeScript only narrows it to `number` inside an explicit
-     `!== null` check, so there is no path that posts an amount derived from a
-     read that failed or never landed. A boolean would have left `balance` in
-     scope at the call site for the next person to reach for.
-     `collectBalance` can also be left ticked from BEFORE a refetch went unknown
-     (the checkbox unmounts, its state does not) — that stale tick cannot post
-     anything, because the amount, not the tick, is what this resolves. */
-  const collectableCenti: number | null =
-    collectBalance && balanceCenti !== null && balanceCenti > 0 ? balanceCenti : null;
 
   const confirmDelivered = async () => {
     // Defence-in-depth: the Confirm button is already withheld for a view-only
@@ -251,35 +143,14 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
     if (deliveredCount < items.length) {
       notes.push(`Only ${deliveredCount} of ${items.length} items are ticked.`);
     }
-    if (collectableCenti !== null) {
-      notes.push(`This will record a ${payMethod.toLowerCase()} payment of RM ${rm(collectableCenti)} against this delivery.`);
-    }
     if (!(await confirm({
       title: `Mark ${h.do_number ?? docNo} delivered?`,
       body: notes.length ? notes.join(" ") : undefined,
-      confirmLabel: collectableCenti !== null ? "Confirm & record payment" : "Confirm delivered",
+      confirmLabel: "Confirm delivered",
     }))) return;
     setActionError(null);
     setBusy(true);
     try {
-      // Record the collected balance FIRST (real endpoint) so a payment
-      // failure aborts before we flip the DO delivered. Amount = full
-      // outstanding balance; method mapped from the design toggle.
-      // `collectableCenti !== null` is the ONLY way in here, and it is what
-      // narrows the amount to a `number` we can defend — see its definition.
-      // Delivery itself is deliberately NOT gated on it: an unknown balance
-      // must never stop a driver handing over the goods.
-      if (collectableCenti !== null) {
-        await authedFetch(`/delivery-orders-mfg/${encodeURIComponent(doId)}/payments`,
-          idempotentInit(idemKey, {
-            method: "POST",
-            body: JSON.stringify({
-              paidAt: todayMyt(),
-              method: PAY_METHOD_API[payMethod],
-              amountCenti: collectableCenti,
-            }),
-          }));
-      }
       // Deliver action — the DO status endpoint persists the POD signature
       // (base64 PNG) onto delivery_orders.signature_data and the delivery
       // photo's R2 key onto delivery_orders.pod_r2_key. GPS stays client-side
@@ -304,10 +175,9 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
       await qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
       // Delivering moves stock + flips the DO + touches SO readiness — refresh
       // the shared/desktop DO, inventory and SO caches too. This screen's own
-      // three reads are now shared keys, so invalidateDoShared's DO_ROOTS
-      // prefix-match already covers them (list, detail AND the payments ledger,
-      // which hangs off the ['mfg-delivery-orders', id, 'payments'] root) —
-      // there is no private mobile key left to refresh separately.
+      // reads are shared keys, so invalidateDoShared's DO_ROOTS prefix-match
+      // already covers them (list + detail) — there is no private mobile key
+      // left to refresh separately.
       invalidateDoShared(qc);
       invalidateInventoryShared(qc);
       invalidateSoShared(qc);
@@ -502,91 +372,6 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                 {gpsState === "ok" ? "Recapture" : "Capture GPS"}
               </button>
             </div>
-
-            {/* OWNER RULING PENDING: mobile-only delivery-collect-payment panel —
-                desktop has no equivalent; gated defensively pending owner decision
-                to keep or remove. Gated on canOperate so a view-only user cannot
-                record a payment (POST /payments) here. */}
-            {canOperate && (
-              <>
-            {/* Collect balance — order total minus payments recorded so far (design balance row). */}
-            <div className="fld-l" style={{ margin: "18px 0 8px" }}>Collect balance</div>
-            <div style={{ background: "var(--card)", border: "1px solid var(--line-card)", borderRadius: 13, padding: "13px 14px" }}>
-              {/* ONLY the money line changes when the read fails — the items, the
-                  customer, the address, the photo, the signature and Confirm all
-                  stay exactly as they are, because only the AMOUNT is unknown.
-                  Withholding the delivery would be the worst outcome of the
-                  three (owner's ruling — see BUG-HISTORY, fix/pod-balance). */}
-              {balanceCenti === null ? (
-                <>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                    <span style={{ fontSize: 12.5, color: "var(--ink2)" }}>Balance due</span>
-                    <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "var(--mut)" }}>
-                      {balanceUnknown === "checking" ? "Checking…" : "Can't confirm"}
-                    </span>
-                  </div>
-                  {balanceUnknown === "failed" && (
-                    <>
-                      {/* Plain language, and the action is "try again" — not a
-                          code, not a status. The driver is not an engineer. */}
-                      <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 9, lineHeight: 1.45 }}>
-                        We couldn{"'"}t check what this customer has already paid, so we can{"'"}t show the balance yet.
-                        Go ahead and deliver as normal. Tap Try again for the balance — if it still won{"'"}t show,
-                        call the office before taking any money.
-                      </div>
-                      <button
-                        type="button"
-                        onClick={retryMoney}
-                        style={{ marginTop: 11, width: "100%", border: "1px solid var(--brand)", background: "var(--card)", color: "var(--brand)", borderRadius: 9, padding: "9px 13px", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
-                      >
-                        Try again
-                      </button>
-                    </>
-                  )}
-                </>
-              ) : (
-                <>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: balanceCenti > 0 ? 11 : 0 }}>
-                    <span style={{ fontSize: 12.5, color: "var(--ink2)" }}>Balance due</span>
-                    <span className="money" style={{ fontSize: 17, fontWeight: 800, color: balanceCenti > 0 ? "var(--gold)" : "var(--green)" }}>{balanceCenti > 0 ? `RM ${rm(balanceCenti)}` : "No balance — fully paid"}</span>
-                  </div>
-                  {balanceCenti > 0 && (
-                    <>
-                      <div style={{ display: "flex", gap: 7 }}>
-                        {(["Cash", "Online", "Card"] as const).map((m) => {
-                          const on = payMethod === m;
-                          return (
-                            <span
-                              key={m}
-                              onClick={() => setPayMethod(m)}
-                              style={{ fontSize: 11.5, fontWeight: on ? 700 : 600, color: on ? "#fff" : "var(--ink2)", background: on ? "var(--brand)" : "var(--bg)", border: on ? "none" : "1px solid var(--line-card)", padding: "6px 13px", borderRadius: 9, cursor: "pointer" }}
-                            >
-                              {m}
-                            </span>
-                          );
-                        })}
-                      </div>
-                      {/* Explicit opt-in — a payment is recorded ONLY when the driver
-                          ticks this. Without it the toggle just picks the method and
-                          nothing is posted. */}
-                      <label style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 12, cursor: "pointer" }}>
-                        <input
-                          type="checkbox"
-                          checked={collectBalance}
-                          onChange={(e) => setCollectBalance(e.target.checked)}
-                          style={{ width: 18, height: 18, accentColor: "#16695f" }}
-                        />
-                        <span style={{ fontSize: 12, color: "var(--ink2)" }}>
-                          Record RM {rm(balanceCenti)} collected by {payMethod.toLowerCase()} now
-                        </span>
-                      </label>
-                    </>
-                  )}
-                </>
-              )}
-            </div>
-              </>
-            )}
 
             {actionError && <div style={{ marginTop: 14, fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{actionError}</div>}
           </>
