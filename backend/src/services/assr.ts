@@ -236,13 +236,15 @@ export async function nextAssrNumber(env: Env): Promise<string> {
 //
 // Service Cases are a CROSS-COMPANY queue, but each case still carries its
 // owning company_id so the shared list can show + split by company. Resolve
-// order: the request's ACTIVE company (passed from the route via
-// activeCompanyId(c)) → the Houzs default. A case raised from a LOCAL sales
-// order that carries a company_id would take precedence over both, but Houzs
-// ASSR cases are keyed to AutoCount SO doc numbers (external, no local
-// company_id), so active company is authoritative here.
+// order (owner 2026-07-20 — 2990 runs Service Cases on the merged platform):
+// the SO's OWN company when the doc resolves to a local scm."mfg_sales_orders"
+// row (a case belongs to its order's company, whatever the creator's switcher
+// says) → the request's company (passed from the route via
+// assrCreateCompanyId(c): the caller's active switcher company) → the Houzs
+// default. AutoCount-keyed Houzs docs carry no local company_id, so for them
+// the route's value stays authoritative.
 //
-// Returns null when neither is resolvable (companies master absent
+// Returns null when nothing is resolvable (companies master absent
 // pre-migration, or a DB cold-start). The INSERT then omits the column,
 // mirroring stampCompany's no-op so single-company Houzs keeps inserting
 // unchanged.
@@ -261,18 +263,88 @@ async function resolveCaseCompanyId(
   }
 }
 
+// ── SCM SO context (multi-company create path) ────────────────
+//
+// The platform-native SO row for a doc number, shaped like the AutoCount
+// getSingle context so createAssrCase's binds stay source-agnostic, plus the
+// SO's owning company_id (drives the case's company stamp). It covers 2990
+// orders (live-mirrored into scm."mfg_sales_orders") and Houzs SCM-native
+// orders that never reached AutoCount. Returns null when the doc is not
+// there — or when the scm schema itself is absent (D1 test mirror,
+// pre-migration) — so the caller falls through to the AutoCount path.
+async function fetchScmSoContext(
+  env: Env,
+  docNo: string
+): Promise<{ context: Record<string, unknown>; company_id: number | null } | null> {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT debtor_name, phone, sales_location, agent, ref,
+              address1, address2, address3, address4, company_id
+         FROM scm."mfg_sales_orders"
+        WHERE LOWER(doc_no) = LOWER(?)
+          AND status <> 'DRAFT' AND status <> 'CANCELLED'
+        LIMIT 1`
+    )
+      .bind(docNo)
+      .first<{
+        debtor_name: string | null;
+        phone: string | null;
+        sales_location: string | null;
+        agent: string | null;
+        ref: string | null;
+        address1: string | null;
+        address2: string | null;
+        address3: string | null;
+        address4: string | null;
+        company_id: number | string | null;
+      }>();
+    if (!row) return null;
+    return {
+      context: {
+        DebtorName: row.debtor_name ?? null,
+        Phone1: row.phone ?? null,
+        SalesLocation: row.sales_location ?? null,
+        SalesAgent: row.agent ?? null,
+        // AutoCount-specific UDF (the internal service PO) — no SCM equivalent.
+        SOUDF_ToPONo: null,
+        InvAddr1: row.address1 ?? null,
+        InvAddr2: row.address2 ?? null,
+        InvAddr3: row.address3 ?? null,
+        InvAddr4: row.address4 ?? null,
+        Ref: row.ref ?? null,
+      },
+      company_id: row.company_id != null ? Number(row.company_id) : null,
+    };
+  } catch {
+    // scm schema absent (D1 test mirror / pre-migration) or a transient DB
+    // error — treat as "not an SCM doc" and let the AutoCount path decide.
+    return null;
+  }
+}
+
 // ── Create case ───────────────────────────────────────────────
 
 export async function createAssrCase(
   env: Env,
   input: CreateAssrInput
 ): Promise<{ assr_no: string; id: number }> {
-  const client = new AutoCountClient(env);
+  // SO context — SCM-first (owner 2026-07-20: 2990 runs Service Cases on the
+  // merged platform). The AutoCount and SCM doc spaces don't overlap in
+  // practice, so legacy Houzs docs miss the scm lookup and take the unchanged
+  // getSingle path.
   let context: any = null;
-  try {
-    context = await client.getSingle(input.doc_no);
-  } catch (e) {
-    console.warn(`[assr] getSingle failed for ${input.doc_no}`, e);
+  let soCompanyId: number | null = null;
+  const scmSo = await fetchScmSoContext(env, input.doc_no);
+  if (scmSo) {
+    context = scmSo.context;
+    soCompanyId = scmSo.company_id;
+  } else {
+    const client = new AutoCountClient(env);
+    try {
+      context = await client.getSingle(input.doc_no);
+    } catch (e) {
+      console.warn(`[assr] getSingle failed for ${input.doc_no}`, e);
+    }
   }
 
   const assrNo = await nextAssrNumber(env);
@@ -334,10 +406,11 @@ export async function createAssrCase(
   const activeProfileId = await getActiveLeadTimeProfileId(env);
   const nowIso = new Date().toISOString();
 
-  // Multi-company (Phase 0b): stamp the owning company. Append the column +
-  // bind ONLY when resolved so the pre-migration / cold-start window (no
+  // Multi-company (Phase 0b): stamp the owning company — the SO's own company
+  // outranks the request's (see resolveCaseCompanyId's doc). Append the column
+  // + bind ONLY when resolved so the pre-migration / cold-start window (no
   // companies master, no company_id column yet) inserts unchanged.
-  const companyId = await resolveCaseCompanyId(env, input.company_id);
+  const companyId = await resolveCaseCompanyId(env, soCompanyId ?? input.company_id);
   const companyCol = companyId != null ? ", company_id" : "";
   const companyPlaceholder = companyId != null ? ", ?" : "";
 
@@ -1202,6 +1275,53 @@ export async function lookupSOItems(
   env: Env,
   docNo: string
 ): Promise<{ item_code: string; item_description: string | null; qty: number }[]> {
+  // SCM-first (owner 2026-07-20 — 2990 Service Cases): 2990 orders and Houzs
+  // SCM-native orders keep their line items in scm."mfg_sales_order_items";
+  // AutoCount has never heard of these docs. Same per-item aggregation shape
+  // as the AutoCount branch below; cancelled lines drop out. The scm schema is
+  // absent on the D1 test mirror — the catch falls through to AutoCount.
+  try {
+    // No boolean literal, no uuid in ORDER BY, exact doc_no: keep the SQL to the
+    // plain shape the env.DB (Hyperdrive) shim is proven to run for the sibling
+    // scm."mfg_sales_orders" reads. `cancelled` is a REAL Postgres boolean on
+    // the SCM table (2990's convention — not the Houzs 0/1 flag convention), so
+    // the drop-cancelled filter runs in JS below rather than as a SQL predicate.
+    // No ORDER BY: a 2990 SO whose lines all carry a NULL line_no (an import
+    // that never stamped the ordinal) came back EMPTY through env.DB while an SO
+    // with 0/1/2 line_no returned fine — ordering by an all-NULL column is the
+    // only difference, and the picker doesn't need a guaranteed order anyway.
+    const rows = await env.DB.prepare(
+      `SELECT item_code, description, qty, cancelled
+         FROM scm."mfg_sales_order_items"
+        WHERE doc_no = ?
+          AND item_code IS NOT NULL AND item_code <> ''`
+    )
+      .bind(docNo)
+      .all<{ item_code: string; description: string | null; qty: number | null; cancelled: unknown }>();
+    const scmSeen = new Map<string, { item_code: string; item_description: string | null; qty: number }>();
+    for (const r of rows.results ?? []) {
+      // Skip cancelled lines. Coerce every truthy encoding the driver/shim might
+      // hand back for the boolean (true / 1 / 't' / 'true') to "cancelled".
+      if (r.cancelled === true || r.cancelled === 1 || r.cancelled === "t" || r.cancelled === "true") continue;
+      const code = (r.item_code ?? "").trim();
+      if (!code) continue;
+      const qty = Number(r.qty ?? 0) || 0;
+      const existing = scmSeen.get(code);
+      if (existing) {
+        existing.qty += qty;
+        if (!existing.item_description && r.description) existing.item_description = r.description;
+      } else {
+        scmSeen.set(code, { item_code: code, item_description: r.description ?? null, qty });
+      }
+    }
+    if (scmSeen.size > 0) return [...scmSeen.values()];
+  } catch (e) {
+    // scm schema absent (D1 test mirror / pre-migration) is expected → fall
+    // through to AutoCount. A REAL error here (the 2990 item-lookup miss we are
+    // chasing) must not stay silent, so surface it to wrangler tail.
+    console.warn(`[assr] scm item lookup failed for ${docNo}:`, (e as Error)?.message ?? e);
+  }
+
   try {
     const client = new AutoCountClient(env);
     const details = await client.getDetail(docNo);
