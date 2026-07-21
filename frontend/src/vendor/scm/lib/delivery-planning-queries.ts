@@ -28,11 +28,12 @@ export const DELIVERY_STATE_LABEL: Record<DeliveryState, string> = {
   DELIVERED: 'Delivered',
 };
 
-// A region is a CONFIG-DRIVEN bucket code (migration 0198) derived from the
-// customer's STATE (not the line warehouse). The seeded defaults are KL · Penang
-// · EM (East Malaysia: Sabah/Sarawak/Labuan) · SG (Singapore), but the owner can
-// add more in the Delivery Regions master, so a region code is now an OPEN string
-// (not a fixed union). 'ALL' is the no-filter param; the rest are bucket codes.
+// A region is a CONFIG-DRIVEN bucket code (migration 0053) derived from the
+// customer's STATE (not the line warehouse). The live buckets are the geographic
+// regions Klang Valley · Northern · Southern · East Coast · EM (East Malaysia:
+// Sabah/Sarawak/Labuan) — Singapore folds into Southern — but the owner can add
+// more in the Delivery Regions master, so a region code is an OPEN string (not a
+// fixed union). 'ALL' is the no-filter param; the rest are bucket codes.
 export type RegionCode = string;
 export type RegionKey = 'ALL' | RegionCode;
 
@@ -144,7 +145,7 @@ export type PlanningResponse = {
   regions: Array<{ key: RegionKey; label: string }>;
 };
 
-/* The board. region = ALL | KL | PENANG | EM | SG; state = DeliveryState | 'ALL'.
+/* The board. region = ALL | KL | NORTHERN | SOUTHERN | EAST_COAST | EM; state = DeliveryState | 'ALL'.
    Counts come back scoped to the active region (not the state) so the 4 state
    tab badges stay stable as the operator switches between state tabs. */
 export function useDeliveryPlanning(opts: { region?: string; state?: string }) {

@@ -90,13 +90,16 @@ deliveryPlanning.use('*', supabaseAuth);
 export type Region = string;
 
 /* The codes the fallback reproduces — used ONLY when the config tables are
-   empty/unapplied so behaviour never regresses below today. (The live scm seed
-   in migration 0053 is SELANGOR/KL/NORTHERN/SOUTHERN/EAST_COAST/EAST_MY; these
-   fallbacks are 2990's and only fire if the config tables read empty.) */
+   empty/unapplied so behaviour never regresses below today. Kept in sync with the
+   live Delivery Regions buckets (Klang Valley / Northern / Southern / East Coast /
+   East Malaysia; Singapore folds into Southern). NOTE: migration 0053's seed is
+   the older SELANGOR/KL/NORTHERN/SOUTHERN/EAST_COAST/EAST_MY set, so a fresh env
+   seeded from 0053 differs from prod until reconciled. */
 const FALLBACK_DEFAULT_REGION = 'KL';
 const FALLBACK_REGIONS: Array<{ key: Region; label: string }> = [
-  { key: 'KL', label: 'KL' }, { key: 'PENANG', label: 'Penang' },
-  { key: 'EM', label: 'EM' }, { key: 'SG', label: 'SG' },
+  { key: 'KL', label: 'Klang Valley' }, { key: 'NORTHERN', label: 'Northern' },
+  { key: 'SOUTHERN', label: 'Southern' }, { key: 'EAST_COAST', label: 'East Coast' },
+  { key: 'EM', label: 'East Malaysia' },
 ];
 
 /* Normalize free-text for tolerant matching: upper, strip punctuation/accents,

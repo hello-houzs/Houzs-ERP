@@ -3,8 +3,10 @@
 //
 // The planning board: which live Sales Orders still need delivering, organised
 // by a top row of 4 DELIVERY-STATE tabs (Pending Delivery / Pending Schedule /
-// Overdue / Delivered, each with a live count) and a region chip row of FOUR
-// FIXED buckets classified by customer STATE (All · KL · Penang · EM · SG).
+// Overdue / Delivered, each with a live count) and a region chip row of
+// CONFIG-DRIVEN buckets classified by customer STATE (All · Klang Valley ·
+// Northern · Southern · East Coast · East Malaysia — owner-maintained in
+// Delivery Regions).
 // Both the active state tab and the active region (bucket key) live in the URL
 // (useSearchParams) so a link / refresh keeps the view. The HC-sheet columns
 // render in the shared DataGrid; the delivery state shows as an inline pill.
@@ -17,8 +19,9 @@
 // the active state/region and renders. Schedule editing calls the PATCH
 // endpoints via the queries hook.
 //
-// Style: 2990 cream brand (CSS modules + design-system). Singapore region is
-// visually distinct (dashed teal chip + a teal row accent).
+// Style: 2990 cream brand (CSS modules + design-system). A region coded 'SG'
+// renders visually distinct (dashed teal chip + a teal row accent) when present;
+// SG is currently folded into Southern, so that styling stays dormant.
 //
 // HOUZS VENDOR NOTE: imports rewired to the vendored locations —
 //   ../components/* → ../../vendor/scm/components/*
@@ -166,7 +169,7 @@ function TypeChip({ order }: { order: PlanningOrder }) {
    don't apply to an ASSR row (stock, driver, lorry). */
 const NotApplicable = () => <span style={{ color: '#767b6e' }}>—</span>;
 
-/* Region chips — CONFIG-DRIVEN buckets (migration 0198) classified by customer
+/* Region chips — CONFIG-DRIVEN buckets (migration 0053) classified by customer
    STATE. The bucket list now comes from the API's `regions` master (owner-
    maintained in Delivery Regions), with an "All" tab prepended. SG is visually
    distinct (dashed teal chip — cross-border, no MY warehouse); that styling keys
@@ -710,12 +713,14 @@ export const DeliveryPlanning = () => {
   const { data, isLoading, error } = useDeliveryPlanning({ region: activeRegion, state: 'ALL' });
 
   /* Region chips = the CONFIG-DRIVEN buckets from the API master (+ "All"
-     prepended). SG (by CODE) is the dashed-teal cross-border chip. Falls back to
-     the four seeded defaults if the API hasn't returned the list yet. */
+     prepended). A region coded 'SG' would render as the dashed-teal cross-border
+     chip. Falls back to the five geographic defaults if the API hasn't returned
+     the list yet (kept in sync with the live Delivery Regions config). */
   const regionTabs = useMemo<RegionTab[]>(() => {
     const masters = data?.regions ?? [
-      { key: 'KL', label: 'KL' }, { key: 'PENANG', label: 'Penang' },
-      { key: 'EM', label: 'EM' }, { key: 'SG', label: 'SG' },
+      { key: 'KL', label: 'Klang Valley' }, { key: 'NORTHERN', label: 'Northern' },
+      { key: 'SOUTHERN', label: 'Southern' }, { key: 'EAST_COAST', label: 'East Coast' },
+      { key: 'EM', label: 'East Malaysia' },
     ];
     return [
       { key: 'ALL', label: 'All' },
