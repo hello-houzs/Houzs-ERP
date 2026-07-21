@@ -6,7 +6,14 @@ import {
   type AccessLevel,
   type PageAccessMeta,
 } from "./pageAccess";
-import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
+import {
+  getCachedUser,
+  setCachedUser,
+  bustCachedUser,
+  rememberSessionLiveness,
+  forgetSessionLiveness,
+  sessionLivenessFallback,
+} from "./sessionCache";
 import { isScopedProjectUser } from "./projectAcl";
 import { applySalesJdOverride } from "./salesJdAccess";
 import { resolvePositionPolicy, positionGrantsWildcard } from "./positionPolicy";
@@ -256,8 +263,11 @@ export async function createSession(
 export async function deleteSession(env: Env, token: string): Promise<void> {
   await env.DB.prepare(`DELETE FROM sessions WHERE token = ?`).bind(token).run();
   // Bust the cached user immediately so logout / forced-expiry takes effect now
-  // rather than waiting out the 60s TTL.
+  // rather than waiting out the 60s TTL. Also forget the in-memory liveness
+  // fallback so a same-isolate logout cannot be re-served during a DB blip
+  // (cross-isolate entries are still bounded by the fallback TTL).
   await bustCachedUser(env, token);
+  forgetSessionLiveness(token);
 }
 
 interface SessionAuthority {
@@ -502,7 +512,7 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
   // indexed DB reads so identity and every authz dependency are current on the
   // next request, even when a best-effort KV bust fails or is delayed. Run all
   // reads in parallel so a cache hit costs max(KV, DB), not KV + DB latency.
-  const [cached, authority, componentRows] = await Promise.all([
+  const readsPromise = Promise.all([
     getCachedUser(env, token),
     env.DB.prepare(
       `SELECT s.user_id, s.expires_at, s.origin,
@@ -553,12 +563,33 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
       .all<AuthzComponent>(),
   ]);
 
+  // The two DB reads above are the AUTHORITATIVE session-validity check. If they
+  // THROW, the DB layer is unreachable (cold-start 503, Supavisor hiccup) — the
+  // session is not proven invalid. Bounded fallback (owner 2026-07-21): re-serve
+  // this token iff the DB most recently CONFIRMED it active within the TTL, else
+  // fail closed exactly as before. getCachedUser never rejects, so a throw here
+  // is always a DB failure.
+  let cached: AuthUser | null;
+  let authority: SessionAuthority | null;
+  let componentRows: D1Result<AuthzComponent>;
+  try {
+    [cached, authority, componentRows] = await readsPromise;
+  } catch (err) {
+    const fallback = sessionLivenessFallback(token);
+    if (fallback) return fallback;
+    throw err;
+  }
+
   if (!authority) {
+    // Session row is gone — an authoritative revoke. Forget the fallback entry
+    // so a subsequent DB blip can never re-serve it.
+    forgetSessionLiveness(token);
     await bustCachedUser(env, token);
     return null;
   }
 
   if (authority.status !== "active" || isExpiredSession(authority.expires_at)) {
+    forgetSessionLiveness(token);
     await deleteSession(env, token);
     return null;
   }
@@ -572,6 +603,9 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
     // Session origin belongs to the authoritative row. Re-publish it so an
     // old cache payload can never decide the request's origin.
     cached.session_origin = authority.origin;
+    // The DB just CONFIRMED this session active — record it so a later DB blip
+    // can re-serve it for up to the fallback TTL.
+    rememberSessionLiveness(token, cached);
     return cached;
   }
 
@@ -581,33 +615,45 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
     await bustCachedUser(env, token);
   }
 
-  const row = await env.DB.prepare(
-    `SELECT u.id, u.email, u.email_alias, u.name, u.role_id, u.status,
-            u.manager_id, u.department_id, u.position_id, u.joined_at, u.last_login_at,
-            u.points_balance, u.gifting_balance, u.current_streak,
-            u.profile_pic_r2_key,
-            r.name as role_name, r.permissions as role_permissions,
-            r.scope_to_pic,
-            p.name as position_name,
-            d.name as department_name,
-            s.expires_at, s.origin
-     FROM sessions s
-     JOIN users u ON u.id = s.user_id
-     JOIN roles r ON r.id = u.role_id
-     LEFT JOIN positions p ON p.id = u.position_id
-     LEFT JOIN departments d ON d.id = u.department_id
-     WHERE s.token = ?`
-  )
-    .bind(token)
-    .first<any>();
-
   // The session/user could change between the authority read and hydration.
+  // This read runs only AFTER the authoritative validity reads above succeeded,
+  // but a transient DB failure here still gets the same bounded-fallback
+  // treatment rather than logging the caller out mid-blip.
+  let row: any;
+  try {
+    row = await env.DB.prepare(
+      `SELECT u.id, u.email, u.email_alias, u.name, u.role_id, u.status,
+              u.manager_id, u.department_id, u.position_id, u.joined_at, u.last_login_at,
+              u.points_balance, u.gifting_balance, u.current_streak,
+              u.profile_pic_r2_key,
+              r.name as role_name, r.permissions as role_permissions,
+              r.scope_to_pic,
+              p.name as position_name,
+              d.name as department_name,
+              s.expires_at, s.origin
+       FROM sessions s
+       JOIN users u ON u.id = s.user_id
+       JOIN roles r ON r.id = u.role_id
+       LEFT JOIN positions p ON p.id = u.position_id
+       LEFT JOIN departments d ON d.id = u.department_id
+       WHERE s.token = ?`
+    )
+      .bind(token)
+      .first<any>();
+  } catch (err) {
+    const fallback = sessionLivenessFallback(token);
+    if (fallback) return fallback;
+    throw err;
+  }
+
   // Re-check the full row before caching it.
   if (!row) {
+    forgetSessionLiveness(token);
     await bustCachedUser(env, token);
     return null;
   }
   if (row.status !== "active" || isExpiredSession(row.expires_at)) {
+    forgetSessionLiveness(token);
     await deleteSession(env, token);
     return null;
   }
@@ -615,6 +661,9 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
   const user = await hydrateAuthUser(env, row);
   user.authz_fingerprint = authzFingerprint;
   await setCachedUser(env, token, user);
+  // Authoritatively hydrated + confirmed active — record for the bounded blip
+  // fallback.
+  rememberSessionLiveness(token, user);
   return user;
 }
 
