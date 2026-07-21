@@ -4332,7 +4332,9 @@ function CreateProjectPanel({
   // backend POST / gate. Sales Director matched by EXACT normalised name
   // (isSalesDirectorUser), never a \b substring. When false we hide the PIC
   // picker entirely so the project is created unassigned (admin PICs it later).
-  const canAssignPeople = can("projects.write") && !isSalesDirectorUser(user);
+  // Owner 2026-07-21: the 2026-07-18 Sales-Director assignment block is fully
+  // reversed (backend already open) — anyone with projects.write may assign.
+  const canAssignPeople = can("projects.write");
   const [eventTypeId, setEventTypeId] = useState<string>("");
   const [brand, setBrand] = useState<string>("");
   const [startDate, setStartDate] = useState("");
@@ -4708,8 +4710,8 @@ function ProjectDetailContent({
   // name (isSalesDirectorUser), never a \b substring, so a free-text rename
   // can't drift the block. Backend re-enforces the same rule on PATCH pic_id +
   // POST/DELETE sales-attendees — this is UX/defence-in-depth only.
-  const canAssignPeople =
-    fullAccess && can("projects.write") && !isSalesDirectorUser(user);
+  // Owner 2026-07-21: Sales-Director block reversed — projects.write is enough.
+  const canAssignPeople = fullAccess && can("projects.write");
   const canEditAttending = canAssignPeople;
 
   async function patch(body: Record<string, any>) {

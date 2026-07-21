@@ -832,7 +832,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // (isSalesDirectorUser), never a \b substring, so a free-text rename can't
   // drift the block. Backend re-enforces the same rule (PATCH pic_id +
   // POST/DELETE sales-attendees); this is UX/defence-in-depth only.
-  const canAssignPeople = canWrite && !isSalesDirectorUser(user);
+  // Owner 2026-07-21: the Sales-Director assignment block is reversed (backend
+  // gates already open) — projects.write is enough to assign PIC + attending.
+  const canAssignPeople = canWrite;
   const canEditTeam = canAssignPeople;
   const canEditAttending = canAssignPeople;
   // PIC's phone from the project detail (backend populates pic_phone) — shown
