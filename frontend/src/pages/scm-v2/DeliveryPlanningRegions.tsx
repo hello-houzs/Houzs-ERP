@@ -4,7 +4,7 @@
 // delivery-planning-regions.ts). One simple master editor: list the region
 // buckets (Code · Name · Sort · Active) with create / edit-in-place / delete.
 //
-// The live buckets are the owner-maintained geographic regions (KL/Selangor /
+// The live buckets are the owner-maintained geographic regions (KL/SEL /
 // Northern / Southern / East Coast / East Malaysia); the owner adds more here and
 // they show up automatically as tabs on Delivery Planning (the board reads this
 // master).
@@ -268,7 +268,7 @@ export const DeliveryPlanningRegions = () => {
         searchPlaceholder="Search regions…"
         groupBanner={false}
         isLoading={regions.isLoading}
-        emptyMessage="No regions yet — add your delivery buckets (e.g. KL/Selangor / Northern / Southern) to get started."
+        emptyMessage="No regions yet — add your delivery buckets (e.g. KL/SEL / Northern / Southern) to get started."
       />
 
       {creating && <CreateRegionDrawer onClose={() => setCreating(false)} nextSort={(regions.data?.reduce((m, r) => Math.max(m, sortOrderOf(r)), 0) ?? 0) + 1} />}
