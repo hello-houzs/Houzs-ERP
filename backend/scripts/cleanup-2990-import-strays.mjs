@@ -17,19 +17,18 @@ async function main() {
   const cid = Number(r[0].id);
   console.log(`2990 company_id=${cid} mode=${APPLY ? "APPLY" : "DRY-RUN"}`);
 
-  // --- product_size_variants: verify the keep/drop split first ---
+  // --- product_size_variants: drop rows whose size_id is not a company_2 size_library entry
+  // (the 132 verbatim-id imports point at 2990's size_library uuids, which live under company_1;
+  // the JOIN in pos-pools.ts / configurator drops these rows or resolves them to empty labels).
   const split = await dst`SELECT
-      count(*) FILTER (WHERE EXISTS (SELECT 1 FROM scm.products p WHERE p.id = v.product_id AND p.company_id = ${cid})) AS keep,
-      count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM scm.products p WHERE p.id = v.product_id AND p.company_id = ${cid})) AS drop
+      count(*) FILTER (WHERE EXISTS (SELECT 1 FROM scm.size_library s WHERE s.id = v.size_id AND s.company_id = ${cid})) AS keep,
+      count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM scm.size_library s WHERE s.id = v.size_id AND s.company_id = ${cid})) AS drop
     FROM scm.product_size_variants v WHERE v.company_id = ${cid}`;
-  console.log(`psv split: keep=${split[0].keep} drop=${split[0].drop}`);
-  const dupes = await dst`SELECT product_id, size_id, count(*) FROM scm.product_size_variants
-    WHERE company_id = ${cid} GROUP BY 1,2 HAVING count(*) > 1`;
-  if (dupes.length) console.log(`WARN psv has ${dupes.length} (product_id,size_id) dupes — PK missing in prod?`);
+  console.log(`psv split (size_id vs company_${cid} size_library): keep=${split[0].keep} drop=${split[0].drop}`);
   if (APPLY) {
     const del = await dst`DELETE FROM scm.product_size_variants v
       WHERE v.company_id = ${cid}
-        AND NOT EXISTS (SELECT 1 FROM scm.products p WHERE p.id = v.product_id AND p.company_id = ${cid})`;
+        AND NOT EXISTS (SELECT 1 FROM scm.size_library s WHERE s.id = v.size_id AND s.company_id = ${cid})`;
     console.log(`psv deleted: ${del.count}`);
   }
 
