@@ -7,6 +7,39 @@ non-obvious about this codebase and how the user wants to collaborate.
 
 Every bug you find and fix **must** get an entry in [`BUG-HISTORY.md`](./BUG-HISTORY.md) at the repo root — no exceptions. One short entry: **Symptom → Root cause (traced, not guessed) → Fix → Ref (PR/date)**, newest first, with a severity tag. This is how we stop re-introducing the same class of bug: **read it before touching a subsystem, and add to it in the same PR that fixes the bug.** This applies to every contributor and every agent/session.
 
+## ⚠️ Read the module guide before you work in a module — MANDATORY (owner rule)
+
+`docs/modules/<module>.md` exists so you do NOT have to read the whole system to
+change one part of it. **Read the guide for the module you are touching, before you
+touch it.** If your change alters that module's SURFACE — a new endpoint, a new
+permission, a new status, a field that starts or stops being required, a new
+lock — **update the guide in the same PR.** A guide nobody updates becomes the next
+thing that lies to us.
+
+If a module has no guide yet, that is the gap to close, not a licence to explore:
+write the guide as you learn the module, following the shape of
+`docs/modules/sales-order.md`.
+
+## ⚠️ A serious incident gets a COE — MANDATORY (owner rule)
+
+**COE = Correction of Error** (the industry term, AWS's). `BUG-HISTORY.md` is the
+per-bug ledger; a COE is for the bigger class: an outage, data at risk, a fault that
+recurred, or anything that made the system feel unreliable to staff. Write
+`docs/<subject>-coe.md`, following the two that exist
+(`docs/system-foundation-coe.md`, `docs/api-fetch-hardening-coe.md`):
+
+**Date · Trigger** (what staff actually saw, in their words) · **Root cause, traced
+with evidence, never guessed** — name the tool that proved it (`wrangler tail`, a
+live DB query) · **Fixes shipped**, one row per PR with its effect · **What the
+audit RULED OUT** — the suspicions that turned out false, and how they were refuted
+· **Deferred**, with the decision owner · **Lessons.**
+
+The ruled-out section is not padding: it is what stops the next person re-chasing a
+theory we already disproved. One real example from `system-foundation-coe.md` —
+money corruption was suspected from reading a migration file, then refuted against
+the live database. The lesson recorded there ("verify schema claims against the live
+DB, not migration files") is worth more than the fix was.
+
 **This file stays THIN on purpose.** It carries rules and traps, not an
 inventory. Facts that change with every merge — route counts, file sizes,
 module lists — belong in the map below, because a stale fact HERE is worse
