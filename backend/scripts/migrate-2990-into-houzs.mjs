@@ -19,7 +19,7 @@ const ORDER = ["staff","customers","suppliers","series","categories","products",
 // Earlier import generations REMAPPED some parent ids on PK collision (see mig 0092),
 // so verbatim-id child rows can point at parents that don't exist under company_2.
 // GUARD drops such rows instead of inserting dangling garbage (FK checks are off).
-const DANGLING_GUARD = { product_size_variants: { parent: "products", col: "product_id" }, delivery_order_payments: { parent: "delivery_orders", col: "delivery_order_id" } };
+const DANGLING_GUARD = { product_size_variants: { parent: "size_library", col: "size_id" }, delivery_order_payments: { parent: "delivery_orders", col: "delivery_order_id" } };
 const DOCNO_COL = { mfg_sales_orders:"doc_no", delivery_orders:"do_number", sales_invoices:"invoice_number", purchase_orders:"po_number", grns:"grn_number", purchase_invoices:"invoice_number", delivery_returns:"dr_number", purchase_returns:"pr_number" };
 const prefixDoc = (v) => (v == null || String(v).startsWith("2990-") ? v : `2990-${v}`);
 // Houzs-only FK columns to null on import (source values point at masters we don't migrate)

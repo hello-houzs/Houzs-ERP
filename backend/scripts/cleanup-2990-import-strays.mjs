@@ -17,19 +17,18 @@ async function main() {
   const cid = Number(r[0].id);
   console.log(`2990 company_id=${cid} mode=${APPLY ? "APPLY" : "DRY-RUN"}`);
 
-  // --- product_size_variants: verify the keep/drop split first ---
+  // --- product_size_variants: drop rows whose size_id is not a company_2 size_library entry
+  // (the 132 verbatim-id imports point at 2990's size_library uuids, which live under company_1;
+  // the JOIN in pos-pools.ts / configurator drops these rows or resolves them to empty labels).
   const split = await dst`SELECT
-      count(*) FILTER (WHERE EXISTS (SELECT 1 FROM scm.products p WHERE p.id = v.product_id AND p.company_id = ${cid})) AS keep,
-      count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM scm.products p WHERE p.id = v.product_id AND p.company_id = ${cid})) AS drop
+      count(*) FILTER (WHERE EXISTS (SELECT 1 FROM scm.size_library s WHERE s.id = v.size_id AND s.company_id = ${cid})) AS keep,
+      count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM scm.size_library s WHERE s.id = v.size_id AND s.company_id = ${cid})) AS drop
     FROM scm.product_size_variants v WHERE v.company_id = ${cid}`;
-  console.log(`psv split: keep=${split[0].keep} drop=${split[0].drop}`);
-  const dupes = await dst`SELECT product_id, size_id, count(*) FROM scm.product_size_variants
-    WHERE company_id = ${cid} GROUP BY 1,2 HAVING count(*) > 1`;
-  if (dupes.length) console.log(`WARN psv has ${dupes.length} (product_id,size_id) dupes — PK missing in prod?`);
+  console.log(`psv split (size_id vs company_${cid} size_library): keep=${split[0].keep} drop=${split[0].drop}`);
   if (APPLY) {
     const del = await dst`DELETE FROM scm.product_size_variants v
       WHERE v.company_id = ${cid}
-        AND NOT EXISTS (SELECT 1 FROM scm.products p WHERE p.id = v.product_id AND p.company_id = ${cid})`;
+        AND NOT EXISTS (SELECT 1 FROM scm.size_library s WHERE s.id = v.size_id AND s.company_id = ${cid})`;
     console.log(`psv deleted: ${del.count}`);
   }
 
@@ -46,10 +45,24 @@ async function main() {
     console.log(`categories deleted: ${del.count}`);
   }
 
+  // --- psv DIAGNOSTIC: the real dangling dimension is size_id, not product_id ---
+  // (the first cleanup run proved every psv.product_id resolves to a company_2
+  // product, so the 132->264 growth must differ on the OTHER half of the PK)
+  const sizeDangle = await dst`SELECT count(*)::int AS n FROM scm.product_size_variants v
+    WHERE v.company_id = ${cid}
+      AND NOT EXISTS (SELECT 1 FROM scm.size_library s WHERE s.id = v.size_id AND s.company_id = ${cid})`;
+  console.log(`psv rows whose size_id is NOT a company_${cid} size_library entry: ${sizeDangle[0].n}`);
+  const perProduct = await dst`SELECT n_variants, count(*)::int AS n_products FROM (
+      SELECT product_id, count(*)::int AS n_variants FROM scm.product_size_variants
+      WHERE company_id = ${cid} GROUP BY product_id) t GROUP BY n_variants ORDER BY n_variants`;
+  console.log(`psv variants-per-product histogram: ${perProduct.map(r => `${r.n_variants}x:${r.n_products}`).join(" ")}`);
+
   // --- series: REPORT ONLY (no read path in backend; shared seeded rows make predicates unsafe) ---
-  const series = await dst`SELECT id, name FROM scm.series WHERE company_id = ${cid} ORDER BY name`;
-  console.log(`series rows (company_${cid}, report only): ${series.length}`);
-  for (const s of series) console.log(`  ${s.id}  ${s.name}`);
+  const seriesCols = await dst`SELECT column_name FROM information_schema.columns
+    WHERE table_schema='scm' AND table_name='series' ORDER BY ordinal_position`;
+  console.log(`series columns: ${seriesCols.map(c => c.column_name).join(",")}`);
+  const seriesRows = await dst`SELECT count(*)::int AS n FROM scm.series WHERE company_id = ${cid}`;
+  console.log(`series rows (company_${cid}, report only): ${seriesRows[0].n}`);
 
   // --- after-state ---
   const after = await dst`SELECT
