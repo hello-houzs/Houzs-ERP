@@ -40,7 +40,7 @@ COSTING_DISPLAY_ENABLED = "true"
 # repointed POS writes `2990-` orders natively. Flip to "true" + redeploy IN THE
 # SAME DEPLOY as the POS VITE_BACKEND_TARGET=houzs flip, AFTER draining the 2990
 # SO outbox + stopping 2990's minter/crons. Rehearse "true" on staging first.
-HOUZS_OWNS_2990 = "false"
+HOUZS_OWNS_2990 = "true"
 # Public origin used to build email links (survey, portal, supplier invite,
 # member invitations, password resets). The canonical user-facing domain —
 # pages.dev still serves, but every link we hand out reads this.
@@ -220,7 +220,7 @@ AUTOCOUNT_SYNC_DISABLED = "true"
 COSTING_DISPLAY_ENABLED = "true"
 # Cutover flip switch (see prod block). Set "true" on staging to rehearse the
 # post-flip write path (POS creates 2990- SOs natively) before flipping prod.
-HOUZS_OWNS_2990 = "false"
+HOUZS_OWNS_2990 = "true"
 PUBLIC_APP_URL = "https://houzs-erp-staging.pages.dev"
 EMAIL_FROM = "Houzs ERP Staging <no-reply@houzscentury.com>"
 EMAIL_REPLY_TO = "Houzs Century <hello@houzscentury.com>"
