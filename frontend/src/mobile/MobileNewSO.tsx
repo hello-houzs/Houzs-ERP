@@ -3,8 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { authedFetch, parseSaveProblems } from "../vendor/scm/lib/authed-fetch";
 import { SaveProblemsList, saveProblemsTitle } from "../vendor/scm/components/SaveProblemsList";
 import { uploadSlipFull } from "../vendor/scm/lib/slip";
-import { useStaff, usePickableStaff } from "../vendor/scm/lib/admin-queries";
-import { useAuth, isAdminLevel } from "../vendor/scm/lib/auth";
+import { usePickableStaff } from "../vendor/scm/lib/admin-queries";
+import { useAuth, isAdminLevel, isHatchSales } from "../vendor/scm/lib/auth";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import { useVenues, type AutoVenue } from "../vendor/scm/lib/venues-queries";
 import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-queries";
@@ -578,10 +578,11 @@ export function MobileNewSO({
      a duplicate is a real one. A separate constant from soIdemKey purely for
      legibility; the two never run on the same mount. */
   const amendIdemKey = useIdempotencyKey();
-  const staffQ = useStaff();
-  /* staffQ (FULL roster) feeds the payment children below, which display
-     persisted collected_by names. The salesperson SELECTION list (staffList) is
-     company-scoped via the Team-grant rule (usePickableStaff). */
+  /* The payment "Collected By" dropdown + the Salesperson selection both draw
+     from the company-scoped, ACTIVE-only pickable set (Team-grant rule), mirroring
+     the desktop PaymentsTable/SoLineCard — a resigned or other-company staff must
+     not be pickable. A persisted collected_by name is displayed from the row's own
+     collected_by_name (PaymentInfoBlock), so no full roster is needed here. */
   const pickableStaffQ = usePickableStaff();
   const { staff: authStaff } = useAuth();
   /* FIX A — the app-level Houzs auth exposes the permission gate + the signed-in
@@ -596,11 +597,20 @@ export function MobileNewSO({
      Owner + IT Admin pass via `*`. Desktop SalesOrderDetail reads the identical
      key — one rule, both surfaces. */
   const canRemoveProcessingDate = can("scm.so.remove_processing_date");
-  /* Unified special-order price gate (owner-approved) — reuses the SAME
-     isAdminLevel gate the desktop SoLineCard uses (lib/auth). A non-admin sales
-     role only DESCRIBES the special order; all RM surcharges + the custom
-     Extra-charge field are hidden for them. */
-  const showSpecialPrices = isAdminLevel(authStaff?.role);
+  /* Unit Price is LOCKED to the SKU Master sell price for everyone below admin
+     (SO-SKU spec D4, Loo 2026-06-05) — the SAME gate the desktop SoLineCard uses
+     (lib/auth): admin-level roles (or the temporary POS "hatch" role) may hand-
+     type a price; everyone else follows the catalog, and the server recompute is
+     authoritative at save. Without this any salesperson could type any price. */
+  const canEditPrice = isAdminLevel(authStaff?.role) || isHatchSales(authStaff?.role);
+  /* Special-order price DISPLAY is off for EVERYONE on the order-entry documents
+     (owner 2026-07-17: costing left the SO/DO/SI forms for the separate Finance
+     "Fulfillment Costing" module — even an admin does not see it while opening an
+     SO). So the preset "+RM …" surcharges, the option-group amounts, and the
+     manual "Extra charge (RM)" field are all hidden — only the special-order NAME
+     stays. The server still applies every surcharge; this removes the DISPLAY
+     only. Mirrors SoLineCard.tsx:236 (was `isAdminLevel(authStaff?.role)`). */
+  const showSpecialPrices = false;
   const isEdit = mode === "edit" || mode === "edit-draft";
 
   /* FIX A — real DB-backed SO dropdowns (was hardcoded arrays). Same hooks +
@@ -2302,6 +2312,7 @@ export function MobileNewSO({
                           onOpenFabricPicker={() => setFabricPickerFor(l.key)}
                           onOpenSpecialPicker={() => setSpecialPickerFor(l.key)}
                           showPrices={showSpecialPrices}
+                          canEditPrice={canEditPrice}
                           onChange={(patch) => patchLine(l.key, patch)}
                           onDdateChange={(v) => setLineDdateManual(l.key, v)}
                           onRemove={async () => {
@@ -2344,7 +2355,7 @@ export function MobileNewSO({
                     <RecordedPaymentsList
                       docNo={docNo ?? ""}
                       payments={existingPays as RecordedPayment[]}
-                      staff={staffQ.data ?? []}
+                      staff={pickableStaffQ.data ?? []}
                       /* Desktop parity (SalesOrderDetail renders PaymentsTable with
                          locked={!isDraftSo && (isLocked || !isEditing)}): inside the
                          editor isEditing is always true, so the rule collapses to
@@ -2363,7 +2374,7 @@ export function MobileNewSO({
                     <PayCard
                       key={p.key}
                       pay={p}
-                      staff={staffQ.data ?? []}
+                      staff={pickableStaffQ.data ?? []}
                       onChange={(patch) => setPays((prev) => prev.map((x) => (x.key === p.key ? { ...x, ...patch } : x)))}
                       onRemove={() => setPays((prev) => prev.filter((x) => x.key !== p.key))}
                     />
@@ -2651,6 +2662,7 @@ function LineCard({
   onOpenFabricPicker,
   onOpenSpecialPicker,
   showPrices,
+  canEditPrice,
   onChange,
   onDdateChange,
   onRemove,
@@ -2667,6 +2679,9 @@ function LineCard({
   onOpenSpecialPicker: () => void;
   /* Owner-approved role gate — false for non-admin sales (hide RM amounts). */
   showPrices: boolean;
+  /* Unit-price lock (SO-SKU spec D4) — false for everyone below admin, so the
+     price follows the SKU Master sell price and cannot be hand-typed. */
+  canEditPrice: boolean;
   onChange: (patch: Partial<LineItem>) => void;
   /* FIX D1(b) — a manual Item Delivery Date edit routes through here so the
      parent can flag the line as an override the header cascade won't touch. */
@@ -2817,7 +2832,13 @@ function LineCard({
             <input className="fld-i" inputMode="numeric" value={line.qty} onChange={(e) => onChange({ qty: e.target.value })} />
           </Field>
           <Field label="Unit Price" style={{ flex: 1.1 }}>
-            <input className="fld-i money" value={line.price} onChange={(e) => onChange({ price: e.target.value })} />
+            <input
+              className="fld-i money"
+              value={line.price}
+              disabled={!canEditPrice}
+              title={!canEditPrice ? "Price follows the SKU Master sell price — admin can override" : undefined}
+              onChange={(e) => onChange({ price: e.target.value })}
+            />
           </Field>
           <Field label="Delivery date" style={{ flex: 1.1 }}>
             <input className="fld-i" type="date" value={line.ddate} onChange={(e) => onDdateChange(e.target.value)} />
@@ -3172,6 +3193,17 @@ function SpecialOrderSheet({ line, pools, showPrices, onChange, onClose }: {
     });
   };
 
+  /* Change one option-group choice for a ticked add-on (owner 2026-07-20 parity
+     with desktop SpecialOrders.changeChoice). Each choice can carry its own
+     extraSen, so a special order MUST expose its groups — otherwise it silently
+     locks to choices[0] (the default toggleSpecial seeds). */
+  const changeChoice = (code: string, groupIdx: number, label: string) => {
+    const def = specialOptions.find((d) => d.code === code);
+    const entry = [...(specialChoicesMap[code] ?? (def?.optionGroups ?? []).map(() => ""))];
+    entry[groupIdx] = label;
+    setVar({ specialChoices: { ...specialChoicesMap, [code]: entry } });
+  };
+
   const extraNote = String(v.extraAddonNote ?? "");
   const extraAmountRM = Number(v.extraAddonAmountRM ?? 0);
   const hasCustom = Boolean(extraNote.trim()) || extraAmountRM > 0;
@@ -3227,6 +3259,30 @@ function SpecialOrderSheet({ line, pools, showPrices, onChange, onClose }: {
               <span style={{ fontSize: 11, color: "#9aa093", flex: "none" }}>not in model</span>
             </label>
           ))}
+
+          {/* Follow-up choice pickers for ticked add-ons that carry option groups
+              (owner 2026-07-20 parity with desktop SpecialOrders) — without these
+              the special order silently locks to the first option even though each
+              choice can carry its own surcharge. The RM delta rides showPrices. */}
+          {specialOptions.filter((a) => pickedSpecials.includes(a.code) && a.optionGroups.length > 0).map((a) =>
+            a.optionGroups.map((g, gi) => (
+              <Field key={`${a.code}-${gi}`} label={`${a.label} · ${g.label}${g.required ? " *" : ""}`}>
+                <select
+                  className="fld-i"
+                  value={(specialChoicesMap[a.code] ?? [])[gi] ?? ""}
+                  onChange={(e) => changeChoice(a.code, gi, e.target.value)}
+                >
+                  {!g.required && <option value="">None</option>}
+                  {g.required && <option value="" disabled>Select{"…"}</option>}
+                  {g.choices.map((c) => (
+                    <option key={c.label} value={c.label}>
+                      {c.label}{showPrices && c.extraSen !== 0 ? ` (${c.extraSen > 0 ? "+" : "−"}RM ${(Math.abs(c.extraSen) / 100).toFixed(2)})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )),
+          )}
 
           {/* ── Custom / other ── */}
           <div style={{ borderTop: "1px dashed #d6d9d2", paddingTop: 11, marginTop: 2 }}>
