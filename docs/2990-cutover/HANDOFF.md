@@ -9,11 +9,13 @@
 
 - **Code / API / POS-side / accounts / photos: DONE and merged.**
 - **Sales + catalog + configurator data: 100% complete + verified** (kept fresh by a live mirror).
-- **The ONE real blocker:** the **ERP/stock data** (PO/DO/GRN/PI/inventory/GL) is frozen at the
-  2026-07-20 import snapshot and has drifted (2990 kept trading). It has **no mirror**, so it needs
-  a **re-run of the import script** — which needs the **2990 service-role key** (a secret; not saved
-  in the repo, so it must be supplied again). This is *not* "can't be done" — it's "one key needed".
-- After data is caught up: **deploy the POS in houzs mode** + do the **coordinated flip**.
+- **ERP/stock catch-up: DONE.** PO / GRN / PI / DO / inventory movements-lots-consumptions / pwp_codes
+  / analysis_customer_targets / drivers / currencies / app_config all match 2990 exactly after the
+  PR #955 importer extension + PR #956 stray-fix + APPLY run (see §A for the census).
+- **Only real data hole left:** `scm.accounts` (GL, 31 rows in 2990) — held for the owner's Ecount
+  export decision (§3). Everything else is caught up.
+- **Left to do:** owner supplies Ecount GL export → run the seed SQL → **deploy the POS in houzs mode** +
+  the **coordinated flip window** (see `FLIP-RUNBOOK.md`).
 
 ---
 
@@ -56,17 +58,24 @@
 ### Accounts — done + verified
 - 4 real salespeople (public.users ids **130–133**), position `sales_executive`, `user_companies.company_id=2`,
   active, adopted onto their `2990S-00x` staff stubs (so historical SOs stay attributed).
-  **PIN = `000000`** (default — should be reset). **pin-login verified working on prod.**
+  **PIN = `000000`** (default — owner ruling 2026-07-21: **do NOT change**; leave as-is).
+  **pin-login verified working on prod.**
 - Staff codes / SO ownership: 2990S-003 Bernard (13), 2990S-004 Ltrey (9), 2990S-005 Angel/kahwai (18),
   2990S-006 Scarlett (28) → **13+9+18+28 = 68 = all company_2 SOs**.
 
-### Data in Houzs company_2 (prod) — sales/catalog COMPLETE
+### Data in Houzs company_2 (prod) — sales/catalog/ERP-tail COMPLETE
 - Sales core **100%** (kept fresh by the live mirror): SO 68 / items 202 / payments 62 / customers 71.
 - Catalog + configurator + pricing **100%**: mfg_products 334, product_models 57, sofa_combo_pricing 246,
-  product_compartments 225, product_size_variants 132, product_bedframe_colours 90, maintenance_config_history 52,
-  master_price_history 2463, fabrics 99, fabric_colours 56, bedframe_options 53, addons 11, special_addons 13,
-  categories 7, so_dropdown_options 48, pwp_rules 3, sofa_quick_picks 77, libraries, singletons — all match 2990.
+  product_compartments 225, product_size_variants (post-cleanup — 132 dangling rows deleted, PR #956;
+  psv variants-per-product back to 4x for the 30 hot-sell products), product_bedframe_colours 90,
+  maintenance_config_history 52, master_price_history 2463, fabrics 99, fabric_colours 56,
+  bedframe_options 53, addons 11, special_addons 13, categories 7 (2 stray categories deleted, PR #956),
+  so_dropdown_options 48, pwp_rules 3, sofa_quick_picks 77, libraries, singletons — all match 2990.
+- ERP/stock tail **100%** (post PR #955 + APPLY): PO 42/86, GRNs 20/44, PIs 15/34, DO 16/40,
+  inventory movements 80 / lots 52 / consumptions 27, pwp_codes 59, analysis_customer_targets 1,
+  drivers 3, currencies 4, app_config 2, delivery_order_payments imported — all match 2990.
 - localities: Houzs `scm.my_localities` = **5870** (superset of 2990's 2937). ✓
+- `lorries` deliberately excluded from import per owner rule.
 
 ### Photos — DONE
 - **48/48 model photos backfilled** into Houzs R2 (fetched from 2990's public proxy
@@ -78,50 +87,56 @@
 
 ## 2. What needs to be done next
 
-### A. Catch up the ERP/stock data — RE-RUN THE IMPORTER  ← the blocker
+### A. ERP/stock data catch-up — DONE
 
-**Why it drifted:** the importer imported a snapshot on 2026-07-20. Sales data stays current because a
-live **mirror** forwards SO/customer/staff/warehouse/amendment. But **PO/DO/GRN/PI/inventory/GL have NO
-mirror** — they're frozen at the snapshot while 2990 kept trading.
+Importer + APPLY run to completion on 2026-07-21. The 2990 service-role key was **not** a fresh blocker —
+the existing `.github/workflows/migrate-2990.yml` GitHub Action already holds it as `SOURCE_SERVICE_ROLE_KEY`
+(verified: the workflow ran successfully).
 
-**Current gaps (2990 → Houzs company_2):**
+**Importer extension (PR #955, merged):** `backend/scripts/migrate-2990-into-houzs.mjs` `ORDER` now includes
+`pwp_rules`, `pwp_codes`, `analysis_customer_targets`, `drivers`, `currencies`, `app_config`,
+`delivery_order_payments`. `lorries` deliberately excluded (owner rule). `personal_quick_picks` handled
+via the source→dest name remap (`sofa_personal_quick_picks` → `personal_quick_picks`).
+
+**Stray-row incident + fix (PR #956, merged, BUG-HISTORY logged):** the verbatim-id importer had inserted
+132 dangling `product_size_variants` rows (size_id pointed at 2990 uuids not in company_2 `size_library`)
+plus 2 stray unreferenced categories. Both cleaned. Importer gained a `DANGLING_GUARD`
+(psv → products, delivery_order_payments → delivery_orders) so re-runs cannot re-create them.
+Configurator variants-per-product for the 30 hot-sell products is back to 4x (was 8x — broken).
+
+**Final census (2990 → Houzs company_2), post-APPLY:**
 
 | table | 2990 | Houzs co_2 |
 |---|---|---|
-| purchase_orders / items | 42 / 86 | 34 / 70 |
-| grns / items | 20 / 44 | 11 / 25 |
-| purchase_invoices / items | 15 / 34 | 10 / 23 |
-| delivery_orders / items | 16 / 40 | 6 / 15 |
-| inventory movements / lots / consumptions | 80 / 52 / 27 | 43 / 33 / 10 |
-| accounts (GL) | 31 | 0 |
-| pwp_codes / personal_quick_picks / analysis_customer_targets | 59 / 1 / 1 | 53 / 0 / 0 |
+| purchase_orders / items | 42 / 86 | **42 / 86** ✓ |
+| grns / items | 20 / 44 | **20 / 44** ✓ |
+| purchase_invoices / items | 15 / 34 | **15 / 34** ✓ |
+| delivery_orders / items | 16 / 40 | **16 / 40** ✓ |
+| inventory movements / lots / consumptions | 80 / 52 / 27 | **80 / 52 / 27** ✓ |
+| pwp_rules / pwp_codes | 3 / 59 | **3 / 59** ✓ |
+| analysis_customer_targets | 1 | **1** ✓ |
+| drivers | 3 | **3** ✓ |
+| currencies | 4 | **4** ✓ |
+| app_config | 2 | **2** ✓ |
+| accounts (GL) | 31 | **0** ← Ecount decision, §3 |
 
-**How to run** (`backend/scripts/migrate-2990-into-houzs.mjs`, idempotent — `ON CONFLICT DO NOTHING`):
+**Re-run** (should now be a no-op — `ON CONFLICT DO NOTHING` + `DANGLING_GUARD`):
 ```bash
-cd backend
-export SOURCE_SUPABASE_URL=https://dolvxrchzbnqvahocwsu.supabase.co
-export SOURCE_SERVICE_ROLE_KEY=<2990 service_role key — Supabase → dolvxrchzbnqvahocwsu → Settings → API>
-export DATABASE_URL=<Houzs prod Postgres conn string — Supabase → anogrigyjbduyzclzjgn → Settings → Database>
-node scripts/migrate-2990-into-houzs.mjs            # DRY-RUN first (prints per-table counts, writes nothing)
-APPLY=1 node scripts/migrate-2990-into-houzs.mjs    # then apply
+gh workflow run migrate-2990.yml -R hello-houzs/Houzs-ERP  # DRY-RUN
+gh workflow run migrate-2990.yml -R hello-houzs/Houzs-ERP -f apply=1  # APPLY
 ```
-**Before running, extend the script's `ORDER` list** — it currently covers staff/customers/sales-chain/
-purchase-chain/inventory but NOT: `pwp_rules`, `pwp_codes`, `analysis_customer_targets`, `accounts`, and
-`personal_quick_picks`. Notes:
-- `personal_quick_picks`: the 2990 table is named **`sofa_personal_quick_picks`** but the Houzs table is
-  **`personal_quick_picks`** — needs a source→dest name remap (the script assumes same names).
-- `accounts` (GL): decide whether to migrate at all — Houzs GL is barely used (company_1 has 12 accounts,
-  0 journal_entries). Only migrate if the owner runs accounting in Houzs.
-
-**Verify after:** re-census company_2 counts and confirm they equal 2990's (exact). A quick check query
-lives in the session notes; or just re-run the DRY-RUN and confirm "would insert 0".
 
 ### B. Deploy the POS in houzs mode (front half of the flip)
 - #732 is merged but dark. To point the POS at Houzs: build `apps/pos` with **`--mode houzs`** (loads
   `.env.houzs`) or set `VITE_BACKEND_TARGET=houzs` + `VITE_HOUZS_API_URL=https://erp.houzscentury.com/api/scm`
   + `VITE_HOUZS_COMPANY_ID=2` as CF Pages env vars, then deploy to `2990s-pos.pages.dev`.
-- **Pre-flight:** confirm the Houzs worker's CORS allows the POS origin (`2990s-pos.pages.dev`) for
-  cross-origin browser requests (bearer + `X-Company-Id`). Test a real login + catalog load from the deployed POS.
+- **CORS: verified `*`** on the Houzs worker — the POS from `2990s-pos.pages.dev` has no cross-origin
+  barrier for bearer + `X-Company-Id`. Real login + catalog load from the deployed POS still needs a
+  smoke pass, but the header wall is clear.
+- **SO doc-no convention (confirmed with owner 2026-07-21):** post-flip the POS keeps the same
+  `2990-SO-YYMM-NNN` pattern and continues from the last 2990-issued number — the next SO after
+  `2990-SO-2607-018` is `2990-SO-2607-019`. The POS keeps displaying the `2990-` prefix
+  (owner accepted option (a) — no display stripping).
 
 ### C. Staging rehearsal (recommended before touching prod)
 - Build POS (houzs mode) and run the full flow end-to-end against Houzs: login → catalog/config render →
@@ -139,32 +154,37 @@ lives in the session notes; or just re-run the DRY-RUN and confirm "would insert
 ### E. Decommission 2990 (after a safe soak)
 - Turn off 2990 backend + crons; keep a read-only DB backup. Only after several clean days on Houzs.
 
+### F. Salesperson-edit workflow (the daily amendment) — CONFIRMED with owner
+
+Under Houzs, salespeople keep the same in-place SO edit habit they use on 2990: they open their own
+SO and edit dates / items / customer directly — that IS the amendment. No dedicated amendment UI is
+needed for the daily flow, and post-flip they'll edit in Houzs directly (no round-trip to 2990). The
+Houzs-native admin-side amendment surfaces (`frontend/src/pages/scm-v2/Amendments.tsx`,
+`AmendmentDetailV2.tsx`, `MobileAmendments.tsx`) exist for coordinator-side workflows and are unchanged.
+- **Caveat (verification pending — do not commit to a resolution):** the POS-side "Processing date has
+  passed — contact a coordinator" refusal in `queries.ts:2418-2421` may need loosening if it fires on
+  the salesperson's in-place edit path post-flip. Confirm the trigger conditions on the deployed POS
+  against the Houzs backend before deciding whether to relax it or leave as-is.
+
 ---
 
 ## 3. What's still NOT done / open items / caveats
 
-- **[BLOCKER] ERP/stock catch-up (§A)** — needs the 2990 service-role key. Nothing else in the data is missing.
-- **3 small tables** (pwp_codes −6, personal_quick_picks −1, analysis_customer_targets −1) — closed by the
-  same importer run once added to `ORDER`.
-- **accounts / GL (31 rows)** — not migrated; decide if 2990's GL matters (Houzs GL lightly used).
-- **SO line-item photos** (`mfg_sales_order_items.photo_urls` — per-order swatches/sketches) — these live in a
-  **private** 2990 R2 bucket (`2990s-so-item-photos`), not the public catalogue path, so they were NOT
-  backfilled. Only needed if the owner wants them; requires 2990 R2 S3 creds (`R2_ACCESS_KEY_ID`/`SECRET`).
-- **Manager visibility** — Bernard (id 130) is `sales_executive` on Houzs, so `mine?scope=all` is capped to
-  his own orders and `GET /sales-analysis` returns 403 (`scm.so.view_all`). If he needs team/analysis view,
-  set his Houzs position to a manager-level one. (Owner: "do later.")
-- **pos_carts** (8 in-progress carts) — ephemeral; not migrated (recreated on use).
-- **Pricing recompute parity** — 2990's CLAUDE.md warns that retiring the 2990 API means owning the port of
-  `apps/api/src/lib/mfg-pricing-recompute.ts` + its 55-case test (the drift gate is NOT the one in
-  `packages/shared`). Houzs SO-create works + has a drift gate (seam audit), but do a deliberate parity pass
+- **`scm.accounts` (GL, 31 rows) — Ecount decision.** Owner supplies the Ecount export (chart of
+  accounts for company_2); run the seed SQL that lives at
+  `C:\Users\User\AppData\Local\Temp\claude\...\ecount-gl-seed.sql` (BEGIN / clear stale co_2 /
+  INSERT one row per Ecount account / COMMIT — read the file header for the collision-with-company_1
+  guidance). Nothing else in the accounts table is blocked by code.
+- **SO line-item photos** (`mfg_sales_order_items.photo_urls` — per-order swatches / sketches) — these
+  live in a **private** 2990 R2 bucket (`2990s-so-item-photos`), not the public catalogue path, so they
+  were NOT backfilled. Only needed if the owner wants them; requires 2990 R2 S3 creds
+  (`R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`).
+- **Manager visibility (Bernard).** Bernard (id 130) is `sales_executive` on Houzs, so
+  `mine?scope=all` is capped to his own orders and `GET /sales-analysis` returns 403
+  (`scm.so.view_all`). If he needs team/analysis view, promote his Houzs position to a manager-level
+  one. (Owner ruling so far: "do later.")
+- **Pricing recompute parity pass.** 2990's CLAUDE.md warns that retiring the 2990 API means owning the
+  port of `apps/api/src/lib/mfg-pricing-recompute.ts` + its 55-case test (the drift gate is NOT the one
+  in `packages/shared`). Houzs SO-create works + has a drift gate (seam audit), but do a deliberate
+  parity pass — feed a representative sample of live 2990 SOs through both engines and diff totals —
   before full retire.
-- **Do NOT blindly merge the other open PRs** — ~16 on `wenwei4046/2990s` (June UI work: alert→toast,
-  ColumnFilterBar) + ~13 on `Houzs-ERP` (ASSR/hardening/drafts) are unrelated to the cutover.
-
----
-
-## The single thing to unblock everything
-
-Supply the **2990 service-role key** (Supabase → `dolvxrchzbnqvahocwsu` → Settings → API → `service_role`)
-and the **Houzs prod `DATABASE_URL`**, then run §A. That closes all remaining data gaps; after that it's
-POS-houzs deploy (§B) + rehearsal (§C) + the coordinated flip (§D).
