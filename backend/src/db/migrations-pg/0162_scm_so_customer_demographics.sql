@@ -1,5 +1,9 @@
 -- ----------------------------------------------------------------------------
--- 0158 — Customer marketing demographics captured ON the Sales Order (hidden).
+-- 0162 — Customer marketing demographics captured ON the Sales Order (hidden).
+--
+-- (Renumbered 0158 -> 0162: main's 0158_assr_inspection_visit landed first, so
+-- this cutover migration took the next free number. Prod's _pg_migrations row
+-- was relabelled 0158 -> 0162 to match; columns were already applied.)
 --
 -- Owner ruling (2026-07-20, POS cutover #14): the POS handover collects three
 -- customer marketing fields — race / birthday / gender (pos-handover-so.ts:
@@ -22,6 +26,6 @@ ALTER TABLE scm.mfg_sales_orders ADD COLUMN IF NOT EXISTS customer_race     text
 ALTER TABLE scm.mfg_sales_orders ADD COLUMN IF NOT EXISTS customer_birthday date;
 ALTER TABLE scm.mfg_sales_orders ADD COLUMN IF NOT EXISTS customer_gender   text;
 
-COMMENT ON COLUMN scm.mfg_sales_orders.customer_race     IS 'POS handover marketing demographic (customerRace). Capture-only, hidden — never on SO/PDF/UI. Cutover #14, mig 0158.';
-COMMENT ON COLUMN scm.mfg_sales_orders.customer_birthday IS 'POS handover marketing demographic (customerBirthday, ISO date). Capture-only, hidden. Cutover #14, mig 0158.';
-COMMENT ON COLUMN scm.mfg_sales_orders.customer_gender   IS 'POS handover marketing demographic (customerGender). Capture-only, hidden. Cutover #14, mig 0158.';
+COMMENT ON COLUMN scm.mfg_sales_orders.customer_race     IS 'POS handover marketing demographic (customerRace). Capture-only, hidden — never on SO/PDF/UI. Cutover #14, mig 0162.';
+COMMENT ON COLUMN scm.mfg_sales_orders.customer_birthday IS 'POS handover marketing demographic (customerBirthday, ISO date). Capture-only, hidden. Cutover #14, mig 0162.';
+COMMENT ON COLUMN scm.mfg_sales_orders.customer_gender   IS 'POS handover marketing demographic (customerGender). Capture-only, hidden. Cutover #14, mig 0162.';
