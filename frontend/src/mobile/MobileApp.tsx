@@ -12,7 +12,7 @@ import { ChoiceProvider } from "../vendor/scm/components/ChoiceDialog";
 import { registerDialogService } from "../vendor/scm/lib/dialog-service";
 import { invalidateSoShared } from "./sharedInvalidate";
 import { useApplyHtmlLang } from "./mobileI18n";
-import { useSystemNoticeUnread } from "./useSystemNoticeUnread";
+import { useAnnouncementUnread } from "./useAnnouncementUnread";
 import { IosInstallGuide } from "../components/IosInstallGuide";
 import { AndroidInstallGuide } from "../components/AndroidInstallGuide";
 // Heavy mobile screens are lazy-loaded so the initial mobile chunk stays small
@@ -38,6 +38,11 @@ const MobileServiceCase = lazy(() => import("./MobileServiceCase").then((m) => (
 const MobilePMS = lazy(() => import("./MobilePMS").then((m) => ({ default: m.MobilePMS })));
 const MobileMailCenter = lazy(() => import("./MobileMailCenter").then((m) => ({ default: m.MobileMailCenter })));
 const MobileAnnouncements = lazy(() => import("./MobileAnnouncements").then((m) => ({ default: m.MobileAnnouncements })));
+// The unacknowledged-notice pop-up. Lazy like every other mobile screen, and
+// only mounted once the unread badge says something IS waiting — that hook
+// (useAnnouncementUnread) polls the same feed, so on the ordinary
+// nothing-new load the phone never downloads this chunk at all.
+const MobileAnnouncementPopup = lazy(() => import("./MobileAnnouncementPopup").then((m) => ({ default: m.MobileAnnouncementPopup })));
 const MobileModuleDetail = lazy(() => import("./MobileModuleDetail").then((m) => ({ default: m.MobileModuleDetail })));
 const MobileModuleForm = lazy(() => import("./MobileModuleForm").then((m) => ({ default: m.MobileModuleForm })));
 const MobileDeliveryPlanning = lazy(() => import("./MobileDeliveryPlanning").then((m) => ({ default: m.MobileDeliveryPlanning })));
@@ -428,10 +433,11 @@ function MobileAppInner() {
   const { user, can, pageAccess, logout } = useAuth();
   const notify = useNotify();
   const qc = useQueryClient();
-  // App-wide unread badge for the actionable system notices (scan / service
-  // case) — shown on the Profile tab (below) + the Profile > Announcements row,
-  // so a phone user sees a new service case without opening the screen (B2).
-  const annUnread = useSystemNoticeUnread();
+  // App-wide unread badge — un-acked human announcements AND the actionable
+  // system notices (scan / service case). Shown on the Profile tab (below) +
+  // the Profile > Announcements row, so a phone user sees a new broadcast or
+  // service case without opening the screen (B2).
+  const annUnread = useAnnouncementUnread();
 
   // Single-source the mobile gating on the SHARED per-node predicate the desktop
   // Sidebar + MobileTabBar filter with (components/navFilter.makeNavVisible), so
@@ -583,6 +589,20 @@ function MobileAppInner() {
     setScreen(target);
   };
 
+  /* The un-acked announcement pop-up. It rides above EVERYTHING — the tab
+     shell and any overlay screen — because a notice has to reach the user
+     wherever they happen to be, which is exactly what the desktop gets from
+     mounting AnnouncementBanner at the app root (App.tsx). Suppressed on the
+     Announcements screen itself (the reader is already there, and a sheet over
+     the list is noise, not news) and while the badge count is 0 — a notice the
+     pop-up would show is by definition un-acked, so it is always counted, and
+     gating on the count keeps the chunk off the wire on a quiet day. */
+  const annPopup = screen.t === "announcements" || annUnread === 0 ? null : (
+    <Suspense fallback={null}>
+      <MobileAnnouncementPopup onOpenList={() => setScreen({ t: "announcements" })} />
+    </Suspense>
+  );
+
   // Overlay screens (pushed above the tab bar). These resolve to lazy-loaded
   // components, so the chosen element is returned under a single <Suspense>
   // boundary (full-screen fallback — an overlay owns the whole viewport anyway).
@@ -703,7 +723,12 @@ function MobileAppInner() {
   else if (screen.t === "locked") overlay = <UrlLocked label={screen.label} onHome={back} />;
   else if (screen.t === "desktop-only") overlay = <DesktopOnly path={screen.path} onHome={back} />;
   else if (screen.t === "stub") overlay = <Stub title={screen.title} onBack={back} />;
-  if (overlay !== null) return <Suspense fallback={<MobileScreenFallback />}>{overlay}</Suspense>;
+  if (overlay !== null) return (
+    <>
+      <Suspense fallback={<MobileScreenFallback />}>{overlay}</Suspense>
+      {annPopup}
+    </>
+  );
 
   return (
     <div className="hz-m" style={{ position: "fixed", inset: 0, background: "var(--app-bg)", display: "flex", flexDirection: "column" }}>
@@ -822,6 +847,8 @@ function MobileAppInner() {
           </div>
         </div>
       )}
+
+      {annPopup}
     </div>
   );
 }

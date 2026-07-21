@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense } from "react";
 import {
   Megaphone,
   AlertTriangle,
@@ -10,10 +10,13 @@ import {
   BellOff,
   ArrowRight,
 } from "lucide-react";
-import { api } from "../api/client";
-import { useAuth } from "../auth/AuthContext";
 import { cn } from "../lib/utils";
-import type { AnnAttachment, AnnMediaLayout } from "./AnnouncementMedia";
+import {
+  bannerSecondaryKind,
+  useAnnouncementBanner,
+  type AnnouncementCategory,
+  type BannerAnnouncement as Announcement,
+} from "./useAnnouncementBanner";
 
 // Lazy so the media gallery (+ MediaLightbox + its icons) stays OUT of the
 // initial bundle — the banner mounts at the app root, but most notices are
@@ -23,35 +26,17 @@ const AnnouncementMedia = lazy(() =>
 );
 
 // ────────────────────────────────────────────────────────────────────────────
-// AnnouncementBanner — top-of-app strip that surfaces the latest active
+// AnnouncementBanner — the DESKTOP pop-up that surfaces the latest active
 // announcement targeted at the current user, with a "Got it" ack button.
 // Polls every 60s. Hidden when no announcement matches or when the user has
 // already acknowledged it (and the office hasn't re-popped via Remind).
 //
-// Backend: GET /api/announcements/banner -> { data: Announcement[], ackedIds }
-// Ack:     POST /api/announcements/:id/ack
+// This file is now PRESENTATION ONLY: the feed, the ack, the local-ack memo,
+// the Remind re-pop rule and "which notice is current" live in
+// useAnnouncementBanner, shared with the phone's pop-up (mobile/
+// MobileAnnouncementPopup) so both shells answer "have I seen this?" the same
+// way. Behaviour here is unchanged.
 // ────────────────────────────────────────────────────────────────────────────
-
-type AnnouncementCategory = "GENERAL" | "WARNING" | "SOP" | "LEARNING";
-
-type Announcement = {
-  id: string;
-  title: string;
-  body: string;
-  createdAt: string | null;
-  remindedAt: string | null;
-  category?: AnnouncementCategory;
-  attachments?: AnnAttachment[];
-  mediaLayout?: AnnMediaLayout;
-};
-
-type BannerResponse = {
-  success?: boolean;
-  data?: Announcement[];
-  ackedIds?: string[];
-};
-
-const POLL_MS = 60_000;
 
 const CATEGORY_LABEL: Record<AnnouncementCategory, string> = {
   GENERAL: "Notice",
@@ -143,125 +128,12 @@ function relativeTime(iso: string): string {
   return new Date(t).toLocaleDateString("en-MY");
 }
 
-// Local ack memo so the banner stays dismissed across reloads even before
-// the next poll picks up the server's ackedIds.
-const LOCAL_ACKS_KEY = "announcements:localAcks";
-
-function readLocalAcks(): Record<string, number> {
-  try {
-    const raw = localStorage.getItem(LOCAL_ACKS_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return {};
-    return parsed as Record<string, number>;
-  } catch {
-    return {};
-  }
-}
-
-function writeLocalAcks(next: Record<string, number>) {
-  try {
-    localStorage.setItem(LOCAL_ACKS_KEY, JSON.stringify(next));
-  } catch {
-    // non-fatal
-  }
-}
-
-// True when the office reminded the notice AFTER the local ack — i.e. the
-// banner should re-surface even though we have a local ack stamp.
-function isRemindedSince(
-  remindedAt: string | null | undefined,
-  ackedAtMs: number | undefined,
-): boolean {
-  if (!remindedAt || !ackedAtMs) return false;
-  const r = Date.parse(remindedAt);
-  if (Number.isNaN(r)) return false;
-  return r > ackedAtMs;
-}
-
 export function AnnouncementBanner() {
-  const { user } = useAuth();
-  const [data, setData] = useState<Announcement[]>([]);
-  const [serverAcked, setServerAcked] = useState<Set<string>>(new Set());
-  const [localAcks, setLocalAcks] = useState<Record<string, number>>(() =>
-    readLocalAcks(),
-  );
-  const [dismissedThisSession, setDismissedThisSession] = useState<
-    Set<string>
-  >(() => new Set());
-
-  const reload = useCallback(async () => {
-    if (!user || !user.id) return;
-    try {
-      const r = await api.get<BannerResponse>("/api/announcements/banner");
-      setData(r.data ?? []);
-      setServerAcked(new Set(r.ackedIds ?? []));
-    } catch {
-      // Silent — the banner is best-effort and must not bubble fetch errors.
-    }
-  }, [user]);
-
-  useEffect(() => {
-    void reload();
-    const t = setInterval(() => void reload(), POLL_MS);
-    return () => clearInterval(t);
-  }, [reload]);
-
-  // Reconcile server ackedIds INTO the local map (additive). Never delete a
-  // local entry — the server is the lagging side; a flaky ack POST must not
-  // cause an endless re-pop loop.
-  useEffect(() => {
-    if (serverAcked.size === 0) return;
-    setLocalAcks((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      const now = Date.now();
-      for (const id of serverAcked) {
-        if (next[id] == null) {
-          next[id] = now;
-          changed = true;
-        }
-      }
-      if (changed) writeLocalAcks(next);
-      return changed ? next : prev;
-    });
-  }, [serverAcked]);
-
-  // The current banner = the newest active notice that this device hasn't
-  // acked (or that the office has reminded since the local ack). Newest first
-  // per the server response.
-  const current = useMemo(() => {
-    for (const a of data) {
-      if (dismissedThisSession.has(a.id)) continue;
-      const localAt = localAcks[a.id];
-      if (localAt == null) return a; // never acked here
-      if (isRemindedSince(a.remindedAt, localAt)) return a; // re-pop
-      // else: already acked — skip
-    }
-    return null;
-  }, [data, dismissedThisSession, localAcks]);
+  // Unscoped feed (human posts AND the per-user scan / service-case notices) —
+  // the desktop pop-up has always shown both.
+  const { current, ack, dismissSession } = useAnnouncementBanner();
 
   if (!current) return null;
-
-  async function ack(a: Announcement) {
-    const now = Date.now();
-    setLocalAcks((prev) => {
-      const next = { ...prev, [a.id]: now };
-      writeLocalAcks(next);
-      return next;
-    });
-    setDismissedThisSession((prev) => {
-      const next = new Set(prev);
-      next.add(a.id);
-      return next;
-    });
-    try {
-      await api.post(`/api/announcements/${a.id}/ack`);
-    } catch {
-      // Best-effort: the local stamp keeps the banner dismissed even if the
-      // server didn't get the ack. The next reload will reconcile.
-    }
-  }
 
   // Secondary action per category: WARNING "View details" / SOP "Read SOP"
   // jump to the announcements page; GENERAL "Remind later" / LEARNING "Later"
@@ -282,19 +154,14 @@ export function AnnouncementBanner() {
   // (reload() returns early without one), and a signed-in user can now open
   // /announcements. A `can(...)` guard on this button would either be dead code
   // or re-create the exact 403 it was added to prevent.
-  // Hide the notice for this session only (no ack recorded, so it re-surfaces
-  // next visit). Used by the backdrop click and the GENERAL/LEARNING secondary.
-  function dismissSession(a: Announcement) {
-    setDismissedThisSession((prev) => {
-      const next = new Set(prev);
-      next.add(a.id);
-      return next;
-    });
-  }
-
+  //
+  // dismissSession now comes from useAnnouncementBanner (destructured above) —
+  // the session-dismiss set moved into the shared hook so the phone sheet gets
+  // the same behaviour; the local copy that used to live here was removed with
+  // its setDismissedThisSession state.
   function secondary(a: Announcement) {
     const cat = a.category ?? "GENERAL";
-    if (cat === "WARNING" || cat === "SOP") {
+    if (bannerSecondaryKind(cat) === "view") {
       window.location.assign("/announcements");
       return;
     }
