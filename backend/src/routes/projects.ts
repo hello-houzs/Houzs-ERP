@@ -731,6 +731,9 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
   let pendingTitle: string | undefined;
   let pendingLogistic = false;
   let pendingApprove: string[] | undefined;
+  let pendingDirector: { stock?: boolean; agreement?: boolean; sales_attending?: boolean } | undefined;
+  let pendingSalesAttending = false;
+  let pendingAgreement = false;
   if (c.req.query("my_pending") === "1" && user) {
     // Owner 2026-07-13 — staged "My Pending". Approvers (anyone holding a
     // checklist approval permission, or `*`) see ONLY the items awaiting
@@ -761,18 +764,27 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     const GATING_APPROVE_PERMS = ["projects.approve"];
     // hasPermission handles the `*` wildcard, so admins/owner still match.
     const held = GATING_APPROVE_PERMS.filter((p) => hasPermission(granted, p));
+    const r = (user.role_name || "").toLowerCase();
     if (held.length > 0) {
+      // Super Admin / owner (weisiang): what they must approve, PLUS the
+      // Agreement / Quotation once its timeline arrives (owner 2026-07-21).
       pendingApprove = held;
-    } else {
-      const r = (user.role_name || "").toLowerCase();
-      if (r === "purchaser") pendingLabel = "PURCHASER";
-      else if (r === "logistic") pendingLogistic = true; // setup not arranged
-      else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";
-      else if (r.includes("bd")) pendingLabel = "BD";
-      else if (r.includes("sales")) pendingLabel = "SALES PIC";
-      else if (r === "manager") pendingTitle = "Agreement / Quotation";
-      // unmapped roles -> no pending filter (see all)
-    }
+      pendingAgreement = true;
+    } else if (r.includes("sales director")) {
+      // Peter / Kingsley (owner 2026-07-21): approve the stock-out record once
+      // the purchaser submits it, and assign the Sales Attending reps. (They do
+      // NOT hold projects.approve, so they previously fell through to SALES PIC.)
+      pendingDirector = { stock: true, sales_attending: true };
+    } else if (r === "purchaser") pendingLabel = "PURCHASER";
+    else if (r === "logistic") pendingLogistic = true; // setup not arranged
+    else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";
+    else if (r.includes("bd")) pendingLabel = "BD";
+    else if (r.includes("sales")) {
+      // Sales PIC: their SALES-PIC-badged tasks + the Sales Attending assignment.
+      pendingLabel = "SALES PIC";
+      pendingSalesAttending = true;
+    } else if (r === "manager") pendingTitle = "Agreement / Quotation";
+    // unmapped roles -> no pending filter (see all)
   }
   const result = await listProjects(c.env, {
     company_id: activeCompanyId(c),
@@ -780,6 +792,9 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     pending_title: pendingTitle,
     pending_logistic: pendingLogistic,
     pending_approve: pendingApprove,
+    pending_director: pendingDirector,
+    pending_sales_attending: pendingSalesAttending || undefined,
+    pending_agreement: pendingAgreement || undefined,
     stage: c.req.query("stage"),
     brand: c.req.query("brand"),
     state: c.req.query("state") || undefined,

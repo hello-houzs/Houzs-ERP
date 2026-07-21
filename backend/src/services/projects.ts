@@ -1245,6 +1245,16 @@ export interface ListProjectsFilters {
    *  required_perm is one of these (e.g. Stock Approver → stock_transfer.approve).
    *  Used for directors/admins who only chase what they must approve. */
   pending_approve?: string[];
+  /** Sales Director staging (owner 2026-07-21). Their pending = whichever of
+   *  these apply, OR-combined: stock-out awaiting approval (Sim submitted it),
+   *  agreement/quotation still pending (agreement approvers only), and the
+   *  project's Sales Attending not yet assigned. */
+  pending_director?: { stock?: boolean; agreement?: boolean; sales_attending?: boolean };
+  /** Sales-attending "pending" = the project has no sales attendees assigned
+   *  yet (Sales PIC + directors). Standalone predicate (not a checklist item). */
+  pending_sales_attending?: boolean;
+  /** Agreement/Quotation on its own timeline (Super Admin / weisiang). */
+  pending_agreement?: boolean;
   /** Multi-company (mig-pg 0093): the ACTIVE company (activeCompanyId(c)).
    *  When set the list is isolated to that company; undefined (company
    *  context unresolved — pre-migration / D1 test mirror) = no predicate. */
@@ -1363,10 +1373,30 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   // lane's own binds.
   const dueToday = todayMyt();
   const DUE_GATE = `substr(COALESCE(pc.due_date, p.start_date), 1, 10) <= ?`;
+  // A caller's "My Pending" can have SEVERAL sources; a project qualifies if
+  // ANY match, so the lanes below OR together (each caller sets only a few).
+  const pendingOr: string[] = [];
+  const pendingBinds: any[] = [];
+  // Sales Attending is a "pending" reminder only for events that HAVEN'T ended
+  // yet (upcoming or currently running) and have no reps assigned — otherwise it
+  // floods with the whole historical backlog. Timeline-gated per "pending follows
+  // the timeline". Binds one `?` (dueToday) each time it's used.
+  const SALES_ATTENDING_EMPTY = `(substr(COALESCE(p.end_date, p.start_date), 1, 10) >= ?
+        AND NOT EXISTS (SELECT 1 FROM project_sales_attendees sa WHERE sa.project_id = p.id))`;
+  // Stock-out record submitted by the purchaser, now awaiting director approval.
+  const STOCK_OUT_AWAITING_APPROVAL = `EXISTS (SELECT 1 FROM project_checklist pc
+                WHERE pc.project_id = p.id AND pc.title = 'Stock Out Transfer Record'
+                  AND pc.review_status IN ('pending_review', 'amended') AND ${DUE_GATE})`;
+  const AGREEMENT_PENDING = `EXISTS (SELECT 1 FROM project_checklist pc
+                WHERE pc.project_id = p.id AND pc.title = 'Agreement / Quotation'
+                  AND pc.status = 'pending' AND ${DUE_GATE})`;
   if (f.pending_label === "PURCHASER") {
-    // Purchaser: the Stock Out Transfer Record only unlocks once the Display
-    // Floor Plan is done; their other tasks surface on their own due date.
-    where.push(
+    // Purchaser staging (owner 2026-07-21):
+    //   - Stock Out Transfer Record unlocks once the Display Floor Plan is done.
+    //   - Exchange List + Stock In Transfer Record unlock once the Defect List
+    //     is done (Sales PIC's post-event check).
+    //   - Every other PURCHASER task surfaces on its own due date.
+    pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
                 WHERE pc.project_id = p.id
                   AND pc.status = 'pending'
@@ -1376,41 +1406,40 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                        OR EXISTS (SELECT 1 FROM project_checklist fp
                                    WHERE fp.project_id = p.id
                                      AND fp.title = 'Display Floor Plan'
-                                     AND (fp.status = 'done' OR fp.review_status = 'approved'))))`
+                                     AND (fp.status = 'done' OR fp.review_status = 'approved')))
+                  AND (pc.title NOT IN ('Exchange List', 'Stock In Transfer Record')
+                       OR EXISTS (SELECT 1 FROM project_checklist dl
+                                   WHERE dl.project_id = p.id
+                                     AND dl.title = 'Defect List'
+                                     AND (dl.status = 'done' OR dl.review_status = 'approved'))))`
     );
-    binds.push(dueToday);
+    pendingBinds.push(dueToday);
   } else if (f.pending_label) {
-    where.push(
+    pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
-                WHERE pc.project_id = p.id
-                  AND pc.status = 'pending'
-                  AND pc.role_label = ?
-                  AND ${DUE_GATE})`
+                WHERE pc.project_id = p.id AND pc.status = 'pending'
+                  AND pc.role_label = ? AND ${DUE_GATE})`
     );
-    binds.push(f.pending_label, dueToday);
+    pendingBinds.push(f.pending_label, dueToday);
   }
   if (f.pending_title) {
-    where.push(
+    pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
-                WHERE pc.project_id = p.id
-                  AND pc.status = 'pending'
-                  AND pc.title = ?
-                  AND ${DUE_GATE})`
+                WHERE pc.project_id = p.id AND pc.status = 'pending'
+                  AND pc.title = ? AND ${DUE_GATE})`
     );
-    binds.push(f.pending_title, dueToday);
+    pendingBinds.push(f.pending_title, dueToday);
   }
   if (f.pending_approve && f.pending_approve.length) {
     // Approver lane: projects with a DUE, still-pending item whose required_perm
     // is one the caller holds — i.e. things they must approve, once due.
     const ph = f.pending_approve.map(() => "?").join(",");
-    where.push(
+    pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
-                WHERE pc.project_id = p.id
-                  AND pc.status = 'pending'
-                  AND pc.required_perm IN (${ph})
-                  AND ${DUE_GATE})`
+                WHERE pc.project_id = p.id AND pc.status = 'pending'
+                  AND pc.required_perm IN (${ph}) AND ${DUE_GATE})`
     );
-    binds.push(...f.pending_approve, dueToday);
+    pendingBinds.push(...f.pending_approve, dueToday);
   }
   if (f.pending_logistic) {
     // Logistic work is staged:
@@ -1418,7 +1447,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     //     (done/approved) but the setup time+crew aren't filled yet.
     //   - DISMANTLE is due once setup is arranged but the dismantle
     //     time+crew aren't filled yet.
-    where.push(`(
+    pendingOr.push(`(
       (
         EXISTS (SELECT 1 FROM project_checklist pc
                  WHERE pc.project_id = p.id
@@ -1434,6 +1463,21 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
         AND COALESCE(p.dismantle_crew, '') IN ('', '{}')
       )
     )`);
+  }
+  // Sales Director staging (owner 2026-07-21): approve the stock-out record once
+  // the purchaser submitted it, and assign the Sales Attending reps.
+  if (f.pending_director) {
+    if (f.pending_director.stock) { pendingOr.push(STOCK_OUT_AWAITING_APPROVAL); pendingBinds.push(dueToday); }
+    if (f.pending_director.agreement) { pendingOr.push(AGREEMENT_PENDING); pendingBinds.push(dueToday); }
+    if (f.pending_director.sales_attending) { pendingOr.push(SALES_ATTENDING_EMPTY); pendingBinds.push(dueToday); }
+  }
+  // Sales Attending not yet assigned (Sales PIC).
+  if (f.pending_sales_attending) { pendingOr.push(SALES_ATTENDING_EMPTY); pendingBinds.push(dueToday); }
+  // Agreement / Quotation on its own timeline (Super Admin / weisiang).
+  if (f.pending_agreement) { pendingOr.push(AGREEMENT_PENDING); pendingBinds.push(dueToday); }
+  if (pendingOr.length) {
+    where.push(`(${pendingOr.join("\n      OR ")})`);
+    binds.push(...pendingBinds);
   }
   // "Completed project" predicate — reused by both the positive
   // (section=__done) filter and the negative (exclude_done) toggle.
