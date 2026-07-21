@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit -p .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "perf:scale": "node scripts/scale-harness.mjs",
     "db:reset": "wrangler d1 execute autocount-sync --file=./src/db/schema.sql --remote",
     "db:reset:local": "wrangler d1 execute autocount-sync --local --file=./src/db/schema.sql",
     "db:migrate": "node scripts/migrate.mjs",

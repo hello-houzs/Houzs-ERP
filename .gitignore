@@ -44,6 +44,7 @@ desktop.ini
 
 # Temp SQL scripts
 tmp_*.sql
+backend/scale-*.json
 
 # Internal specs (kept local, not published)
 PROJECT_BRIEF.md
