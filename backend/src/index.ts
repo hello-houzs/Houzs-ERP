@@ -54,6 +54,7 @@ import search from "./routes/search";
 import assrPrint from "./routes/assr_print";
 import assrPortal from "./routes/assrPortal";
 import assrFormIntake from "./routes/assrFormIntake";
+import assrPosIntake from "./routes/assrPosIntake";
 import survey from "./routes/survey";
 import track from "./routes/track";
 import portal from "./routes/portal";
@@ -192,6 +193,9 @@ app.route("/api/pos", pos);
 // below the gate at first, so every call 401'd at the gate before the
 // route's own key check ever ran.
 app.route("/api/assr-form-intake", assrFormIntake);
+// POS → Service Case intake (owner 2026-07-21). Same PRE-AUTH placement as
+// the form intake — its own POS_INTAKE_KEY guard runs inside the route.
+app.route("/api/assr-pos-intake", assrPosIntake);
 
 // Auth gate for everything else under /api/*. Mounted AFTER the
 // public API routes above so they stay unauthenticated.

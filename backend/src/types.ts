@@ -25,6 +25,11 @@ export type Env = {
   // (/api/assr-form-intake). GitHub secret, injected at deploy; the
   // endpoint 401s on every request while unset.
   FORM_INTAKE_KEY?: string;
+  /** Shared secret for the 2990 POS → Service Case intake
+   *  (/api/assr-pos-intake). Set on this worker AND the 2990 apps/api
+   *  worker; the endpoint 401s while unset. Separate from FORM_INTAKE_KEY
+   *  so the POS and Google-Form channels rotate independently. */
+  POS_INTAKE_KEY?: string;
   /** Shared secret for the sheet status-export pull (Nick 2026-07-14) —
    *  a separate key from FORM_INTAKE_KEY because the form-intake script
    *  lives in a different Google account than the HC Delivery sheet's. */
