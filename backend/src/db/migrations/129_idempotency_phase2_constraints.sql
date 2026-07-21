@@ -17,7 +17,7 @@ SELECT 0
  WHERE NOT EXISTS (
    SELECT 1
      FROM _migrations
-    WHERE name = '127_idempotency_principal_company_hash.sql'
+    WHERE name = '128_idempotency_principal_company_hash.sql'
  );
 
 INSERT INTO __idempotency_phase2_guard (ok)
@@ -27,7 +27,7 @@ SELECT 0
      SELECT 1
        FROM app_settings AS worker_marker
        JOIN _migrations AS phase1
-         ON phase1.name = '127_idempotency_principal_company_hash.sql'
+         ON phase1.name = '128_idempotency_principal_company_hash.sql'
       WHERE worker_marker.key = 'rollout.idempotency_phase1_worker_live'
         AND datetime(worker_marker.updated_at) >= datetime(phase1.applied_at)
         AND datetime(worker_marker.updated_at) <= datetime('now', '-24 hours')

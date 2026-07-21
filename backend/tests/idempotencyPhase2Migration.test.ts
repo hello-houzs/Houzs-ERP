@@ -2,16 +2,22 @@ import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, test } from "vitest";
 
 const pgMigration = Object.values(
-  import.meta.glob("../src/db/migrations-pg/0159_*.sql", {
+  import.meta.glob("../src/db/migrations-pg/0165_idempotency_phase2_constraints.sql", {
     eager: true,
     query: "?raw",
     import: "default",
   }),
 )[0] as string;
 
+// Every Postgres migration filename in the live tree, for the cross-reference
+// assertion below.
+const pgMigrationNames = Object.keys(
+  import.meta.glob("../src/db/migrations-pg/*.sql", { eager: true, query: "?raw", import: "default" }),
+).map((path) => path.split("/").pop() as string);
+
 function phase2Migration() {
   const migration = env.TEST_MIGRATIONS.find(
-    (candidate) => candidate.name === "128_idempotency_phase2_constraints.sql",
+    (candidate) => candidate.name === "129_idempotency_phase2_constraints.sql",
   );
   if (!migration) throw new Error("D1 idempotency Phase-2 migration is missing");
   return migration;
@@ -36,7 +42,7 @@ async function resetToPhase1(): Promise<void> {
     `CREATE INDEX idx_idempotency_keys_created_at
       ON idempotency_keys (created_at)`,
     `INSERT OR REPLACE INTO _migrations (name, applied_at)
-     VALUES ('127_idempotency_principal_company_hash.sql', datetime('now', '-26 hours'))`,
+     VALUES ('128_idempotency_principal_company_hash.sql', datetime('now', '-26 hours'))`,
     `DELETE FROM app_settings
       WHERE key IN ('rollout.idempotency_phase1_worker_live', 'rollout.idempotency_phase2_offline_bootstrap')`,
     `INSERT INTO app_settings (key, value, updated_at)
@@ -58,7 +64,7 @@ describe("idempotency Phase-2 migration contract", () => {
     await env.DB.prepare(
       `UPDATE _migrations SET applied_at = datetime('now') WHERE name = ?`,
     )
-      .bind("127_idempotency_principal_company_hash.sql")
+      .bind("128_idempotency_principal_company_hash.sql")
       .run();
     await env.DB.prepare(
       `UPDATE app_settings SET updated_at = datetime('now') WHERE key = ?`,
@@ -82,7 +88,7 @@ describe("idempotency Phase-2 migration contract", () => {
     await env.DB.prepare(
       `UPDATE _migrations SET applied_at = datetime('now') WHERE name = ?`,
     )
-      .bind("127_idempotency_principal_company_hash.sql")
+      .bind("128_idempotency_principal_company_hash.sql")
       .run();
     await env.DB.prepare(
       `DELETE FROM app_settings WHERE key = 'rollout.idempotency_phase1_worker_live'`,
@@ -111,7 +117,7 @@ describe("idempotency Phase-2 migration contract", () => {
     await env.DB.prepare(
       `UPDATE _migrations SET applied_at = datetime('now') WHERE name = ?`,
     )
-      .bind("127_idempotency_principal_company_hash.sql")
+      .bind("128_idempotency_principal_company_hash.sql")
       .run();
     await env.DB.prepare(
       `DELETE FROM app_settings WHERE key = 'rollout.idempotency_phase1_worker_live'`,
@@ -198,7 +204,7 @@ describe("idempotency Phase-2 migration contract", () => {
     expect(pgMigration).toContain(
       "LOCK TABLE public.idempotency_keys IN ACCESS EXCLUSIVE MODE",
     );
-    expect(pgMigration).toContain("0158_idempotency_principal_company_hash.sql");
+    expect(pgMigration).toContain("0163_idempotency_principal_company_hash.sql");
     expect(pgMigration).toContain("interval '24 hours'");
     expect(pgMigration).toContain("rollout.idempotency_phase1_worker_live");
     expect(pgMigration).toContain("interval '24 hours'");
@@ -212,5 +218,22 @@ describe("idempotency Phase-2 migration contract", () => {
     expect(pgMigration).toContain(
       "PRIMARY KEY (user_id, tenant_scope, key, scope)",
     );
+  });
+
+  test("the Phase-1 filename this migration gates on actually exists in the tree", () => {
+    // Regression pin (2026-07-22). The gate does
+    //   SELECT applied_at FROM _pg_migrations WHERE filename = '<phase 1>'
+    // and RAISEs if it finds nothing. That string is a hard-coded filename, so
+    // renumbering Phase 1 before merge (which is routine here — numbers are
+    // assigned at merge time against current main) silently turns the gate into
+    // a guaranteed failure, and a failed migration blocks EVERY later migration
+    // in production. Phase 1 landed as 0163, not the 0158 this branch was
+    // written against. Assert the referenced file is really present rather than
+    // just asserting a literal, which cannot tell right from wrong.
+    const referenced = pgMigration.match(
+      /WHERE filename = '([^']+\.sql)'/,
+    )?.[1];
+    expect(referenced).toBeDefined();
+    expect(pgMigrationNames).toContain(referenced);
   });
 });

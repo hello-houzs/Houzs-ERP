@@ -3,10 +3,10 @@
 Phase 2 converts the additive Phase 1 columns into enforced database
 constraints. It is intentionally a separate release:
 
-- Postgres: `0158_idempotency_principal_company_hash.sql` must deploy first;
-  `0159_idempotency_phase2_constraints.sql` is the later hardening release.
-- D1: `127_idempotency_principal_company_hash.sql` must deploy first;
-  `128_idempotency_phase2_constraints.sql` is the later parity release.
+- Postgres: `0163_idempotency_principal_company_hash.sql` must deploy first;
+  `0165_idempotency_phase2_constraints.sql` is the later hardening release.
+- D1: `128_idempotency_principal_company_hash.sql` must deploy first;
+  `129_idempotency_phase2_constraints.sql` is the later parity release.
 - Never place both phases in one PR, merge, migration run, or Worker rollout.
   The Phase 2 SQL requires a durable Phase 1 Worker marker to soak for 24 hours.
 
@@ -48,7 +48,7 @@ Run read-only checks against the intended environment:
 ```sql
 SELECT filename, applied_at, now() - applied_at AS soak_age
 FROM public._pg_migrations
-WHERE filename = '0158_idempotency_principal_company_hash.sql';
+WHERE filename = '0163_idempotency_principal_company_hash.sql';
 
 SELECT key, value, updated_at,
        now() - updated_at::timestamptz AS worker_soak_age
@@ -83,7 +83,7 @@ legacy claims are older than the replay window and Phase 2 deletes them.
 SELECT name, applied_at,
        CAST((julianday('now') - julianday(applied_at)) * 24 AS INTEGER) AS soak_hours
 FROM _migrations
-WHERE name = '127_idempotency_principal_company_hash.sql';
+WHERE name = '128_idempotency_principal_company_hash.sql';
 
 SELECT key, value, updated_at,
        CAST((julianday('now') - julianday(updated_at)) * 24 AS INTEGER) AS worker_soak_hours
@@ -197,7 +197,7 @@ the production invocation as one file is therefore part of the gate.
 ```sql
 SELECT filename, applied_at
 FROM public._pg_migrations
-WHERE filename = '0159_idempotency_phase2_constraints.sql';
+WHERE filename = '0165_idempotency_phase2_constraints.sql';
 
 SELECT column_name, is_nullable
 FROM information_schema.columns
@@ -228,7 +228,7 @@ PRAGMA table_info(idempotency_keys);
 PRAGMA index_list(idempotency_keys);
 SELECT name, applied_at
 FROM _migrations
-WHERE name = '128_idempotency_phase2_constraints.sql';
+WHERE name = '129_idempotency_phase2_constraints.sql';
 ```
 
 Expected primary-key order: `user_id=1`, `tenant_scope=2`, `key=3`, `scope=4`.
