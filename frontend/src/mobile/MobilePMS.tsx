@@ -267,33 +267,6 @@ type ConfirmFn = (o: { title: string; body?: ReactNode; confirmLabel?: string; c
 type PromptFn = (o: { title: string; body?: ReactNode; defaultValue?: string; placeholder?: string; confirmLabel?: string; validate?: (v: string) => string | null }) => Promise<string | null>;
 type SetBusy = Dispatch<SetStateAction<boolean>>;
 
-// Map the design's 3 rental-payment states onto the project.payment_status
-// enum the POST /:id/payment endpoint accepts.
-const PAYMENT_OPTS: Array<[string, string]> = [
-  ["not_started", "N/A"],
-  ["deposit_paid", "Pending"],
-  ["paid", "Fully paid"],
-];
-
-// POST /api/projects/:id/payment — sets project.payment_status.
-async function patchPayment(
-  id: number,
-  status: string,
-  setBusy: SetBusy,
-  notify: NotifyFn,
-  reload: () => void,
-): Promise<void> {
-  setBusy(true);
-  try {
-    await api.post(`/api/projects/${id}/payment`, { status });
-    reload();
-  } catch (e) {
-    await notify({ title: "Update failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
-  } finally {
-    setBusy(false);
-  }
-}
-
 // Dual-read helper — the PG driver camelCases result columns, so a row may
 // carry either snake_case (D1 fallback / raw SQL) or camelCase. Always read
 // both (project_pg_camelcase_columns memory — #1 recurring bug).
@@ -384,7 +357,7 @@ const stageVariant = pmsStageVariant;
 
 // Map the desktop variant onto the mobile badge palette already used across
 // the screen (amber = open, green/teal = in-progress, grey = neutral/closed,
-// clay-red = error). bg/fg pairs match ListChip / PaymentBadge tints.
+// clay-red = error). bg/fg pairs match the ListChip tints.
 const STAGE_TINT: Record<StageVariant, { bg: string; fg: string }> = {
   neutral: { bg: "#eef0ec", fg: "#767b6e" },
   open: { bg: "#f6efd9", fg: "#6e4d12" },
@@ -756,15 +729,6 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // matrix level, a different question from the PMS FINANCIAL section, so an
   // unresolved payload used to answer the finance question with the page answer.
   const financeVisible = access.canFinancial && !!data?.finance;
-  // Rental & payment section: gate on the PMS PAYMENT flag. The backend blanks
-  // payment_* cols for a role without it (#345), so a non-payment sales user
-  // would otherwise see an empty "N/A" section — hide it outright.
-  //
-  // THIS WAS `pms ? pms.canPayment ?? true : true` — a `?? true` on a MONEY
-  // surface. Both branches granted: an absent `pms` block showed the card, and a
-  // present block with the flag omitted ALSO showed it. A permission we could
-  // not read is NO, and never more so than on payment.
-  const paymentVisible = access.canPayment;
   // ── Mobile role-based checklist visibility (owner 2026-07-16) ──────────────
   // Gate specific items/sections by the viewer's org role. Keyed off stable org
   // fields (position_name / department_name / role_name), mirroring
@@ -806,6 +770,13 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // sections are hidden.
   const isSalesExecMgr = isSalesStaff && !isMgt;
   const cohort5 = isDriverCrew || isStorekeeper || isSalesExecMgr;
+  // Sales-section visibility — mirror the desktop split (Projects.tsx:9914-9918):
+  // the Sales panel is gated on sales VIEW access (page-access OR sales-staff OR
+  // director), NOT on canFinancial. The desktop renders ProjectSalesEntriesSection
+  // outside the finance gate for exactly this reason — a non-financial salesperson
+  // (isSalesExecMgr) HOLDS the log-sale action but has canFinancial=false, so
+  // nesting it under the finance gate lost the action for the person who owns it.
+  const canViewSales = salesAccess !== "none" || isSalesStaff || isDirectorPos;
   const cohortHiddenSection = (name: string) =>
     /payment|closeout|booth layout|setup\s*&?\s*dismantle documents|expo map/i.test(name);
   const sectionNameById = new Map((data?.sections ?? []).map((s) => [s.id, s.name] as const));
@@ -1163,20 +1134,39 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reload={reload}
             />
 
-            {/* Rental & Payment card removed on mobile (owner 2026-07-20): it
-                duplicated the task list's PAYMENT section (Rental Payment +
-                Security Deposit), which owner/directors already see there. */}
+            {/* Rental & Payment STATUS card removed on mobile (owner 2026-07-20):
+                it duplicated the task list's PAYMENT section (Rental Payment +
+                Security Deposit), which owner/directors already see there — and it
+                wrote projects.payment_status while that pill writes pill_value
+                (desynced). Payment status now flows only through the pill; the
+                rental AMOUNT + Total Sales are editable in the snapshot below. */}
 
-            {/* financial snapshot (finance-gated) — design v7 places P&L as the
-                FINAL card, after the logistics + money sections. */}
-            {financeVisible && (
-              <FinancialSnapshot
-                finance={data.finance!}
-                lines={data.finance_lines}
+            {/* Sales — SALES-gated, split out of the finance snapshot so a
+                non-financial salesperson (who HOLDS the log-sale action) can
+                reach it. Mirrors desktop ProjectSalesEntriesSection, gated on
+                canViewSales (NOT canFinancial). */}
+            {canViewSales && (
+              <SalesPanel
+                projectId={id}
+                incomeLines={data.finance_lines}
                 canLogSale={canLogSale && !archived}
                 busy={busy}
                 setBusy={setBusy}
                 prompt={prompt}
+                notify={notify}
+                reload={reload}
+              />
+            )}
+
+            {/* financial snapshot (finance-gated) — P&L headline + editable
+                rental amount + Total Sales lump-sum + cost ledger. */}
+            {financeVisible && (
+              <FinancialSnapshot
+                finance={data.finance!}
+                lines={data.finance_lines}
+                canWrite={canWrite && !archived}
+                busy={busy}
+                setBusy={setBusy}
                 notify={notify}
                 projectId={id}
                 reload={reload}
@@ -1276,53 +1266,81 @@ function SalesAttending({
   );
 }
 
-// ── Rental & payment (N/A / Pending / Fully Paid → POST /:id/payment) ──
-function RentalPayment({
-  status, canWrite, busy, setBusy, notify, onSet,
+// ── Sales (SALES-gated — split from the finance snapshot) ──
+// The quick-log-a-sale action belongs to the salesperson working the project,
+// not to finance. Desktop renders ProjectSalesEntriesSection on canViewSales
+// (Projects.tsx:9885,9914-9918), NOT canFinancial — so a non-financial sales
+// exec keeps the action. POST /api/sales/entries is gated on sales page-access
+// (requirePageAccess("sales")), which canLogSale mirrors. The income lines come
+// from the finance ledger, which the backend strips for a finance-hidden user;
+// a sales-only user therefore sees the log action with an empty list and still
+// no P&L.
+function SalesPanel({
+  projectId, incomeLines, canLogSale, busy, setBusy, prompt, notify, reload,
 }: {
-  status: string | null;
-  canWrite: boolean;
+  projectId: number;
+  incomeLines?: FinanceLine[];
+  canLogSale: boolean;
   busy: boolean;
   setBusy: SetBusy;
+  prompt: PromptFn;
   notify: NotifyFn;
-  onSet: (status: string) => Promise<void>;
+  reload: () => void;
 }) {
-  void setBusy; void notify; // handled inside onSet (patchPayment)
-  const cur = status ?? "not_started";
+  // Quick-log a sale at the project (POST /api/sales/entries { quick_log }).
+  // Lands as a draft sales entry; surfaces as a synthetic income line.
+  const logSale = async () => {
+    const amtStr = await prompt({
+      title: "Sale amount (RM)",
+      placeholder: "0.00",
+      validate: (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? null : "Enter a positive number."; },
+    });
+    if (amtStr == null) return;
+    const ref = await prompt({ title: "Reference no. (optional)", placeholder: "e.g. INV-123" });
+    if (ref == null) return;
+    const today = todayInAppTz();
+    setBusy(true);
+    try {
+      await api.post(`/api/sales/entries`, {
+        project_id: projectId,
+        quick_log: true,
+        amount: parseFloat(amtStr),
+        ref_no: ref.trim() || null,
+        occurred_at: today,
+      });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const income = (incomeLines ?? []).filter((l) => (l.kind ?? "").toLowerCase() === "income");
+
   return (
-    <details className="pacc">
+    <details className="pacc" open>
       <summary>
-        <span className="psec-t">Rental &amp; payment</span>
-        <PaymentBadge status={cur} />
+        <span className="psec-t">Sales</span>
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">
-        <div className="docrow" style={{ borderTop: "none" }}>
-          <span style={{ flex: 1, fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>Rental Payment</span>
-          {canWrite ? (
-            PAYMENT_OPTS.map(([v, label]) => {
-              const on = v === cur;
-              const tone = v === "not_started"
-                ? { bg: on ? "#f4f6f3" : "#fff", fg: "#767b6e" }
-                : v === "deposit_paid"
-                  ? { bg: on ? "#f6efd9" : "#fff", fg: "#6e4d12", border: "#e8dcc5" }
-                  : { bg: on ? "#e2f0e9" : "#fff", fg: "#2f8a5b", border: "#bcdcd7" };
-              return (
-                <button
-                  key={v}
-                  className="tinybtn"
-                  disabled={busy || on}
-                  style={{ background: tone.bg, color: tone.fg, borderColor: tone.border ?? "#d6d9d2", fontWeight: on ? 800 : 700 }}
-                  onClick={() => { void onSet(v); }}
-                >
-                  {label}
-                </button>
-              );
-            })
-          ) : (
-            <span className="pkv-v" style={{ marginTop: 0 }}>{humanize(cur)}</span>
-          )}
+        <div style={{ display: "flex", alignItems: "center", margin: "0 0 6px" }}>
+          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093" }}>Sales entries</span>
+          {canLogSale && <button className="tinybtn" style={{ marginLeft: "auto", color: "#16695f", borderColor: "#bcdcd7" }} disabled={busy} onClick={logSale}>+ Log sale</button>}
         </div>
+        {income.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#9aa093" }}>No sales recorded.</div>
+        ) : (
+          <div style={{ border: "1px solid #eceee9", borderRadius: 10, overflow: "hidden" }}>
+            {income.map((line, i) => (
+              <div key={`${line.source ?? "l"}-${line.id}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
+                <span style={{ flex: 1, minWidth: 90, fontSize: 12, color: "#414539" }}>{line.description || humanize(line.category || "sales")}</span>
+                <span className="money" style={{ fontSize: 12, fontWeight: 700, color: "#2f8a5b" }}>{formatCurrency(line.amount)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </details>
   );
@@ -2937,16 +2955,150 @@ function FloorPlans({
 }
 
 // ── Finance snapshot ──
+// Quick Total Sales — set project_finance.total_sales directly (mirror desktop
+// saveQuickTotal, Projects.tsx:9937-9954). PATCH /:id/finance requires
+// projects.write + finance visibility (denyFinance); the caller only mounts this
+// inside the finance-gated snapshot for a writer. Saves on blur / Enter.
+function QuickTotalSalesField({
+  projectId, current, busy, setBusy, notify, reload,
+}: {
+  projectId: number;
+  current: number | null;
+  busy: boolean;
+  setBusy: SetBusy;
+  notify: NotifyFn;
+  reload: () => void;
+}) {
+  const [val, setVal] = useState(current != null ? String(current) : "");
+  useEffect(() => {
+    setVal(current != null ? String(current) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
+
+  const save = async () => {
+    const trimmed = val.trim();
+    if (trimmed === "") return; // leave unset rather than forcing 0
+    const n = parseFloat(trimmed);
+    if (!Number.isFinite(n) || n < 0) {
+      await notify({ title: "Invalid amount", body: "Enter a valid total sales amount.", tone: "error" });
+      return;
+    }
+    if (current != null && Math.abs(n - current) < 0.005) return; // unchanged
+    setBusy(true);
+    try {
+      await api.patch(`/api/projects/${projectId}/finance`, { total_sales: n });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <label style={{ background: "#f4f6f3", borderRadius: 10, padding: 11, display: "block" }}>
+      <span className="pkv-l">Total sales (RM)</span>
+      <input
+        className="fld-i money"
+        type="number"
+        inputMode="decimal"
+        value={val}
+        placeholder="—"
+        disabled={busy}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+        style={{ marginTop: 4, width: "100%", boxSizing: "border-box" }}
+      />
+    </label>
+  );
+}
+
+// Quick Rental (RM) — writes a single `rental` cost line to the finance ledger
+// (mirror desktop QuickRentalField, Projects.tsx:5323-5392): keying rental here
+// syncs the Rental row, Total Cost, Net Profit + the Project List column.
+// POST/PATCH/DELETE /projects/finance/lines require projects.write + finance
+// visibility (denyFinance); the caller only mounts this inside the finance-gated
+// snapshot for a writer. Saves on blur / Enter.
+function QuickRentalField({
+  projectId, lines, busy, setBusy, notify, reload,
+}: {
+  projectId: number;
+  lines: FinanceLine[];
+  busy: boolean;
+  setBusy: SetBusy;
+  notify: NotifyFn;
+  reload: () => void;
+}) {
+  const existing = lines.filter(
+    (l) => (l.kind ?? "").toLowerCase() === "cost"
+      && (l.category ?? "").trim() === "rental"
+      && !pick(l.auto_source, l.autoSource),
+  );
+  const current = existing.reduce((s, l) => s + (l.amount || 0), 0);
+  const [val, setVal] = useState(current ? String(current) : "");
+  useEffect(() => {
+    setVal(current ? String(current) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
+
+  const save = async () => {
+    const trimmed = val.trim();
+    const n = trimmed === "" ? 0 : parseFloat(trimmed);
+    if (isNaN(n) || n < 0) {
+      await notify({ title: "Invalid amount", body: "Enter a valid rental amount.", tone: "error" });
+      return;
+    }
+    if (Math.abs(n - current) < 0.005) return; // unchanged
+    setBusy(true);
+    try {
+      if (n <= 0) {
+        for (const l of existing) await api.del(`/api/projects/finance/lines/${l.id}`);
+      } else if (existing.length === 1) {
+        await api.patch(`/api/projects/finance/lines/${existing[0].id}`, { amount: n });
+      } else {
+        // 0 existing → create; >1 → consolidate the duplicates into one.
+        for (const l of existing) await api.del(`/api/projects/finance/lines/${l.id}`);
+        await api.post(`/api/projects/${projectId}/finance/lines`, {
+          kind: "cost", category: "rental", amount: n, description: "Rental",
+        });
+      }
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <label style={{ background: "#f4f6f3", borderRadius: 10, padding: 11, display: "block" }}>
+      <span className="pkv-l">Rental (RM)</span>
+      <input
+        className="fld-i money"
+        type="number"
+        inputMode="decimal"
+        value={val}
+        placeholder="—"
+        disabled={busy}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+        style={{ marginTop: 4, width: "100%", boxSizing: "border-box" }}
+      />
+    </label>
+  );
+}
+
 function FinancialSnapshot({
-  projectId, finance, lines, canLogSale, busy, setBusy, prompt, notify, reload,
+  projectId, finance, lines, canWrite, busy, setBusy, notify, reload,
 }: {
   projectId: number;
   finance: NonNullable<ProjectDetail["finance"]>;
   lines?: FinanceLine[];
-  canLogSale: boolean;
+  canWrite: boolean;
   busy: boolean;
   setBusy: SetBusy;
-  prompt: PromptFn;
   notify: NotifyFn;
   reload: () => void;
 }) {
@@ -2959,38 +3111,8 @@ function FinancialSnapshot({
     setReceipt({ r2_key: key, content_type: mimeFromKey(key), caption: pick(line.file_name, line.fileName) ?? "Receipt" });
   };
 
-  // Quick-log a sale at the project (POST /api/sales/entries { quick_log }).
-  // Lands as a draft sales entry; surfaces as a synthetic income line.
-  const logSale = async () => {
-    const amtStr = await prompt({
-      title: "Sale amount (RM)",
-      placeholder: "0.00",
-      validate: (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? null : "Enter a positive number."; },
-    });
-    if (amtStr == null) return;
-    const ref = await prompt({ title: "Reference no. (optional)", placeholder: "e.g. INV-123" });
-    if (ref == null) return;
-    const today = todayInAppTz();
-    setBusy(true);
-    try {
-      await api.post(`/api/sales/entries`, {
-        project_id: projectId,
-        quick_log: true,
-        amount: parseFloat(amtStr),
-        ref_no: ref.trim() || null,
-        occurred_at: today,
-      });
-      reload();
-    } catch (e) {
-      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const allLines = lines ?? [];
   const costLines = allLines.filter((l) => (l.kind ?? "").toLowerCase() === "cost");
-  const incomeLines = allLines.filter((l) => (l.kind ?? "").toLowerCase() === "income");
   const sales = finance.total_sales ?? 0;
   const cost =
     (finance.rental ?? 0) +
@@ -3031,23 +3153,20 @@ function FinancialSnapshot({
             <div className="money" style={{ fontSize: 16, fontWeight: 800, color: netColor, marginTop: 3 }}>{marginPct == null ? "—" : `${marginPct.toFixed(1)}%`}</div>
           </div>
         </div>
-        {/* Sales / income lines — quick-log adds a draft sales entry which
-            surfaces here as a synthetic income line. Read-only otherwise. */}
-        <div style={{ display: "flex", alignItems: "center", margin: "12px 0 6px" }}>
-          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093" }}>Sales</span>
-          {canLogSale && <button className="tinybtn" style={{ marginLeft: "auto", color: "#16695f", borderColor: "#bcdcd7" }} disabled={busy} onClick={logSale}>+ Log sale</button>}
-        </div>
-        {incomeLines.length === 0 ? (
-          <div style={{ fontSize: 12, color: "#9aa093" }}>No sales recorded.</div>
-        ) : (
-          <div style={{ border: "1px solid #eceee9", borderRadius: 10, overflow: "hidden" }}>
-            {incomeLines.map((line, i) => (
-              <div key={`${line.source ?? "l"}-${line.id}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
-                <span style={{ flex: 1, minWidth: 90, fontSize: 12, color: "#414539" }}>{line.description || humanize(line.category || "sales")}</span>
-                <span className="money" style={{ fontSize: 12, fontWeight: 700, color: "#2f8a5b" }}>{formatCurrency(line.amount)}</span>
-              </div>
-            ))}
-          </div>
+        {/* Quick edit (finance write) — Total Sales PATCHes
+            project_finance.total_sales (mirror desktop saveQuickTotal:9937-9954);
+            Rental writes a `rental` cost line (mirror desktop
+            QuickRentalField:5323-5392). Both endpoints require projects.write +
+            finance visibility, which financeVisible + canWrite already satisfy,
+            so the control never 403s. */}
+        {canWrite && (
+          <>
+            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093", margin: "12px 0 6px" }}>Quick edit</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <QuickTotalSalesField projectId={projectId} current={finance.total_sales ?? null} busy={busy} setBusy={setBusy} notify={notify} reload={reload} />
+              <QuickRentalField projectId={projectId} lines={allLines} busy={busy} setBusy={setBusy} notify={notify} reload={reload} />
+            </div>
+          </>
         )}
 
         {/* Cost ledger — read-only snapshot. A stored receipt opens in the lightbox. */}
@@ -3174,19 +3293,6 @@ function MiniProgress({ pct }: { pct: number }) {
       <span className="tnum" style={{ fontSize: 11, fontWeight: 700, color: "var(--brand-d)" }}>{c}%</span>
     </span>
   );
-}
-
-function PaymentBadge({ status }: { status: string }) {
-  const s = status.toLowerCase();
-  const map: Record<string, [string, string]> = {
-    fully_paid: ["#e2f0e9", "#2f8a5b"],
-    paid: ["#e2f0e9", "#2f8a5b"],
-    pending: ["#f6efd9", "#6e4d12"],
-    unpaid: ["#f7e7e5", "#a13a34"],
-    na: ["#f4f6f3", "#767b6e"],
-  };
-  const [bg, fg] = map[s] ?? ["#f4f6f3", "#767b6e"];
-  return <span className="rbadge" style={{ marginLeft: "auto", background: bg, color: fg }}>{humanize(status).toUpperCase()}</span>;
 }
 
 function humanize(s: string): string {

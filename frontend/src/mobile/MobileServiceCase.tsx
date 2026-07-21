@@ -2694,12 +2694,26 @@ function PhotoGrid({
     }
   };
 
+  // Toggle customer-portal visibility (mirror desktop ServiceCases:3406-3414).
+  // A photo uploaded from the phone defaults to visible_to_customer=1, so
+  // without this the case's evidence photos leak to the customer portal.
+  const toggleVisibility = async (att: Any, visible: boolean) => {
+    const attId = Number(get(att, "id"));
+    if (!attId) return;
+    try {
+      await api.patch(`/api/assr/attachments/${attId}/visibility`, { visible_to_customer: visible });
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't update visibility", body: e?.message || "Please try again.", tone: "error" });
+    }
+  };
+
   return (
     <>
       <div className="fld-l" style={{ marginTop: 8 }}>{label} ({attachments.length})</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginTop: 6 }}>
         {attachments.map((att, i) => (
-          <AttachThumb key={get(att, "id") ?? i} att={att} onArchive={() => archive(att)} />
+          <AttachThumb key={get(att, "id") ?? i} att={att} onArchive={() => archive(att)} onVisibility={(v) => toggleVisibility(att, v)} />
         ))}
         <label style={{ border: `1px dashed ${accent}`, borderRadius: 11, aspectRatio: "1", background: FIELD_BG, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, cursor: uploading ? "default" : "pointer", opacity: uploading ? 0.6 : 1 }}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2889,12 +2903,17 @@ function MobileSupplierPick({ c, onChanged, notify, disabled }: { c: Any; onChan
 // Auth-fetched attachment thumbnail (blob URL) with a remove affordance.
 // Tapping an image or video opens the fullscreen viewer; videos defer
 // the blob fetch until then so lists don't pull whole files.
-function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
+function AttachThumb({ att, onArchive, onVisibility }: { att: Any; onArchive: () => void; onVisibility?: (visible: boolean) => void }) {
   const key = get(att, "r2Key", "r2_key");
   const contentType = String(get(att, "contentType", "content_type") ?? "");
   const isVideo = contentType.startsWith("video");
   const isPdf = contentType.includes("pdf");
   const [viewing, setViewing] = useState(false);
+  // Customer-portal visibility (mirror desktop ServiceCases AttachmentThumb):
+  // visible_to_customer defaults to 1, so a photo shot from the phone is
+  // customer-visible unless explicitly hidden. Without this toggle the mobile
+  // could only archive, never hide — a customer-facing data leak.
+  const visible = Number(get(att, "visibleToCustomer", "visible_to_customer") ?? 1) === 1;
 
   /* WO-7 — the GRID tile loads the light `.thumb` sibling; attachments
      uploaded before thumbnails shipped have none (404) and fall back to
@@ -2918,7 +2937,7 @@ function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
   return (
     <div
       onClick={() => { if (!isPdf) setViewing(true); }}
-      style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid ${DIM}`, cursor: isPdf ? "default" : "pointer" }}
+      style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid ${DIM}`, cursor: isPdf ? "default" : "pointer", opacity: visible ? 1 : 0.55 }}
     >
       {isVideo || isPdf ? (
         <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 3 }}>
@@ -2933,6 +2952,16 @@ function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
         <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
           <span style={{ fontSize: 9, color: GREY }}>…</span>
         </div>
+      )}
+      {onVisibility && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onVisibility(!visible); }}
+          aria-label={visible ? "Hide from customer" : "Show to customer"}
+          title={visible ? "Hide from customer" : "Show to customer"}
+          style={{ position: "absolute", top: 3, left: 3, height: 20, padding: "0 7px", borderRadius: 10, border: "none", background: visible ? "rgba(17,20,15,.55)" : TEAL, color: "#fff", fontSize: 9, fontWeight: 800, lineHeight: "20px", cursor: "pointer" }}
+        >
+          {visible ? "Hide" : "Show"}
+        </button>
       )}
       <button
         onClick={(e) => { e.stopPropagation(); onArchive(); }}
