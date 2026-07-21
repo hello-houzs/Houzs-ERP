@@ -113,6 +113,7 @@ function CompanyBadge({ code }: { code: string | null }) {
 const isAssr = (o: PlanningOrder): boolean => o.row_type === 'assr';
 /* DP-Order rows (manual setup / dismantle / supplier-pickup jobs). */
 const isDp = (o: PlanningOrder): boolean => o.row_type === 'dp';
+const isProject = (o: PlanningOrder): boolean => o.row_type === 'project';
 /* A friendly label for a DP job type — resolved from the SHARED canonical map
    (dpJobTypeLabel) so the board's Type chip and the New-DP-Order dropdown always
    read the same wording. Empty job_type falls back to a generic 'DP job'. */
@@ -140,6 +141,11 @@ function TypeChip({ order }: { order: PlanningOrder }) {
     label = dpLabel(order);
     tone = '#8a2f66';
     bg = 'rgba(166, 50, 107, 0.12)';
+  } else if (isProject(order)) {
+    // PMS project setup/dismantle — reuse the SETUP/DISMANTLE label, distinct tone.
+    label = dpLabel(order);
+    tone = '#1f5e73';
+    bg = 'rgba(31, 94, 115, 0.12)';
   } else if (isAssr(order)) {
     if (order.job_kind === 'customer_pickup') {
       label = 'Cust. pickup';
@@ -222,12 +228,12 @@ function StatusEditCell({ order, sched }: { order: PlanningOrder; sched: SchedMu
   const tone = DSTATE_TONE[order.delivery_state];
   /* ASSR + DP rows: the delivery-state override is not wired for these yet, so
      show the state read-only (as a tinted pill) instead of an editable select. */
-  if (isAssr(order) || isDp(order)) {
+  if (isAssr(order) || isDp(order) || isProject(order)) {
     return (
       <span
         className={styles.dstatePill}
         style={{ background: tone.bg, color: tone.fg }}
-        title={isDp(order) ? 'DP-job state (schedule it from the DP Order)' : 'Service-case state (override not wired for ASSR)'}
+        title={isProject(order) ? 'PMS project window — scheduled in Projects' : isDp(order) ? 'DP-job state (schedule it from the DP Order)' : 'Service-case state (override not wired for ASSR)'}
       >
         {DELIVERY_STATE_LABEL[order.delivery_state]}
       </span>
@@ -261,7 +267,7 @@ function ScheduleDateEditCell({ order, sched }: { order: PlanningOrder; sched: S
   /* DP-Order rows schedule through their own endpoint (mint the DP number from the
      assigned lorry), not the board's SO/ASSR date write-back. Show the requested
      date read-only here. */
-  if (isDp(order)) {
+  if (isDp(order) || isProject(order)) {
     return <span style={{ fontVariantNumeric: 'tabular-nums', color: '#767b6e' }}>{current || '—'}</span>;
   }
   const assr = isAssr(order);
@@ -299,6 +305,8 @@ const KEEP_CURRENT = '__current__';
 function DriverEditCell({ order, sched, drivers }: { order: PlanningOrder; sched: SchedMutation; drivers: DriverRow[] }) {
   /* Driver assignment is not wired for ASSR / DP rows yet → non-applicable. */
   if (isAssr(order) || isDp(order)) return <NotApplicable />;
+  /* PMS project rows are a read-only mirror — show the crew PMS assigned (edit in Projects). */
+  if (isProject(order)) return <span style={{ color: '#767b6e' }}>{order.crew?.driver_1_name || '—'}</span>;
   /* No driver_id on the row (crew carries names only) → preselect by matching the
      current driver_1_name against the option list. */
   const currentName = order.crew?.driver_1_name ?? '';
@@ -332,6 +340,8 @@ function DriverEditCell({ order, sched, drivers }: { order: PlanningOrder; sched
 function LorryEditCell({ order, sched, lorries }: { order: PlanningOrder; sched: SchedMutation; lorries: LorryRow[] }) {
   /* Lorry assignment is not wired for ASSR / DP rows yet → non-applicable. */
   if (isAssr(order) || isDp(order)) return <NotApplicable />;
+  /* PMS project rows are a read-only mirror — show the assigned lorry (edit in Projects). */
+  if (isProject(order)) return <span style={{ color: '#767b6e' }}>{order.crew?.lorry_plate || '—'}</span>;
   const currentPlate = order.crew?.lorry_plate ?? '';
   const matchedId = lorries.find((l) => l.plate === currentPlate)?.id ?? '';
   const offList = currentPlate !== '' && matchedId === '';
@@ -602,7 +612,7 @@ export const DeliveryPlanning = () => {
   const openRow = (o: PlanningOrder) => {
     // DP-Order rows have no SO/ASSR document to open (their so_doc_no is a
     // synthetic `DP:<id>` key) — no navigation.
-    if (isDp(o)) return;
+    if (isDp(o) || isProject(o)) return;
     if (isAssr(o)) {
       if (o.assr_id != null) navigate(`/assr/${o.assr_id}`);
     } else {
@@ -768,9 +778,9 @@ export const DeliveryPlanning = () => {
          two kinds read apart at a glance. */
       key: 'row_type', label: 'Type', width: 130, groupable: true,
       accessor: (o) => <TypeChip order={o} />,
-      searchValue: (o) => (isDp(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup customer pickup' : o.job_kind === 'inspection' ? 'Inspection' : 'Delivery') : 'SO delivery'),
-      groupValue: (o) => (isDp(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup' : o.job_kind === 'inspection' ? 'Inspection' : 'Delivery') : 'SO delivery'),
-      exportValue: (o) => (isDp(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup' : o.job_kind === 'inspection' ? 'Inspection' : 'Delivery') : 'SO delivery'),
+      searchValue: (o) => (isDp(o) || isProject(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup customer pickup' : o.job_kind === 'inspection' ? 'Inspection' : 'Delivery') : 'SO delivery'),
+      groupValue: (o) => (isDp(o) || isProject(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup' : o.job_kind === 'inspection' ? 'Inspection' : 'Delivery') : 'SO delivery'),
+      exportValue: (o) => (isDp(o) || isProject(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup' : o.job_kind === 'inspection' ? 'Inspection' : 'Delivery') : 'SO delivery'),
     },
     {
       /* SO No. for SO rows; the ASSR ref (assr_no) for service-case rows. */
@@ -1327,12 +1337,12 @@ export const DeliveryPlanning = () => {
         onRowDoubleClick={openRow}
         expandable={{
           /* Line-item drill-down is SO-only (ASSR rows carry no SO lines). */
-          renderExpansion: (row) => (isAssr(row) || isDp(row) ? null : <PlanningExpandedLines docNo={row.so_doc_no} />),
+          renderExpansion: (row) => (isAssr(row) || isDp(row) || isProject(row) ? null : <PlanningExpandedLines docNo={row.so_doc_no} />),
           /* Falsy key suppresses the expand chevron for ASSR rows. */
-          rowExpansionKey: (row) => (isAssr(row) || isDp(row) ? '' : row.so_doc_no),
+          rowExpansionKey: (row) => (isAssr(row) || isDp(row) || isProject(row) ? '' : row.so_doc_no),
         }}
         rowStyle={(o) => (o.region === 'SG' ? { boxShadow: 'inset 3px 0 0 #2f5d4f' } : undefined)}
-        contextMenu={(row) => (isDp(row)
+        contextMenu={(row) => (isProject(row) ? [] : isDp(row)
           ? [
               ...(!row.dp_no ? [{ label: 'Schedule…', onClick: () => setSchedulingDp(row) }] : []),
               { label: 'Cancel job', onClick: () => void cancelDpRow(row) },

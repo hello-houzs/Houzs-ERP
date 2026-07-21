@@ -40,7 +40,7 @@ export type RegionKey = 'ALL' | RegionCode;
 /* A board row is either a Sales-Order delivery (the original rows) or a
    Service-Case (ASSR) job. row_type discriminates; it defaults to 'so' for the
    long-standing SO rows (the backend now stamps it explicitly on every row). */
-export type PlanningRowType = 'so' | 'assr' | 'dp';
+export type PlanningRowType = 'so' | 'assr' | 'dp' | 'project';
 /* ASSR job kind (only meaningful when row_type === 'assr'). */
 export type AssrJobKind = 'customer_pickup' | 'delivery' | 'inspection';
 

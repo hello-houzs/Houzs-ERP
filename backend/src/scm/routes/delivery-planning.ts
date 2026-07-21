@@ -849,7 +849,7 @@ deliveryPlanning.get('/', async (c) => {
       // Row discriminator + ASSR-parity fields. SO rows are always 'so' with no
       // Service-Case ref / job_kind. ADDITIVE — every existing SO field below is
       // untouched (see the ASSR union after this map for the 'assr' rows).
-      row_type: 'so' as 'so' | 'assr' | 'dp',
+      row_type: 'so' as 'so' | 'assr' | 'dp' | 'project',
       ref: null as string | null,
       job_kind: null as 'customer_pickup' | 'delivery' | 'inspection' | null,
       // DP-Order job type (DELIVERY/PICKUP/SERVICE/SETUP/DISMANTLE/SUPPLIER_PICKUP)
@@ -1216,7 +1216,133 @@ deliveryPlanning.get('/', async (c) => {
     console.warn(`[delivery-planning] DP-order union skipped: ${String((e as Error).message).slice(0, 120)}`);
   }
 
-  const allOrders = [...orders, ...assrOrders, ...dpBoardRows];
+  /* ── PMS project SETUP / DISMANTLE union (READ-ONLY mirror) ───────────────────
+     The fleet (drivers / lorries) is SHARED across deliveries, service cases AND
+     exhibition projects, so a project's setup / dismantle window is a real fleet
+     commitment the coordinator must SEE to avoid double-booking a lorry. This is a
+     read-only mirror of what the PMS module already schedules (projects.setup_* /
+     dismantle_*): scheduling + crew assignment stay in PMS, which owns that editor
+     and its permission gates (SETUP_DISMANTLE). One row per SET window (a project
+     with both a setup and a dismantle date shows two rows). Fleet is company-shared
+     so this is intentionally NOT company-scoped. public.projects → c.env.DB raw SQL
+     (same path as the ASSR union). Defensive: any failure logs + leaves the rest. */
+  const projectOrders: BoardRow[] = [];
+  try {
+    const projRows = await c.env.DB.prepare(
+      `SELECT p.id AS id, p.code AS code, p.name AS name,
+              p.venue AS venue, p.venue_address AS venue_address, p.state AS state,
+              p.setup_start_at     AS setup_start_at,
+              p.dismantle_start_at AS dismantle_start_at,
+              sd.name  AS setup_driver_name,     sl.plate AS setup_lorry_plate,
+              dd.name  AS dismantle_driver_name, dl.plate AS dismantle_lorry_plate
+         FROM projects p
+         LEFT JOIN users   sd ON sd.id = p.setup_driver_user_id
+         LEFT JOIN lorries sl ON sl.id = p.setup_lorry_id
+         LEFT JOIN users   dd ON dd.id = p.dismantle_driver_user_id
+         LEFT JOIN lorries dl ON dl.id = p.dismantle_lorry_id
+        WHERE p.archived_at IS NULL
+          AND (p.setup_start_at IS NOT NULL OR p.dismantle_start_at IS NOT NULL)`,
+    ).all<{
+      id: number | null; code: string | null; name: string | null;
+      venue: string | null; venue_address: string | null; state: string | null;
+      setup_start_at: string | null; dismantle_start_at: string | null;
+      setup_driver_name: string | null; setup_lorry_plate: string | null;
+      dismantle_driver_name: string | null; dismantle_lorry_plate: string | null;
+    }>();
+
+    for (const p of (projRows.results ?? [])) {
+      const stateRegions = stateToRegionsFromConfig(regionCfg, p.state, null);
+      const primaryRegion = stateRegions[0] ?? FALLBACK_DEFAULT_REGION;
+      const regionSet = new Set<Region>(stateRegions);
+      const address = p.venue_address ?? p.venue ?? null;
+      const partyName = p.venue ?? p.name ?? null;
+
+      // One row per SET window; job type reuses the DP SETUP/DISMANTLE vocabulary
+      // so the board's Type chip labels it via the same dpJobTypeLabel map.
+      const legs: Array<{ jobType: 'SETUP' | 'DISMANTLE'; date: string; driver: string | null; lorry: string | null }> = [];
+      if (p.setup_start_at)     legs.push({ jobType: 'SETUP',     date: String(p.setup_start_at).slice(0, 10),     driver: p.setup_driver_name,     lorry: p.setup_lorry_plate });
+      if (p.dismantle_start_at) legs.push({ jobType: 'DISMANTLE', date: String(p.dismantle_start_at).slice(0, 10), driver: p.dismantle_driver_name, lorry: p.dismantle_lorry_plate });
+
+      for (const leg of legs) {
+        const rowKey = `PRJ:${String(p.id)}#${leg.jobType}`;
+        projectOrders.push({
+          row_type: 'project',
+          ref: p.code ?? null,
+          job_kind: null,
+          dp_job_type: leg.jobType,
+          dp_no: null,
+          assr_id: null,
+          so_doc_no: rowKey,
+          debtor_code: null,
+          debtor_name: partyName,
+          phone: null,
+          branding: null,
+          status: 'PROJECT',
+          // Read-only mirror: a project window is already crewed in PMS → it's a
+          // committed fleet job, so it surfaces under Pending Delivery.
+          delivery_state: 'PENDING_DELIVERY',
+          delivery_state_override: null,
+          balance_centi: 0,
+          balance_centi_live: null,
+          local_total_centi: 0,
+          release_gate: (() => {
+            const g = computeReleaseGate({ totalCenti: 0, paidCenti: 0 });
+            return { decision: g.decision, remaining_centi: g.remainingCenti, collect_on_delivery_centi: g.collectOnDeliveryCenti, reason: 'PMS project — no order balance' };
+          })(),
+          so_date: null,
+          processing_date: null,
+          customer_delivery_date: leg.date,
+          amend_date_from_customer: null,
+          amended_delivery_date: leg.date,
+          amend_reason: null,
+          effective_delivery_date: leg.date,
+          internal_expected_dd: leg.date,
+          days_left: daysBetween(today, leg.date),
+          address,
+          postcode: null,
+          building_type: null,
+          possession_date: null,
+          house_type: null,
+          replacement_disposal: null,
+          referral: null,
+          time_range: null,
+          time_confirmed: null,
+          arrival_at: null,
+          departure_at: null,
+          shipout_date: null,
+          customer_delivered_date: null,
+          eta_arriving_port: null,
+          delivery_substatus: null,
+          arrives_em_warehouse_date: null,
+          do_date: null,
+          stock_status: null,
+          stock_remark: null,
+          is_main_ready: null,
+          company_code: null,
+          region: primaryRegion,
+          regions: [...regionSet],
+          warehouse_id: null,
+          warehouse_code: null,
+          warehouse_name: null,
+          customer_state: p.state ?? null,
+          delivered_qty: 0,
+          remaining_qty: 0,
+          // Show the crew PMS already assigned to this window (read-only on the board).
+          crew: (leg.driver || leg.lorry) ? {
+            driver: leg.driver, helper: null, lorry: leg.lorry,
+            driver_1_name: leg.driver, driver_1_ic: null, driver_1_contact: null,
+            driver_2_name: null, helper_1_name: null, helper_2_name: null,
+            lorry_plate: leg.lorry,
+          } : null,
+          delivery_orders: [],
+        });
+      }
+    }
+  } catch (e) {
+    console.warn(`[delivery-planning] project union skipped: ${String((e as Error).message).slice(0, 120)}`);
+  }
+
+  const allOrders = [...orders, ...assrOrders, ...dpBoardRows, ...projectOrders];
 
   /* 7c. PER-ASSIGNEE ROW SCOPE. For a self-scoped caller (Driver/Helper), keep
         ONLY the rows assigned to them; unassigned rows and other crews' jobs drop
