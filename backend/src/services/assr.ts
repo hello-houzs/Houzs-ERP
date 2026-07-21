@@ -277,12 +277,18 @@ async function fetchScmSoContext(
   docNo: string
 ): Promise<{ context: Record<string, unknown>; company_id: number | null } | null> {
   try {
+    // 2990 SOs leave the free-text `agent` blank and carry the rep as
+    // salesperson_id -> scm.staff, so COALESCE to that name — else a 2990
+    // case's Sales Agent lands empty. (No `--` comments inside the SQL: the
+    // d1-compat shim folds it to one line and would comment out the tail.)
     const row = await env.DB.prepare(
-      `SELECT debtor_name, phone, sales_location, agent, ref,
-              address1, address2, address3, address4, company_id
-         FROM scm."mfg_sales_orders"
-        WHERE LOWER(doc_no) = LOWER(?)
-          AND status <> 'DRAFT' AND status <> 'CANCELLED'
+      `SELECT o.debtor_name, o.phone, o.sales_location,
+              COALESCE(NULLIF(o.agent, ''), sp.name) AS agent,
+              o.ref, o.address1, o.address2, o.address3, o.address4, o.company_id
+         FROM scm."mfg_sales_orders" o
+         LEFT JOIN scm.staff sp ON sp.id = o.salesperson_id
+        WHERE LOWER(o.doc_no) = LOWER(?)
+          AND o.status <> 'DRAFT' AND o.status <> 'CANCELLED'
         LIMIT 1`
     )
       .bind(docNo)
