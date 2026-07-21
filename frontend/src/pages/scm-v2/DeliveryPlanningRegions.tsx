@@ -1,11 +1,13 @@
 // ----------------------------------------------------------------------------
 // Delivery Planning Regions — the owner-maintained MASTER for the Delivery
-// Planning board's region tabs (migration 0198 / route
+// Planning board's region tabs (migration 0053 / route
 // delivery-planning-regions.ts). One simple master editor: list the region
 // buckets (Code · Name · Sort · Active) with create / edit-in-place / delete.
 //
-// Seeded rows are KL / Penang / EM / SG; the owner adds more here and they show
-// up automatically as tabs on Delivery Planning (the board reads this master).
+// The live buckets are the owner-maintained geographic regions (Klang Valley /
+// Northern / Southern / East Coast / East Malaysia); the owner adds more here and
+// they show up automatically as tabs on Delivery Planning (the board reads this
+// master).
 // Per-state → region(s) assignment lives in SO Maintenance (the multi-select),
 // not here — this page only owns the bucket list itself.
 //
@@ -224,7 +226,7 @@ export const DeliveryPlanningRegions = () => {
         searchPlaceholder="Search regions…"
         groupBanner={false}
         isLoading={regions.isLoading}
-        emptyMessage="No regions yet — add KL / Penang / EM / SG to get started."
+        emptyMessage="No regions yet — add your delivery buckets (e.g. Klang Valley / Northern / Southern) to get started."
       />
 
       {creating && <CreateRegionDrawer onClose={() => setCreating(false)} nextSort={(regions.data?.reduce((m, r) => Math.max(m, sortOrderOf(r)), 0) ?? 0) + 1} />}

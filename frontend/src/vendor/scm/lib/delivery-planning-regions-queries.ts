@@ -1,7 +1,7 @@
 // Vendored from apps/backend/src/lib/delivery-planning-regions-queries.ts —
 // Delivery Planning Regions CONFIG hooks for the owner-maintained region master
 // + the per-state → region(s) multi-mapping that drives the Delivery Planning
-// board's tabs (migration 0198 / route delivery-planning-regions.ts).
+// board's tabs (migration 0053 / route delivery-planning-regions.ts).
 //
 // Two surfaces:
 //   • the region MASTER (delivery_planning_regions) — code / name / sortOrder /
