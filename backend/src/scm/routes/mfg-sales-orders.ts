@@ -5926,9 +5926,39 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
        an SO whose State was filled in / corrected AFTER creation kept its lines'
        warehouse_id NULL → "—" in MRP. Backfill the warehouse onto lines that
        don't have one yet (NULL only — explicit per-line overrides untouched).
-       Wei Siang 2026-06-16. */
+       Wei Siang 2026-06-16.
+
+       CONFLICT BLOCK (owner 2026-07-22 — 'supplier 就会发错货给我'): if any
+       non-cancelled line has ALREADY been bound to a warehouse (typically
+       because a PO / DO was cut against it), a State change that would move
+       it to a different warehouse creates a real risk: the SO header says
+       new State + new warehouse, but the downstream PO still targets the OLD
+       warehouse, so the supplier ships to the wrong place. Detect the
+       mismatch BEFORE we mutate anything, 409 with the offending line codes
+       + old + new warehouse. Operator must resolve manually (cancel the PO,
+       or move the SO line's warehouse deliberately). NULL lines are still
+       auto-rebound below — this only guards non-NULL overrides. */
     const reboundWh = await deriveWarehouseIdFromState(sb, body['customerState'] as string | null, c);
     if (reboundWh) {
+      const { data: mismatchRows } = await sb
+        .from('mfg_sales_order_items')
+        .select('item_code, warehouse_id')
+        .eq('doc_no', docNo)
+        .eq('cancelled', false)
+        .not('warehouse_id', 'is', null)
+        .neq('warehouse_id', reboundWh);
+      const conflicts = (mismatchRows ?? []) as Array<{ item_code: string; warehouse_id: string }>;
+      if (conflicts.length > 0) {
+        return c.json({
+          error: 'state_change_conflicts_line_warehouse',
+          reason:
+            'One or more lines are already bound to a different warehouse (usually because a PO / DO was cut). ' +
+            'Changing the State would leave the downstream doc targeting the old warehouse — supplier could ship to the wrong place. ' +
+            'Cancel the affected downstream doc, or move each line to the new warehouse explicitly, then retry.',
+          newWarehouseId: reboundWh,
+          offenders: conflicts.map((r) => ({ itemCode: r.item_code, currentWarehouseId: r.warehouse_id })),
+        }, 409);
+      }
       await sb
         .from('mfg_sales_order_items')
         .update({ warehouse_id: reboundWh })
