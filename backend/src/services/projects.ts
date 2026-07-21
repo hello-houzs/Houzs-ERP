@@ -1658,12 +1658,11 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                      AND c.section_id = s.id
                      AND c.status NOT IN ('done', 'na')
                 )) as sections_complete,
-            -- Sales-only progress (owner 2026-07-21): the sales cohort's list
-            -- row shows progress over THEIR deliverables (role_label
-            -- 'SALES PIC'), not the admin sections. A task counts as done when
-            -- its status is done/na OR it already carries a live attachment —
-            -- the same signal as the mobile tile badges (sales have no tick
-            -- circles; uploads ARE their completion signal).
+            -- Sales-only progress (owner 2026-07-21). Counts over SALES PIC
+            -- badged tasks; done = status done/na or a live attachment exists
+            -- (uploads are the sales completion signal). NOTE keep these SQL
+            -- comments free of apostrophes / quoted words: the D1-to-PG shim
+            -- mis-scans quotes inside comments and 500s the whole list query.
             (SELECT COUNT(*) FROM project_checklist c
               WHERE c.project_id = p.id
                 AND c.role_label = 'SALES PIC') as sales_tasks_total,
