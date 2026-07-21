@@ -13,6 +13,35 @@ if (!src || !dst) {
   console.error('usage: node scripts/copy-pg-to-pg.mjs "<src url>" "<dst url>"');
   process.exit(2);
 }
+
+/* PROD GUARD — this script TRUNCATEs every public table in the TARGET before
+   refilling it. Its sibling load-d1-dump-to-pg.mjs carries the same guard, and
+   it carries it because that script once wiped production (2026-06-17; see
+   docs/prod-wipe-by-loader-coe.md). This one is the runbook's NEXT step and had
+   no guard at all, which is the same accident waiting on a different line.
+
+   Deliberately narrow: it refuses a PROD TARGET only. A prod SOURCE is a
+   read-only copy-from and stays allowed — that is the normal way to seed a
+   staging environment, and blocking it would push operators into editing the
+   script, which is worse.
+
+   Known limit, inherited from the sibling and worth naming rather than hiding:
+   the project ref is HARDCODED and substring-matched, so this FAILS OPEN for
+   any future production project. It stops the accident we have actually had;
+   it is not a security control. */
+const PROD_REF = "anogrigyjbduyzclzjgn";
+if (dst.includes(PROD_REF) && process.env.ACK_PROD_WIPE !== "yes") {
+  console.error(
+    `REFUSING: the TARGET is PROD (${PROD_REF}). This script TRUNCATEs every public\n` +
+      "table in the target before copying. If you truly mean to overwrite production,\n" +
+      "set ACK_PROD_WIPE=yes.",
+  );
+  process.exit(1);
+}
+if (src === dst) {
+  console.error("REFUSING: source and target are the same database — this would TRUNCATE the data it is about to read.");
+  process.exit(1);
+}
 const S = postgres(src, { ssl: "require", prepare: false, max: 1 });
 const D = postgres(dst, { ssl: "require", prepare: false, max: 1 });
 
