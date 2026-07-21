@@ -1,0 +1,318 @@
+# Module: Purchase Order (SCM)
+
+Per-module technical doc — the data flow from the screen down to the database,
+plus the performance characteristics. Sibling of `sales-order.md`; the PO is the
+BUY side of the same doc-machinery (list hook → `/api/scm/<doc>` handler →
+`scm.<doc>` tables).
+
+> Convention: money is in **sen** (integer cents) end-to-end. Dates are stored
+> UTC, displayed DD/MM/YYYY. All reads/writes go through `/api/scm/*`.
+>
+> Line references are against `main` @ `8f8427ed`.
+
+Doc-flow position: **SO → PO → GRN → PI**. The PO is the only document in that
+chain that moves **no stock at all** (see §5).
+
+---
+
+## 1. Frontend
+
+### Screens
+| Surface | File | Notes |
+|---------|------|-------|
+| Desktop list | `frontend/src/pages/scm-v2/PurchaseOrdersListV2.tsx` | Server-paginated, `pageSize = 50` fixed (`:584`), page index in `?page=`. Renders the server page verbatim — no client re-filter. |
+| Desktop detail (read) | `frontend/src/pages/scm-v2/PurchaseOrderDetailV2.tsx` | **READ-ONLY by design** (`:334`). A thin router: `?edit=1` forwards to the legacy editor (`:351`). |
+| Desktop detail (edit) | `frontend/src/pages/scm-v2/PurchaseOrderDetail.tsx` | The inline editor + the SO-amendment "Revision ready" banner + Revisions tab. Lazy-loaded (`PurchaseOrderDetailV2.tsx:341`). |
+| Desktop new | `frontend/src/pages/scm-v2/PurchaseOrderNew.tsx` | |
+| Desktop from-SO | `frontend/src/pages/scm-v2/PurchaseOrderFromSo.tsx` | Multi-select picker over `/outstanding-so-items`. |
+| Mobile list | `frontend/src/mobile/MobileModuleList.tsx` | Generic screen; the PO config is `MODULE_CONFIGS["mfg-purchase-orders"]` (`:1198-1237`). |
+| Mobile detail | `frontend/src/mobile/MobileModuleDetail.tsx` | Generic; PO config `:354`, PO status actions `:515-532`. |
+| Mobile convert (SO→PO) | `frontend/src/mobile/MobileConvertWizard.tsx` | `target = "po"` (`:75`). |
+
+Desktop routes are declared in `frontend/src/App.tsx:516-519`, all behind
+`<ScmGuard area="scm.procurement.po">`.
+
+### Data hooks
+`frontend/src/vendor/scm/lib/suppliers-queries.ts` — the PO hook block was
+vendored into the Suppliers slice, **not** a `purchase-order-queries.ts` (see the
+banner at `:487-494`). This is the single most common wrong guess about this module.
+
+- `usePurchaseOrdersPaged({page,pageSize,status,supplierId,q,sort})` (`:523`) — what
+  the desktop list actually uses.
+  - `queryKey: ['mfg-purchase-orders-paged', page, pageSize, status, supplierId, q, sort]`
+  - `placeholderData: (prev) => prev`, `staleTime: 30_000`.
+  - Returns the whole envelope so the page can read `.purchaseOrders` **and**
+    `.statusCounts`.
+- `usePurchaseOrders({status?, supplierId?})` (`:496`) — the legacy unpaginated
+  hook, `queryKey: ['mfg-purchase-orders', status ?? 'all', supplierId ?? 'all']`.
+  Still used by `GrnNew.tsx:156`.
+- `usePurchaseOrderDetail(id)` (`:542`) — `['mfg-purchase-order-detail', id]`,
+  `enabled: Boolean(id)`.
+- `fetchPurchaseOrderDetail(id)` (`:555`) — plain non-hook fetch for batch print.
+- `useOutstandingSoItems()` (`:627`) — `['mfg-purchase-orders', 'outstanding-so-items']`.
+- Mutations invalidate `['mfg-purchase-orders']` (e.g. `:693`, `:842`) and force a
+  refetch of the picker key (`:845`).
+
+### Caching / loading behaviour
+Same three layers as the SO module (`docs/modules/sales-order.md` §1), with two
+PO-specific facts:
+
+1. **The paged list is NOT persisted to localStorage.**
+   `frontend/src/lib/query-persist.ts:92-98` whitelists the entity
+   `"mfg-purchase-orders"`; the desktop list's key is
+   `"mfg-purchase-orders-paged"`, which is a *different* first segment and so
+   fails `isListKey` (`:113`). A cold open of the PO list therefore shows a real
+   load, unlike the SO list.
+2. **Mobile's shared-invalidation entry omits the paged root.**
+   `frontend/src/mobile/sharedInvalidate.ts:71` maps `"mfg-purchase-orders"` to
+   `["mfg-purchase-orders", "mfg-purchase-order-detail"]` — no
+   `"mfg-purchase-orders-paged"`, unlike the DO / SI / GRN entries either side of
+   it (`:69-72`). A mobile PO status change does not invalidate the desktop
+   paged list. Stated as observed, not as a recommendation.
+
+---
+
+## 2. API surface
+
+All under `backend/src/scm/routes/mfg-purchase-orders.ts`, mounted at
+`/api/scm/mfg-purchase-orders` (`backend/src/scm/index.ts:237`) behind
+`scmAreaGuard('scm.procurement.po')` (`:236`) — GET needs `view`, writes need
+`edit` on that area.
+
+| Method | Path | Line | Purpose |
+|--------|------|------|---------|
+| GET | `/` | `:374` | List. `?page=` opts into pagination + `statusCounts`; without it the legacy `{ purchaseOrders }` array. |
+| GET | `/outstanding-so-items` | `:537` | SO lines still convertible (`qty - po_qty_picked > 0`) — the From-SO picker. |
+| GET | `/:id` | `:693` | Header + items + `has_children`. |
+| GET | `/:id/linked` | `:859` | Downstream GRNs / PIs / PRs (three parallel reads). |
+| GET | `/:id/revisions` | `:896` | `po_revisions` snapshots for the Revisions tab. |
+| POST | `/` | `:911` | Create (`asDraft: true` → DRAFT, else SUBMITTED). |
+| POST | `/from-sos` | `:2139` | Batch convert whole SOs; groups by supplier, can emit N POs. |
+| POST | `/:id/convert-from-so` | `:2694` | Append SO lines onto an existing PO. |
+| PATCH | `/:id` | `:2219` | Header edit. |
+| POST/PATCH/DELETE | `/:id/items[/:itemId]` | `:2400` / `:2504` / `:2619` | Line CRUD. |
+| PATCH | `/:id/submit` | `:2904` | Legacy no-op/echo — returns 409 unless already SUBMITTED. |
+| PATCH | `/:id/confirm` | `:2998` | **The commit**: DRAFT → SUBMITTED. |
+| POST | `/:id/send-to-supplier` | `:3019` | Email the PO PDF. Fail-closed on the `purchase_order` email channel (`:3032`). |
+| PATCH | `/:id/cancel` | `:3182` | → CANCELLED; releases SO quota. |
+| PATCH | `/:id/reopen` | `:3276` | CANCELLED → SUBMITTED; re-claims SO quota. |
+| DELETE | `/:id` | `:3345` | Hard delete, **CANCELLED only** (`:3362`). |
+
+Auth note (same as SO): inside `/api/scm/*`, `user.id` is the caller's **scm.staff
+UUID**; use `houzsUser.id` for the public bigint.
+
+---
+
+## 3. Backend
+
+### The list handler — `mfgPurchaseOrders.get('/')` (`:374-520`)
+
+1. **Select** (`:387`) — one PostgREST query with three embeds:
+   `supplier:suppliers(...)`, `items:purchase_order_items(material_code, material_name, qty)`
+   (the per-row item summary), and `purchase_location:warehouses!purchase_location_id(...)`.
+2. **Two paths, chosen by the presence of `page`** (`:394-395`).
+   - Legacy (`:404-419`): `order po_date desc, created_at desc`, `.limit(500)`,
+     `status` matched against `VALID_STATUSES` (`:285`), optional `supplierId`,
+     `scopeToCompany`.
+   - Paginated (`:420-483`): `pageSize` clamped to 1..100 (default 50), sort
+     whitelist `po_date | po_number | status | total_centi` (`:426`) with
+     `po_number` as the unique tiebreaker (`:433`), bucket resolution via
+     `PO_STATUS_BUCKETS` (`:292-298`), `q` ilike over `po_number` + `notes` only
+     (`:448` — supplier name is an embedded resource and cannot be `ilike`d),
+     `from`/`to` on `po_date`, `.range(...)`.
+   - `statusCounts` = six `head:true count:'exact'` queries in one `Promise.all`
+     (`:467-474`), over the same company + supplier filter but **without** status,
+     search or paging.
+3. **Enrichment — exactly ONE extra query** (`:496-512`): all non-cancelled GRNs
+   for the listed PO ids, carrying `grn_number`. It powers both `has_children`
+   (the downstream lock) and the "Transfer To (GRN)" column, so the two are one
+   round trip.
+4. **Assemble** (`:513-517`) — `has_children` + `transfer_to_grns` stamped per row;
+   response is `{ purchaseOrders }` or `{ purchaseOrders, total, page, pageSize, statusCounts }`.
+
+### Main mutation paths
+
+- **Create** (`:911`). `asDraft === true` lands `status: 'DRAFT'` with
+  `submitted_at: null` (`:1065-1071`); otherwise SUBMITTED. `recomputeSoPicked`
+  runs only on the non-draft path (`:1142`). Both create paths delete the header
+  again if the line insert fails, which is why `recordPoCreate` (`:174`) re-reads
+  the persisted row instead of echoing the payload.
+- **Confirm** (`confirmMfgPurchaseOrderHandler`, `:2928`). DRAFT → SUBMITTED:
+  stamps `submitted_at`, writes a `POST` audit row, then runs `recomputeSoPicked`
+  best-effort (`:2983-2989`). Idempotent on SUBMITTED / PARTIALLY_RECEIVED
+  (`:2943`); rejects anything else with 409.
+- **Cancel** (`:3182`). Refuses RECEIVED (`:3200`); idempotent on CANCELLED;
+  then two locks — `poHasDownstream` (`:3208`) and `poHasOutstandingDropshipOut`
+  (`:3214`). Releases every converted SO line's quota via `recomputeSoPicked`
+  (`:3251-3259`).
+- **Reopen** (`:3276`). CANCELLED → SUBMITTED only (`:3294`); re-claims the quota.
+- **Delete** (`:3345`). CANCELLED only; items cascade by FK (`:3376`); the audit
+  row snapshots number/supplier/total because nothing can be joined back to
+  afterwards (`:3380-3400`).
+
+### The two guards worth knowing
+
+- `poHasDownstream(sb, poId)` (`:226-235`) — any non-cancelled GRN on this PO ⇒
+  header edit, line add/edit/delete and cancel all 409. Convert-to-GRN is
+  deliberately **not** gated, so partial receiving keeps working.
+- `poHasOutstandingDropshipOut(sb, poNumber)` (`:252-283`) — reads
+  `inventory_movements` for `OUT / source_doc_type 'DO' / batch_no = this PO's number`.
+  A drop-ship DO ships against the PO's *expected* batch before receipt; cancelling
+  the PO would strand that OUT with no incoming batch. Best-effort: a read error
+  or a missing `batch_no` column returns `null` (no block).
+- `SO_UNORDERABLE_STATUSES = {DRAFT, CANCELLED, ON_HOLD}` (`:312`) — a PO line
+  sourced from an SO in any of those is refused (`firstUnorderableSo`, `:313`).
+  A purely manual line with no SO link skips the check entirely.
+
+### The SO-quota counter — `recomputeSoPicked` (`:2352-2398`)
+
+Live-count, not arithmetic: it re-sums `purchase_order_items.qty` per
+`so_item_id` and writes `mfg_sales_order_items.po_qty_picked`. Two exclusions
+matter: lines with `from_mrp === true` never lock the SO line (`:2372`), and
+POs whose status is `CANCELLED` **or `DRAFT`** are excluded (`:2384`). Best-effort
+throughout — it logs and skips, because the primary write already committed.
+
+---
+
+## 4. Database
+
+Schema `scm`. Baseline DDL: `backend/scripts/scm-schema/2990s-full-schema.sql:1150`
+(`purchase_orders`) and `:1103` (`purchase_order_items`); later columns arrive via
+`backend/src/db/migrations-pg/`. The authoritative in-code column lists are
+`HEADER_COLS` (`mfg-purchase-orders.ts:342-355`) and `ITEM_COLS` (`:357-371`) —
+those are what the route actually selects.
+
+| Table | Role |
+|-------|------|
+| `scm.purchase_orders` | PO header. `po_number` (UNIQUE), `supplier_id`, `status`, `po_date`, `expected_at`, `purchase_location_id` (FK → `warehouses.id`), `currency`, `subtotal_centi` / `tax_centi` / `total_centi`, `submitted_at` / `received_at` / `cancelled_at`, `revision`, `supplier_delivery_date_2..4`, `company_id`. |
+| `scm.purchase_order_items` | PO lines. `binding_id`, `material_kind` / `material_code` / `material_name`, `supplier_sku`, `qty`, `received_qty`, `unit_price_centi`, `discount_centi`, `line_total_centi`, `unit_cost_centi`, variant columns (`item_group`, `variants`, `gap_inches`, `divan_*`, `leg_*`, `custom_specials`, `line_suffix`, `special_order_price_sen`), `delivery_date`, `warehouse_id`, `supplier_delivery_date_2..4`, `so_item_id`, `from_mrp`. |
+| `scm.po_revisions` | Full header+items snapshot per revision, keyed `(po_id, revision)`. Written by `snapshotPo` / `reviseBoundPo` (`backend/src/scm/lib/so-revision.ts:595`, `:725`). |
+| `scm.mfg_sales_order_items` | Upstream. `po_qty_picked` is written by this module. |
+| `scm.grns` | Downstream. `purchase_order_id` is the lock's join column. |
+
+Note on migration numbers: several in-code comments cite the **2990 source repo's**
+numbering, which does not line up with `backend/src/db/migrations-pg/`. Verified
+matches: `0082_scm_fx_landed_cost.sql`, `0143_scm_do_ship_cost_snapshot.sql`,
+`0154_scm_oversell_retrocost.sql`. Do not trust a bare "migration NNNN" in a
+comment without checking the filename.
+
+### Status vocabulary
+
+`VALID_STATUSES` (`:285`): `DRAFT | SUBMITTED | PARTIALLY_RECEIVED | RECEIVED | CANCELLED`.
+Filter-pill buckets (`:292-298`) are all 1:1 but the KEYS differ from the raw
+status: `draft→DRAFT`, `open→SUBMITTED`, `partial→PARTIALLY_RECEIVED`,
+`received→RECEIVED`, `cancelled→CANCELLED`.
+
+`PARTIALLY_RECEIVED` / `RECEIVED` are **not** set by this module — they are
+derived by `recomputePoReceived` in `grns.ts:672-733` from live GRN lines
+(`:719-728`), and it never resurrects a CANCELLED PO (`:731`).
+
+---
+
+## 5. Stock direction
+
+**A Purchase Order moves NO inventory, in either direction, at any status.**
+
+Verified: `mfg-purchase-orders.ts` contains exactly one reference to
+`inventory_movements` — a `.select()` inside the drop-ship cancel guard (`:258`).
+There is no `writeMovements` import and no write to any movement table. The
+file's own audit header says it plainly: *"No REVERSE: a PO posts nothing to the
+ledger, so there is nothing to contra"* (`:114`).
+
+What the PO *does* move at confirm is a **counter, not stock**:
+`mfg_sales_order_items.po_qty_picked` (`recomputeSoPicked`, `:2988`), which is
+what drops a line out of the From-SO picker. Cancel/reopen/delete move the same
+counter back and forth.
+
+The inventory IN for purchased goods happens one document later, at **GRN post**
+(`docs/modules/grn.md` §5).
+
+---
+
+## 6. What locks and when
+
+| Trigger | What stops being editable | Enforced at |
+|---------|---------------------------|-------------|
+| Any non-cancelled **GRN** exists on the PO | Header PATCH, line add, line edit, line delete, **and cancel** | `poHasDownstream` called at `:2228`, `:2412`, `:2512`, `:2624`, `:3208` |
+| Status `RECEIVED` | Cancel refused outright | `:3200` |
+| Status `RECEIVED` or `CANCELLED` | Whole page read-only (frontend) | `PurchaseOrderDetail.tsx:254-255` — `isEditableStatus` is DRAFT / SUBMITTED / PARTIALLY_RECEIVED; `isLocked = !isEditableStatus || hasChildren` |
+| Status ≠ `CANCELLED` | Hard DELETE refused | `:3362` |
+| Drop-ship DO shipped against this PO's expected batch | Cancel refused | `:3214` |
+| Status `DRAFT` or `CANCELLED` | Send-to-supplier refused | `poSendRefusalForStatus`, `:3052` |
+
+The frontend drops out of edit mode automatically if the PO locks while the user
+is editing (`PurchaseOrderDetail.tsx:261-267`).
+
+**Amendment path — yes.** The PO is revised **in place** with a bumped `revision`
+column, and the prior version is snapshotted into `scm.po_revisions`. The engine
+is `reviseBoundPo` (`backend/src/scm/lib/so-revision.ts:725`), driven by the
+SO-amendment approve-PO gate; `GET /:id/revisions` (`:896`) feeds the Revisions
+tab and the detail header shows a "Revised · rev N" badge when `revision > 1`
+(`:346-349`).
+
+---
+
+## 7. The cost / money columns
+
+Everything is integer sen. The PO is a **cost** document — it has no margin
+columns at all.
+
+| Column | Where | Frozen or live |
+|--------|-------|----------------|
+| `unit_price_centi` | line | Live — operator-editable until the PO locks. This is the agreed supplier price. |
+| `discount_centi` | line | Live. Clamped so `line_total_centi = max(0, qty*unit - discount)` (`:2432`). |
+| `line_total_centi` | line | Derived on every line write; rolls into the header. |
+| `unit_cost_centi` | line | Written at create from the supplier cost matrix (`computeMfgPoUnitCost`, `shared/mfg-pricing`) / supplier sofa-combo spread (`loadSupplierSofaCombos`, `:78`). |
+| `subtotal_centi`, `tax_centi`, `total_centi` | header | Derived from lines. |
+| `currency` | header | MYR / RMB / USD / SGD (`VALID_CURRENCIES`, `:299`). **The PO carries no `exchange_rate`** — FX→MYR conversion happens at the GRN, using the GRN's own rate (`grns.ts:400`). |
+| `received_qty` | line | Not money, but the column the money chain hangs off: written only by `recomputePoReceived` (`grns.ts:672`). |
+
+Supplier cost never leaks sideways: `loadSupplierSofaCombos` (`:78-105`)
+deliberately excludes sales-side combo rows (`supplier_id IS NULL`), and the
+`/sofa-combos` route is NOT `openRead` for exactly this reason
+(`backend/src/scm/index.ts:195-205`).
+
+---
+
+## 8. Desktop and mobile files that must change together
+
+A rule change to the PO touches both surfaces. The pairs:
+
+| Concern | Desktop | Mobile |
+|---------|---------|--------|
+| List columns / filters | `pages/scm-v2/PurchaseOrdersListV2.tsx` | `mobile/MobileModuleList.tsx` `MODULE_CONFIGS["mfg-purchase-orders"]` (`:1198`) |
+| Server pagination opt-in | the `usePurchaseOrdersPaged` hook | `mobile/MobileModuleList.tsx` `SERVER_PAGINATED` set (`:328`) |
+| Detail fields | `pages/scm-v2/PurchaseOrderDetailV2.tsx` (read) + `PurchaseOrderDetail.tsx` (edit) | `mobile/MobileModuleDetail.tsx` config `:354` |
+| Status actions (Confirm / Cancel / Reopen / Delete) | `PurchaseOrderDetailV2.tsx` action bar | `mobile/MobileModuleDetail.tsx:515-532` |
+| SO→PO conversion | `pages/scm-v2/PurchaseOrderFromSo.tsx` | `mobile/MobileConvertWizard.tsx` (`target: "po"`) |
+| Cache invalidation after a write | the mutation hooks in `vendor/scm/lib/suppliers-queries.ts` | `mobile/sharedInvalidate.ts:71` |
+
+Shared, so a change lands on both at once: the backend route, and the
+`suppliers-queries.ts` hooks (mobile's convert wizard and POD screens call
+`authedFetch` directly, which is why `sharedInvalidate.ts` exists at all — see
+its header comment, `:1-19`).
+
+---
+
+## 9. Performance summary
+
+Optimized:
+- List: **one** enrichment query total (`:496-512`), serving both `has_children`
+  and `transfer_to_grns`. Nothing to parallelise — there is no second read.
+- Detail: header + items + downstream-count folded into one `Promise.all`
+  (`:700-718`) instead of three sequential round trips.
+- `/:id/linked`: three reads in one `Promise.all` (`:863`).
+- Desktop list is server-paginated (50/page) with server-side search, sort and
+  status counts — the page renders the server's rows verbatim.
+
+Watch as data grows:
+- The **legacy unpaginated path** still `.limit(500)` (`:413`) and is still used
+  by `GrnNew.tsx:156`. Beyond 500 POs that picker silently truncates.
+- `statusCounts` costs six `count:'exact'` queries per paginated request
+  (`:467-474`). They are `head:true` so no rows travel, but they are six index
+  scans on every page turn.
+- Free-text search cannot reach supplier name/code (`:444-449`) because those are
+  embedded resources. A user searching by supplier gets nothing.
+
+Cross-module context: `docs/perf-optimization-plan.md`. Route/permission
+inventory: `docs/generated/`.
