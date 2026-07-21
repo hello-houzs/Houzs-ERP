@@ -408,6 +408,14 @@ const PMS_PAGE_SIZE = 30;
 function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onBack?: () => void }) {
   const [q, setQ] = useState("");
   const [stageFilter, setStageFilter] = useState<string>("all");
+  // "My events" — drivers/helpers (tick-only, no projects.write) land on the
+  // events they're crewed on (setup/dismantle assignment, FK or crew JSON;
+  // owner 2026-07-16) with "All" one tap away. Everyone else sees the normal
+  // full list with no extra chip.
+  const { can } = useAuth();
+  const tickOnly = can("projects.checklist.tick") && !can("projects.write");
+  const [assignedOnly, setAssignedOnly] = useState<boolean | null>(null);
+  const showAssigned = tickOnly && (assignedOnly ?? true);
   /* Debounced search term — the value actually sent to the server (and keyed
      into the infinite query) so a keystroke doesn't fire a request per
      character. 300ms after the operator stops typing the list re-runs from
@@ -437,13 +445,14 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     p.set("per_page", String(PMS_PAGE_SIZE));
     if (stageFilter !== "all") p.set("stage", stageFilter);
     if (debouncedQ) p.set("search", debouncedQ);
+    if (showAssigned) p.set("assigned_to_me", "1");
     return p.toString();
   };
   const {
     data, isLoading, error,
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ],
+    queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ, showAssigned],
     queryFn: ({ pageParam }) => api.get<ListResponse>(`/api/projects?${buildParams(pageParam)}`),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
@@ -500,6 +509,15 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
           </div>
         </div>
         <div className="chips" style={{ marginTop: 11 }}>
+          {tickOnly && (
+            <button
+              onClick={() => setAssignedOnly(!showAssigned)}
+              className={showAssigned ? "chip on" : "chip"}
+              style={showAssigned ? undefined : { borderColor: "#bcdcd7", color: "#16695f" }}
+            >
+              My events
+            </button>
+          )}
           {STAGE_FILTERS.map(([k, label]) => (
             <button key={k} onClick={() => setStageFilter(k)} className={stageFilter === k ? "chip on" : "chip"}>{label}</button>
           ))}
@@ -510,6 +528,12 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
 
         {isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load projects. Pull to retry.</div>}
+        {!isLoading && !error && showAssigned && rows.length === 0 && (
+          <div style={{ textAlign: "center", padding: "26px 0" }}>
+            <div style={{ color: "#9aa093", fontSize: 12 }}>No events assigned to you{stageFilter !== "all" || debouncedQ ? " match these filters" : " yet"}.</div>
+            <button className="tinybtn" style={{ marginTop: 10 }} onClick={() => setAssignedOnly(false)}>Show all events</button>
+          </div>
+        )}
         {!isLoading && !error && (
           <>
             {rows.length > 0 && (

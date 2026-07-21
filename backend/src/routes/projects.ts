@@ -802,6 +802,10 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     // so the list and the calendar agree. Admins/directors/unscoped roles
     // have scope === null and never carry this (they see all, unchanged).
     attendee_user_id: scope ? user?.id : undefined,
+    // "Assigned to me" (owner 2026-07-16): drivers/helpers can pull just the
+    // events they're crewed on (FK cols or crew JSON name match).
+    assigned_user_id: c.req.query("assigned_to_me") === "1" ? user?.id : undefined,
+    assigned_user_name: c.req.query("assigned_to_me") === "1" ? user?.name ?? undefined : undefined,
   });
   // Server-side finance strip (rule 3): the list SELECTs pf.rental /
   // total_sales / contractor_cost per row. Blank them for any non-director

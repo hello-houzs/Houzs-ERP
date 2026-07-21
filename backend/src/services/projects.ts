@@ -1249,6 +1249,13 @@ export interface ListProjectsFilters {
    *  When set the list is isolated to that company; undefined (company
    *  context unresolved — pre-migration / D1 test mirror) = no predicate. */
   company_id?: number;
+  /** "Assigned to me" (drivers/helpers, owner 2026-07-16): only projects
+   *  where this user is on the setup/dismantle crew — matched via the FK
+   *  driver/helper columns OR the crew-editor JSON (setup_crew /
+   *  dismantle_crew store {name} entries; crew names come from the users
+   *  master, so an exact quoted-name match is reliable). Pass BOTH fields. */
+  assigned_user_id?: number;
+  assigned_user_name?: string;
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -1316,6 +1323,29 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   if (f.state) {
     where.push("p.state = ?");
     binds.push(f.state);
+  }
+  // "Assigned to me" (drivers/helpers): the FK driver/helper columns OR the
+  // crew-editor JSON. The JSON stores people as {"name":"X","phone":…} (some
+  // legacy imports as {"name" : "X"}), and names come from the users master,
+  // so a lowercase '"<name>"' containment match is an exact-name match.
+  if (f.assigned_user_id != null) {
+    const arms = [
+      "p.setup_driver_user_id = ?",
+      "p.dismantle_driver_user_id = ?",
+      "p.setup_helper_1_id = ?",
+      "p.setup_helper_2_id = ?",
+      "p.dismantle_helper_1_id = ?",
+      "p.dismantle_helper_2_id = ?",
+    ];
+    for (const _ of arms) binds.push(f.assigned_user_id);
+    const nm = (f.assigned_user_name || "").trim().toLowerCase();
+    if (nm) {
+      arms.push("lower(COALESCE(p.setup_crew,'')) LIKE ?");
+      arms.push("lower(COALESCE(p.dismantle_crew,'')) LIKE ?");
+      const pat = `%"${nm}"%`;
+      binds.push(pat, pat);
+    }
+    where.push(`(${arms.join(" OR ")})`);
   }
   // "My pending tasks" — project has >=1 pending checklist item that
   // belongs to the caller's role (matched by chip label or, for
