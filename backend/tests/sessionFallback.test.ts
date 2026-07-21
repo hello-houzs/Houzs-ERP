@@ -118,6 +118,45 @@ describe("bounded short-TTL session-revocation fallback", () => {
     expect(served?.email).toBe(warmed.email);
   });
 
+  test("a DB outage must not abandon the in-flight session-cache read", async () => {
+    await warmLiveness();
+
+    // Regression pin (2026-07-22). getUserBySession ran its KV read and its two
+    // authoritative DB reads under Promise.all. Promise.all settles as soon as
+    // the FIRST input rejects, so on the DB-outage path the function returned
+    // from the bounded fallback while the KV read was still in flight. A storage
+    // operation that outlives the request that started it is cancellable in
+    // workerd, and it is what made the suite fail with "Failed to pop isolated
+    // storage stack frame ... unable to pop KV storage". Assert the cache read
+    // has SETTLED by the time the call resolves.
+    let cacheReadSettled = false;
+    const instrumentedCache = {
+      get: async (key: string) => {
+        const value = await env.SESSION_CACHE.get(key);
+        // Yield across several turns so an abandoned read would still be pending
+        // when the immediately-rejecting DB path returns.
+        for (let i = 0; i < 5; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        cacheReadSettled = true;
+        return value;
+      },
+      put: (...args: unknown[]) => (env.SESSION_CACHE as any).put(...args),
+      delete: (...args: unknown[]) => (env.SESSION_CACHE as any).delete(...args),
+    };
+
+    const outage = () => Promise.reject(new Error("injected DB outage"));
+    const stmt: any = { bind: () => stmt, first: outage, all: outage, run: outage };
+    const downEnv = {
+      DB: { prepare: () => stmt },
+      SESSION_CACHE: instrumentedCache,
+    } as unknown as Env;
+
+    const served = await getUserBySession(downEnv, token);
+    expect(served?.id).toBe(userId);
+    expect(cacheReadSettled).toBe(true);
+  });
+
   test("DB down + absent cache → fail closed (rejected)", async () => {
     // No warm read for this token, and the map was reset in beforeEach.
     expect(sessionLivenessFallback(token)).toBeNull();

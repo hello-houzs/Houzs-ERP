@@ -512,7 +512,17 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
   // indexed DB reads so identity and every authz dependency are current on the
   // next request, even when a best-effort KV bust fails or is delayed. Run all
   // reads in parallel so a cache hit costs max(KV, DB), not KV + DB latency.
-  const readsPromise = Promise.all([
+  //
+  // allSettled, NOT all: `Promise.all` rejects the instant the FIRST input
+  // rejects and abandons the others still in flight. On the DB-outage path that
+  // is exactly what happens — the DB reads reject while the KV read is still
+  // pending, and the function returns from the bounded fallback below with a
+  // live KV operation left dangling. In workerd that op then settles outside the
+  // request that started it (in tests, outside the isolated-storage frame, which
+  // is what "Failed to pop isolated storage stack frame" reports). Settling all
+  // three keeps the same parallelism and the same max(KV, DB) latency while
+  // guaranteeing no storage promise outlives this call.
+  const settled = Promise.allSettled([
     getCachedUser(env, token),
     env.DB.prepare(
       `SELECT s.user_id, s.expires_at, s.origin,
@@ -567,18 +577,25 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
   // THROW, the DB layer is unreachable (cold-start 503, Supavisor hiccup) — the
   // session is not proven invalid. Bounded fallback (owner 2026-07-21): re-serve
   // this token iff the DB most recently CONFIRMED it active within the TTL, else
-  // fail closed exactly as before. getCachedUser never rejects, so a throw here
-  // is always a DB failure.
-  let cached: AuthUser | null;
-  let authority: SessionAuthority | null;
-  let componentRows: D1Result<AuthzComponent>;
-  try {
-    [cached, authority, componentRows] = await readsPromise;
-  } catch (err) {
+  // fail closed exactly as before. Only the two DB results gate that decision,
+  // so a cache-layer problem can never be mistaken for a DB outage.
+  const [cachedResult, authorityResult, componentResult] = await settled;
+
+  // getCachedUser swallows its own errors and resolves null, so a rejection here
+  // is not expected; treat one as a cache miss rather than a session failure.
+  const cached: AuthUser | null =
+    cachedResult.status === "fulfilled" ? cachedResult.value : null;
+
+  if (authorityResult.status === "rejected" || componentResult.status === "rejected") {
     const fallback = sessionLivenessFallback(token);
     if (fallback) return fallback;
-    throw err;
+    throw authorityResult.status === "rejected"
+      ? authorityResult.reason
+      : (componentResult as PromiseRejectedResult).reason;
   }
+
+  const authority: SessionAuthority | null = authorityResult.value;
+  const componentRows: D1Result<AuthzComponent> = componentResult.value;
 
   if (!authority) {
     // Session row is gone — an authoritative revoke. Forget the fallback entry
