@@ -246,6 +246,13 @@ const DRIVER_HELPER_ROWS: readonly PolicyRow[] = [
 const STOREKEEPER_ROWS: readonly PolicyRow[] = [
   // Everything Driver/Helper get.
   { page_key: "scm.transportation", level: "view" },
+  // Projects / PMS — view, same rows as Driver/Helper (owner 2026-07-21:
+  // storekeepers work events alongside the crew; the projects endpoints
+  // additionally row-scope helpers/storekeepers to events they're crewed on
+  // — isCrewScopedUser in routes/projects.ts).
+  { page_key: "projects", level: "view" },
+  { page_key: "projects.finances", level: "none" },
+  { page_key: "projects.maintenance", level: "none" },
   // Warehouse RACKING + rack/bin inventory VIEW. Racking/bin live under the
   // Inventory + Warehouses pages, both gated on scm.warehouse.inventory (there
   // is no finer racking key). The L1 `scm.warehouse` = view opens the Warehouse
@@ -263,6 +270,9 @@ const STOREKEEPER_ROWS: readonly PolicyRow[] = [
 const STOREKEEPER_SUPERVISOR_ROWS: readonly PolicyRow[] = [
   // Everything Storekeeper gets.
   { page_key: "scm.transportation", level: "view" },
+  { page_key: "projects", level: "view" },
+  { page_key: "projects.finances", level: "none" },
+  { page_key: "projects.maintenance", level: "none" },
   { page_key: "scm.warehouse", level: "view" },
   { page_key: "scm.warehouse.inventory", level: "view" },
   { page_key: "scm.warehouse.transfers", level: "none" },
