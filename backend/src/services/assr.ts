@@ -1281,18 +1281,25 @@ export async function lookupSOItems(
   // as the AutoCount branch below; cancelled lines drop out. The scm schema is
   // absent on the D1 test mirror — the catch falls through to AutoCount.
   try {
+    // No boolean literal, no uuid in ORDER BY, exact doc_no: keep the SQL to the
+    // plain shape the env.DB (Hyperdrive) shim is proven to run for the sibling
+    // scm."mfg_sales_orders" reads. `cancelled` is a REAL Postgres boolean on
+    // the SCM table (2990's convention — not the Houzs 0/1 flag convention), so
+    // the drop-cancelled filter runs in JS below rather than as a SQL predicate.
     const rows = await env.DB.prepare(
-      `SELECT item_code, description, qty
+      `SELECT item_code, description, qty, cancelled
          FROM scm."mfg_sales_order_items"
-        WHERE LOWER(doc_no) = LOWER(?)
+        WHERE doc_no = ?
           AND item_code IS NOT NULL AND item_code <> ''
-          AND (cancelled IS NULL OR cancelled = false)
-        ORDER BY line_no, id`
+        ORDER BY line_no`
     )
       .bind(docNo)
-      .all<{ item_code: string; description: string | null; qty: number | null }>();
+      .all<{ item_code: string; description: string | null; qty: number | null; cancelled: unknown }>();
     const scmSeen = new Map<string, { item_code: string; item_description: string | null; qty: number }>();
     for (const r of rows.results ?? []) {
+      // Skip cancelled lines. Coerce every truthy encoding the driver/shim might
+      // hand back for the boolean (true / 1 / 't' / 'true') to "cancelled".
+      if (r.cancelled === true || r.cancelled === 1 || r.cancelled === "t" || r.cancelled === "true") continue;
       const code = (r.item_code ?? "").trim();
       if (!code) continue;
       const qty = Number(r.qty ?? 0) || 0;
@@ -1305,8 +1312,11 @@ export async function lookupSOItems(
       }
     }
     if (scmSeen.size > 0) return [...scmSeen.values()];
-  } catch {
-    // scm schema absent (D1 test mirror / pre-migration) — AutoCount decides.
+  } catch (e) {
+    // scm schema absent (D1 test mirror / pre-migration) is expected → fall
+    // through to AutoCount. A REAL error here (the 2990 item-lookup miss we are
+    // chasing) must not stay silent, so surface it to wrangler tail.
+    console.warn(`[assr] scm item lookup failed for ${docNo}:`, (e as Error)?.message ?? e);
   }
 
   try {
