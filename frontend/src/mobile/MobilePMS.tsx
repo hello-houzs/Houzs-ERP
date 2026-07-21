@@ -652,6 +652,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const notify = useNotify();
   const prompt = usePrompt();
   const [busy, setBusy] = useState(false);
+  // Owner 2026-07-21: the system project code is unreadable at full length —
+  // the header meta collapses to one ellipsised line, tap toggles the full string.
+  const [metaExpanded, setMetaExpanded] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-pms-detail", id],
@@ -952,16 +955,30 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 <option value="cancelled">Cancelled</option>
               </select>
             )}
-            {p && (!canWrite || !access.canEdit || archived) && <StageBadge stage={p.stage} dark />}
+            {p && (!canWrite || !access.canEdit || archived) && <StageBadge stage={p.stage} />}
           </div>
         </div>
         {/* Title block — prototype #project header VERBATIM: gold eyebrow
             "Project", then the project name (16px/800 per Build Spec detail),
-            then a meta line carrying our real code/brand/event/venue data. */}
+            then the system-code meta line. Owner 2026-07-21: brand + venue are
+            NOT repeated here — they live in the Project card rows below (one
+            place per fact); event type stays (shown nowhere else). The code
+            line ellipsises to one line and expands on tap, because full codes
+            never fit a phone width. */}
         <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".13em", textTransform: "uppercase", color: "#8c968a", marginTop: 6 }}>Project</div>
         <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", lineHeight: 1.3, marginTop: 3 }}>{p?.name || "—"}</div>
-        <div style={{ fontSize: 11.5, color: "#8c968a", marginTop: 5 }}>
-          {[p?.code, p?.brand, p?.event_type_name, p?.venue].filter(Boolean).join(" · ") || "—"}
+        <div
+          role="button"
+          aria-expanded={metaExpanded}
+          onClick={() => setMetaExpanded((v) => !v)}
+          style={{
+            fontSize: 11.5, color: "#8c968a", marginTop: 5,
+            ...(metaExpanded
+              ? { whiteSpace: "normal" as const, wordBreak: "break-all" as const }
+              : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }),
+          }}
+        >
+          {[p?.code, p?.event_type_name].filter(Boolean).join(" · ") || "—"}
         </div>
       </header>
 
@@ -1033,12 +1050,14 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
               </summary>
               {/* Body — design "Project" card rows: Dates / Venue / Booth no. /
-                  Organizer / Branding, wired to our real columns. */}
+                  Organizer / Branding, wired to our real columns. Owner
+                  2026-07-21: rows get an explicit hairline (--line) — the
+                  default --line2 divider reads invisible on phone screens. */}
               <div className="pbody">
-                <div className="row" style={{ borderTop: "none" }}><span className="row-l">Dates</span><span className="row-v money">{dm(p.start_date)} – {dm(p.end_date)}</span></div>
-                <div className="row"><span className="row-l">Venue</span><span className="row-v">{p.venue || p.state || "—"}</span></div>
-                <div className="row"><span className="row-l">Booth no.</span><span className="row-v">{p.booth_no || "—"}</span></div>
-                <div className="row"><span className="row-l">Organizer</span><span className="row-v">{p.organizer || "—"}</span></div>
+                <div className="row" style={{ borderTop: "none", borderBottom: "1px solid var(--line)" }}><span className="row-l">Dates</span><span className="row-v money">{dm(p.start_date)} – {dm(p.end_date)}</span></div>
+                <div className="row" style={{ borderBottom: "1px solid var(--line)" }}><span className="row-l">Venue</span><span className="row-v">{p.venue || p.state || "—"}</span></div>
+                <div className="row" style={{ borderBottom: "1px solid var(--line)" }}><span className="row-l">Booth no.</span><span className="row-v">{p.booth_no || "—"}</span></div>
+                <div className="row" style={{ borderBottom: "1px solid var(--line)" }}><span className="row-l">Organizer</span><span className="row-v">{p.organizer || "—"}</span></div>
                 <div className="row" style={{ borderBottom: "none" }}><span className="row-l">Branding</span><span className="row-v">{p.brand || "—"}</span></div>
               </div>
             </details>
@@ -3375,17 +3394,14 @@ function ListChip({ children }: { children: ReactNode }) {
 // colour matching the desktop stageVariant, mapped onto the mobile badge
 // palette (STAGE_TINT). draft=neutral/grey · setup=open/amber ·
 // live+dismantle=in-progress/green · completed+closed=closed/grey ·
-// cancelled=error/clay-red.
-function StageBadge({ stage, dark }: { stage: string | null | undefined; dark?: boolean }) {
+// cancelled=error/clay-red. Owner 2026-07-21: ONE standard badge everywhere
+// (auto width, .spill padding, stage tint) — the detail header's bespoke gold
+// "dark" variant is gone; the solid tinted pill is legible on the dark header.
+function StageBadge({ stage }: { stage: string | null | undefined }) {
   const tint = STAGE_TINT[stageVariant(stage)];
   const label = stageLabel(stage);
   return (
-    <span className="spill" style={{
-      flex: "none",
-      background: dark ? "rgba(216,168,90,.16)" : tint.bg,
-      color: dark ? "#d8a85a" : tint.fg,
-      border: dark ? "1px solid rgba(216,168,90,.4)" : "none",
-    }}>{label}</span>
+    <span className="spill" style={{ flex: "none", background: tint.bg, color: tint.fg, border: "none" }}>{label}</span>
   );
 }
 
