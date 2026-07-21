@@ -4530,6 +4530,9 @@ function DetailContent({
                 );
               }
               return (
+                // Bounded, self-scrolling timeline — a long history scrolls
+                // inside this box instead of stretching the whole page.
+                <div className="max-h-[65vh] overflow-y-auto overflow-x-hidden pr-1">
                 <ol className="relative space-y-3 pl-5">
                   <span className="pointer-events-none absolute left-[7px] top-1.5 bottom-1.5 w-px bg-border" />
                   {rows.map((a: any) => {
@@ -4743,6 +4746,7 @@ function DetailContent({
                     );
                   })}
                 </ol>
+                </div>
               );
             })()}
           </section>
