@@ -99,7 +99,7 @@ these routers is gated by `scmAreaGuard('scm.transportation.drivers')`** — see
 | GET | `/delivery-planning` | `scm/routes/delivery-planning.ts:409` | **The board.** `?region=ALL\|<code>&state=ALL\|<delivery_state>` → `{ orders, counts, regions }` |
 | GET | `/delivery-planning/:docNo/lines` | `:1389` | Expand-row line items, scoped to the caller's ALLOWED companies (not the active one) |
 | PATCH | `/delivery-planning/:type/:id/fields` | `:1493` | HC delivery fields (time range, shipout date, sub-status…) |
-| PATCH | `/delivery-planning/:type/:id/schedule` | `:1682` | Schedule date + **driver / lorry assignment**; `type` = `so \| do \| assr` |
+| PATCH | `/delivery-planning/:type/:id/schedule` | `:1705` | Schedule date + **driver / lorry assignment**; `type` = `so \| do \| assr` |
 | GET/POST/PATCH/DELETE | `/delivery-planning-regions`, `/…/states/:stateKey` | `delivery-planning-regions.ts:65,89,120,150,196,228,261` | Region master + the state→region map |
 | GET/POST/PATCH | `/drivers` | `drivers.ts:26,40,71` | Driver master |
 | GET/POST/PATCH | `/helpers` | `helpers.ts:23,35,64` | Helper master |
@@ -220,7 +220,7 @@ Three masters, one shared fleet across companies. `drivers.ts:31-34` and
 
 | Path | What it writes | Who calls it |
 |---|---|---|
-| `PATCH /delivery-planning/:type/:id/schedule` (`:1682`) | schedule date, optional `deliveryState` override, and `{lorryId, driverId, tripId?, tripDate?, warehouseId?}` → **finds or creates a `scm.trips` row** for (lorry, date) and adds a `trip_stops` DELIVERY row (`:1909-1946`). `is_outsourced` derives from the lorry's `is_internal` (`:1705-1712`); trip numbers are minted max+1 via `mintMonthlyDocNo` (`:1716-1722`). | The board's `DriverEditCell` (`DeliveryPlanning.tsx:305`) and `LorryEditCell` (`:340`), and the bulk apply (`:660-665`). |
+| `PATCH /delivery-planning/:type/:id/schedule` (`:1705`) | schedule date, optional `deliveryState` override, and `{lorryId, driverId, tripId?, tripDate?, warehouseId?}` → **finds or creates a `scm.trips` row** for (lorry, date) and adds a `trip_stops` DELIVERY row (`:1909-1946`). `is_outsourced` derives from the lorry's `is_internal` (`:1705-1712`); trip numbers are minted max+1 via `mintMonthlyDocNo` (`:1716-1722`). | The board's `DriverEditCell` (`DeliveryPlanning.tsx:305`) and `LorryEditCell` (`:340`), and the bulk apply (`:660-665`). |
 | `PUT /delivery-orders-mfg/:id/crew` (`delivery-orders-mfg.ts:3314`) | the full `scm.delivery_order_crew` row — driver 1/2, **helper 1/2**, lorry, plus name/IC/contact/plate snapshots — and syncs `driver_id` / `driver_name` / `vehicle` onto the DO header (`:3412-3414`). | **Nobody, at this commit.** No frontend file references `/crew`. |
 
 Consequences worth knowing before you touch this:
@@ -394,13 +394,32 @@ Where it is enforced:
 | Trips list / detail / status | `trips.ts:128-131`, `:153-154`, `:292-293` |
 | DP orders list + act | `dp-orders.ts:102`, `:118-125`, `:247` |
 
-> **Verified gap.** `PATCH /delivery-planning/:type/:id/schedule` — the route
-> that assigns driver and lorry and creates trips — does **not** call
-> `resolveDeliveryScope`. `grep` over lines 1682-2026 of
-> `delivery-planning.ts` returns no scope call. Its only gate is the area
-> guard's `edit` level. That is consistent today (field crew hold `view`, not
-> `edit`), but it means the ownership rule the `fields` handler documents at
-> `:1546-1552` is not applied on the assignment path.
+> **Deliberately unscoped — owner ruling 2026-07-22. Do not "fix" this.**
+> `PATCH /delivery-planning/:type/:id/schedule` — the route that assigns driver
+> and lorry and creates trips — does **not** call `resolveDeliveryScope`, and
+> must not. Scheduling is a ONE-PERSON function: a single dispatcher assigns the
+> whole operation's jobs. Narrowing the handler to the caller's own assignments
+> would lock that dispatcher out of every job they do not already own — the
+> exact opposite of what the business needs. Its gate is the area guard's `edit`
+> level on `scm.transportation.drivers`, and that is intended to be the complete
+> gate.
+>
+> The asymmetry with `/fields` (`:1553-1566`, which **does** scope) is the point.
+> `/fields` narrows because editing a job's own data — steps, POD, execution
+> timestamps — is a per-owner act. Assignment is the opposite act: it decides
+> whose job it becomes, so it cannot be scoped by ownership it creates. Adding
+> the scope call to make the two routes match would be a behaviour change against
+> a standing ruling, not a consistency fix. The handler carries the same note at
+> `delivery-planning.ts:1682-1704`, and
+> `backend/tests/scheduleScopeRuling.test.ts` fails loudly if a scope call is
+> added.
+>
+> What would justify revisiting: if scheduling ever stops being one person —
+> per-region or per-depot dispatchers each owning a slice of the board — then
+> `resolveDeliveryScope` is the mechanism to reach for, extended with a
+> region/depot mode rather than the existing `self` (which keys on crew
+> assignment and would be the wrong axis). Until the operation actually splits,
+> unscoped is correct.
 
 ### Frontend gates
 
