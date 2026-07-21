@@ -195,10 +195,14 @@ function Guard({
    *  unlocks its area WITHOUT removing the existing `scm.access` / `*` path. */
   anyAccess?: string[];
   /** ADDITIVE code-keyed admittance: a Sales Director (auth/salesAccess.
-   *  isSalesDirectorUser) passes even without the flat permission. Used by
-   *  /announcements — a Sales Director may post to their Sales department but
-   *  their POSITION carries no announcements.* verb (backend is the authority,
-   *  requirePermissionOrSalesDirector). Mirrors PageGuard's allowSalesDirector. */
+   *  isSalesDirectorUser) passes even without the flat permission — their
+   *  POSITION carries no permission-matrix backfill, so a code-keyed door is the
+   *  only one they have. Mirrors PageGuard's allowSalesDirector, which is where
+   *  the live users are (/team). /announcements was the last <Guard> caller and
+   *  dropped its gate entirely on 2026-07-21 (readable by every active user), so
+   *  this prop is currently unused HERE; kept because it is the established
+   *  spelling of "admit the Sales Director too" and the next route that needs it
+   *  must not invent a second one. */
   allowSalesDirector?: boolean;
   children: React.ReactNode;
 }) {
@@ -460,20 +464,21 @@ export default function App() {
             </PageGuard>
           }
         />
-        {/* ── Announcements — office-wide notices + read receipts. List page
-            gated on announcements.read; create/edit/remind/delete also need
-            announcements.write (enforced server-side). A Sales Director is
-            admitted additively (code-keyed off position) — they may post to
-            their Sales department / a specific salesperson; the backend
-            (requirePermissionOrSalesDirector) is the authority. ── */}
-        <Route
-          path="/announcements"
-          element={
-            <Guard perm="announcements.read" allowSalesDirector>
-              <Announcements />
-            </Guard>
-          }
-        />
+        {/* ── Announcements — office-wide notices + read receipts. NO permission
+            gate (owner restated 2026-07-21: announcements are readable by EVERY
+            active user), so this is a bare route like / and /profile — the whole
+            tree already sits inside <AuthGate>, which is the authentication the
+            page needs. It used to be `<Guard perm="announcements.read">`, but
+            that verb is the ADMIN list/composer permission an ordinary
+            salesperson never holds, so the notice pop-up's "Read SOP" /
+            "View details" button landed them on Forbidden. The mobile shell
+            already showed the same screen to everyone; this closes the desktop
+            half. Nothing leaks: GET /api/announcements audience-filters a
+            non-manager caller to the live notices addressed to them (the same
+            filter /banner has always run), and every write action on the page
+            keys off `canWrite` = announcements.write / Sales Director, which the
+            backend re-checks. ── */}
+        <Route path="/announcements" element={<Announcements />} />
         {/* ── Mail Center — shared inbox. Permission-gated on mail_center.read
             (the per-user mailbox scope is enforced server-side; reads/replies
             aren't gated by a permission key, only by mailbox ownership). The

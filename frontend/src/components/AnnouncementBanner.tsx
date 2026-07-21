@@ -267,7 +267,21 @@ export function AnnouncementBanner() {
   // jump to the announcements page; GENERAL "Remind later" / LEARNING "Later"
   // hide the notice for this session only (no ack recorded, so it re-surfaces
   // on the next visit). Plain location.assign, not useNavigate — the banner
-  // also renders router-less in design-sync previews.
+  // also renders router-less in design-sync previews (.design-sync/previews/
+  // AnnouncementBanner.tsx mounts it under <AuthProvider> ALONE), and
+  // useNavigate() throws outside a <Router>. That is a hard constraint, not a
+  // leftover: swapping it for client-side navigation would crash the preview
+  // build, so this one CTA stays a full page load.
+  //
+  // The jump carries NO permission check on purpose. It used to send anyone
+  // without announcements.read (i.e. every ordinary salesperson) to a Forbidden
+  // page, because this pop-up rides /banner — which is ungated — while the page
+  // behind the button was gated on the ADMIN verb. The fix was to open the page
+  // (owner 2026-07-21: readable by EVERY active user), so there is no longer a
+  // capability that can fail here: the banner only renders for a signed-in user
+  // (reload() returns early without one), and a signed-in user can now open
+  // /announcements. A `can(...)` guard on this button would either be dead code
+  // or re-create the exact 403 it was added to prevent.
   // Hide the notice for this session only (no ack recorded, so it re-surfaces
   // next visit). Used by the backdrop click and the GENERAL/LEARNING secondary.
   function dismissSession(a: Announcement) {

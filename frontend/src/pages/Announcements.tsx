@@ -225,13 +225,28 @@ export function Announcements() {
   const listQ = useQuery<ListResponse>("/api/announcements", () => api.get("/api/announcements"));
   const items = listQ.data?.data ?? [];
 
-  // Lookups for the audience pickers + the "To: …" pill resolver.
-  const usersQ = useQuery<{ users: TeamMember[] }>("/api/users", () => api.get("/api/users"));
-  const deptsQ = useQuery<{ departments: Department[] }>("/api/departments", () =>
-    api.get("/api/departments"),
+  // Lookups for the audience pickers + the "To: …" pill resolver. All three sit
+  // behind users.read on the backend, which a plain reader does not hold — and
+  // since 2026-07-21 this page is open to EVERY authed user, so firing them
+  // unconditionally would mean three guaranteed 403s (times TanStack's retries)
+  // on every ordinary staffer's page load. Off, not hidden: `enabled: canWrite`
+  // means the requests are never made. Nothing is lost — a 403 resolves to the
+  // same empty array these consumers already fall back to, so the "To: …" pill
+  // renders identically either way, and only a writer has a picker to fill.
+  const usersQ = useQuery<{ users: TeamMember[] }>("/api/users", () => api.get("/api/users"), [], {
+    enabled: canWrite,
+  });
+  const deptsQ = useQuery<{ departments: Department[] }>(
+    "/api/departments",
+    () => api.get("/api/departments"),
+    [],
+    { enabled: canWrite },
   );
-  const positionsQ = useQuery<{ positions: Position[] }>("/api/positions", () =>
-    api.get("/api/positions"),
+  const positionsQ = useQuery<{ positions: Position[] }>(
+    "/api/positions",
+    () => api.get("/api/positions"),
+    [],
+    { enabled: canWrite },
   );
   // Multi-company: the company-target selector + row chip only appear when the
   // companies master returns MORE THAN ONE company (mirrors the top-bar

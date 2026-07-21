@@ -47,7 +47,7 @@ GET,/api/agents/si/brief,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,"requireP
 GET,/api/agents/si/findings,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,"requirePermission(""*"")",,,NO,DECLARED_GATE,backend/src/routes/agent-console.ts:1009
 POST,/api/agents/si/findings/resolve,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,"requirePermission(""*"")",,,YES,DECLARED_GATE,backend/src/routes/agent-console.ts:1039
 GET,/api/agents/status,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,"requirePermission(""*"")",,,NO,DECLARED_GATE,backend/src/routes/agent-console.ts:119
-GET,/api/announcements,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermissionOrSalesDirector(""announcements.read"")",,NO,DECLARED_GATE,backend/src/routes/announcements.ts:517
+GET,/api/announcements,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,,,NO,INHERITED_ONLY,backend/src/routes/announcements.ts:530
 POST,/api/announcements,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermissionOrSalesDirector(""announcements.write"")",,YES,DECLARED_GATE,backend/src/routes/announcements.ts:765
 DELETE,/api/announcements/:id,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermissionOrSalesDirector(""announcements.write"")",,YES,DECLARED_GATE,backend/src/routes/announcements.ts:1144
 PATCH,/api/announcements/:id,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth,,"requirePermissionOrSalesDirector(""announcements.write"")",,YES,DECLARED_GATE,backend/src/routes/announcements.ts:900

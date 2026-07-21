@@ -267,9 +267,11 @@ app.route("/api/inbox", inbox);
 // the handlers (owner passes via "*"). The pre-auth /api/mail-center/inbound
 // route is mounted above, before the auth gate, and is not shadowed by this.
 app.route("/api/mail-center", mailCenter);
-// Announcements — the banner GET + ack POST are open to every authed user
-// (the route handles it internally); list/CRUD/remind/acks-readout are
-// announcements.read / announcements.write gated.
+// Announcements — the banner GET, the LIST GET and the ack POST are open to
+// every authed user (the route handles it internally: the list is audience- and
+// company-filtered server-side, same as the banner). announcements.read is the
+// ADMIN verb and no longer gates reading; CRUD/remind/acks-readout stay on
+// announcements.write.
 app.route("/api/announcements", announcements);
 // Agent Console — owner-only (requirePermission("*") inside the router).
 // Deliberately in the public /api tree, NOT /api/scm (the scm subtree swaps
