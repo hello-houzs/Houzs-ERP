@@ -303,12 +303,14 @@ function ScheduleDateEditCell({ order, sched }: { order: PlanningOrder; sched: S
 const KEEP_CURRENT = '__current__';
 
 function DriverEditCell({ order, sched, drivers }: { order: PlanningOrder; sched: SchedMutation; drivers: DriverRow[] }) {
-  /* Driver assignment is not wired for ASSR / DP rows yet → non-applicable. */
-  if (isAssr(order) || isDp(order)) return <NotApplicable />;
+  /* DP rows carry no crew until scheduled from the DP Order → non-applicable. */
+  if (isDp(order)) return <NotApplicable />;
   /* PMS project rows are a read-only mirror — show the crew PMS assigned (edit in Projects). */
   if (isProject(order)) return <span style={{ color: '#767b6e' }}>{order.crew?.driver_1_name || '—'}</span>;
-  /* No driver_id on the row (crew carries names only) → preselect by matching the
-     current driver_1_name against the option list. */
+  /* SO rows write type:'so'; ASSR legs write type:'assr' (+ jobKind) — the backend
+     wires the leg onto a trip so it consumes fleet capacity (P3). No driver_id on
+     the row (crew carries names only) → preselect by matching driver_1_name. */
+  const assrLeg = isAssr(order);
   const currentName = order.crew?.driver_1_name ?? '';
   const matchedId = drivers.find((d) => d.name === currentName)?.id ?? '';
   const offList = currentName !== '' && matchedId === '';
@@ -323,7 +325,9 @@ function DriverEditCell({ order, sched, drivers }: { order: PlanningOrder; sched
         if (picked === KEEP_CURRENT) return;   // re-picking the off-list current = no-op
         const driverId = picked || null;
         const driverNameOptimistic = driverId ? (drivers.find((d) => d.id === driverId)?.name ?? null) : null;
-        sched.mutate({ type: 'so', id: order.so_doc_no, driverId, driverNameOptimistic });
+        sched.mutate(assrLeg
+          ? { type: 'assr', id: String(order.assr_id ?? ''), jobKind: order.job_kind, driverId, driverNameOptimistic }
+          : { type: 'so', id: order.so_doc_no, driverId, driverNameOptimistic });
       }}
     >
       <option value="">—</option>
@@ -338,10 +342,13 @@ function DriverEditCell({ order, sched, drivers }: { order: PlanningOrder; sched
 }
 
 function LorryEditCell({ order, sched, lorries }: { order: PlanningOrder; sched: SchedMutation; lorries: LorryRow[] }) {
-  /* Lorry assignment is not wired for ASSR / DP rows yet → non-applicable. */
-  if (isAssr(order) || isDp(order)) return <NotApplicable />;
+  /* DP rows carry no crew until scheduled from the DP Order → non-applicable. */
+  if (isDp(order)) return <NotApplicable />;
   /* PMS project rows are a read-only mirror — show the assigned lorry (edit in Projects). */
   if (isProject(order)) return <span style={{ color: '#767b6e' }}>{order.crew?.lorry_plate || '—'}</span>;
+  /* SO rows write type:'so'; ASSR legs write type:'assr' (+ jobKind) — wires the
+     leg onto a trip (P3) so a lorry is a real fleet commitment. */
+  const assrLeg = isAssr(order);
   const currentPlate = order.crew?.lorry_plate ?? '';
   const matchedId = lorries.find((l) => l.plate === currentPlate)?.id ?? '';
   const offList = currentPlate !== '' && matchedId === '';
@@ -356,7 +363,9 @@ function LorryEditCell({ order, sched, lorries }: { order: PlanningOrder; sched:
         if (picked === KEEP_CURRENT) return;
         const lorryId = picked || null;
         const lorryPlateOptimistic = lorryId ? (lorries.find((l) => l.id === lorryId)?.plate ?? null) : null;
-        sched.mutate({ type: 'so', id: order.so_doc_no, lorryId, lorryPlateOptimistic });
+        sched.mutate(assrLeg
+          ? { type: 'assr', id: String(order.assr_id ?? ''), jobKind: order.job_kind, lorryId, lorryPlateOptimistic }
+          : { type: 'so', id: order.so_doc_no, lorryId, lorryPlateOptimistic });
       }}
     >
       <option value="">—</option>

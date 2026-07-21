@@ -237,9 +237,23 @@ Consequences worth knowing before you touch this:
   matching that string against the master list, keeping an off-list current
   value selectable so an existing assignment never silently blanks
   (`DeliveryPlanning.tsx:311-336`, `:345-366`).
-- ASSR and DP rows show "not applicable" for Driver / Lorry — assignment is not
-  wired for them (`DeliveryPlanning.tsx:307`, `:342`). Project rows are
-  read-only mirrors (`:309`, `:344`).
+- ASSR rows are **assignable** (PR #947): picking a lorry wires the leg onto a
+  real trip via `scheduleAssrOntoTrip`, so a service visit consumes fleet
+  capacity like an SO/DO delivery. The stop links back to its case through
+  `scm.trip_stops.assr_case_id` (mig 0166), and the board re-reads the trip's
+  crew on every load (the "ASSR crew echo") so the assignment survives a
+  refresh. **DP** rows still show "not applicable" for Driver / Lorry
+  (`DeliveryPlanning.tsx:307`, `:342`); project rows are read-only mirrors
+  (`:309`, `:344`).
+- **One leg = one stop.** A leg re-scheduled to another lorry or day resolves to
+  a different trip, so the wiring deletes that leg's stops on every other trip
+  (`assr_case_id` + `stop_type`, `trip_id` ≠ the new one). Without it the visit
+  would be counted against both lorries by `/lorry-capacity`. The SO/DO path
+  does **not** do this and can still leave a stop behind on a re-point — a known
+  gap, recorded in `BUG-HISTORY.md` (2026-07-21).
+- A crew-only edit (a lorry with no `scheduleDate`) skips the case's date write,
+  so the ASSR branch checks the case **exists and is open** up front; a closed,
+  archived or unknown case is a 404 and never mints a trip or a DP number.
 
 **How a person becomes a driver or helper — two disconnected mechanisms.**
 (1) Manual master CRUD (`POST /drivers`, `POST /helpers`), which creates a

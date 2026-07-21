@@ -1116,6 +1116,54 @@ deliveryPlanning.get('/', async (c) => {
     console.warn(`[delivery-planning] ASSR union skipped: ${String((e as Error).message).slice(0, 120)}`);
   }
 
+  /* ── ASSR crew echo (P3) ──────────────────────────────────────────────────────
+     An ASSR leg scheduled onto a trip (scheduleAssrOntoTrip) writes a trip_stop
+     keyed by (assr_case_id, stop_type). Resolve that stop's trip crew so the board's
+     Driver / Lorry cells reflect the assignment — not just optimistically, but on
+     every load. Best-effort: any failure leaves the ASSR rows date-only. */
+  try {
+    const assrCaseIds = [...new Set(assrOrders.map((o) => o.assr_id).filter((x): x is number => x != null))];
+    if (assrCaseIds.length) {
+      const { data: stopsRaw } = await sb.from('trip_stops')
+        .select('assr_case_id, stop_type, trip_id').in('assr_case_id', assrCaseIds);
+      const stops = (stopsRaw ?? []) as Array<{ assr_case_id: number; stop_type: string; trip_id: string }>;
+      if (stops.length) {
+        const tripIds = [...new Set(stops.map((s) => s.trip_id).filter(Boolean))];
+        const { data: tripsRaw } = await sb.from('trips').select('id, driver_id, lorry_id').in('id', tripIds);
+        const trips = (tripsRaw ?? []) as Array<{ id: string; driver_id: string | null; lorry_id: string | null }>;
+        const tripById = new Map(trips.map((t) => [String(t.id), t]));
+        const driverIds = [...new Set(trips.map((t) => t.driver_id).filter((x): x is string => !!x))];
+        const lorryIds = [...new Set(trips.map((t) => t.lorry_id).filter((x): x is string => !!x))];
+        const { data: drvRaw } = driverIds.length ? await sb.from('drivers').select('id, name').in('id', driverIds) : { data: [] };
+        const { data: lryRaw } = lorryIds.length ? await sb.from('lorries').select('id, plate').in('id', lorryIds) : { data: [] };
+        const driverName = new Map(((drvRaw ?? []) as Array<{ id: string; name: string | null }>).map((d) => [String(d.id), d.name]));
+        const lorryPlate = new Map(((lryRaw ?? []) as Array<{ id: string; plate: string | null }>).map((l) => [String(l.id), l.plate]));
+        const stopByKey = new Map<string, { driver: string | null; lorry: string | null }>();
+        for (const s of stops) {
+          const t = tripById.get(String(s.trip_id));
+          stopByKey.set(`${s.assr_case_id}#${s.stop_type}`, {
+            driver: t?.driver_id ? (driverName.get(String(t.driver_id)) ?? null) : null,
+            lorry: t?.lorry_id ? (lorryPlate.get(String(t.lorry_id)) ?? null) : null,
+          });
+        }
+        for (const o of assrOrders) {
+          const st = o.job_kind === 'customer_pickup' ? 'PICKUP' : o.job_kind === 'inspection' ? 'INSPECTION' : 'DELIVERY';
+          const hit = stopByKey.get(`${o.assr_id}#${st}`);
+          if (hit && (hit.driver || hit.lorry)) {
+            o.crew = {
+              driver: hit.driver, helper: null, lorry: hit.lorry,
+              driver_1_name: hit.driver, driver_1_ic: null, driver_1_contact: null,
+              driver_2_name: null, helper_1_name: null, helper_2_name: null,
+              lorry_plate: hit.lorry,
+            };
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(`[delivery-planning] ASSR crew echo skipped: ${String((e as Error).message).slice(0, 120)}`);
+  }
+
   /* ── DP Order union (mig 0129) ────────────────────────────────────────────────
      The MANUAL DP orders — SETUP / DISMANTLE / SUPPLIER_PICKUP and any DP order
      with no source document already on the board (so_doc_no / assr_case_id / do_id
@@ -1714,31 +1762,59 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
   if (!parsed.success) return c.json({ error: 'invalid_body', reason: parsed.error.message }, 400);
   const p = parsed.data;
 
-  /* ── ASSR (Service Case) schedule write-back ─────────────────────────────────
-     Two-way editing of the board date: writing scheduleDate updates the case's
-     DRIVING date on public.assr_cases. Which column depends on jobKind —
-     'customer_pickup' → customer_pickup_at, 'inspection' → inspection_visit_at, 'delivery' → do_date. No trip/crew
-     wiring for ASSR legs (out of scope). Kept fully SEPARATE from the SO/DO path
-     below, which stays byte-for-byte unchanged. assr_cases is PUBLIC → c.env.DB. */
+  /* ── ASSR (Service Case) schedule write-back + trip wiring ───────────────────
+     Writing scheduleDate updates the case's DRIVING date on public.assr_cases
+     (jobKind → column: customer_pickup → customer_pickup_at, inspection →
+     inspection_visit_at, delivery → do_date). P3: an ASSR leg scheduled WITH a
+     lorry is ALSO wired onto a trip (scheduleAssrOntoTrip) so it consumes real
+     fleet capacity — parity with SO/DO. Kept SEPARATE from the SO/DO path below,
+     which stays byte-for-byte unchanged. assr_cases is PUBLIC → c.env.DB; trips /
+     trip_stops are scm → the supabase client. */
   if (type === 'assr') {
-    if (p.scheduleDate === undefined) return c.json({ error: 'no_changes' }, 400);
+    const assrWantsTrip = p.tripId != null || p.lorryId != null;
+    if (p.scheduleDate === undefined && !assrWantsTrip) return c.json({ error: 'no_changes' }, 400);
     const caseId = Number(id);
     if (!Number.isFinite(caseId)) return c.json({ error: 'bad_id', reason: 'assr id must be numeric' }, 400);
-    // jobKind decides the target column. Default to 'delivery' (do_date) when
-    // absent — the frontend row carries job_kind and should always send it.
-    const col = p.jobKind === 'customer_pickup' ? 'customer_pickup_at'
-      : p.jobKind === 'inspection' ? 'inspection_visit_at'
+    const jobKind: 'customer_pickup' | 'delivery' | 'inspection' =
+      p.jobKind === 'customer_pickup' ? 'customer_pickup'
+      : p.jobKind === 'inspection' ? 'inspection'
+      : 'delivery';
+    const col = jobKind === 'customer_pickup' ? 'customer_pickup_at'
+      : jobKind === 'inspection' ? 'inspection_visit_at'
       : 'do_date';
-    try {
-      const res = await c.env.DB.prepare(
-        `UPDATE assr_cases SET ${col} = ?, updated_at = datetime('now')
-          WHERE id = ? AND closed_at IS NULL AND archived_at IS NULL`,
-      ).bind(p.scheduleDate, caseId).run();
-      if (!res.meta.changes) return c.json({ error: 'not_found' }, 404);
-    } catch (e) {
-      return c.json({ error: 'update_failed', reason: String((e as Error).message).slice(0, 200) }, 500);
+    /* The case must EXIST and be OPEN before ANYTHING is written. The date write
+       below carries that guard in its own WHERE clause, but a crew-only edit (a
+       lorry with no scheduleDate — now reachable because the board's Driver /
+       Lorry cells are editable for ASSR) skips that write entirely. Without this
+       check such a call would mint a trip, a trip_stop and a DP number for a
+       closed / archived / non-existent case: fleet capacity consumed by work that
+       is finished or was never there, and invisible on the board because the
+       board has no row for it. Fails the same way the date path already does. */
+    const openCase = (await c.env.DB.prepare(
+      `SELECT id FROM assr_cases
+        WHERE id = ? AND closed_at IS NULL AND archived_at IS NULL`,
+    ).bind(caseId).first()) as { id: number } | null;
+    if (!openCase) return c.json({ error: 'not_found' }, 404);
+
+    // Write the driving date when the date cell was the edit (unchanged behaviour).
+    if (p.scheduleDate !== undefined) {
+      try {
+        const res = await c.env.DB.prepare(
+          `UPDATE assr_cases SET ${col} = ?, updated_at = datetime('now')
+            WHERE id = ? AND closed_at IS NULL AND archived_at IS NULL`,
+        ).bind(p.scheduleDate, caseId).run();
+        if (!res.meta.changes) return c.json({ error: 'not_found' }, 404);
+      } catch (e) {
+        return c.json({ error: 'update_failed', reason: String((e as Error).message).slice(0, 200) }, 500);
+      }
     }
-    return c.json({ ok: true, assr: { id: caseId, job_kind: col === 'do_date' ? 'delivery' : col === 'inspection_visit_at' ? 'inspection' : 'customer_pickup', [col]: p.scheduleDate }, trip: null });
+    // P3: wire the leg onto a trip when a lorry/trip was chosen. Best-effort +
+    // REPORTED — the date write already committed (same rule as the SO/DO path).
+    const sb = c.get('supabase');
+    const wiring: TripWiring = assrWantsTrip
+      ? await scheduleAssrOntoTrip(c, sb, caseId, jobKind, p)
+      : { state: 'NOT_REQUESTED' };
+    return c.json({ ok: true, assr: { id: caseId, job_kind: jobKind, [col]: p.scheduleDate ?? null }, ...tripFieldsFor(wiring) });
   }
 
   const wantsTrip = p.tripId != null || p.lorryId != null;
@@ -2044,6 +2120,150 @@ async function scheduleOntoTrip(
     return {
       state: 'FAILED',
       reason: `trip wiring failed: ${String((e as Error)?.message ?? e).slice(0, 160)}`,
+    };
+  }
+}
+
+/* ── ASSR trip integration (P3) ────────────────────────────────────────────────
+   The ASSR-leg twin of scheduleOntoTrip. An ASSR pickup / delivery / inspection
+   leg scheduled with a lorry gets a real trip_stop, so it consumes fleet capacity
+   (lorry-capacity counts stops) and shows on the Trips view — parity with SO/DO.
+   Kept SEPARATE so scheduleOntoTrip (the SO/DO path) stays byte-for-byte unchanged.
+   Links the stop to the case via trip_stops.assr_case_id (mig 0166); idempotent on
+   re-schedule — an existing stop for (trip, case, stop_type) is reused. Best-effort
+   + REPORTED like scheduleOntoTrip: the date write already committed. */
+const ASSR_STOP_TYPE: Record<'customer_pickup' | 'delivery' | 'inspection', string> = {
+  customer_pickup: 'PICKUP',
+  delivery:        'DELIVERY',
+  inspection:      'INSPECTION',
+};
+
+async function scheduleAssrOntoTrip(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sb: any,
+  caseId: number,
+  jobKind: 'customer_pickup' | 'delivery' | 'inspection',
+  p: z.infer<typeof scheduleSchema>,
+): Promise<TripWiring> {
+  try {
+    const user = c.get('user') as { id?: string } | null;
+    const stopType = ASSR_STOP_TYPE[jobKind];
+    const dateCol = jobKind === 'customer_pickup' ? 'customer_pickup_at'
+      : jobKind === 'inspection' ? 'inspection_visit_at'
+      : 'do_date';
+
+    /* Case snapshot (customer / address) + the leg's own date, from public.assr_cases
+       via c.env.DB (same path the ASSR board union uses). The leg date is the trip's
+       default date so a crew-only edit (no scheduleDate) still lands on the right day. */
+    const a = (await c.env.DB.prepare(
+      `SELECT customer_name AS customer_name, ${dateCol} AS leg_date,
+              addr1 AS addr1, addr2 AS addr2, addr3 AS addr3, addr4 AS addr4
+         FROM assr_cases WHERE id = ?`,
+    ).bind(caseId).first()) as {
+      customer_name: string | null; leg_date: string | null;
+      addr1: string | null; addr2: string | null; addr3: string | null; addr4: string | null;
+    } | null;
+    const customerName = a?.customer_name ?? null;
+    const address = [a?.addr1, a?.addr2, a?.addr3, a?.addr4].filter(Boolean).join(', ') || null;
+
+    /* Find-or-create the trip — same rule as scheduleOntoTrip. */
+    const tripDate = p.tripDate ?? p.scheduleDate ?? a?.leg_date ?? todayMY();
+    let tripId = p.tripId ?? null;
+    if (!tripId && p.lorryId) {
+      const { data: found } = await sb.from('trips').select('id, trip_no')
+        .eq('lorry_id', p.lorryId).eq('trip_date', tripDate).neq('status', 'CANCELLED').limit(1);
+      const hit = ((found ?? []) as Array<{ id: string }>)[0];
+      if (hit) tripId = hit.id;
+    }
+    if (!tripId) {
+      if (!p.lorryId) return { state: 'NOT_REQUESTED' };
+      const isOutsourced = await deriveTripOutsourced(sb, p.lorryId);
+      const { data: created, error: tErr } = await insertWithDocNoRetry<{ id: string; trip_no: string }>(
+        () => nextTripNo(sb),
+        (tripNo) => sb.from('trips').insert({
+          company_id:    activeCompanyId(c),
+          trip_no:       tripNo,
+          trip_date:     tripDate,
+          lorry_id:      p.lorryId,
+          driver_id:     p.driverId ?? null,
+          warehouse_id:  p.warehouseId ?? null,
+          trip_type:     'DELIVERY',
+          status:        'PLANNED',
+          is_outsourced: isOutsourced,
+          created_by:    user?.id ?? null,
+        }).select('id, trip_no').single(),
+      );
+      if (tErr || !created) {
+        return {
+          state: 'FAILED',
+          reason: tErr
+            ? `could not create the trip: ${String((tErr as { message?: string }).message ?? tErr).slice(0, 160)}`
+            : 'could not create the trip: the insert returned no row',
+        };
+      }
+      tripId = (created as { id: string }).id;
+    }
+    const tripIdStr = tripId as string;
+
+    /* Append the stop — idempotent on (trip, case, stop_type). */
+    const { data: existing } = await sb.from('trip_stops').select('id')
+      .eq('trip_id', tripIdStr).eq('assr_case_id', caseId).eq('stop_type', stopType).limit(1);
+    const already = ((existing ?? []) as Array<{ id: string }>)[0];
+    if (!already) {
+      const { data: cntRows } = await sb.from('trip_stops').select('stop_no').eq('trip_id', tripIdStr);
+      const nextStopNo = ((cntRows ?? []) as Array<{ stop_no?: number; stopNo?: number }>)
+        .reduce((m, r) => Math.max(m, Number(r.stopNo ?? r.stop_no ?? 0)), 0) + 1;
+
+      /* Mint the DP number from the trip's lorry — parity with the SO/DO path.
+         Never guess: a null dp_no is renumberable; a duplicate is a silent corruption. */
+      let lorryIdForNo = p.lorryId ?? null;
+      if (!lorryIdForNo) {
+        const { data: tRow } = await sb.from('trips').select('lorry_id').eq('id', tripIdStr).maybeSingle();
+        const tr = tRow as { lorry_id?: string | null; lorryId?: string | null } | null;
+        lorryIdForNo = (tr?.lorryId ?? tr?.lorry_id ?? null) as string | null;
+      }
+      const dpNo = await mintDpNoForLorry(sb, { tripDate, lorryId: lorryIdForNo });
+
+      await sb.from('trip_stops').insert({
+        company_id:    activeCompanyId(c),
+        trip_id:       tripIdStr,
+        stop_no:       nextStopNo,
+        stop_type:     stopType,
+        assr_case_id:  caseId,
+        customer_name: customerName,
+        address,
+        revenue_centi: 0,
+        dp_no:         dpNo,
+      });
+    }
+
+    /* ONE LEG = ONE STOP. The de-dup above is scoped to a single trip, so it only
+       catches a re-press of the SAME lorry on the SAME date. A real re-schedule —
+       a different lorry, or the same lorry on another day — resolves to a
+       DIFFERENT trip, and the stop written for the previous one would simply stay
+       behind: the leg then sits on two trips at once and lorry-capacity counts it
+       against BOTH, inflating the fleet numbers this feature exists to make
+       honest. Drop the leg's stops on every other trip so the newest assignment
+       is the only one. Scoped to assr_case_id + stop_type, so it can never touch
+       an SO/DO stop (their assr_case_id is null) or this case's other legs. */
+    const { error: staleErr } = await sb.from('trip_stops').delete()
+      .eq('assr_case_id', caseId).eq('stop_type', stopType).neq('trip_id', tripIdStr);
+    if (staleErr) {
+      return {
+        state: 'FAILED',
+        reason: `the leg was placed on the new trip but the previous one could not be cleared — it may be counted twice: ${String((staleErr as { message?: string }).message ?? staleErr).slice(0, 120)}`,
+      };
+    }
+
+    const { data: tNo } = await sb.from('trips').select('id, trip_no').eq('id', tripIdStr).maybeSingle();
+    const tr = tNo as { trip_no?: string; tripNo?: string } | null;
+    return { state: 'WIRED', trip: { id: tripIdStr, trip_no: (tr?.tripNo ?? tr?.trip_no ?? '') } };
+  } catch (e) {
+    return {
+      state: 'FAILED',
+      reason: `ASSR trip wiring failed: ${String((e as Error)?.message ?? e).slice(0, 160)}`,
     };
   }
 }
