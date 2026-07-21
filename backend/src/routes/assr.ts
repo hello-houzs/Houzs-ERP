@@ -1959,16 +1959,6 @@ app.post("/:id/logistics/:logId/archive", requirePermission("service_cases.write
     true
   );
   if (!ok) return c.json({ error: "Not found" }, 404);
-  await logActivity(
-    c.env,
-    id,
-    "logistics_removed",
-    null,
-    null,
-    "Logistics entry removed",
-    userId || null,
-    { category: "service", source_channel: "app" }
-  );
   return c.json({ ok: true });
 });
 
@@ -2814,44 +2804,13 @@ app.post("/:id/items", requirePermission("service_cases.write"), async (c) => {
   }>();
   if (!body.items?.length) return c.json({ error: "items required" }, 400);
   await addItems(c.env, id, body.items);
-  const addUserId = (c as any).get?.("userId") ?? null;
-  for (const it of body.items) {
-    await logActivity(
-      c.env,
-      id,
-      "item_added",
-      null,
-      it.item_code,
-      `Added item ${it.item_code}${it.qty && it.qty > 1 ? ` (qty ${it.qty})` : ""}`,
-      addUserId,
-      { category: "service", source_channel: "app" }
-    );
-  }
   return c.json({ ok: true });
 });
 
 app.delete("/:id/items/:itemId", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const itemId = parseInt(c.req.param("itemId"), 10);
-  const prevItem = await c.env.DB.prepare(
-    `SELECT item_code, remark FROM assr_items WHERE id = ? AND assr_id = ?`
-  )
-    .bind(itemId, id)
-    .first<{ item_code: string | null; remark: string | null }>();
   await removeItem(c.env, id, itemId);
-  if (prevItem) {
-    const delUserId = (c as any).get?.("userId") ?? null;
-    await logActivity(
-      c.env,
-      id,
-      "item_removed",
-      prevItem.item_code,
-      null,
-      `Removed item ${prevItem.item_code ?? `#${itemId}`}${prevItem.remark ? ` (remark was "${prevItem.remark}")` : ""}`,
-      delUserId,
-      { category: "service", source_channel: "app" }
-    );
-  }
   return c.json({ ok: true });
 });
 
@@ -3101,17 +3060,6 @@ app.post("/:id/logistics", requirePermission("service_cases.write"), async (c) =
   }>();
   if (!body.type) return c.json({ error: "type is required" }, 400);
   const logId = await createLogistics(c.env, id, body);
-  const logUserId = (c as any).get?.("userId") ?? null;
-  await logActivity(
-    c.env,
-    id,
-    "logistics_added",
-    null,
-    body.type,
-    `Scheduled ${body.type}${body.scheduled_date ? ` for ${body.scheduled_date}` : ""}`,
-    logUserId,
-    { category: "service", source_channel: "app" }
-  );
   return c.json({ id: logId }, 201);
 });
 
@@ -3121,20 +3069,6 @@ app.patch("/:id/logistics/:logId", requirePermission("service_cases.write"), asy
   const body = await c.req.json<Record<string, any>>();
   const ok = await patchLogistics(c.env, id, logId, body);
   if (!ok) return c.json({ error: "Not found" }, 404);
-  const logUserId = (c as any).get?.("userId") ?? null;
-  const changed = Object.keys(body).filter((k) =>
-    ["scheduled_date", "scheduled_time_range", "assigned_to", "status", "notes", "completed_at"].includes(k)
-  );
-  await logActivity(
-    c.env,
-    id,
-    "logistics_updated",
-    null,
-    null,
-    `Logistics updated${changed.length ? ` (${changed.join(", ")})` : ""}`,
-    logUserId,
-    { category: "service", source_channel: "app" }
-  );
   return c.json({ ok: true });
 });
 

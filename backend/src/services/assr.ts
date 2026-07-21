@@ -846,10 +846,17 @@ const FIELD_LABELS: Record<string, string> = {
   supplier_service_note: "Supplier Service Note", inspection_by: "Inspection By",
   qc_issue_result: "QC Result",
 };
-// Fields that already emit their own richer timeline entry below — excluded
-// from the generic per-field audit so nothing is logged twice.
-const FIELD_LOG_SKIP = new Set<string>([
-  "assigned_to", "assigned_to_2", "sub_status", "doc_no", "complaint_issue",
+// Only DATE and REMARK/note edits are worth a timeline entry (owner
+// 2026-07-21 — "record date + remark, the rest no need"). Everything else
+// (resolution method, verification outcome, priority, costs, identity, …)
+// is config noise and is NOT recorded. Photos/files/videos are logged
+// separately as attachment events, and item remarks via item_remark.
+const FIELD_LOG_ALLOW = new Set<string>([
+  // dates
+  "customer_pickup_at", "supplier_pickup_at", "items_ready_at",
+  "completion_date", "do_date", "qc_receipt_date",
+  // remarks / free-text notes
+  "goods_returned_note", "supplier_service_note", "action_remark", "satisfaction_notes",
 ]);
 const fieldLabel = (k: string): string =>
   FIELD_LABELS[k] ?? k.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
@@ -1058,12 +1065,11 @@ export async function patchAssrCase(
     }
   }
 
-  // Append-only per-field audit — every other changed field (stage-action
-  // dates, notes, product/resolution info, costs, addresses, etc.) lands on
-  // the timeline so the case keeps a full reviewable history. Fields with a
-  // dedicated entry above are skipped so nothing is double-logged.
+  // Append-only per-field audit — records ONLY date + remark/note edits
+  // (FIELD_LOG_ALLOW); all other field changes are config noise and are not
+  // logged (owner 2026-07-21).
   for (const k of PATCH_FIELDS) {
-    if (!(k in body) || FIELD_LOG_SKIP.has(k)) continue;
+    if (!(k in body) || !FIELD_LOG_ALLOW.has(k)) continue;
     const before = beforeSnapshot ? beforeSnapshot[k] ?? null : null;
     const after = body[k] ?? null;
     if (String(before ?? "") === String(after ?? "")) continue;
