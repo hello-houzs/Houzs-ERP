@@ -41,6 +41,7 @@ import { formatPhone } from '@2990s/shared/phone';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { DeliveryFieldsDrawer } from '../../vendor/scm/components/DeliveryFieldsDrawer';
 import { NewDpOrderDrawer } from '../../vendor/scm/components/NewDpOrderDrawer';
+import { ScheduleDpOrderDrawer } from '../../vendor/scm/components/ScheduleDpOrderDrawer';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { badgeFor } from '../../vendor/scm/lib/category-badges';
@@ -513,6 +514,8 @@ export const DeliveryPlanning = () => {
   /* The order whose HC fields are being edited (drawer open when non-null). */
   const [editing, setEditing] = useState<PlanningOrder | null>(null);
   const [showNewDp, setShowNewDp] = useState(false);
+  /* The DP job being scheduled (Schedule drawer open when non-null). */
+  const [schedulingDp, setSchedulingDp] = useState<PlanningOrder | null>(null);
   const cancelDp = useCancelDpOrder();
 
   /* Cancel a DP job. The row's so_doc_no is the synthetic `DP:<id>` key, so the
@@ -1321,7 +1324,10 @@ export const DeliveryPlanning = () => {
         }}
         rowStyle={(o) => (o.region === 'SG' ? { boxShadow: 'inset 3px 0 0 #2f5d4f' } : undefined)}
         contextMenu={(row) => (isDp(row)
-          ? [{ label: 'Cancel job', onClick: () => void cancelDpRow(row) }]
+          ? [
+              ...(!row.dp_no ? [{ label: 'Schedule…', onClick: () => setSchedulingDp(row) }] : []),
+              { label: 'Cancel job', onClick: () => void cancelDpRow(row) },
+            ]
           : isAssr(row)
           ? [
               { label: 'Open Service Case', onClick: () => openRow(row) },
@@ -1339,6 +1345,10 @@ export const DeliveryPlanning = () => {
       {/* Per-row HC fields editor (right-click → Edit HC fields). SO-context
           always editable; DO-execution editable only when the order has a DO. */}
       {showNewDp && <NewDpOrderDrawer onClose={() => setShowNewDp(false)} />}
+
+      {schedulingDp && (
+        <ScheduleDpOrderDrawer dpRow={schedulingDp} onClose={() => setSchedulingDp(null)} />
+      )}
 
       {editing && (
         <DeliveryFieldsDrawer order={editing} onClose={() => setEditing(null)} />

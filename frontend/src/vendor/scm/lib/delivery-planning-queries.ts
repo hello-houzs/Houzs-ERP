@@ -322,6 +322,39 @@ export function useCancelDpOrder() {
   });
 }
 
+/* Schedule a DP Order onto a lorry + date — this MINTS its DP number (from the
+   lorry plate + date) and, when a trip is given, appends it as a stop on that
+   trip. POST /dp-orders/:id/schedule. The endpoint has always existed; this is
+   the first UI caller (P0 of docs/delivery-planning-jobtypes-spec.md), so setup /
+   dismantle / supplier-pickup jobs can finally leave "Pending Schedule".
+
+   `tripStop.failed` is surfaced so the caller can tell "scheduled but the stop
+   never attached" from a clean success — a wiring failure must never look like a
+   plain success (the #720 lesson the endpoint documents). A header-only schedule
+   (no tripId) is valid: the number is minted, no stop is written. */
+export type ScheduleDpOrderVars = { id: string; lorryId: string; tripDate: string; tripId?: string };
+export type ScheduleDpOrderResult = {
+  dpOrder: unknown;
+  dp_no: string | null;
+  tripStop: { id: string | null; failed: boolean; reason?: string };
+};
+export function useScheduleDpOrder() {
+  const qc = useQueryClient();
+  return useMutation<ScheduleDpOrderResult, Error, ScheduleDpOrderVars>({
+    mutationFn: ({ id, lorryId, tripDate, tripId }) =>
+      authedFetch<ScheduleDpOrderResult>(`/dp-orders/${id}/schedule`, {
+        method: 'POST',
+        body: JSON.stringify({ lorryId, tripDate, ...(tripId ? { tripId } : {}) }),
+      }),
+    onSuccess: () => {
+      // Refresh the board AND the trips views — a new stop landed on a trip.
+      qc.invalidateQueries({ queryKey: ['delivery-planning'] });
+      qc.invalidateQueries({ queryKey: ['scm-trips'] });
+      qc.invalidateQueries({ queryKey: ['scm-trip'] });
+    },
+  });
+}
+
 /* Set the concrete schedule date (+ optional manual delivery_state override,
    + optional driver / lorry trip-wiring) on an SO or DO. type = 'so' | 'do';
    id = SO doc_no or DO id.
