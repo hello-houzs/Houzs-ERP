@@ -228,11 +228,31 @@ const FLAGS_SALES_DIRECTOR: PositionAccessFlags = {
 const DRIVER_HELPER_ROWS: readonly PolicyRow[] = [
   // Delivery Planning board — view only. L1 grant; drivers inherits view.
   { page_key: "scm.transportation", level: "view" },
+  // Projects / PMS — view (owner 2026-07-21: drivers & helpers "open all
+  // events", editing stays limited to their own role-badged checklist tasks,
+  // which the projects.checklist.tick permission + the role-label gates on
+  // the status/attachment routes already enforce). This restores what the
+  // old position_page_access matrix gave positions 16/17 (projects,
+  // projects.list, projects.calendar = view) and what the mobile PMS driver
+  // portal has been using since 2026-07-09 — the 07-18 fold dropped it and
+  // locked drivers out of every event ("Couldn't load this project").
+  // finances / maintenance carry an explicit none so the L1 view does not
+  // cascade onto them (same pattern as the Storekeeper warehouse denials).
+  { page_key: "projects", level: "view" },
+  { page_key: "projects.finances", level: "none" },
+  { page_key: "projects.maintenance", level: "none" },
 ];
 
 const STOREKEEPER_ROWS: readonly PolicyRow[] = [
   // Everything Driver/Helper get.
   { page_key: "scm.transportation", level: "view" },
+  // Projects / PMS — view, same rows as Driver/Helper (owner 2026-07-21:
+  // storekeepers work events alongside the crew; the projects endpoints
+  // additionally row-scope helpers/storekeepers to events they're crewed on
+  // — isCrewScopedUser in routes/projects.ts).
+  { page_key: "projects", level: "view" },
+  { page_key: "projects.finances", level: "none" },
+  { page_key: "projects.maintenance", level: "none" },
   // Warehouse RACKING + rack/bin inventory VIEW. Racking/bin live under the
   // Inventory + Warehouses pages, both gated on scm.warehouse.inventory (there
   // is no finer racking key). The L1 `scm.warehouse` = view opens the Warehouse
@@ -250,6 +270,9 @@ const STOREKEEPER_ROWS: readonly PolicyRow[] = [
 const STOREKEEPER_SUPERVISOR_ROWS: readonly PolicyRow[] = [
   // Everything Storekeeper gets.
   { page_key: "scm.transportation", level: "view" },
+  { page_key: "projects", level: "view" },
+  { page_key: "projects.finances", level: "none" },
+  { page_key: "projects.maintenance", level: "none" },
   { page_key: "scm.warehouse", level: "view" },
   { page_key: "scm.warehouse.inventory", level: "view" },
   { page_key: "scm.warehouse.transfers", level: "none" },
@@ -428,6 +451,33 @@ const CONFIG_WRITE_POSITIONS: ReadonlySet<string> = new Set(
 function positionCanWriteConfig(positionName: string | null): boolean {
   const name = normalisePosition(positionName ?? "");
   return name ? CONFIG_WRITE_POSITIONS.has(name) : false;
+}
+
+// ── The GOD positions — position ⇒ '*' wildcard (owner 2026-07-20) ────────────
+//
+// Owner-directed: merge role + position onto ONE position-driven controller. A
+// person in a god-tier POSITION is a full super admin — no roles.permissions
+// grant needed. auth.ts injects '*' into permissions_set for these positions, so
+// they flow through the SAME '*' machinery the Owner role already uses: the page
+// short-circuit to fullAccessMap, every requirePermission site, and the money /
+// config carve-outs (all of which already exempt '*'). Exact normalised-name
+// membership, NEVER substring — so "Logistic Admin" / "Service Admin" are NOT
+// caught, and a free-text rename can't inject god-mode (same anti-injection rule
+// as MONEY_WRITE_POSITIONS / CONFIG_WRITE_POSITIONS above). "Owner" is listed
+// ahead of the position existing so the owner + Test Admin (position=NULL today,
+// '*' role-only) can be migrated onto it and roles.permissions can eventually
+// retire. Additive only: it can only ever ADD '*', never remove a permission.
+const GOD_POSITIONS: ReadonlySet<string> = new Set(
+  ["Super Admin", "Owner"].map(normalisePosition),
+);
+
+/** True when this POSITION alone confers the '*' wildcard (full super admin).
+ *  Exact normalised-name membership; unknown/empty → false. Consumed by
+ *  services/auth.ts (hydrateAuthUser), which adds '*' to the caller's
+ *  permission set so position drives god-mode without a role grant. */
+export function positionGrantsWildcard(positionName: string | null): boolean {
+  const name = normalisePosition(positionName ?? "");
+  return name ? GOD_POSITIONS.has(name) : false;
 }
 
 /** Plain-language reason for the 403 body — a sentence a person can act on. */

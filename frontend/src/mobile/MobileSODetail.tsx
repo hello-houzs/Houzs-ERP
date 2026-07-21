@@ -6,7 +6,7 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
 import { fetchScanSlipImageBlobUrl } from "../vendor/scm/lib/slip";
-import { useStaff } from "../vendor/scm/lib/admin-queries";
+import { useStaff, usePickableStaff } from "../vendor/scm/lib/admin-queries";
 import { statusLabel } from "../vendor/scm/lib/status-pill";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import { ACCESS_RANK } from "../types";
@@ -35,6 +35,7 @@ import {
 import {
   amendmentLineChangedFields,
   amendmentOldSnapshot,
+  amendmentUnrenderedAxes,
   amendmentVariantSummaries,
   visibleAmendmentLines,
 } from "../vendor/scm/lib/so-amendment-line-diff";
@@ -42,6 +43,8 @@ import {
   useAmendmentDetail,
   useSupplierConfirm,
   useApproveSo,
+  useApprovePo,
+  useSendAmendment,
   useRejectAmendment,
   useWithdrawAmendment,
   type AmendmentLine,
@@ -158,6 +161,10 @@ type SoItem = {
   uom: string | null;
   qty: number | null;
   unit_price_centi: number | null;
+  /* Per-line discount (mfg_sales_order_items.discount_centi). Desktop SO detail
+     shows it in the "Disc" column; without it a discounted line silently hid the
+     discount on mobile and an FOC line read "RM 0.00 ×qty" with no marker. */
+  discount_centi: number | null;
   total_centi: number | null;
   line_delivery_date: string | null;
 };
@@ -221,6 +228,8 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const [viewingAmendmentId, setViewingAmendmentId] = useState<string | null>(null);
   const [supplierConfirmOpen, setSupplierConfirmOpen] = useState(false);
   const approveSo = useApproveSo();
+  const approvePo = useApprovePo();
+  const sendAmendment = useSendAmendment();
   const rejectAmendment = useRejectAmendment();
   const withdrawAmendment = useWithdrawAmendment();
   const updateStatus = useUpdateMfgSalesOrderStatus();
@@ -235,6 +244,12 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const paymentsQ = useSalesOrderPayments(docNo);
 
   const staffQ = useStaff();
+  /* staffQ (FULL roster) resolves persisted names (a scoped-out / resigned
+     salesperson or collector still shows a name). The payment "Collected By"
+     SELECTION list must instead be the company-scoped, ACTIVE-only pickable set
+     (Team-grant rule), mirroring the desktop PaymentsTable — a resigned or
+     other-company staff must never be a NEW pickable collector. */
+  const pickableStaffQ = usePickableStaff();
   const houzsAuth = useHouzsAuth();
   const h = detail.data?.salesOrder as SoHeader | undefined;
   const items = (detail.data?.items ?? []) as SoItem[];
@@ -416,6 +431,14 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const isAmendmentRequester =
     amendmentRequestedBy != null && scmStaff?.id != null && String(amendmentRequestedBy) === String(scmStaff.id);
   const canRejectAmendment = houzsAuth.can("scm.amendment.approve_po");
+  /* Approve-PO + Send gates (SO_APPROVED -> PO_APPROVED -> SENT) ride the SAME
+     purchasing key the server enforces + the desktop PO banner uses
+     (scm.amendment.approve_po). The server 403 stays the real gate. */
+  const canApprovePo = houzsAuth.can("scm.amendment.approve_po");
+  /* The bound PO carried on the shared amendment detail — names the PO in the
+     "SO revised, PO not yet revised" safety warning; null until the PO exists. */
+  const boundPo =
+    (openAmendmentDetail.data?.purchaseOrders?.[0] as { id: string; po_number: string; status: string } | undefined) ?? null;
   const canOfferReject =
     (amendmentStatus === "REQUESTED" || amendmentStatus === "SUPPLIER_PENDING") && canRejectAmendment;
   const canOfferWithdraw =
@@ -508,6 +531,68 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
       void notifyTop({ title: "Could not approve the revision", body: e instanceof Error ? e.message : "Something went wrong.", tone: "error" });
     } finally {
       setBusy(false);
+    }
+  };
+
+  /* Approve-PO gate (SO_APPROVED -> PO_APPROVED) — the amendment's SECOND gate.
+     Re-derives the bound PO(s) in place (same PO number, revision bumped, prior
+     snapshotted into Revisions). Desktop drives this from the PO page; the mobile
+     app has no PO editor, so the gate lives on this banner. The PO's line items
+     are not loaded here, so a `received_floor` 409 names no specific line — the
+     plain-language "raise a Purchase Return first" is still exact. Mirrors desktop
+     PurchaseOrderDetail.handleApprovePo. */
+  const handleApprovePo = async () => {
+    if (!openAmendment || approvePo.isPending) return;
+    if (!(await confirm({
+      title: `Approve PO revision for ${docNo}?`,
+      body: "This applies the supplier-confirmed changes to the bound Purchase Order: it is re-derived in place (same PO number, revision bumped) and the current version is snapshotted into Revisions. This cannot be undone.",
+      confirmLabel: "Approve PO",
+    }))) return;
+    try {
+      const res = await approvePo.mutateAsync({ id: openAmendment.id });
+      const warns = res?.warnings ?? [];
+      void notifyTop(
+        warns.length
+          ? { title: "PO revision approved — please check a few items", body: warns.join(" "), tone: "info" }
+          : { title: "PO revision approved" },
+      );
+    } catch (e) {
+      /* approve-po may 409 { code:'received_floor', revisedQty, receivedQty } —
+         the revised qty is below what's already been received, so a Purchase
+         Return must clear the excess first. Read the structured body off the
+         thrown error (authed-fetch rides err.body) and render ONE plain sentence. */
+      const body = (e as { body?: Record<string, unknown> }).body ?? null;
+      if (body && body.code === "received_floor") {
+        const revised = Number(body.revisedQty ?? 0);
+        const received = Number(body.receivedQty ?? 0);
+        void notifyTop({
+          title: "Cannot approve — quantity already received",
+          body: `One PO line would be revised down to ${revised}, but ${received} have already been received. `
+            + "Raise a Purchase Return for the excess first, then approve the amendment again.",
+          tone: "error",
+        });
+        return;
+      }
+      void notifyTop({ title: "Could not approve the PO", body: e instanceof Error ? e.message : "Something went wrong.", tone: "error" });
+    }
+  };
+
+  /* Send gate (PO_APPROVED -> SENT) — marks the amendment SENT. There is no server
+     email (Houzs mirrors 2990): the operator opens the bound PO on desktop to
+     download the Revised PO and sends it to the supplier themselves. Mirrors
+     desktop PurchaseOrderDetail.handleSendAmendment. */
+  const handleSendAmendment = async () => {
+    if (!openAmendment || sendAmendment.isPending) return;
+    if (!(await confirm({
+      title: `Mark amendment ${openAmendment.amendment_no || ""} as sent?`.trim(),
+      body: "This marks the amendment SENT. There is no automatic email — open the bound PO on desktop to download the Revised PO and send it to the supplier yourself (print / WhatsApp).",
+      confirmLabel: "Mark sent",
+    }))) return;
+    try {
+      await sendAmendment.mutateAsync({ id: openAmendment.id });
+      void notifyTop({ title: "Amendment marked sent" });
+    } catch (e) {
+      void notifyTop({ title: "Could not mark sent", body: e instanceof Error ? e.message : "Something went wrong.", tone: "error" });
     }
   };
 
@@ -649,9 +734,11 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             {/* ── Pending-amendment banner (Phase 1-C) ──────────────────────
                 An amendment is in flight. Shows its no + status pill, a "View
                 changes" link opening the before/after diff, and the gate actions
-                the current user is permitted (record supplier confirmation at
-                REQUESTED / approve SO revision at SUPPLIER_PENDING) — mirroring
-                the desktop SalesOrderDetail pending banner. */}
+                the current user is permitted across BOTH gates — record supplier
+                confirmation (REQUESTED) / approve SO revision (SUPPLIER_PENDING) /
+                approve the bound PO (SO_APPROVED) / send to supplier (PO_APPROVED)
+                — mirroring the desktop SalesOrderDetail + PurchaseOrderDetail
+                amendment banners so mobile can finish + send the amendment. */}
             {hasOpenAmendment && openAmendment && (
               <div style={{ display: "flex", flexDirection: "column", gap: 9, background: "rgba(214,158,46,0.14)", border: "1px solid rgba(214,158,46,0.55)", borderRadius: 12, padding: "11px 13px", marginBottom: 12 }}>
                 <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -688,6 +775,50 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                   >
                     {busy ? "Working…" : "Approve SO revision"}
                   </button>
+                )}
+                {/* SO_APPROVED -> Approve PO (the amendment's SECOND gate). The SO
+                    revision is live but the bound PO is NOT yet revised, so the
+                    supplier is still building the OLD version until this runs
+                    (safety warning, owner 2026-07-19). Desktop drives this from the
+                    PO page; mobile has no PO editor, so the gate lives here. */}
+                {openAmendment.status === "SO_APPROVED" && (
+                  <>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "#6d5626", background: "rgba(214,158,46,0.12)", border: "1px solid rgba(214,158,46,0.4)", borderRadius: 9, padding: "8px 10px" }}>
+                      The Sales Order is revised{boundPo?.po_number ? <> but <strong>{boundPo.po_number}</strong> is NOT</> : ", but its purchase order is NOT"} — the supplier is still working to the old version until the PO revision is approved too.
+                    </div>
+                    {canApprovePo && (
+                      <button
+                        type="button"
+                        onClick={() => void handleApprovePo()}
+                        disabled={approvePo.isPending}
+                        className="money"
+                        style={{ border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f", fontFamily: "inherit", fontSize: 12, fontWeight: 700, borderRadius: 9, padding: "9px 11px", cursor: "pointer", opacity: approvePo.isPending ? 0.5 : 1 }}
+                      >
+                        {approvePo.isPending ? "Approving…" : "Approve PO revision"}
+                      </button>
+                    )}
+                  </>
+                )}
+                {/* PO_APPROVED -> Send. Marks the amendment SENT (no server email);
+                    the Revised PO PDF is downloaded from the desktop PO screen — the
+                    mobile app has no PO PDF generator. */}
+                {openAmendment.status === "PO_APPROVED" && (
+                  <>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "#6d5626" }}>
+                      The PO is revised. Mark it sent, then open the bound PO on desktop to download the Revised PO for the supplier.
+                    </div>
+                    {canApprovePo && (
+                      <button
+                        type="button"
+                        onClick={() => void handleSendAmendment()}
+                        disabled={sendAmendment.isPending}
+                        className="money"
+                        style={{ border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f", fontFamily: "inherit", fontSize: 12, fontWeight: 700, borderRadius: 9, padding: "9px 11px", cursor: "pointer", opacity: sendAmendment.isPending ? 0.5 : 1 }}
+                      >
+                        {sendAmendment.isPending ? "Sending…" : "Send to supplier"}
+                      </button>
+                    )}
+                  </>
                 )}
                 {/* Reject — an approver refusing (reason mandatory). Available at
                     every pre-approved gate, exactly as desktop AmendmentDetailV2. */}
@@ -810,6 +941,13 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                   description: it.description,
                   variant: buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),
                 });
+                /* FOC + discount markers (desktop SalesOrderDetailV2 "Disc"
+                   column). FOC = zero unit price AND zero line total; otherwise a
+                   positive discount_centi renders under the unit price. Without
+                   these the row hid the discount and an FOC line looked like a
+                   plain "RM 0.00 ×qty". */
+                const isFoc = (it.unit_price_centi ?? 0) === 0 && lineTotalCenti(it) === 0;
+                const discountCenti = it.discount_centi ?? 0;
                 return (
                 <div key={it.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "11px 13px", borderTop: i ? "1px solid var(--line2)" : "none" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -818,9 +956,17 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                     {/* UOM only — never the code (see the primary line above). */}
                     {(it.uom ?? "").trim() ? <div className="money" style={{ fontSize: 10, color: "var(--mut2)", marginTop: 3 }}>{it.uom!.trim()}</div> : null}
                   </div>
-                  <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  <div style={{ textAlign: "right", whiteSpace: "nowrap", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
                     <div className="money" style={{ fontSize: 13, fontWeight: 700, color: "#0c3f39" }}>RM {rm(lineTotalCenti(it))}</div>
-                    <div className="money" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>×{it.qty ?? 0}</div>
+                    {/* Unit price × qty — the per-unit price was missing on mobile,
+                        so a discounted / FOC line was indistinguishable from a
+                        full-price one. */}
+                    <div className="money" style={{ fontSize: 11, color: "var(--mut)" }}>RM {rm(it.unit_price_centi ?? 0)} {"×"}{it.qty ?? 0}</div>
+                    {isFoc ? (
+                      <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: ".3px", color: "#a16a2e", background: "#f6ecd9", border: "1px solid #e6d3ad", borderRadius: 5, padding: "1px 5px" }}>FOC</span>
+                    ) : discountCenti > 0 ? (
+                      <div className="money" style={{ fontSize: 10.5, color: "#b23a3a" }}>Disc RM {rm(discountCenti)}</div>
+                    ) : null}
                   </div>
                 </div>
                 );
@@ -892,7 +1038,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                 <RecordedPaymentsList
                   docNo={docNo}
                   payments={payments as RecordedPayment[]}
-                  staff={staffQ.data ?? []}
+                  staff={pickableStaffQ.data ?? []}
                   defaultCollectedBy={defaultCollectedBy}
                   canEdit={canEditPayments}
                   draftUnlocked={isDraftSo}
@@ -924,7 +1070,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
       {payOpen && h && (
         <AddPaymentSheet
           docNo={docNo}
-          staff={staffQ.data ?? []}
+          staff={pickableStaffQ.data ?? []}
           defaultCollectedBy={defaultCollectedBy}
           onClose={() => setPayOpen(false)}
           onSaved={async () => {
@@ -1575,6 +1721,13 @@ function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onC
                 /* Emphasise the field that actually moved — Was / Requesting
                    were two plain columns you had to diff by eye. */
                 const chg = amendmentLineChangedFields(l);
+                /* Axes this line carries that the summaries above cannot show. A
+                   non-empty set means the spec strings are INCOMPLETE, and a short
+                   Requesting string is exactly what reads as "the amendment dropped
+                   my divan height" on a screen you can APPROVE from. Say it out loud
+                   (mirror desktop DiffCard) instead of showing a shorter string. */
+                const unrendered = amendmentUnrenderedAxes(l);
+                const unrenderedAll = [...new Set([...unrendered.from, ...unrendered.to])];
                 return (
                   <div key={l.id} style={{ border: "1px solid var(--line2, #e3e6e0)", borderRadius: 11, overflow: "hidden" }}>
                     <div style={{ padding: "7px 11px", background: "#f4f6f3", fontSize: 10.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "#5c6156" }}>{amendmentChangeLabel(l.change_type)}</div>
@@ -1616,6 +1769,11 @@ function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onC
                         )}
                       </div>
                     </div>
+                    {unrenderedAll.length > 0 && (
+                      <div style={{ borderTop: "1px solid var(--line2, #e3e6e0)", background: "rgba(214,158,46,0.12)", padding: "7px 11px", fontSize: 10.5, lineHeight: 1.4, color: "#6d5626" }}>
+                        This line also carries {unrenderedAll.join(", ")}, which the summary above cannot display. Open the Sales Order to check the full specification before approving.
+                      </div>
+                    )}
                   </div>
                 );
               })}

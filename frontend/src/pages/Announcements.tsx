@@ -563,6 +563,23 @@ function Composer({
       toast.error("Title is required");
       return;
     }
+    // A specific-audience bucket with nothing picked posts an EMPTY target
+    // array, which the backend treats as ALL_USERS — silently broadcasting a
+    // dept/position/person-scoped notice to everyone. Refuse it (the mobile
+    // composer already guards this; see MobileAnnouncements.tsx). Choosing
+    // "All users" is the explicit path to everyone.
+    if (bucket === "DEPT" && selectedDepts.size === 0) {
+      toast.error("Pick at least one department, or choose All users.");
+      return;
+    }
+    if (bucket === "POSITION" && selectedPositions.size === 0) {
+      toast.error("Pick at least one position, or choose All users.");
+      return;
+    }
+    if (bucket === "USER" && selectedUsers.size === 0) {
+      toast.error("Pick at least one person, or choose All users.");
+      return;
+    }
     setPosting(true);
     try {
       const body: Record<string, unknown> = {

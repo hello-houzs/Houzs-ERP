@@ -236,13 +236,15 @@ export async function nextAssrNumber(env: Env): Promise<string> {
 //
 // Service Cases are a CROSS-COMPANY queue, but each case still carries its
 // owning company_id so the shared list can show + split by company. Resolve
-// order: the request's ACTIVE company (passed from the route via
-// activeCompanyId(c)) → the Houzs default. A case raised from a LOCAL sales
-// order that carries a company_id would take precedence over both, but Houzs
-// ASSR cases are keyed to AutoCount SO doc numbers (external, no local
-// company_id), so active company is authoritative here.
+// order (owner 2026-07-20 — 2990 runs Service Cases on the merged platform):
+// the SO's OWN company when the doc resolves to a local scm."mfg_sales_orders"
+// row (a case belongs to its order's company, whatever the creator's switcher
+// says) → the request's company (passed from the route via
+// assrCreateCompanyId(c): the caller's active switcher company) → the Houzs
+// default. AutoCount-keyed Houzs docs carry no local company_id, so for them
+// the route's value stays authoritative.
 //
-// Returns null when neither is resolvable (companies master absent
+// Returns null when nothing is resolvable (companies master absent
 // pre-migration, or a DB cold-start). The INSERT then omits the column,
 // mirroring stampCompany's no-op so single-company Houzs keeps inserting
 // unchanged.
@@ -261,18 +263,94 @@ async function resolveCaseCompanyId(
   }
 }
 
+// ── SCM SO context (multi-company create path) ────────────────
+//
+// The platform-native SO row for a doc number, shaped like the AutoCount
+// getSingle context so createAssrCase's binds stay source-agnostic, plus the
+// SO's owning company_id (drives the case's company stamp). It covers 2990
+// orders (live-mirrored into scm."mfg_sales_orders") and Houzs SCM-native
+// orders that never reached AutoCount. Returns null when the doc is not
+// there — or when the scm schema itself is absent (D1 test mirror,
+// pre-migration) — so the caller falls through to the AutoCount path.
+async function fetchScmSoContext(
+  env: Env,
+  docNo: string
+): Promise<{ context: Record<string, unknown>; company_id: number | null } | null> {
+  try {
+    // 2990 SOs leave the free-text `agent` blank and carry the rep as
+    // salesperson_id -> scm.staff, so COALESCE to that name — else a 2990
+    // case's Sales Agent lands empty. (No `--` comments inside the SQL: the
+    // d1-compat shim folds it to one line and would comment out the tail.)
+    const row = await env.DB.prepare(
+      `SELECT o.debtor_name, o.phone, o.sales_location,
+              COALESCE(NULLIF(o.agent, ''), sp.name) AS agent,
+              o.ref, o.address1, o.address2, o.address3, o.address4, o.company_id
+         FROM scm."mfg_sales_orders" o
+         LEFT JOIN scm.staff sp ON sp.id = o.salesperson_id
+        WHERE LOWER(o.doc_no) = LOWER(?)
+          AND o.status <> 'DRAFT' AND o.status <> 'CANCELLED'
+        LIMIT 1`
+    )
+      .bind(docNo)
+      .first<{
+        debtor_name: string | null;
+        phone: string | null;
+        sales_location: string | null;
+        agent: string | null;
+        ref: string | null;
+        address1: string | null;
+        address2: string | null;
+        address3: string | null;
+        address4: string | null;
+        company_id: number | string | null;
+      }>();
+    if (!row) return null;
+    return {
+      context: {
+        DebtorName: row.debtor_name ?? null,
+        Phone1: row.phone ?? null,
+        SalesLocation: row.sales_location ?? null,
+        SalesAgent: row.agent ?? null,
+        // AutoCount-specific UDF (the internal service PO) — no SCM equivalent.
+        SOUDF_ToPONo: null,
+        InvAddr1: row.address1 ?? null,
+        InvAddr2: row.address2 ?? null,
+        InvAddr3: row.address3 ?? null,
+        InvAddr4: row.address4 ?? null,
+        Ref: row.ref ?? null,
+      },
+      company_id: row.company_id != null ? Number(row.company_id) : null,
+    };
+  } catch {
+    // scm schema absent (D1 test mirror / pre-migration) or a transient DB
+    // error — treat as "not an SCM doc" and let the AutoCount path decide.
+    return null;
+  }
+}
+
 // ── Create case ───────────────────────────────────────────────
 
 export async function createAssrCase(
   env: Env,
   input: CreateAssrInput
 ): Promise<{ assr_no: string; id: number }> {
-  const client = new AutoCountClient(env);
+  // SO context — SCM-first (owner 2026-07-20: 2990 runs Service Cases on the
+  // merged platform). The AutoCount and SCM doc spaces don't overlap in
+  // practice, so legacy Houzs docs miss the scm lookup and take the unchanged
+  // getSingle path.
   let context: any = null;
-  try {
-    context = await client.getSingle(input.doc_no);
-  } catch (e) {
-    console.warn(`[assr] getSingle failed for ${input.doc_no}`, e);
+  let soCompanyId: number | null = null;
+  const scmSo = await fetchScmSoContext(env, input.doc_no);
+  if (scmSo) {
+    context = scmSo.context;
+    soCompanyId = scmSo.company_id;
+  } else {
+    const client = new AutoCountClient(env);
+    try {
+      context = await client.getSingle(input.doc_no);
+    } catch (e) {
+      console.warn(`[assr] getSingle failed for ${input.doc_no}`, e);
+    }
   }
 
   const assrNo = await nextAssrNumber(env);
@@ -334,10 +412,11 @@ export async function createAssrCase(
   const activeProfileId = await getActiveLeadTimeProfileId(env);
   const nowIso = new Date().toISOString();
 
-  // Multi-company (Phase 0b): stamp the owning company. Append the column +
-  // bind ONLY when resolved so the pre-migration / cold-start window (no
+  // Multi-company (Phase 0b): stamp the owning company — the SO's own company
+  // outranks the request's (see resolveCaseCompanyId's doc). Append the column
+  // + bind ONLY when resolved so the pre-migration / cold-start window (no
   // companies master, no company_id column yet) inserts unchanged.
-  const companyId = await resolveCaseCompanyId(env, input.company_id);
+  const companyId = await resolveCaseCompanyId(env, soCompanyId ?? input.company_id);
   const companyCol = companyId != null ? ", company_id" : "";
   const companyPlaceholder = companyId != null ? ", ?" : "";
 
@@ -723,6 +802,9 @@ const PATCH_FIELDS = [
   "supplier_pickup_at", "items_ready_at",
   // Mig 107 — date we collect the faulty item from the customer's house
   "customer_pickup_at",
+  // Mig 127 — on-site OWN-TEAM inspection visit date, de-conflated from
+  // customer_pickup_at; drives a distinct INSPECTION leg on Delivery Planning.
+  "inspection_visit_at",
   // Mig 074 — v3.1 fields
   "inspection_result", "email_for_survey",
   // Mig 081 — verification card (Under Verification → Pending Solution gate)
@@ -746,6 +828,49 @@ const PATCH_FIELDS = [
   // and Supplier. Values are allow-listed in the PATCH route.
   "sub_status",
 ] as const;
+
+// Human labels for the append-only per-field timeline audit. Anything not
+// listed falls back to a prettified column name.
+const FIELD_LABELS: Record<string, string> = {
+  doc_no: "SO No", customer_name: "Customer Name", customer_email: "Customer Email",
+  phone: "Phone", location: "Location", sales_agent: "Sales Agent", item_code: "Item Code",
+  complaint_issue: "Complaint", action_remark: "Action Remark", service_category: "Service Category",
+  completion_date: "Completion Date", po_no: "PO No", resolution_method: "Resolution Method",
+  issue_category: "Issue Category", priority: "Priority", ref_no: "Reference No",
+  delivery_order: "Delivery Order", do_date: "DO Date",
+  satisfaction_rating: "Satisfaction Rating", satisfaction_notes: "Satisfaction Notes",
+  addr1: "Address 1", addr2: "Address 2", addr3: "Address 3", addr4: "Address 4",
+  ncr_category: "NCR Category", quality_review_passed: "Quality Review Passed",
+  po_amount: "PO Amount", customer_amount: "Customer Amount",
+  supplier_invoice_ref: "Supplier Invoice Ref", cost_notes: "Cost Notes",
+  sla_hours: "SLA Hours", deadline_at: "Deadline",
+  supplier_pickup_at: "Supplier Pickup Date", items_ready_at: "Supplier Return / Item Ready Date",
+  customer_pickup_at: "Customer Pickup Date", inspection_visit_at: "Inspection Visit Date",
+  inspection_result: "Inspection Result", email_for_survey: "Survey Email",
+  verification_outcome: "Verification Outcome", verified_root_cause: "Verified Root Cause",
+  qc_receipt_date: "QC Receipt Date", goods_returned_note: "Goods Returned Note",
+  supplier_service_note: "Supplier Service Note", inspection_by: "Inspection By",
+  qc_issue_result: "QC Result",
+};
+// Only DATE and REMARK/note edits are worth a timeline entry (owner
+// 2026-07-21 — "record date + remark, the rest no need"). Everything else
+// (resolution method, verification outcome, priority, costs, identity, …)
+// is config noise and is NOT recorded. Photos/files/videos are logged
+// separately as attachment events, and item remarks via item_remark.
+const FIELD_LOG_ALLOW = new Set<string>([
+  // dates
+  "customer_pickup_at", "supplier_pickup_at", "items_ready_at",
+  "completion_date", "do_date", "qc_receipt_date",
+  // remarks / free-text notes
+  "goods_returned_note", "supplier_service_note", "action_remark", "satisfaction_notes",
+]);
+const fieldLabel = (k: string): string =>
+  FIELD_LABELS[k] ?? k.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+const fieldDisplay = (v: any): string => {
+  if (v === null || v === undefined || v === "") return "(empty)";
+  const s = String(v);
+  return s.length > 120 ? s.slice(0, 117) + "..." : s;
+};
 
 export async function patchAssrCase(
   env: Env,
@@ -772,12 +897,28 @@ export async function patchAssrCase(
       .first<{ doc_no: string | null }>();
     prevDocNo = prev?.doc_no ?? null;
     if (prevDocNo !== body.doc_no) {
-      const so = await env.DB.prepare(
+      let so = await env.DB.prepare(
         `SELECT ref, debtor_name, phone, sales_agent
            FROM sales_orders WHERE LOWER(doc_no) = LOWER(?)`
       )
         .bind(body.doc_no)
         .first<{ ref: string | null; debtor_name: string | null; phone: string | null; sales_agent: string | null }>();
+      // 2990 / SCM-native SOs never reach the HOUZS AutoCount `sales_orders`
+      // mirror, so a re-match to a 2990 doc found nothing and left the customer
+      // blank. Fall back to the scm order table — the same source createAssrCase
+      // hydrates from — so re-matching a 2990 SO fills the identity too. Same
+      // "only fields the caller didn't send" rule applies below.
+      if (!so) {
+        const scm = await fetchScmSoContext(env, body.doc_no);
+        if (scm) {
+          so = {
+            ref: (scm.context.Ref as string | null) ?? null,
+            debtor_name: (scm.context.DebtorName as string | null) ?? null,
+            phone: (scm.context.Phone1 as string | null) ?? null,
+            sales_agent: (scm.context.SalesAgent as string | null) ?? null,
+          };
+        }
+      }
       if (so) {
         if (!("customer_name" in body) && so.debtor_name) body.customer_name = so.debtor_name;
         if (!("phone" in body) && so.phone) body.phone = cleanPhone(so.phone);
@@ -790,6 +931,16 @@ export async function patchAssrCase(
     // ignore rather than null the linkage.
     delete body.doc_no;
   }
+
+  // Snapshot the pre-update values of every auditable field, so each actual
+  // change can be written to the timeline as an append-only entry. A later
+  // edit or removal never erases the earlier recorded value — the history
+  // stays fully reviewable.
+  const beforeSnapshot = await env.DB.prepare(
+    `SELECT ${PATCH_FIELDS.join(", ")} FROM assr_cases WHERE id = ?`
+  )
+    .bind(id)
+    .first<Record<string, any>>();
 
   for (const k of PATCH_FIELDS) {
     if (k in body) {
@@ -920,6 +1071,26 @@ export async function patchAssrCase(
     }
   }
 
+  // Append-only per-field audit — records ONLY date + remark/note edits
+  // (FIELD_LOG_ALLOW); all other field changes are config noise and are not
+  // logged (owner 2026-07-21).
+  for (const k of PATCH_FIELDS) {
+    if (!(k in body) || !FIELD_LOG_ALLOW.has(k)) continue;
+    const before = beforeSnapshot ? beforeSnapshot[k] ?? null : null;
+    const after = body[k] ?? null;
+    if (String(before ?? "") === String(after ?? "")) continue;
+    await logActivity(
+      env,
+      id,
+      "field_change",
+      before === null ? null : String(before),
+      after === null ? null : String(after),
+      `${fieldLabel(k)}: ${fieldDisplay(before)} → ${fieldDisplay(after)}`,
+      userId,
+      { category: "service", source_channel: "app" }
+    );
+  }
+
   // When the case's item_code changes, re-resolve the creditor so the
   // link to the procurement supplier stays accurate. Fire-and-forget —
   // a failed lookup shouldn't fail the PATCH.
@@ -1042,6 +1213,22 @@ export async function setItemRemark(
   return (r.meta.changes ?? 0) > 0;
 }
 
+// Per-item quantity (Nick 2026-07-20) — editable in the Product Info
+// card; feeds the ITEMS table's QTY column on both print copies.
+export async function setItemQty(
+  env: Env,
+  assrId: number,
+  itemId: number,
+  qty: number
+): Promise<boolean> {
+  const r = await env.DB.prepare(
+    `UPDATE assr_items SET qty = ? WHERE id = ? AND assr_id = ?`
+  )
+    .bind(qty, itemId, assrId)
+    .run();
+  return (r.meta.changes ?? 0) > 0;
+}
+
 // ── Attachments ───────────────────────────────────────────────
 
 export function assrAttachmentKey(
@@ -1135,6 +1322,53 @@ export async function lookupSOItems(
   env: Env,
   docNo: string
 ): Promise<{ item_code: string; item_description: string | null; qty: number }[]> {
+  // SCM-first (owner 2026-07-20 — 2990 Service Cases): 2990 orders and Houzs
+  // SCM-native orders keep their line items in scm."mfg_sales_order_items";
+  // AutoCount has never heard of these docs. Same per-item aggregation shape
+  // as the AutoCount branch below; cancelled lines drop out. The scm schema is
+  // absent on the D1 test mirror — the catch falls through to AutoCount.
+  try {
+    // No boolean literal, no uuid in ORDER BY, exact doc_no: keep the SQL to the
+    // plain shape the env.DB (Hyperdrive) shim is proven to run for the sibling
+    // scm."mfg_sales_orders" reads. `cancelled` is a REAL Postgres boolean on
+    // the SCM table (2990's convention — not the Houzs 0/1 flag convention), so
+    // the drop-cancelled filter runs in JS below rather than as a SQL predicate.
+    // No ORDER BY: a 2990 SO whose lines all carry a NULL line_no (an import
+    // that never stamped the ordinal) came back EMPTY through env.DB while an SO
+    // with 0/1/2 line_no returned fine — ordering by an all-NULL column is the
+    // only difference, and the picker doesn't need a guaranteed order anyway.
+    const rows = await env.DB.prepare(
+      `SELECT item_code, description, qty, cancelled
+         FROM scm."mfg_sales_order_items"
+        WHERE doc_no = ?
+          AND item_code IS NOT NULL AND item_code <> ''`
+    )
+      .bind(docNo)
+      .all<{ item_code: string; description: string | null; qty: number | null; cancelled: unknown }>();
+    const scmSeen = new Map<string, { item_code: string; item_description: string | null; qty: number }>();
+    for (const r of rows.results ?? []) {
+      // Skip cancelled lines. Coerce every truthy encoding the driver/shim might
+      // hand back for the boolean (true / 1 / 't' / 'true') to "cancelled".
+      if (r.cancelled === true || r.cancelled === 1 || r.cancelled === "t" || r.cancelled === "true") continue;
+      const code = (r.item_code ?? "").trim();
+      if (!code) continue;
+      const qty = Number(r.qty ?? 0) || 0;
+      const existing = scmSeen.get(code);
+      if (existing) {
+        existing.qty += qty;
+        if (!existing.item_description && r.description) existing.item_description = r.description;
+      } else {
+        scmSeen.set(code, { item_code: code, item_description: r.description ?? null, qty });
+      }
+    }
+    if (scmSeen.size > 0) return [...scmSeen.values()];
+  } catch (e) {
+    // scm schema absent (D1 test mirror / pre-migration) is expected → fall
+    // through to AutoCount. A REAL error here (the 2990 item-lookup miss we are
+    // chasing) must not stay silent, so surface it to wrangler tail.
+    console.warn(`[assr] scm item lookup failed for ${docNo}:`, (e as Error)?.message ?? e);
+  }
+
   try {
     const client = new AutoCountClient(env);
     const details = await client.getDetail(docNo);

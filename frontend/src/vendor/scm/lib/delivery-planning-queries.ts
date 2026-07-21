@@ -28,20 +28,21 @@ export const DELIVERY_STATE_LABEL: Record<DeliveryState, string> = {
   DELIVERED: 'Delivered',
 };
 
-// A region is a CONFIG-DRIVEN bucket code (migration 0198) derived from the
-// customer's STATE (not the line warehouse). The seeded defaults are KL · Penang
-// · EM (East Malaysia: Sabah/Sarawak/Labuan) · SG (Singapore), but the owner can
-// add more in the Delivery Regions master, so a region code is now an OPEN string
-// (not a fixed union). 'ALL' is the no-filter param; the rest are bucket codes.
+// A region is a CONFIG-DRIVEN bucket code (migration 0053) derived from the
+// customer's STATE (not the line warehouse). The live buckets are the geographic
+// regions KL/SEL · Northern · Southern · East Coast · EM (East Malaysia:
+// Sabah/Sarawak/Labuan) — Singapore folds into Southern — but the owner can add
+// more in the Delivery Regions master, so a region code is an OPEN string (not a
+// fixed union). 'ALL' is the no-filter param; the rest are bucket codes.
 export type RegionCode = string;
 export type RegionKey = 'ALL' | RegionCode;
 
 /* A board row is either a Sales-Order delivery (the original rows) or a
    Service-Case (ASSR) job. row_type discriminates; it defaults to 'so' for the
    long-standing SO rows (the backend now stamps it explicitly on every row). */
-export type PlanningRowType = 'so' | 'assr' | 'dp';
+export type PlanningRowType = 'so' | 'assr' | 'dp' | 'project';
 /* ASSR job kind (only meaningful when row_type === 'assr'). */
-export type AssrJobKind = 'customer_pickup' | 'delivery';
+export type AssrJobKind = 'customer_pickup' | 'delivery' | 'inspection';
 
 export type PlanningOrder = {
   /* SO rows: 'so' (default). ASSR (service-case) rows: 'assr'. DP-Order jobs
@@ -144,7 +145,7 @@ export type PlanningResponse = {
   regions: Array<{ key: RegionKey; label: string }>;
 };
 
-/* The board. region = ALL | KL | PENANG | EM | SG; state = DeliveryState | 'ALL'.
+/* The board. region = ALL | KL | NORTHERN | SOUTHERN | EAST_COAST | EM; state = DeliveryState | 'ALL'.
    Counts come back scoped to the active region (not the state) so the 4 state
    tab badges stay stable as the operator switches between state tabs. */
 export function useDeliveryPlanning(opts: { region?: string; state?: string }) {
@@ -275,6 +276,15 @@ export const DP_JOB_TYPE_LABEL: Record<DpJobType, string> = {
   SUPPLIER_PICKUP: 'Supplier Pickup',
 };
 
+/* The job types the New-DP-Order drawer OFFERS to create. DELIVERY / PICKUP /
+   SERVICE are deliberately EXCLUDED: they are represented natively by SO / DO /
+   ASSR board rows, and a source-backed DP order of those types is suppressed by
+   the board's anti-double-count union guard — so it would silently vanish (a data
+   sink). The drawer's real job is the "extra" fleet jobs with no native document.
+   DP_JOB_TYPES (the full set) is still used to LABEL any existing/legacy dp_order
+   the board renders. */
+export const DP_CREATABLE_JOB_TYPES = ['SETUP', 'DISMANTLE', 'SUPPLIER_PICKUP'] as const;
+
 /* The label the board / dropdown show for a DP job type. Reads the canonical map;
    falls back to a Title-Cased prettify for any value not in the set (defensive —
    the board's Type chip previously prettified inline, so unknown/legacy stored
@@ -319,6 +329,39 @@ export function useCancelDpOrder() {
         `/dp-orders/${id}/cancel`, { method: 'POST', body: JSON.stringify({}) },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['delivery-planning'] }),
+  });
+}
+
+/* Schedule a DP Order onto a lorry + date — this MINTS its DP number (from the
+   lorry plate + date) and, when a trip is given, appends it as a stop on that
+   trip. POST /dp-orders/:id/schedule. The endpoint has always existed; this is
+   the first UI caller (P0 of docs/delivery-planning-jobtypes-spec.md), so setup /
+   dismantle / supplier-pickup jobs can finally leave "Pending Schedule".
+
+   `tripStop.failed` is surfaced so the caller can tell "scheduled but the stop
+   never attached" from a clean success — a wiring failure must never look like a
+   plain success (the #720 lesson the endpoint documents). A header-only schedule
+   (no tripId) is valid: the number is minted, no stop is written. */
+export type ScheduleDpOrderVars = { id: string; lorryId: string; tripDate: string; tripId?: string };
+export type ScheduleDpOrderResult = {
+  dpOrder: unknown;
+  dp_no: string | null;
+  tripStop: { id: string | null; failed: boolean; reason?: string };
+};
+export function useScheduleDpOrder() {
+  const qc = useQueryClient();
+  return useMutation<ScheduleDpOrderResult, Error, ScheduleDpOrderVars>({
+    mutationFn: ({ id, lorryId, tripDate, tripId }) =>
+      authedFetch<ScheduleDpOrderResult>(`/dp-orders/${id}/schedule`, {
+        method: 'POST',
+        body: JSON.stringify({ lorryId, tripDate, ...(tripId ? { tripId } : {}) }),
+      }),
+    onSuccess: () => {
+      // Refresh the board AND the trips views — a new stop landed on a trip.
+      qc.invalidateQueries({ queryKey: ['delivery-planning'] });
+      qc.invalidateQueries({ queryKey: ['scm-trips'] });
+      qc.invalidateQueries({ queryKey: ['scm-trip'] });
+    },
   });
 }
 

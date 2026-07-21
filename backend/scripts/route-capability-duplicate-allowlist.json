@@ -1,0 +1,11 @@
+[
+  {
+    "method": "POST",
+    "path": "/api/users/:id/impersonate",
+    "sources": [
+      "backend/src/routes/users.ts:1692",
+      "backend/src/routes/users.ts:1922"
+    ],
+    "reason": "Existing production-owner and staging-only handlers overlap. Remove the production-unconditional duplicate in the D3 privilege-boundary batch."
+  }
+]

@@ -14,7 +14,7 @@ import { Avatar } from "../components/Avatar";
  * to its project, mirroring the bell popover.
  */
 export function Notifications() {
-  const { feed, totalUnread, reload } = useNotifications();
+  const { feed, totalUnread, loadFailed, reload } = useNotifications();
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 py-5">
@@ -28,7 +28,9 @@ export function Notifications() {
               Notifications
             </h1>
             <p className="text-[11.5px] text-ink-muted">
-              {totalUnread > 0
+              {loadFailed && feed.length === 0
+                ? "Couldn't load"
+                : totalUnread > 0
                 ? `${totalUnread > 99 ? "99+" : totalUnread} unread`
                 : "You're caught up"}
             </p>
@@ -44,7 +46,30 @@ export function Notifications() {
         </button>
       </header>
 
-      {feed.length === 0 ? (
+      {feed.length === 0 && loadFailed ? (
+        /* An empty feed we FAILED to load is NOT an empty feed. Telling someone
+           they're caught up when we never got an answer is the most misleading
+           thing this screen can say — it's the one people read to decide whether
+           anything needs them. Mirror the mobile inbox, which already keeps
+           these two states apart (see MobileInbox.tsx + useNotifications
+           loadFailed). */
+        <div className="rounded-lg border border-err/30 bg-err/5 px-4 py-12 text-center shadow-stone">
+          <p className="text-[12.5px] font-semibold text-ink">
+            We couldn't load your notifications.
+          </p>
+          <p className="mt-1 text-[11.5px] text-ink-muted">
+            This isn't the same as having none. Try again.
+          </p>
+          <button
+            type="button"
+            onClick={() => reload()}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+          >
+            <RotateCcw size={13} />
+            Retry
+          </button>
+        </div>
+      ) : feed.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface px-4 py-12 text-center text-[12px] text-ink-muted shadow-stone">
           Nothing new. You're caught up.
         </div>

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
-import { resolvePositionPolicy } from "../src/services/positionPolicy";
+import { resolvePositionPolicy, positionGrantsWildcard } from "../src/services/positionPolicy";
 import { scmAreaGuard } from "../src/scm/middleware/area-guard";
 import {
   PAGES,
@@ -58,10 +58,20 @@ const EXPECTED_WHITELIST: Record<string, Record<string, AccessLevel>> = {
   Driver: {
     "scm.transportation": "view",
     "scm.transportation.drivers": "view", // inherits the L1 parent
+    // Projects / PMS view (owner 2026-07-21): drivers open all events; edits
+    // stay permission-gated to their own role-badged checklist tasks.
+    // finances / maintenance carry explicit none rows (asserted by the
+    // all-else-none sweep).
+    projects: "view",
+    "projects.list": "view", // inherits the L1 parent
+    "projects.calendar": "view", // inherits the L1 parent
   },
   Helper: {
     "scm.transportation": "view",
     "scm.transportation.drivers": "view",
+    projects: "view",
+    "projects.list": "view",
+    "projects.calendar": "view",
   },
   Storekeeper: {
     "scm.transportation": "view",
@@ -701,5 +711,34 @@ describe("positionPolicy — the adjustment split is genuinely decoupled from in
     const app = warehouseAppFor(viewer);
     expect((await app.request("/inventory/")).status).toBe(200);
     expect((await app.request("/inventory/adjustments", { method: "POST" })).status).toBe(403);
+  });
+});
+
+/* Position ⇒ '*' (owner 2026-07-20). A god-tier POSITION (Super Admin / Owner) is
+   a full super admin with no roles.permissions grant — step 1 of merging role +
+   position onto one position-driven controller. The critical safety property is
+   EXACT-name membership: a substring match would let "Logistic Admin" / "Service
+   Admin" (real positions) or a free-text rename inject god-mode. */
+describe("positionGrantsWildcard — position ⇒ '*'", () => {
+  test("god positions grant the wildcard (exact name, case/space tolerant)", () => {
+    expect(positionGrantsWildcard("Super Admin")).toBe(true);
+    expect(positionGrantsWildcard("Owner")).toBe(true);
+    expect(positionGrantsWildcard("  super   admin ")).toBe(true);
+    expect(positionGrantsWildcard("OWNER")).toBe(true);
+  });
+
+  test("NON-god positions never grant it — anti-substring (the whole safety point)", () => {
+    expect(positionGrantsWildcard("Logistic Admin")).toBe(false);
+    expect(positionGrantsWildcard("Service Admin")).toBe(false);
+    expect(positionGrantsWildcard("Super Administrator")).toBe(false);
+    expect(positionGrantsWildcard("Assistant Super Admin")).toBe(false);
+    expect(positionGrantsWildcard("Sales Director")).toBe(false);
+    expect(positionGrantsWildcard("Owners")).toBe(false);
+  });
+
+  test("empty / null → false (fail closed)", () => {
+    expect(positionGrantsWildcard("")).toBe(false);
+    expect(positionGrantsWildcard(null)).toBe(false);
+    expect(positionGrantsWildcard("   ")).toBe(false);
   });
 });

@@ -149,6 +149,9 @@ export interface AssrCase {
   closed_at: string | null;
   created_by: number | null;
   created_by_name?: string | null;
+  /** Owning company's code ("HOUZS" / "2990") — joined by the list endpoint;
+   *  the cross-company portal tags non-HOUZS rows with it. */
+  company_code?: string | null;
   satisfaction_rating: number | null;
   satisfaction_notes: string | null;
   // AutoCount-derived creditor (procurement supplier). Auto-resolved
@@ -191,6 +194,9 @@ export interface AssrCase {
   supplier_pickup_at?: string | null;
   // Mig 107 — date we collect the faulty item from the customer's house.
   customer_pickup_at?: string | null;
+  /* Mig 127 — on-site own-team inspection visit date, de-conflated from
+     customer_pickup_at; drives a distinct INSPECTION leg on Delivery Planning. */
+  inspection_visit_at?: string | null;
   // Mig 0073 — who performs the issue inspection: 'own' | 'supplier'.
   // Lives on the Under Verification stage since mig 0105.
   inspection_by?: "own" | "supplier" | null;

@@ -30,6 +30,12 @@
 // See authed-fetch.ts's import note: the token may be in sessionStorage, so the
 // read must come from the shared accessor, never an inlined localStorage hit.
 import { readAuthToken } from '../../../lib/authToken';
+import {
+  consumeCorrelated,
+  correlatedFetch,
+  requestIdFromError,
+  requestIdFromResponse,
+} from '../../../lib/requestCorrelation';
 
 // PROD fallback is same-origin (Pages Function proxies /api/*); see
 // authed-fetch.ts for the rationale.
@@ -59,8 +65,8 @@ export type SaveDiff = { field: string; expected: unknown; actual: unknown };
 
 export type SaveResult<T> =
   | { ok: true; data: T }
-  | { ok: false; reason: 'http'; status: number; body: string }
-  | { ok: false; reason: 'network'; details: string }
+  | { ok: false; reason: 'http'; status: number; body: string; requestId?: string }
+  | { ok: false; reason: 'network'; details: string; requestId?: string }
   | { ok: false; reason: 'mismatch'; diffs: SaveDiff[]; data: T };
 
 /** Mutation transport — injectable so tests don't touch the network/auth. */
@@ -111,7 +117,7 @@ const authedFetcher: Fetcher = async (path, init) => {
   /* Lands in the 'network' result's `details` (not user-facing today), but keep
      it a sentence so any future surfacing of details is already plain. */
   if (!token) throw new Error('Your session has expired — please sign in again.');
-  return fetch(`${API_URL}${path}`, {
+  return correlatedFetch(`${API_URL}${path}`, {
     ...init,
     headers: {
       ...(init.headers ?? {}),
@@ -127,12 +133,12 @@ export async function readbackGet<T>(path: string): Promise<T | null> {
   const token = readAuthToken();
   if (!token) return null;
   const sep = path.includes('?') ? '&' : '?';
-  const res = await fetch(`${API_URL}${path}${sep}_t=${Date.now()}`, {
+  const res = await correlatedFetch(`${API_URL}${path}${sep}_t=${Date.now()}`, {
     cache: 'no-store',
     headers: { authorization: `Bearer ${token}`, ...companyHeader() },
   });
   if (!res.ok) return null;
-  return (await res.json()) as T;
+  return consumeCorrelated(res, () => res.json() as Promise<T>);
 }
 
 /** Turn a FAILED save into an operator-friendly, plain-language sentence — no
@@ -189,12 +195,17 @@ export async function verifiedSave<T>(args: VerifiedSaveArgs<T>): Promise<SaveRe
       body: args.body !== undefined ? JSON.stringify(args.body) : undefined,
     });
   } catch (e) {
-    return { ok: false, reason: 'network', details: e instanceof Error ? e.message : String(e) };
+    return {
+      ok: false,
+      reason: 'network',
+      details: e instanceof Error ? e.message : String(e),
+      requestId: requestIdFromError(e),
+    };
   }
   if (!res.ok) {
     let body = '';
     try { body = await res.text(); } catch { /* ignore */ }
-    return { ok: false, reason: 'http', status: res.status, body };
+    return { ok: false, reason: 'http', status: res.status, body, requestId: requestIdFromResponse(res) };
   }
 
   // 2. Read back (cache-bypassing) and 3. compare.
@@ -202,7 +213,12 @@ export async function verifiedSave<T>(args: VerifiedSaveArgs<T>): Promise<SaveRe
   try {
     data = await args.readback();
   } catch (e) {
-    return { ok: false, reason: 'network', details: `readback failed: ${e instanceof Error ? e.message : String(e)}` };
+    return {
+      ok: false,
+      reason: 'network',
+      details: `readback failed: ${e instanceof Error ? e.message : String(e)}`,
+      requestId: requestIdFromError(e),
+    };
   }
   if (data == null) {
     return { ok: false, reason: 'network', details: 'readback returned no data — save state unknown' };

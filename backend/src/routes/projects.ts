@@ -47,7 +47,7 @@ import {
   canSeeProject,
   isScopedProjectUser,
 } from "../services/projectAcl";
-import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer, isSalesUser, isSalesDirectorUser } from "../services/pmsAccess";
+import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer, isSalesUser } from "../services/pmsAccess";
 import { scopeSalesReportsForUser } from "../services/orgScope";
 import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
@@ -731,6 +731,9 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
   let pendingTitle: string | undefined;
   let pendingLogistic = false;
   let pendingApprove: string[] | undefined;
+  let pendingDirector: { stock?: boolean; agreement?: boolean; sales_attending?: boolean } | undefined;
+  let pendingSalesAttending = false;
+  let pendingAgreement = false;
   if (c.req.query("my_pending") === "1" && user) {
     // Owner 2026-07-13 — staged "My Pending". Approvers (anyone holding a
     // checklist approval permission, or `*`) see ONLY the items awaiting
@@ -761,18 +764,27 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     const GATING_APPROVE_PERMS = ["projects.approve"];
     // hasPermission handles the `*` wildcard, so admins/owner still match.
     const held = GATING_APPROVE_PERMS.filter((p) => hasPermission(granted, p));
+    const r = (user.role_name || "").toLowerCase();
     if (held.length > 0) {
+      // Super Admin / owner (weisiang): what they must approve, PLUS the
+      // Agreement / Quotation once its timeline arrives (owner 2026-07-21).
       pendingApprove = held;
-    } else {
-      const r = (user.role_name || "").toLowerCase();
-      if (r === "purchaser") pendingLabel = "PURCHASER";
-      else if (r === "logistic") pendingLogistic = true; // setup not arranged
-      else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";
-      else if (r.includes("bd")) pendingLabel = "BD";
-      else if (r.includes("sales")) pendingLabel = "SALES PIC";
-      else if (r === "manager") pendingTitle = "Agreement / Quotation";
-      // unmapped roles -> no pending filter (see all)
-    }
+      pendingAgreement = true;
+    } else if (r.includes("sales director")) {
+      // Peter / Kingsley (owner 2026-07-21): approve the stock-out record once
+      // the purchaser submits it, and assign the Sales Attending reps. (They do
+      // NOT hold projects.approve, so they previously fell through to SALES PIC.)
+      pendingDirector = { stock: true, sales_attending: true };
+    } else if (r === "purchaser") pendingLabel = "PURCHASER";
+    else if (r === "logistic") pendingLogistic = true; // setup not arranged
+    else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";
+    else if (r.includes("bd")) pendingLabel = "BD";
+    else if (r.includes("sales")) {
+      // Sales PIC: their SALES-PIC-badged tasks + the Sales Attending assignment.
+      pendingLabel = "SALES PIC";
+      pendingSalesAttending = true;
+    } else if (r === "manager") pendingTitle = "Agreement / Quotation";
+    // unmapped roles -> no pending filter (see all)
   }
   const result = await listProjects(c.env, {
     company_id: activeCompanyId(c),
@@ -780,6 +792,9 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     pending_title: pendingTitle,
     pending_logistic: pendingLogistic,
     pending_approve: pendingApprove,
+    pending_director: pendingDirector,
+    pending_sales_attending: pendingSalesAttending || undefined,
+    pending_agreement: pendingAgreement || undefined,
     stage: c.req.query("stage"),
     brand: c.req.query("brand"),
     state: c.req.query("state") || undefined,
@@ -802,6 +817,14 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     // so the list and the calendar agree. Admins/directors/unscoped roles
     // have scope === null and never carry this (they see all, unchanged).
     attendee_user_id: scope ? user?.id : undefined,
+    // "Assigned to me" (owner 2026-07-16): drivers/helpers can pull just the
+    // events they're crewed on (FK cols or crew JSON name match).
+    // Owner 2026-07-21: for helpers/storekeepers this is FORCED — they only
+    // ever see their assigned events (isCrewScopedUser).
+    assigned_user_id:
+      isCrewScopedUser(user) || c.req.query("assigned_to_me") === "1" ? user?.id : undefined,
+    assigned_user_name:
+      isCrewScopedUser(user) || c.req.query("assigned_to_me") === "1" ? user?.name ?? undefined : undefined,
   });
   // Server-side finance strip (rule 3): the list SELECTs pf.rental /
   // total_sales / contractor_cost per row. Blank them for any non-director
@@ -1481,6 +1504,12 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
   if (!canSeeProject(user, detail.project) && !isDetailAttendee) {
     return c.json({ error: "Not found" }, 404);
   }
+  // Owner 2026-07-21: helpers/storekeepers open ONLY events they're crewed on
+  // (same 404-shape as the other row-ACL misses so ids aren't probeable).
+  if (isCrewScopedUser(user)) {
+    const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0, user?.name);
+    if (phases.length === 0) return c.json({ error: "Not found" }, 404);
+  }
   // Tell the frontend which panels to hide for this user/project.
   // `level` keeps the legacy 'full' | 'limited' vocabulary for current
   // callsites; `level_v2` emits the new 'full' | 'partial' vocabulary
@@ -1640,16 +1669,10 @@ app.post("/", requirePermission("projects.write"), async (c) => {
   if (!body.name || !body.name.trim()) {
     return c.json({ error: "name is required" }, 400);
   }
-  // Owner 2026-07-18: PIC assignment is open to EVERYONE holding projects.write
-  // EXCEPT the Sales Director — consistent with the PATCH pic_id + sales-attendees
-  // gates below. Enforced by EXACT normalised position name (isSalesDirectorUser),
-  // deliberately NOT a \b substring, so a free-text rename can't drift the block.
-  // Field-scoped like the PATCH rule: a Sales Director may still CREATE a project,
-  // they simply cannot set the PIC at creation. Fires only when a real pic_id is
-  // supplied — creating WITHOUT a PIC is a harmless no-op, not a 403.
-  if ((body.pic_id ?? null) !== null && isSalesDirectorUser(user)) {
-    return c.json({ error: "A Sales Director cannot assign the project PIC." }, 403);
-  }
+  // Owner 2026-07-20: reversed the 2026-07-18 block — a Sales Director may now
+  // assign the project PIC at create (as well as PATCH + Sales Attending below),
+  // like everyone else holding projects.write. The scope + brand gates below
+  // still apply to the picked user.
   // Scoped users (sales reps) can only create projects where they or
   // their manager is the PIC. Ignore any other pic_id they submit.
   let picId = body.pic_id ?? null;
@@ -1756,21 +1779,9 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
     }
   }
 
-  // Owner 2026-07-18: PIC assignment is open to EVERYONE holding projects.write
-  // EXCEPT the Sales Director. Enforced by EXACT normalised position name
-  // (isSalesDirectorUser), deliberately NOT a \b substring — a free-text rename
-  // ("Assistant to Sales Director") must not smuggle this block onto, or off,
-  // another position. Scoped to the pic_id FIELD only: a Sales Director keeps
-  // every other project edit in this same PATCH; they simply cannot (re)assign
-  // the PIC. Fires only on an actual change so a redundant same-value echo is a
-  // harmless no-op rather than a spurious 403.
-  if (
-    "pic_id" in body &&
-    (body.pic_id ?? null) !== (existing.pic_id ?? null) &&
-    isSalesDirectorUser(user)
-  ) {
-    return c.json({ error: "A Sales Director cannot assign the project PIC." }, 403);
-  }
+  // Owner 2026-07-20: reversed the 2026-07-18 block — a Sales Director may now
+  // (re)assign the PIC in this PATCH, like everyone else holding projects.write.
+  // The brand gate below still validates the picked user.
 
   // Brand gate for any PIC assignment (admin or scoped). Validates
   // against the post-patch brand, so changing brand + pic together is
@@ -2412,7 +2423,7 @@ app.put("/:id/phase-photos/upload", async (c) => {
   const granted = user?.permissions_set ?? user?.permissions;
   const canManage = !!user && hasPermission(granted, "projects.write");
   if (!canManage) {
-    const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0);
+    const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0, user?.name);
     if (!phases.includes(phase as "setup" | "dismantle")) {
       return c.json({ error: "Not crewed on this phase" }, 403);
     }
@@ -2464,7 +2475,7 @@ app.post("/:id/phase-photos", async (c) => {
   const granted = user?.permissions_set ?? user?.permissions;
   const canManage = !!user && hasPermission(granted, "projects.write");
   if (!canManage) {
-    const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0);
+    const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0, user?.name);
     if (!phases.includes(phase)) {
       return c.json({ error: "Not crewed on this phase" }, 403);
     }
@@ -2490,7 +2501,7 @@ app.get("/:id/phase-photos", async (c) => {
     !!user &&
     (hasPermission(grantedR, "projects.read") || hasPermission(grantedR, "projects.write"));
   if (!canRead) {
-    const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0);
+    const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0, user?.name);
     if (!phases.length) return c.json({ error: "You don't have permission to view this project." }, 403);
   }
 
@@ -2517,16 +2528,24 @@ app.delete("/phase-photos/:photoId", async (c) => {
   if (isNaN(photoId)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
   const row = await c.env.DB.prepare(
-    `SELECT project_id, uploaded_by, r2_key FROM project_phase_photos WHERE id = ?`
+    `SELECT project_id, phase, uploaded_by, r2_key FROM project_phase_photos WHERE id = ?`
   )
     .bind(photoId)
-    .first<{ project_id: number; uploaded_by: number | null; r2_key: string }>();
+    .first<{ project_id: number; phase: "setup" | "dismantle"; uploaded_by: number | null; r2_key: string }>();
   if (!row) return c.json({ error: "Not found" }, 404);
 
   const granted = user?.permissions_set ?? user?.permissions;
   const canManage = !!user && hasPermission(granted, "projects.write");
   const isUploader = user?.id != null && row.uploaded_by === user.id;
-  if (!canManage && !isUploader) return c.json({ error: "You don't have permission to delete this photo." }, 403);
+  if (!canManage && !isUploader) {
+    // Owner 2026-07-21: crew (helpers/storekeepers/drivers) manage the
+    // setup/dismantle photos of events they're crewed on — including
+    // removing a wrong shot someone else on the crew uploaded.
+    const phases = await getUserPhasesOnProject(c.env, row.project_id, user?.id ?? 0, user?.name);
+    if (!phases.includes(row.phase)) {
+      return c.json({ error: "You don't have permission to delete this photo." }, 403);
+    }
+  }
 
   await c.env.DB.prepare(`DELETE FROM project_phase_photos WHERE id = ?`)
     .bind(photoId)
@@ -2775,6 +2794,19 @@ app.patch("/checklist/:itemId", requireAnyPermission(["projects.write", "project
   if (!ok) return c.json({ error: "No changes" }, 400);
   return c.json({ ok: true });
 });
+
+// Owner 2026-07-21: helpers/storekeepers are CREW-SCOPED — they may view/edit
+// only events they're crewed on (setup/dismantle FK slots or the per-lorry
+// crew JSON). Matched on the EXACT position name (never \b substrings —
+// position names are owner-editable free text; see the pmsAccess note).
+// Drivers intentionally stay unscoped (owner kept them see-all).
+const CREW_SCOPED_POSITIONS = new Set(["helper", "storekeeper", "storekeeper supervisor"]);
+function isCrewScopedUser(user: { position_name?: string | null; permissions?: string[]; permissions_set?: Set<string> | string[] } | null | undefined): boolean {
+  if (!user) return false;
+  const granted = (user as any).permissions_set ?? user.permissions;
+  if (hasPermission(granted, "*") || hasPermission(granted, "projects.write")) return false;
+  return CREW_SCOPED_POSITIONS.has((user.position_name ?? "").trim().toLowerCase());
+}
 
 // Does the task's role badge admit this user's role? Exact match, plus:
 // DRIVER-badged field tasks (Setup/Dismantle Image) are worked by the whole
@@ -3513,12 +3545,8 @@ app.post("/:id/sales-attendees", requirePermission("projects.write"), async (c) 
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
-  // Owner 2026-07-18: Sales-Attending assignment is open to EVERYONE with
-  // projects.write EXCEPT the Sales Director. Same exact-name gate as the PIC
-  // PATCH above (isSalesDirectorUser, not a \b substring).
-  if (isSalesDirectorUser(user)) {
-    return c.json({ error: "A Sales Director cannot change Sales Attending." }, 403);
-  }
+  // Owner 2026-07-20: reversed the 2026-07-18 block — a Sales Director may now
+  // change Sales Attending, like everyone else holding projects.write.
   const body = await c.req.json<{ sales_rep_id?: number }>();
   if (!body.sales_rep_id) return c.json({ error: "Please choose a sales attendee." }, 400);
   try {
@@ -3558,12 +3586,8 @@ app.delete(
     const repId = parseInt(c.req.param("repId"), 10);
     if (isNaN(id) || isNaN(repId)) return c.json({ error: "Invalid ID" }, 400);
     const user = c.get("user");
-    // Owner 2026-07-18: removing an attendee is part of the same "assign"
-    // capability — open to everyone with projects.write EXCEPT the Sales
-    // Director (exact-name gate, mirrors the POST above).
-    if (isSalesDirectorUser(user)) {
-      return c.json({ error: "A Sales Director cannot change Sales Attending." }, 403);
-    }
+    // Owner 2026-07-20: reversed the 2026-07-18 block — a Sales Director may now
+    // remove Sales Attending too, like everyone else holding projects.write.
     const rep = await c.env.DB.prepare(
       `SELECT code, name FROM sales_reps WHERE id = ?`
     )
@@ -3751,13 +3775,34 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
      scope_to_pic, so getProjectScope already treats them as unfiltered
      everywhere else; the calendar now matches. Only scope_to_pic roles
      (sales reps) stay filtered to their own assigned events. */
+  /* Owner 2026-07-21: helpers/storekeepers are crew-scoped — their calendar
+     shows only events they're crewed on, so they drop out of the unscoped
+     see-all lane and get a crew-assignment arm instead. */
+  const crewScoped = isCrewScopedUser(user);
   const seeAll =
     !!user &&
+    !crewScoped &&
     (isAdmin || getPmsRole(user, { pic_id: null }) === "DIRECTOR" || scope === null);
   const assignArms: string[] = [];
   const scopeBinds: any[] = [];
   if (!seeAll) {
-    if (scope) {
+    if (crewScoped && user?.id) {
+      // Crew arm — FK slots + per-lorry crew JSON exact-name containment
+      // (same match listProjects' assigned_user arm uses).
+      const idArms = [
+        "p.setup_driver_user_id = ?", "p.dismantle_driver_user_id = ?",
+        "p.setup_helper_1_id = ?", "p.setup_helper_2_id = ?",
+        "p.dismantle_helper_1_id = ?", "p.dismantle_helper_2_id = ?",
+      ];
+      let arm = idArms.join(" OR ");
+      for (const _ of idArms) scopeBinds.push(user.id);
+      const nm = (user.name ?? "").trim().toLowerCase();
+      if (nm) {
+        arm += " OR lower(COALESCE(p.setup_crew,'')) LIKE ? OR lower(COALESCE(p.dismantle_crew,'')) LIKE ?";
+        scopeBinds.push(`%"${nm}"%`, `%"${nm}"%`);
+      }
+      assignArms.push(`(${arm})`);
+    } else if (scope) {
       // Existing scoped-role behavior, verbatim (one-hop PIC + brand gate) —
       // just OR-extended with the attendee arm below so an attending rep
       // also sees venues where they aren't the PIC.

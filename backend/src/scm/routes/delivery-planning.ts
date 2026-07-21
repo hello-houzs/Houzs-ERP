@@ -90,13 +90,16 @@ deliveryPlanning.use('*', supabaseAuth);
 export type Region = string;
 
 /* The codes the fallback reproduces — used ONLY when the config tables are
-   empty/unapplied so behaviour never regresses below today. (The live scm seed
-   in migration 0053 is SELANGOR/KL/NORTHERN/SOUTHERN/EAST_COAST/EAST_MY; these
-   fallbacks are 2990's and only fire if the config tables read empty.) */
+   empty/unapplied so behaviour never regresses below today. Kept in sync with the
+   live Delivery Regions buckets (KL/SEL / Northern / Southern / East Coast /
+   East Malaysia; Singapore folds into Southern). NOTE: migration 0053's seed is
+   the older SELANGOR/KL/NORTHERN/SOUTHERN/EAST_COAST/EAST_MY set, so a fresh env
+   seeded from 0053 differs from prod until reconciled. */
 const FALLBACK_DEFAULT_REGION = 'KL';
 const FALLBACK_REGIONS: Array<{ key: Region; label: string }> = [
-  { key: 'KL', label: 'KL' }, { key: 'PENANG', label: 'Penang' },
-  { key: 'EM', label: 'EM' }, { key: 'SG', label: 'SG' },
+  { key: 'KL', label: 'KL/SEL' }, { key: 'NORTHERN', label: 'Northern' },
+  { key: 'SOUTHERN', label: 'Southern' }, { key: 'EAST_COAST', label: 'East Coast' },
+  { key: 'EM', label: 'East Malaysia' },
 ];
 
 /* Normalize free-text for tolerant matching: upper, strip punctuation/accents,
@@ -846,9 +849,9 @@ deliveryPlanning.get('/', async (c) => {
       // Row discriminator + ASSR-parity fields. SO rows are always 'so' with no
       // Service-Case ref / job_kind. ADDITIVE — every existing SO field below is
       // untouched (see the ASSR union after this map for the 'assr' rows).
-      row_type: 'so' as 'so' | 'assr' | 'dp',
+      row_type: 'so' as 'so' | 'assr' | 'dp' | 'project',
       ref: null as string | null,
-      job_kind: null as 'customer_pickup' | 'delivery' | null,
+      job_kind: null as 'customer_pickup' | 'delivery' | 'inspection' | null,
       // DP-Order job type (DELIVERY/PICKUP/SERVICE/SETUP/DISMANTLE/SUPPLIER_PICKUP)
       // — only 'dp' rows carry it; SO/ASSR rows are null (union parity).
       dp_job_type: null as string | null,
@@ -983,16 +986,20 @@ deliveryPlanning.get('/', async (c) => {
               phone         AS phone,
               location      AS location,
               customer_pickup_at AS customer_pickup_at,
+              inspection_visit_at AS inspection_visit_at,
+              inspection_by AS inspection_by,
               do_date       AS do_date,
               addr1 AS addr1, addr2 AS addr2, addr3 AS addr3, addr4 AS addr4
          FROM assr_cases
         WHERE closed_at IS NULL
           AND archived_at IS NULL
-          AND (customer_pickup_at IS NOT NULL OR do_date IS NOT NULL)`,
+          AND (customer_pickup_at IS NOT NULL OR do_date IS NOT NULL
+               OR (inspection_visit_at IS NOT NULL AND inspection_by = 'own'))`,
     ).all<{
       id: number | null; assr_no: string | null; status: string | null;
       customer_name: string | null; phone: string | null; location: string | null;
-      customer_pickup_at: string | null; do_date: string | null;
+      customer_pickup_at: string | null; inspection_visit_at: string | null;
+      inspection_by: string | null; do_date: string | null;
       addr1: string | null; addr2: string | null; addr3: string | null; addr4: string | null;
     }>();
 
@@ -1011,8 +1018,12 @@ deliveryPlanning.get('/', async (c) => {
       // effective/board date is that trigger date so it lands in the schedule
       // column. A date-but-not-yet-delivered case = PENDING_SCHEDULE (reuse the
       // existing enum). Stock columns are null/'—' for ASSR rows.
-      const legs: Array<{ jobKind: 'customer_pickup' | 'delivery'; date: string }> = [];
+      const legs: Array<{ jobKind: 'customer_pickup' | 'delivery' | 'inspection'; date: string }> = [];
       if (a.customer_pickup_at) legs.push({ jobKind: 'customer_pickup', date: a.customer_pickup_at });
+      // Own-team on-site inspection visit — a distinct fleet leg. Supplier-done
+      // inspections are handled on the supplier side, so they never surface here
+      // (the SELECT already gates this to inspection_by = 'own').
+      if (a.inspection_visit_at && a.inspection_by === 'own') legs.push({ jobKind: 'inspection', date: a.inspection_visit_at });
       if (a.do_date)            legs.push({ jobKind: 'delivery',        date: a.do_date });
 
       for (const leg of legs) {
@@ -1205,7 +1216,133 @@ deliveryPlanning.get('/', async (c) => {
     console.warn(`[delivery-planning] DP-order union skipped: ${String((e as Error).message).slice(0, 120)}`);
   }
 
-  const allOrders = [...orders, ...assrOrders, ...dpBoardRows];
+  /* ── PMS project SETUP / DISMANTLE union (READ-ONLY mirror) ───────────────────
+     The fleet (drivers / lorries) is SHARED across deliveries, service cases AND
+     exhibition projects, so a project's setup / dismantle window is a real fleet
+     commitment the coordinator must SEE to avoid double-booking a lorry. This is a
+     read-only mirror of what the PMS module already schedules (projects.setup_* /
+     dismantle_*): scheduling + crew assignment stay in PMS, which owns that editor
+     and its permission gates (SETUP_DISMANTLE). One row per SET window (a project
+     with both a setup and a dismantle date shows two rows). Fleet is company-shared
+     so this is intentionally NOT company-scoped. public.projects → c.env.DB raw SQL
+     (same path as the ASSR union). Defensive: any failure logs + leaves the rest. */
+  const projectOrders: BoardRow[] = [];
+  try {
+    const projRows = await c.env.DB.prepare(
+      `SELECT p.id AS id, p.code AS code, p.name AS name,
+              p.venue AS venue, p.venue_address AS venue_address, p.state AS state,
+              p.setup_start_at     AS setup_start_at,
+              p.dismantle_start_at AS dismantle_start_at,
+              sd.name  AS setup_driver_name,     sl.plate AS setup_lorry_plate,
+              dd.name  AS dismantle_driver_name, dl.plate AS dismantle_lorry_plate
+         FROM projects p
+         LEFT JOIN users   sd ON sd.id = p.setup_driver_user_id
+         LEFT JOIN lorries sl ON sl.id = p.setup_lorry_id
+         LEFT JOIN users   dd ON dd.id = p.dismantle_driver_user_id
+         LEFT JOIN lorries dl ON dl.id = p.dismantle_lorry_id
+        WHERE p.archived_at IS NULL
+          AND (p.setup_start_at IS NOT NULL OR p.dismantle_start_at IS NOT NULL)`,
+    ).all<{
+      id: number | null; code: string | null; name: string | null;
+      venue: string | null; venue_address: string | null; state: string | null;
+      setup_start_at: string | null; dismantle_start_at: string | null;
+      setup_driver_name: string | null; setup_lorry_plate: string | null;
+      dismantle_driver_name: string | null; dismantle_lorry_plate: string | null;
+    }>();
+
+    for (const p of (projRows.results ?? [])) {
+      const stateRegions = stateToRegionsFromConfig(regionCfg, p.state, null);
+      const primaryRegion = stateRegions[0] ?? FALLBACK_DEFAULT_REGION;
+      const regionSet = new Set<Region>(stateRegions);
+      const address = p.venue_address ?? p.venue ?? null;
+      const partyName = p.venue ?? p.name ?? null;
+
+      // One row per SET window; job type reuses the DP SETUP/DISMANTLE vocabulary
+      // so the board's Type chip labels it via the same dpJobTypeLabel map.
+      const legs: Array<{ jobType: 'SETUP' | 'DISMANTLE'; date: string; driver: string | null; lorry: string | null }> = [];
+      if (p.setup_start_at)     legs.push({ jobType: 'SETUP',     date: String(p.setup_start_at).slice(0, 10),     driver: p.setup_driver_name,     lorry: p.setup_lorry_plate });
+      if (p.dismantle_start_at) legs.push({ jobType: 'DISMANTLE', date: String(p.dismantle_start_at).slice(0, 10), driver: p.dismantle_driver_name, lorry: p.dismantle_lorry_plate });
+
+      for (const leg of legs) {
+        const rowKey = `PRJ:${String(p.id)}#${leg.jobType}`;
+        projectOrders.push({
+          row_type: 'project',
+          ref: p.code ?? null,
+          job_kind: null,
+          dp_job_type: leg.jobType,
+          dp_no: null,
+          assr_id: null,
+          so_doc_no: rowKey,
+          debtor_code: null,
+          debtor_name: partyName,
+          phone: null,
+          branding: null,
+          status: 'PROJECT',
+          // Read-only mirror: a project window is already crewed in PMS → it's a
+          // committed fleet job, so it surfaces under Pending Delivery.
+          delivery_state: 'PENDING_DELIVERY',
+          delivery_state_override: null,
+          balance_centi: 0,
+          balance_centi_live: null,
+          local_total_centi: 0,
+          release_gate: (() => {
+            const g = computeReleaseGate({ totalCenti: 0, paidCenti: 0 });
+            return { decision: g.decision, remaining_centi: g.remainingCenti, collect_on_delivery_centi: g.collectOnDeliveryCenti, reason: 'PMS project — no order balance' };
+          })(),
+          so_date: null,
+          processing_date: null,
+          customer_delivery_date: leg.date,
+          amend_date_from_customer: null,
+          amended_delivery_date: leg.date,
+          amend_reason: null,
+          effective_delivery_date: leg.date,
+          internal_expected_dd: leg.date,
+          days_left: daysBetween(today, leg.date),
+          address,
+          postcode: null,
+          building_type: null,
+          possession_date: null,
+          house_type: null,
+          replacement_disposal: null,
+          referral: null,
+          time_range: null,
+          time_confirmed: null,
+          arrival_at: null,
+          departure_at: null,
+          shipout_date: null,
+          customer_delivered_date: null,
+          eta_arriving_port: null,
+          delivery_substatus: null,
+          arrives_em_warehouse_date: null,
+          do_date: null,
+          stock_status: null,
+          stock_remark: null,
+          is_main_ready: null,
+          company_code: null,
+          region: primaryRegion,
+          regions: [...regionSet],
+          warehouse_id: null,
+          warehouse_code: null,
+          warehouse_name: null,
+          customer_state: p.state ?? null,
+          delivered_qty: 0,
+          remaining_qty: 0,
+          // Show the crew PMS already assigned to this window (read-only on the board).
+          crew: (leg.driver || leg.lorry) ? {
+            driver: leg.driver, helper: null, lorry: leg.lorry,
+            driver_1_name: leg.driver, driver_1_ic: null, driver_1_contact: null,
+            driver_2_name: null, helper_1_name: null, helper_2_name: null,
+            lorry_plate: leg.lorry,
+          } : null,
+          delivery_orders: [],
+        });
+      }
+    }
+  } catch (e) {
+    console.warn(`[delivery-planning] project union skipped: ${String((e as Error).message).slice(0, 120)}`);
+  }
+
+  const allOrders = [...orders, ...assrOrders, ...dpBoardRows, ...projectOrders];
 
   /* 7c. PER-ASSIGNEE ROW SCOPE. For a self-scoped caller (Driver/Helper), keep
         ONLY the rows assigned to them; unassigned rows and other crews' jobs drop
@@ -1509,7 +1646,7 @@ const scheduleSchema = z.object({
   // ASSR ONLY (type='assr'): which driving date the board row represents, so the
   // scheduleDate write-back targets the matching assr_cases column
   // (customer_pickup_at vs do_date). Ignored for so | do.
-  jobKind: z.enum(['customer_pickup', 'delivery']).nullable().optional(),
+  jobKind: z.enum(['customer_pickup', 'delivery', 'inspection']).nullable().optional(),
   // ── Optional trip wiring ───────────────────────────────────────────────────
   // Scheduling an order onto a trip. Either tripId (append to an existing trip)
   // OR {lorryId, driverId, tripDate?} (find-or-create a trip for that lorry+date).
@@ -1557,7 +1694,7 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
   /* ── ASSR (Service Case) schedule write-back ─────────────────────────────────
      Two-way editing of the board date: writing scheduleDate updates the case's
      DRIVING date on public.assr_cases. Which column depends on jobKind —
-     'customer_pickup' → customer_pickup_at, 'delivery' → do_date. No trip/crew
+     'customer_pickup' → customer_pickup_at, 'inspection' → inspection_visit_at, 'delivery' → do_date. No trip/crew
      wiring for ASSR legs (out of scope). Kept fully SEPARATE from the SO/DO path
      below, which stays byte-for-byte unchanged. assr_cases is PUBLIC → c.env.DB. */
   if (type === 'assr') {
@@ -1566,7 +1703,9 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
     if (!Number.isFinite(caseId)) return c.json({ error: 'bad_id', reason: 'assr id must be numeric' }, 400);
     // jobKind decides the target column. Default to 'delivery' (do_date) when
     // absent — the frontend row carries job_kind and should always send it.
-    const col = p.jobKind === 'customer_pickup' ? 'customer_pickup_at' : 'do_date';
+    const col = p.jobKind === 'customer_pickup' ? 'customer_pickup_at'
+      : p.jobKind === 'inspection' ? 'inspection_visit_at'
+      : 'do_date';
     try {
       const res = await c.env.DB.prepare(
         `UPDATE assr_cases SET ${col} = ?, updated_at = datetime('now')
@@ -1576,7 +1715,7 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
     } catch (e) {
       return c.json({ error: 'update_failed', reason: String((e as Error).message).slice(0, 200) }, 500);
     }
-    return c.json({ ok: true, assr: { id: caseId, job_kind: col === 'do_date' ? 'delivery' : 'customer_pickup', [col]: p.scheduleDate }, trip: null });
+    return c.json({ ok: true, assr: { id: caseId, job_kind: col === 'do_date' ? 'delivery' : col === 'inspection_visit_at' ? 'inspection' : 'customer_pickup', [col]: p.scheduleDate }, trip: null });
   }
 
   const wantsTrip = p.tripId != null || p.lorryId != null;

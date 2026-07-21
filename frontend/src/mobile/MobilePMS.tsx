@@ -267,33 +267,6 @@ type ConfirmFn = (o: { title: string; body?: ReactNode; confirmLabel?: string; c
 type PromptFn = (o: { title: string; body?: ReactNode; defaultValue?: string; placeholder?: string; confirmLabel?: string; validate?: (v: string) => string | null }) => Promise<string | null>;
 type SetBusy = Dispatch<SetStateAction<boolean>>;
 
-// Map the design's 3 rental-payment states onto the project.payment_status
-// enum the POST /:id/payment endpoint accepts.
-const PAYMENT_OPTS: Array<[string, string]> = [
-  ["not_started", "N/A"],
-  ["deposit_paid", "Pending"],
-  ["paid", "Fully paid"],
-];
-
-// POST /api/projects/:id/payment — sets project.payment_status.
-async function patchPayment(
-  id: number,
-  status: string,
-  setBusy: SetBusy,
-  notify: NotifyFn,
-  reload: () => void,
-): Promise<void> {
-  setBusy(true);
-  try {
-    await api.post(`/api/projects/${id}/payment`, { status });
-    reload();
-  } catch (e) {
-    await notify({ title: "Update failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
-  } finally {
-    setBusy(false);
-  }
-}
-
 // Dual-read helper — the PG driver camelCases result columns, so a row may
 // carry either snake_case (D1 fallback / raw SQL) or camelCase. Always read
 // both (project_pg_camelcase_columns memory — #1 recurring bug).
@@ -384,7 +357,7 @@ const stageVariant = pmsStageVariant;
 
 // Map the desktop variant onto the mobile badge palette already used across
 // the screen (amber = open, green/teal = in-progress, grey = neutral/closed,
-// clay-red = error). bg/fg pairs match ListChip / PaymentBadge tints.
+// clay-red = error). bg/fg pairs match the ListChip tints.
 const STAGE_TINT: Record<StageVariant, { bg: string; fg: string }> = {
   neutral: { bg: "#eef0ec", fg: "#767b6e" },
   open: { bg: "#f6efd9", fg: "#6e4d12" },
@@ -408,6 +381,27 @@ const PMS_PAGE_SIZE = 30;
 function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onBack?: () => void }) {
   const [q, setQ] = useState("");
   const [stageFilter, setStageFilter] = useState<string>("all");
+  // "My events" — drivers/helpers (tick-only, no projects.write) land on the
+  // events they're crewed on (setup/dismantle assignment, FK or crew JSON;
+  // owner 2026-07-16) with "All" one tap away. Everyone else sees the normal
+  // full list with no extra chip.
+  const { can, user } = useAuth();
+  const tickOnly = can("projects.checklist.tick") && !can("projects.write");
+  const [assignedOnly, setAssignedOnly] = useState<boolean | null>(null);
+  const showAssigned = tickOnly && (assignedOnly ?? true);
+  // Owner 2026-07-21: field/sales roles (Sales Executive/Manager except Sales
+  // Director, plus Driver/Helper/Storekeeper) get a slimmed filter bar — only
+  // "My events", "Setup", "Dismantle" (no All / Draft / Live / Completed).
+  const _pos = (user?.position_name ?? "").trim();
+  const _dept = (user?.department_name ?? "").trim();
+  const _isDirector = !!user?.permissions?.includes("*") || /\b(super admin|sales director|finance manager)\b/i.test(_pos);
+  const _isCrew = /\b(driver|helper)\b/i.test(_pos) || /storekeeper/i.test(_pos);
+  const _isSalesExec = (/sales/i.test(_dept) || /^sales/i.test(_pos)) && !_isDirector;
+  const restrictedCohort = _isCrew || _isSalesExec;
+  const visibleStageFilters = restrictedCohort
+    ? STAGE_FILTERS.filter(([k]) => k === "setup" || k === "dismantle")
+    : STAGE_FILTERS;
+  const myEventsOn = tickOnly ? showAssigned : true; // sales are already scoped to their events
   /* Debounced search term — the value actually sent to the server (and keyed
      into the infinite query) so a keystroke doesn't fire a request per
      character. 300ms after the operator stops typing the list re-runs from
@@ -437,13 +431,14 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     p.set("per_page", String(PMS_PAGE_SIZE));
     if (stageFilter !== "all") p.set("stage", stageFilter);
     if (debouncedQ) p.set("search", debouncedQ);
+    if (showAssigned) p.set("assigned_to_me", "1");
     return p.toString();
   };
   const {
     data, isLoading, error,
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ],
+    queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ, showAssigned],
     queryFn: ({ pageParam }) => api.get<ListResponse>(`/api/projects?${buildParams(pageParam)}`),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
@@ -500,7 +495,16 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
           </div>
         </div>
         <div className="chips" style={{ marginTop: 11 }}>
-          {STAGE_FILTERS.map(([k, label]) => (
+          {(tickOnly || restrictedCohort) && (
+            <button
+              onClick={() => { if (tickOnly) setAssignedOnly(!showAssigned); }}
+              className={myEventsOn ? "chip on" : "chip"}
+              style={myEventsOn ? undefined : { borderColor: "#bcdcd7", color: "#16695f" }}
+            >
+              My events
+            </button>
+          )}
+          {visibleStageFilters.map(([k, label]) => (
             <button key={k} onClick={() => setStageFilter(k)} className={stageFilter === k ? "chip on" : "chip"}>{label}</button>
           ))}
         </div>
@@ -510,6 +514,12 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
 
         {isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load projects. Pull to retry.</div>}
+        {!isLoading && !error && showAssigned && rows.length === 0 && (
+          <div style={{ textAlign: "center", padding: "26px 0" }}>
+            <div style={{ color: "#9aa093", fontSize: 12 }}>No events assigned to you{stageFilter !== "all" || debouncedQ ? " match these filters" : " yet"}.</div>
+            <button className="tinybtn" style={{ marginTop: 10 }} onClick={() => setAssignedOnly(false)}>Show all events</button>
+          </div>
+        )}
         {!isLoading && !error && (
           <>
             {rows.length > 0 && (
@@ -732,15 +742,6 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // matrix level, a different question from the PMS FINANCIAL section, so an
   // unresolved payload used to answer the finance question with the page answer.
   const financeVisible = access.canFinancial && !!data?.finance;
-  // Rental & payment section: gate on the PMS PAYMENT flag. The backend blanks
-  // payment_* cols for a role without it (#345), so a non-payment sales user
-  // would otherwise see an empty "N/A" section — hide it outright.
-  //
-  // THIS WAS `pms ? pms.canPayment ?? true : true` — a `?? true` on a MONEY
-  // surface. Both branches granted: an absent `pms` block showed the card, and a
-  // present block with the flag omitted ALSO showed it. A permission we could
-  // not read is NO, and never more so than on payment.
-  const paymentVisible = access.canPayment;
   // ── Mobile role-based checklist visibility (owner 2026-07-16) ──────────────
   // Gate specific items/sections by the viewer's org role. Keyed off stable org
   // fields (position_name / department_name / role_name), mirroring
@@ -782,6 +783,13 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // sections are hidden.
   const isSalesExecMgr = isSalesStaff && !isMgt;
   const cohort5 = isDriverCrew || isStorekeeper || isSalesExecMgr;
+  // Sales-section visibility — mirror the desktop split (Projects.tsx:9914-9918):
+  // the Sales panel is gated on sales VIEW access (page-access OR sales-staff OR
+  // director), NOT on canFinancial. The desktop renders ProjectSalesEntriesSection
+  // outside the finance gate for exactly this reason — a non-financial salesperson
+  // (isSalesExecMgr) HOLDS the log-sale action but has canFinancial=false, so
+  // nesting it under the finance gate lost the action for the person who owns it.
+  const canViewSales = salesAccess !== "none" || isSalesStaff || isDirectorPos;
   const cohortHiddenSection = (name: string) =>
     /payment|closeout|booth layout|setup\s*&?\s*dismantle documents|expo map/i.test(name);
   const sectionNameById = new Map((data?.sections ?? []).map((s) => [s.id, s.name] as const));
@@ -821,9 +829,10 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     return false;
   };
   const visibleChecklist = (data?.checklist ?? []).filter((it) => !itemHidden(it));
-  // Reversed 2026-07-16: crew (driver/helper/storekeeper) now VIEW+DOWNLOAD the
-  // Filled floorplan (previously hidden). Keep the prop for future per-role use.
-  const hideFilledPlan = false;
+  // Owner 2026-07-21 (re-reversed): the Filled floorplan tile is hidden from
+  // crew again — their Floor Plans card keeps Display (banner), Unfilled
+  // (view/download) and the stock-transfer records (view/download).
+  const hideFilledPlan = isDriverCrew || isStorekeeper;
   // Owner 2026-07-18: PIC assignment AND Sales-Attending assignment are open to
   // EVERYONE holding projects.write EXCEPT the Sales Director — same single
   // logic layer as the desktop ProjectTeamSection (canAssignPeople). This
@@ -832,7 +841,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // (isSalesDirectorUser), never a \b substring, so a free-text rename can't
   // drift the block. Backend re-enforces the same rule (PATCH pic_id +
   // POST/DELETE sales-attendees); this is UX/defence-in-depth only.
-  const canAssignPeople = canWrite && !isSalesDirectorUser(user);
+  // Owner 2026-07-21: the Sales-Director assignment block is reversed (backend
+  // gates already open) — projects.write is enough to assign PIC + attending.
+  const canAssignPeople = canWrite;
   const canEditTeam = canAssignPeople;
   const canEditAttending = canAssignPeople;
   // PIC's phone from the project detail (backend populates pic_phone) — shown
@@ -1042,11 +1053,12 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             </details>
 
-            {/* tasklist — REMOVED for the sales cohort (owner 2026-07-17):
-                their six deliverables live in the SalesDocsCard tiles and the
+            {/* tasklist — REMOVED for the sales cohort (owner 2026-07-17) and
+                for crew (owner 2026-07-21): their deliverables live in the
+                doc-tile cards (SalesDocsCard / CREW_DOC_TILES) and the
                 floorplans in the FloorPlans card, so the row list was pure
                 duplication for them. Everyone else keeps the full tasklist. */}
-            {!isSalesExecMgr && <TasklistSectionView
+            {!isSalesExecMgr && !(isDriverCrew || isStorekeeper) && <TasklistSectionView
               sections={data.sections}
               items={visibleChecklist}
               progress={data.section_progress}
@@ -1076,11 +1088,15 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 /* `canEdit !== false` treated BOTH an absent pms block and an
                    omitted flag as writable. Now the server's answer, fail-closed. */
                 canWrite={canWrite && access.canEdit && !archived}
+                /* Crew manage the setup/dismantle photos (owner 2026-07-21);
+                   the backend re-gates on being crewed on the phase. */
+                canPhoto={(isDriverCrew || isStorekeeper) && !archived}
                 busy={busy}
                 setBusy={setBusy}
                 patchProject={patchProject}
                 notify={notify}
                 reloadPhotos={reloadPhotos}
+                confirm={confirm}
               />
             )}
 
@@ -1089,6 +1105,26 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 The tasklist rows stay; this is the visual hub on top. */}
             {isSalesStaff && !isMgt && (
               <SalesDocsCard
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy}
+                setBusy={setBusy}
+                notify={notify}
+                prompt={prompt}
+                confirm={confirm}
+                reload={reload}
+              />
+            )}
+
+            {/* Crew (driver/helper/storekeeper) doc tiles (owner 2026-07-21 v2)
+                — same card style as sales, ALL view/download-only (their photo
+                work lives in Setup & Dismantle's phase photos). Replaces their
+                tasklist rows (hidden above). */}
+            {(isDriverCrew || isStorekeeper) && (
+              <SalesDocsCard
+                tiles={CREW_DOC_TILES}
+                title="Event documents"
                 checklist={data.checklist}
                 attachments={data.checklist_attachments}
                 canTick={canTick && !archived}
@@ -1116,28 +1152,39 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reload={reload}
             />
 
-            {/* rental & payment (PMS PAYMENT-gated) */}
-            {paymentVisible && !cohort5 && (
-              <RentalPayment
-                status={p.payment_status ?? null}
-                canWrite={canWrite && !archived}
-                busy={busy}
-                setBusy={setBusy}
-                notify={notify}
-                onSet={(status) => patchPayment(id, status, setBusy, notify, reload)}
-              />
-            )}
+            {/* Rental & Payment STATUS card removed on mobile (owner 2026-07-20):
+                it duplicated the task list's PAYMENT section (Rental Payment +
+                Security Deposit), which owner/directors already see there — and it
+                wrote projects.payment_status while that pill writes pill_value
+                (desynced). Payment status now flows only through the pill; the
+                rental AMOUNT + Total Sales are editable in the snapshot below. */}
 
-            {/* financial snapshot (finance-gated) — design v7 places P&L as the
-                FINAL card, after the logistics + money sections. */}
-            {financeVisible && (
-              <FinancialSnapshot
-                finance={data.finance!}
-                lines={data.finance_lines}
+            {/* Sales — SALES-gated, split out of the finance snapshot so a
+                non-financial salesperson (who HOLDS the log-sale action) can
+                reach it. Mirrors desktop ProjectSalesEntriesSection, gated on
+                canViewSales (NOT canFinancial). */}
+            {canViewSales && (
+              <SalesPanel
+                projectId={id}
+                incomeLines={data.finance_lines}
                 canLogSale={canLogSale && !archived}
                 busy={busy}
                 setBusy={setBusy}
                 prompt={prompt}
+                notify={notify}
+                reload={reload}
+              />
+            )}
+
+            {/* financial snapshot (finance-gated) — P&L headline + editable
+                rental amount + Total Sales lump-sum + cost ledger. */}
+            {financeVisible && (
+              <FinancialSnapshot
+                finance={data.finance!}
+                lines={data.finance_lines}
+                canWrite={canWrite && !archived}
+                busy={busy}
+                setBusy={setBusy}
                 notify={notify}
                 projectId={id}
                 reload={reload}
@@ -1237,53 +1284,81 @@ function SalesAttending({
   );
 }
 
-// ── Rental & payment (N/A / Pending / Fully Paid → POST /:id/payment) ──
-function RentalPayment({
-  status, canWrite, busy, setBusy, notify, onSet,
+// ── Sales (SALES-gated — split from the finance snapshot) ──
+// The quick-log-a-sale action belongs to the salesperson working the project,
+// not to finance. Desktop renders ProjectSalesEntriesSection on canViewSales
+// (Projects.tsx:9885,9914-9918), NOT canFinancial — so a non-financial sales
+// exec keeps the action. POST /api/sales/entries is gated on sales page-access
+// (requirePageAccess("sales")), which canLogSale mirrors. The income lines come
+// from the finance ledger, which the backend strips for a finance-hidden user;
+// a sales-only user therefore sees the log action with an empty list and still
+// no P&L.
+function SalesPanel({
+  projectId, incomeLines, canLogSale, busy, setBusy, prompt, notify, reload,
 }: {
-  status: string | null;
-  canWrite: boolean;
+  projectId: number;
+  incomeLines?: FinanceLine[];
+  canLogSale: boolean;
   busy: boolean;
   setBusy: SetBusy;
+  prompt: PromptFn;
   notify: NotifyFn;
-  onSet: (status: string) => Promise<void>;
+  reload: () => void;
 }) {
-  void setBusy; void notify; // handled inside onSet (patchPayment)
-  const cur = status ?? "not_started";
+  // Quick-log a sale at the project (POST /api/sales/entries { quick_log }).
+  // Lands as a draft sales entry; surfaces as a synthetic income line.
+  const logSale = async () => {
+    const amtStr = await prompt({
+      title: "Sale amount (RM)",
+      placeholder: "0.00",
+      validate: (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? null : "Enter a positive number."; },
+    });
+    if (amtStr == null) return;
+    const ref = await prompt({ title: "Reference no. (optional)", placeholder: "e.g. INV-123" });
+    if (ref == null) return;
+    const today = todayInAppTz();
+    setBusy(true);
+    try {
+      await api.post(`/api/sales/entries`, {
+        project_id: projectId,
+        quick_log: true,
+        amount: parseFloat(amtStr),
+        ref_no: ref.trim() || null,
+        occurred_at: today,
+      });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const income = (incomeLines ?? []).filter((l) => (l.kind ?? "").toLowerCase() === "income");
+
   return (
-    <details className="pacc">
+    <details className="pacc" open>
       <summary>
-        <span className="psec-t">Rental &amp; payment</span>
-        <PaymentBadge status={cur} />
+        <span className="psec-t">Sales</span>
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">
-        <div className="docrow" style={{ borderTop: "none" }}>
-          <span style={{ flex: 1, fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>Rental Payment</span>
-          {canWrite ? (
-            PAYMENT_OPTS.map(([v, label]) => {
-              const on = v === cur;
-              const tone = v === "not_started"
-                ? { bg: on ? "#f4f6f3" : "#fff", fg: "#767b6e" }
-                : v === "deposit_paid"
-                  ? { bg: on ? "#f6efd9" : "#fff", fg: "#6e4d12", border: "#e8dcc5" }
-                  : { bg: on ? "#e2f0e9" : "#fff", fg: "#2f8a5b", border: "#bcdcd7" };
-              return (
-                <button
-                  key={v}
-                  className="tinybtn"
-                  disabled={busy || on}
-                  style={{ background: tone.bg, color: tone.fg, borderColor: tone.border ?? "#d6d9d2", fontWeight: on ? 800 : 700 }}
-                  onClick={() => { void onSet(v); }}
-                >
-                  {label}
-                </button>
-              );
-            })
-          ) : (
-            <span className="pkv-v" style={{ marginTop: 0 }}>{humanize(cur)}</span>
-          )}
+        <div style={{ display: "flex", alignItems: "center", margin: "0 0 6px" }}>
+          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093" }}>Sales entries</span>
+          {canLogSale && <button className="tinybtn" style={{ marginLeft: "auto", color: "#16695f", borderColor: "#bcdcd7" }} disabled={busy} onClick={logSale}>+ Log sale</button>}
         </div>
+        {income.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#9aa093" }}>No sales recorded.</div>
+        ) : (
+          <div style={{ border: "1px solid #eceee9", borderRadius: 10, overflow: "hidden" }}>
+            {income.map((line, i) => (
+              <div key={`${line.source ?? "l"}-${line.id}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
+                <span style={{ flex: 1, minWidth: 90, fontSize: 12, color: "#414539" }}>{line.description || humanize(line.category || "sales")}</span>
+                <span className="money" style={{ fontSize: 12, fontWeight: 700, color: "#2f8a5b" }}>{formatCurrency(line.amount)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </details>
   );
@@ -2045,7 +2120,7 @@ const isoTimePart = (iso: string | null | undefined): string => {
 // PUT /:id/phase-photos/upload → POST /:id/phase-photos). Schedule/driver/
 // lorry all persist via PATCH /:id.
 function SetupDismantle({
-  projectId, project, photos, drivers, lorries, canWrite, busy, setBusy, patchProject, notify, reloadPhotos,
+  projectId, project, photos, drivers, lorries, canWrite, canPhoto, busy, setBusy, patchProject, notify, reloadPhotos, confirm,
 }: {
   projectId: number;
   project: ProjectDetail["project"];
@@ -2053,11 +2128,16 @@ function SetupDismantle({
   drivers: FleetStaff[];
   lorries: Lorry[];
   canWrite: boolean;
+  /** Owner 2026-07-21: crew (driver/helper/storekeeper) manage the phase
+   *  photos (upload / replace / remove / view) without canWrite — the
+   *  backend gates on being crewed on that phase. */
+  canPhoto?: boolean;
   busy: boolean;
   setBusy: SetBusy;
   patchProject: (body: Record<string, unknown>) => Promise<boolean>;
   notify: NotifyFn;
   reloadPhotos: () => void;
+  confirm: ConfirmFn;
 }) {
   const setupPhoto = photos.find((ph) => ph.phase === "setup");
   const dismantlePhoto = photos.find((ph) => ph.phase === "dismantle");
@@ -2085,11 +2165,13 @@ function SetupDismantle({
           drivers={drivers}
           lorries={lorries}
           canWrite={canWrite}
+          canPhoto={canPhoto}
           busy={busy}
           setBusy={setBusy}
           patchProject={patchProject}
           notify={notify}
           reloadPhotos={reloadPhotos}
+          confirm={confirm}
         />
         <div style={{ height: 1, background: "#e3e6e0", margin: "14px 0" }} />
         <PhaseBlock
@@ -2100,11 +2182,13 @@ function SetupDismantle({
           drivers={drivers}
           lorries={lorries}
           canWrite={canWrite}
+          canPhoto={canPhoto}
           busy={busy}
           setBusy={setBusy}
           patchProject={patchProject}
           notify={notify}
           reloadPhotos={reloadPhotos}
+          confirm={confirm}
         />
       </div>
     </details>
@@ -2148,7 +2232,7 @@ function StaffSelect({
 }
 
 function PhaseBlock({
-  kind, projectId, project, photo, drivers, lorries, canWrite, busy, setBusy, patchProject, notify, reloadPhotos,
+  kind, projectId, project, photo, drivers, lorries, canWrite, canPhoto: canPhotoProp, busy, setBusy, patchProject, notify, reloadPhotos, confirm,
 }: {
   kind: "Setup" | "Dismantle";
   projectId: number;
@@ -2157,12 +2241,17 @@ function PhaseBlock({
   drivers: FleetStaff[];
   lorries: Lorry[];
   canWrite: boolean;
+  canPhoto?: boolean;
   busy: boolean;
   setBusy: SetBusy;
   patchProject: (body: Record<string, unknown>) => Promise<boolean>;
   notify: NotifyFn;
   reloadPhotos: () => void;
+  confirm: ConfirmFn;
 }) {
+  // Photo controls open to crew as well as writers (owner 2026-07-21); the
+  // schedule/crew fields stay canWrite-only.
+  const canPhoto = canWrite || !!canPhotoProp;
   const fileRef = useRef<HTMLInputElement | null>(null);
   const accent = kind === "Setup" ? "#16695f" : "#a16a2e";
   const phase = kind.toLowerCase() as "setup" | "dismantle";
@@ -2308,9 +2397,9 @@ function PhaseBlock({
       )}
       <button
         type="button"
-        disabled={busy || (!photoKey && !canWrite)}
-        onClick={() => { if (photoKey) setPhotoOpen(true); else if (canWrite) fileRef.current?.click(); }}
-        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 0, overflow: "hidden", cursor: photoKey || canWrite ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
+        disabled={busy || (!photoKey && !canPhoto)}
+        onClick={() => { if (photoKey) setPhotoOpen(true); else if (canPhoto) fileRef.current?.click(); }}
+        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 0, overflow: "hidden", cursor: photoKey || canPhoto ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
       >
         {photoKey ? (
           <R2Thumb r2Key={photoKey} style={{ width: 64, height: 54, flex: "none" }} />
@@ -2320,12 +2409,34 @@ function PhaseBlock({
           </div>
         )}
         <div style={{ padding: "7px 0", minWidth: 0 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canWrite ? " · tap to upload" : ""}</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canPhoto ? " · tap to upload" : ""}</div>
           <div style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{uploaderCredit(photo)}</div>
         </div>
       </button>
-      {photoKey && canWrite && (
-        <button className="tinybtn" disabled={busy} style={{ marginTop: 6 }} onClick={() => fileRef.current?.click()}>Replace photo</button>
+      {photoKey && canPhoto && (
+        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+          <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Replace photo</button>
+          <button
+            className="tinybtn"
+            disabled={busy}
+            style={{ color: "#a13a34" }}
+            onClick={async () => {
+              if (!photo) return;
+              if (!(await confirm({ title: `Remove the ${kind.toLowerCase()} photo?`, confirmLabel: "Remove", danger: true }))) return;
+              setBusy(true);
+              try {
+                await api.del(`/api/projects/phase-photos/${photo.id}`);
+                void reloadPhotos();
+              } catch (e) {
+                await notify({ title: "Remove failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Remove
+          </button>
+        </div>
       )}
       <input ref={fileRef} type="file" accept="image/*,.pdf,.mp4,.mov,.webm" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadPhoto(f); }} />
       {photoOpen && photoKey && (
@@ -2352,11 +2463,16 @@ function PhaseBlock({
 // Arrangement per the owner's Card-Editor screenshot (2026-07-17): Weekend
 // full-width on top, Permit+Deco side by side, Setup Image+Defect List side
 // by side, Event Complete Image full-width at the bottom.
-const SALES_DOC_TILES: ReadonlyArray<{
+type DocTile = {
   label: string;
   match: RegExp;
   salesPicOnly?: boolean;
+  /** Pin to the DRIVER-badged variant when a title exists in two roles. */
+  driverOnly?: boolean;
   remarkTile?: boolean;
+  /** Owner 2026-07-21 (crew Decoration): media area shows the item's remark
+   *  AND the files are listed below, view/download-only. */
+  remarkWithFiles?: boolean;
   requirePhotoRemark?: boolean;
   /** Full-width tile (spans both grid columns). */
   fullWidth?: boolean;
@@ -2365,7 +2481,9 @@ const SALES_DOC_TILES: ReadonlyArray<{
   /** Owner 2026-07-17: BD-owned items — sales VIEW + DOWNLOAD only, no
    *  edit/upload/remove from this card. */
   readOnly?: boolean;
-}> = [
+};
+
+const SALES_DOC_TILES: ReadonlyArray<DocTile> = [
   { label: "Weekend Activity", match: /^weekend/i, remarkTile: true, fullWidth: true, readOnly: true },
   { label: "Permit", match: /permit/i, readOnly: true },
   { label: "Decoration", match: /^deco/i, readOnly: true },
@@ -2374,8 +2492,21 @@ const SALES_DOC_TILES: ReadonlyArray<{
   { label: "Event Complete Image", match: /^event complete image/i, fullWidth: true, mediaH: 108 },
 ];
 
+// ── Crew (driver/helper/storekeeper) tile set (owner 2026-07-21 v2) ──
+// Same card style as sales, ALL view/download-only — crew's own photo work
+// (setup/dismantle) moved to the Setup & Dismantle section's phase photos.
+// Decoration shows its remark AND its files (view remark + download).
+const CREW_DOC_TILES: ReadonlyArray<DocTile> = [
+  { label: "Stock Out Transfer Record", match: /^stock out/i, readOnly: true },
+  { label: "Permit", match: /permit/i, readOnly: true },
+  { label: "Decoration", match: /^deco/i, readOnly: true, remarkWithFiles: true },
+  { label: "Blank Floorplan", match: /^blank floor/i, readOnly: true, fullWidth: true },
+];
+
 function SalesDocsCard({
   checklist, attachments, canTick, busy, setBusy, notify, prompt, confirm, reload,
+  tiles: tileDefs = SALES_DOC_TILES,
+  title = "Setup & Dismantle documents",
 }: {
   checklist?: ChecklistItem[];
   attachments?: TaskAttachment[];
@@ -2386,16 +2517,20 @@ function SalesDocsCard({
   prompt: PromptFn;
   confirm: ConfirmFn;
   reload: () => void;
+  /** Tile set — defaults to the sales six; crew pass CREW_DOC_TILES. */
+  tiles?: ReadonlyArray<DocTile>;
+  title?: string;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const pendingRef = useRef<{ itemId: number; caption?: string } | null>(null);
   const [view, setView] = useState<{ items: MediaItem[]; idx: number } | null>(null);
 
-  const tiles = SALES_DOC_TILES.map((t) => {
+  const tiles = tileDefs.map((t) => {
     const item = (checklist ?? []).find(
       (it) =>
         t.match.test((it.title || "").trim()) &&
-        (!t.salesPicOnly || (it.role_label ?? "").trim().toUpperCase() === "SALES PIC")
+        (!t.salesPicOnly || (it.role_label ?? "").trim().toUpperCase() === "SALES PIC") &&
+        (!t.driverOnly || (it.role_label ?? "").trim().toUpperCase() === "DRIVER")
     );
     const atts = item
       ? (attachments ?? []).filter((a) => !a.archived_at && a.item_id === item.id)
@@ -2411,7 +2546,9 @@ function SalesDocsCard({
   if (tiles.length === 0) return null;
 
   const doneCount = tiles.filter((t) =>
-    t.remarkTile ? !!(t.item?.notes ?? "").trim() : t.files.length > 0
+    t.remarkTile ? !!(t.item?.notes ?? "").trim()
+    : t.remarkWithFiles ? (t.files.length > 0 || !!(t.item?.notes ?? "").trim())
+    : t.files.length > 0
   ).length;
 
   const startUpload = async (t: (typeof tiles)[number]) => {
@@ -2495,6 +2632,16 @@ function SalesDocsCard({
   };
 
   const openTile = async (t: (typeof tiles)[number]) => {
+    if (t.remarkWithFiles) {
+      // Files win the tap (they carry the download); the remark is already
+      // visible on the tile face, and surfaces in full when there's no file.
+      if (t.files.length > 0) { setView({ items: t.files, idx: t.files.length - 1 }); return; }
+      const txt = (t.item?.notes ?? "").trim();
+      await notify(txt
+        ? { title: t.label, body: txt }
+        : { title: t.label, body: "No remark or file here yet.", tone: "info" });
+      return;
+    }
     if (t.remarkTile) {
       if (t.readOnly) {
         // View-only: surface the full remark (the tile truncates long text).
@@ -2515,7 +2662,7 @@ function SalesDocsCard({
   return (
     <details className="pacc" open>
       <summary>
-        <span className="psec-t">Setup &amp; Dismantle documents</span>
+        <span className="psec-t">{title}</span>
         <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{doneCount}/{tiles.length}</span>
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
@@ -2523,7 +2670,9 @@ function SalesDocsCard({
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
           {tiles.map((t) => {
             const latest = t.files[t.files.length - 1];
-            const hasContent = t.remarkTile ? !!(t.item?.notes ?? "").trim() : t.files.length > 0;
+            const hasContent = t.remarkTile ? !!(t.item?.notes ?? "").trim()
+              : t.remarkWithFiles ? (t.files.length > 0 || !!(t.item?.notes ?? "").trim())
+              : t.files.length > 0;
             const mediaH = t.mediaH ?? 80;
             return (
               <div key={t.label} style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden", background: "#fff", ...(t.fullWidth ? { gridColumn: "1 / -1" } : {}) }}>
@@ -2534,9 +2683,9 @@ function SalesDocsCard({
                   onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (!busy) void openTile(t); } }}
                   style={{ cursor: "pointer" }}
                 >
-                  {t.remarkTile ? (
+                  {t.remarkTile || t.remarkWithFiles ? (
                     <div style={{ height: mediaH, padding: "8px 10px", fontSize: 11, lineHeight: 1.45, color: (t.item?.notes ?? "").trim() ? "#414539" : "#9aa093", overflow: "hidden", background: "#faf9f5" }}>
-                      {(t.item?.notes ?? "").trim() || (canTick && !t.readOnly ? "Tap to write the remark…" : "No remark yet.")}
+                      {(t.item?.notes ?? "").trim() || (canTick && !t.readOnly && !t.remarkWithFiles ? "Tap to write the remark…" : "No remark yet.")}
                     </div>
                   ) : latest && /^image\//.test(latest.content_type ?? "") ? (
                     <R2Thumb r2Key={latest.r2_key} style={{ width: "100%", height: mediaH }} />
@@ -2546,7 +2695,7 @@ function SalesDocsCard({
                   <div style={{ padding: "7px 9px 4px" }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{t.label}</div>
                     <span className="rbadge" style={{ background: hasContent ? "#e2f0e9" : "#f0f1ed", color: hasContent ? "#2f8a5b" : "#9aa093" }}>
-                      {t.remarkTile
+                      {t.remarkTile || (t.remarkWithFiles && t.files.length === 0)
                         ? (hasContent ? "DONE" : "NONE")
                         : (hasContent ? `${t.files.length} FILE${t.files.length === 1 ? "" : "S"}` : "NONE")}
                     </span>
@@ -2555,7 +2704,25 @@ function SalesDocsCard({
                 {/* Owner 2026-07-17: the editable photo tiles list every uploaded
                     file by name — tap the name to VIEW it first; × removes it
                     (confirm-guarded). Upload stays its own button below. */}
-                {!t.remarkTile && !t.readOnly && t.atts.length > 0 && (
+                {/* remarkWithFiles (crew Decoration): the files listed by name,
+                    view/download-only — tap opens the lightbox. */}
+                {t.remarkWithFiles && t.atts.length > 0 && (
+                  <div style={{ padding: "0 9px 8px", display: "flex", flexDirection: "column", gap: 5 }}>
+                    {t.atts.map((a, i) => (
+                      <button
+                        key={a.id}
+                        type="button"
+                        className="tinybtn"
+                        style={{ minWidth: 0, display: "inline-flex", alignItems: "center", gap: 5 }}
+                        onClick={() => setView({ items: t.files, idx: i })}
+                        title={a.file_name ?? undefined}
+                      >
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.file_name || "File"}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!t.remarkTile && !t.remarkWithFiles && !t.readOnly && t.atts.length > 0 && (
                   <div style={{ padding: "0 9px 6px", display: "flex", flexDirection: "column", gap: 5 }}>
                     {t.atts.map((a, i) => (
                       <span key={a.id} style={{ display: "inline-flex", alignItems: "stretch" }}>
@@ -2874,16 +3041,150 @@ function FloorPlans({
 }
 
 // ── Finance snapshot ──
+// Quick Total Sales — set project_finance.total_sales directly (mirror desktop
+// saveQuickTotal, Projects.tsx:9937-9954). PATCH /:id/finance requires
+// projects.write + finance visibility (denyFinance); the caller only mounts this
+// inside the finance-gated snapshot for a writer. Saves on blur / Enter.
+function QuickTotalSalesField({
+  projectId, current, busy, setBusy, notify, reload,
+}: {
+  projectId: number;
+  current: number | null;
+  busy: boolean;
+  setBusy: SetBusy;
+  notify: NotifyFn;
+  reload: () => void;
+}) {
+  const [val, setVal] = useState(current != null ? String(current) : "");
+  useEffect(() => {
+    setVal(current != null ? String(current) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
+
+  const save = async () => {
+    const trimmed = val.trim();
+    if (trimmed === "") return; // leave unset rather than forcing 0
+    const n = parseFloat(trimmed);
+    if (!Number.isFinite(n) || n < 0) {
+      await notify({ title: "Invalid amount", body: "Enter a valid total sales amount.", tone: "error" });
+      return;
+    }
+    if (current != null && Math.abs(n - current) < 0.005) return; // unchanged
+    setBusy(true);
+    try {
+      await api.patch(`/api/projects/${projectId}/finance`, { total_sales: n });
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <label style={{ background: "#f4f6f3", borderRadius: 10, padding: 11, display: "block" }}>
+      <span className="pkv-l">Total sales (RM)</span>
+      <input
+        className="fld-i money"
+        type="number"
+        inputMode="decimal"
+        value={val}
+        placeholder="—"
+        disabled={busy}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+        style={{ marginTop: 4, width: "100%", boxSizing: "border-box" }}
+      />
+    </label>
+  );
+}
+
+// Quick Rental (RM) — writes a single `rental` cost line to the finance ledger
+// (mirror desktop QuickRentalField, Projects.tsx:5323-5392): keying rental here
+// syncs the Rental row, Total Cost, Net Profit + the Project List column.
+// POST/PATCH/DELETE /projects/finance/lines require projects.write + finance
+// visibility (denyFinance); the caller only mounts this inside the finance-gated
+// snapshot for a writer. Saves on blur / Enter.
+function QuickRentalField({
+  projectId, lines, busy, setBusy, notify, reload,
+}: {
+  projectId: number;
+  lines: FinanceLine[];
+  busy: boolean;
+  setBusy: SetBusy;
+  notify: NotifyFn;
+  reload: () => void;
+}) {
+  const existing = lines.filter(
+    (l) => (l.kind ?? "").toLowerCase() === "cost"
+      && (l.category ?? "").trim() === "rental"
+      && !pick(l.auto_source, l.autoSource),
+  );
+  const current = existing.reduce((s, l) => s + (l.amount || 0), 0);
+  const [val, setVal] = useState(current ? String(current) : "");
+  useEffect(() => {
+    setVal(current ? String(current) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
+
+  const save = async () => {
+    const trimmed = val.trim();
+    const n = trimmed === "" ? 0 : parseFloat(trimmed);
+    if (isNaN(n) || n < 0) {
+      await notify({ title: "Invalid amount", body: "Enter a valid rental amount.", tone: "error" });
+      return;
+    }
+    if (Math.abs(n - current) < 0.005) return; // unchanged
+    setBusy(true);
+    try {
+      if (n <= 0) {
+        for (const l of existing) await api.del(`/api/projects/finance/lines/${l.id}`);
+      } else if (existing.length === 1) {
+        await api.patch(`/api/projects/finance/lines/${existing[0].id}`, { amount: n });
+      } else {
+        // 0 existing → create; >1 → consolidate the duplicates into one.
+        for (const l of existing) await api.del(`/api/projects/finance/lines/${l.id}`);
+        await api.post(`/api/projects/${projectId}/finance/lines`, {
+          kind: "cost", category: "rental", amount: n, description: "Rental",
+        });
+      }
+      reload();
+    } catch (e) {
+      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <label style={{ background: "#f4f6f3", borderRadius: 10, padding: 11, display: "block" }}>
+      <span className="pkv-l">Rental (RM)</span>
+      <input
+        className="fld-i money"
+        type="number"
+        inputMode="decimal"
+        value={val}
+        placeholder="—"
+        disabled={busy}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+        style={{ marginTop: 4, width: "100%", boxSizing: "border-box" }}
+      />
+    </label>
+  );
+}
+
 function FinancialSnapshot({
-  projectId, finance, lines, canLogSale, busy, setBusy, prompt, notify, reload,
+  projectId, finance, lines, canWrite, busy, setBusy, notify, reload,
 }: {
   projectId: number;
   finance: NonNullable<ProjectDetail["finance"]>;
   lines?: FinanceLine[];
-  canLogSale: boolean;
+  canWrite: boolean;
   busy: boolean;
   setBusy: SetBusy;
-  prompt: PromptFn;
   notify: NotifyFn;
   reload: () => void;
 }) {
@@ -2896,38 +3197,8 @@ function FinancialSnapshot({
     setReceipt({ r2_key: key, content_type: mimeFromKey(key), caption: pick(line.file_name, line.fileName) ?? "Receipt" });
   };
 
-  // Quick-log a sale at the project (POST /api/sales/entries { quick_log }).
-  // Lands as a draft sales entry; surfaces as a synthetic income line.
-  const logSale = async () => {
-    const amtStr = await prompt({
-      title: "Sale amount (RM)",
-      placeholder: "0.00",
-      validate: (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? null : "Enter a positive number."; },
-    });
-    if (amtStr == null) return;
-    const ref = await prompt({ title: "Reference no. (optional)", placeholder: "e.g. INV-123" });
-    if (ref == null) return;
-    const today = todayInAppTz();
-    setBusy(true);
-    try {
-      await api.post(`/api/sales/entries`, {
-        project_id: projectId,
-        quick_log: true,
-        amount: parseFloat(amtStr),
-        ref_no: ref.trim() || null,
-        occurred_at: today,
-      });
-      reload();
-    } catch (e) {
-      await notify({ title: "Failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const allLines = lines ?? [];
   const costLines = allLines.filter((l) => (l.kind ?? "").toLowerCase() === "cost");
-  const incomeLines = allLines.filter((l) => (l.kind ?? "").toLowerCase() === "income");
   const sales = finance.total_sales ?? 0;
   const cost =
     (finance.rental ?? 0) +
@@ -2968,23 +3239,20 @@ function FinancialSnapshot({
             <div className="money" style={{ fontSize: 16, fontWeight: 800, color: netColor, marginTop: 3 }}>{marginPct == null ? "—" : `${marginPct.toFixed(1)}%`}</div>
           </div>
         </div>
-        {/* Sales / income lines — quick-log adds a draft sales entry which
-            surfaces here as a synthetic income line. Read-only otherwise. */}
-        <div style={{ display: "flex", alignItems: "center", margin: "12px 0 6px" }}>
-          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093" }}>Sales</span>
-          {canLogSale && <button className="tinybtn" style={{ marginLeft: "auto", color: "#16695f", borderColor: "#bcdcd7" }} disabled={busy} onClick={logSale}>+ Log sale</button>}
-        </div>
-        {incomeLines.length === 0 ? (
-          <div style={{ fontSize: 12, color: "#9aa093" }}>No sales recorded.</div>
-        ) : (
-          <div style={{ border: "1px solid #eceee9", borderRadius: 10, overflow: "hidden" }}>
-            {incomeLines.map((line, i) => (
-              <div key={`${line.source ?? "l"}-${line.id}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
-                <span style={{ flex: 1, minWidth: 90, fontSize: 12, color: "#414539" }}>{line.description || humanize(line.category || "sales")}</span>
-                <span className="money" style={{ fontSize: 12, fontWeight: 700, color: "#2f8a5b" }}>{formatCurrency(line.amount)}</span>
-              </div>
-            ))}
-          </div>
+        {/* Quick edit (finance write) — Total Sales PATCHes
+            project_finance.total_sales (mirror desktop saveQuickTotal:9937-9954);
+            Rental writes a `rental` cost line (mirror desktop
+            QuickRentalField:5323-5392). Both endpoints require projects.write +
+            finance visibility, which financeVisible + canWrite already satisfy,
+            so the control never 403s. */}
+        {canWrite && (
+          <>
+            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093", margin: "12px 0 6px" }}>Quick edit</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <QuickTotalSalesField projectId={projectId} current={finance.total_sales ?? null} busy={busy} setBusy={setBusy} notify={notify} reload={reload} />
+              <QuickRentalField projectId={projectId} lines={allLines} busy={busy} setBusy={setBusy} notify={notify} reload={reload} />
+            </div>
+          </>
         )}
 
         {/* Cost ledger — read-only snapshot. A stored receipt opens in the lightbox. */}
@@ -3111,19 +3379,6 @@ function MiniProgress({ pct }: { pct: number }) {
       <span className="tnum" style={{ fontSize: 11, fontWeight: 700, color: "var(--brand-d)" }}>{c}%</span>
     </span>
   );
-}
-
-function PaymentBadge({ status }: { status: string }) {
-  const s = status.toLowerCase();
-  const map: Record<string, [string, string]> = {
-    fully_paid: ["#e2f0e9", "#2f8a5b"],
-    paid: ["#e2f0e9", "#2f8a5b"],
-    pending: ["#f6efd9", "#6e4d12"],
-    unpaid: ["#f7e7e5", "#a13a34"],
-    na: ["#f4f6f3", "#767b6e"],
-  };
-  const [bg, fg] = map[s] ?? ["#f4f6f3", "#767b6e"];
-  return <span className="rbadge" style={{ marginLeft: "auto", background: bg, color: fg }}>{humanize(status).toUpperCase()}</span>;
 }
 
 function humanize(s: string): string {

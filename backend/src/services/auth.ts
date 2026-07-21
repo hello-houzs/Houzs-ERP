@@ -9,7 +9,7 @@ import {
 import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
 import { isScopedProjectUser } from "./projectAcl";
 import { applySalesJdOverride } from "./salesJdAccess";
-import { resolvePositionPolicy } from "./positionPolicy";
+import { resolvePositionPolicy, positionGrantsWildcard } from "./positionPolicy";
 
 // ── Crypto helpers ────────────────────────────────────────
 // PBKDF2 via Web Crypto — built into Workers, no WASM needed.
@@ -260,6 +260,17 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
   const managerId: number | null = row.manager_id ?? null;
   const permissions = parsePermissions(row.role_permissions);
   const permissionsSet = new Set(permissions);
+  // Position => '*' (owner 2026-07-20): a god-tier POSITION (Super Admin / Owner)
+  // is a full super admin with NO roles.permissions grant — step 1 of merging role
+  // + position onto ONE position-driven controller. Additive: it only ever ADDS
+  // '*', so it can never strip a permission a role already grants. The injected '*'
+  // then flows through the existing wildcard machinery — the page short-circuit
+  // below (permissionsSet.has("*") -> fullAccessMap) and every requirePermission
+  // site. Exact-name match lives in positionPolicy (never substring).
+  if (!permissionsSet.has("*") && positionGrantsWildcard(row.position_name ?? null)) {
+    permissions.push("*");
+    permissionsSet.add("*");
+  }
   // Owner 2026-07-15 — hydrate the brand allow-list not only for `scope_to_pic`
   // roles but for the whole code-keyed project-scoped cohort (isScopedProjectUser
   // = scope_to_pic OR a non-director Sales user). Some Sales positions lack the

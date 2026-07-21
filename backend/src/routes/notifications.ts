@@ -160,19 +160,20 @@ app.get("/", async (c) => {
 
   // Pull limit+1 rows so we can tell the frontend whether there's a
   // next page without an extra COUNT(*) query.
-  const rawRows = await feedQ
+  // The feed page and the per-project unread counts are INDEPENDENT queries
+  // (neither reads the other's result). This endpoint is polled by the bell, so
+  // run them CONCURRENTLY instead of serially — roughly halves the poll latency.
+  // Two queries take two connections from the Hyperdrive pool; well within it.
+  const feedPromise = feedQ
     .where(and(...feedConds))
     .orderBy(desc(project_activity.created_at), desc(project_activity.id))
     .limit(limit + 1)
     .offset(offset);
 
-  const hasMore = rawRows.length > limit;
-  const trimmedRows = hasMore ? rawRows.slice(0, limit) : rawRows;
-
   // Per-project unread counts: activity rows strictly newer than the
   // user's last_read_at for that project. Null (never opened) counts
   // everything. Still scoped to visible projects.
-  const unreadRows = await db
+  const unreadPromise = db
     .select({
       project_id: projects.id,
       unread_count: sql<number>`COUNT(*)`,
@@ -200,6 +201,11 @@ app.get("/", async (c) => {
     )
     .groupBy(projects.id)
     .having(sql`COUNT(*) > 0`);
+
+  const [rawRows, unreadRows] = await Promise.all([feedPromise, unreadPromise]);
+
+  const hasMore = rawRows.length > limit;
+  const trimmedRows = hasMore ? rawRows.slice(0, limit) : rawRows;
 
   const unread_by_project: Record<number, number> = {};
   let total_unread = 0;
