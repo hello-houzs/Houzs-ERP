@@ -3470,7 +3470,13 @@ function DetailContent({
                       >
                         {item.item_description || ""}
                       </span>
-                      <span className="text-[11px] text-ink-muted">&times;{item.qty}</span>
+                      <ItemQtyStepper
+                        caseId={id}
+                        item={item}
+                        disabled={c.stage === "completed" || !!c.archived_at}
+                        onSaved={() => detail.reload()}
+                        toast={toast}
+                      />
                       {c.stage !== "completed" && (
                         <button
                           onClick={() => removeItem(item.id)}
@@ -7599,6 +7605,68 @@ function SupplierField({ c, id, detail, toast, onUpdated }: {
 // Prints in the ITEMS table's REMARK column on both the customer and
 // supplier copies (Nick 2026-07-15). Saves on blur / Enter; empty
 // clears the remark.
+// Per-item quantity stepper (Nick 2026-07-20) — − N + inline in the
+// Product Info card; saves immediately, feeds the print QTY column.
+function ItemQtyStepper({ caseId, item, disabled, onSaved, toast }: {
+  caseId: number;
+  item: any;
+  disabled?: boolean;
+  onSaved: () => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const qty = Math.max(1, Number(item.qty ?? 1));
+  const [saving, setSaving] = useState(false);
+
+  async function set(next: number) {
+    const clamped = Math.max(1, Math.round(next));
+    if (clamped === qty || saving) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/assr/${caseId}/items/${item.id}`, { qty: clamped });
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update quantity");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (disabled) {
+    return <span className="text-[11px] text-ink-muted">&times;{qty}</span>;
+  }
+  return (
+    <div className="flex items-center gap-0.5 rounded border border-border bg-bg/50">
+      <button
+        type="button"
+        onClick={() => set(qty - 1)}
+        disabled={saving || qty <= 1}
+        className="px-1.5 py-0.5 text-[12px] font-bold text-ink-muted hover:text-ink disabled:opacity-40"
+        title="Decrease quantity"
+      >
+        −
+      </button>
+      <input
+        type="number"
+        min={1}
+        value={qty}
+        onChange={(e) => set(parseInt(e.target.value, 10) || 1)}
+        disabled={saving}
+        className="w-8 border-x border-border bg-transparent py-0.5 text-center text-[11px] font-semibold text-ink outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        title="Quantity"
+      />
+      <button
+        type="button"
+        onClick={() => set(qty + 1)}
+        disabled={saving}
+        className="px-1.5 py-0.5 text-[12px] font-bold text-ink-muted hover:text-ink disabled:opacity-40"
+        title="Increase quantity"
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
 function ItemRemarkInput({ caseId, item, disabled, onSaved, toast }: {
   caseId: number;
   item: any;

@@ -20,6 +20,7 @@ import {
   nextServicePONumber,
   setCaseCreditorManual,
   setItemRemark,
+  setItemQty,
 } from "../services/assr";
 import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken, issueSalesToken, revokeCaseTokens } from "../services/caseTracking";
@@ -2860,33 +2861,55 @@ app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async 
   const id = parseInt(c.req.param("id"), 10);
   const itemId = parseInt(c.req.param("itemId"), 10);
   if (isNaN(id) || isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
-  const body = await c.req.json<{ remark?: string | null }>();
-  const remark = body.remark == null ? null : String(body.remark).trim() || null;
-  // Capture the prior remark so the change is recorded append-only on the
-  // timeline: removing a remark logs a "cleared" event while the earlier
-  // recorded remark stays in the history.
+  const body = await c.req.json<{ remark?: string | null; qty?: number }>();
+  const userId = (c as any).get?.("userId") ?? null;
   const prevItem = await c.env.DB.prepare(
-    `SELECT item_code, remark FROM assr_items WHERE id = ? AND assr_id = ?`
+    `SELECT item_code, remark, qty FROM assr_items WHERE id = ? AND assr_id = ?`
   )
     .bind(itemId, id)
-    .first<{ item_code: string | null; remark: string | null }>();
-  const ok = await setItemRemark(c.env, id, itemId, remark);
-  if (!ok) return c.json({ error: "Not found" }, 404);
-  if ((prevItem?.remark ?? null) !== remark) {
-    const userId = (c as any).get?.("userId") ?? null;
-    const code = prevItem?.item_code ?? `#${itemId}`;
-    await logActivity(
-      c.env,
-      id,
-      "item_remark",
-      prevItem?.remark ?? null,
-      remark,
-      remark
-        ? `Product remark on ${code}: ${prevItem?.remark ? `"${prevItem.remark}" → ` : ""}"${remark}"`
-        : `Product remark on ${code} cleared${prevItem?.remark ? ` (was "${prevItem.remark}")` : ""}`,
-      userId,
-      { category: "service", source_channel: "app" }
-    );
+    .first<{ item_code: string | null; remark: string | null; qty: number | null }>();
+  if (!prevItem) return c.json({ error: "Not found" }, 404);
+  const code = prevItem.item_code ?? `#${itemId}`;
+
+  // Quantity — clamp to a positive integer; log the change.
+  if (body.qty !== undefined) {
+    const qty = Math.max(1, Math.round(Number(body.qty) || 0));
+    const ok = await setItemQty(c.env, id, itemId, qty);
+    if (!ok) return c.json({ error: "Not found" }, 404);
+    if ((prevItem.qty ?? 1) !== qty) {
+      await logActivity(
+        c.env,
+        id,
+        "item_qty",
+        String(prevItem.qty ?? 1),
+        String(qty),
+        `Quantity on ${code}: ${prevItem.qty ?? 1} → ${qty}`,
+        userId,
+        { category: "service", source_channel: "app" }
+      );
+    }
+  }
+
+  // Remark — capture the prior value so the change is recorded
+  // append-only on the timeline (removing logs a "cleared" event).
+  if (body.remark !== undefined) {
+    const remark = body.remark == null ? null : String(body.remark).trim() || null;
+    const ok = await setItemRemark(c.env, id, itemId, remark);
+    if (!ok) return c.json({ error: "Not found" }, 404);
+    if ((prevItem.remark ?? null) !== remark) {
+      await logActivity(
+        c.env,
+        id,
+        "item_remark",
+        prevItem.remark ?? null,
+        remark,
+        remark
+          ? `Product remark on ${code}: ${prevItem.remark ? `"${prevItem.remark}" → ` : ""}"${remark}"`
+          : `Product remark on ${code} cleared${prevItem.remark ? ` (was "${prevItem.remark}")` : ""}`,
+        userId,
+        { category: "service", source_channel: "app" }
+      );
+    }
   }
   return c.json({ ok: true });
 });

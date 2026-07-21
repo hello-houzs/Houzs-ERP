@@ -1201,6 +1201,22 @@ export async function setItemRemark(
   return (r.meta.changes ?? 0) > 0;
 }
 
+// Per-item quantity (Nick 2026-07-20) — editable in the Product Info
+// card; feeds the ITEMS table's QTY column on both print copies.
+export async function setItemQty(
+  env: Env,
+  assrId: number,
+  itemId: number,
+  qty: number
+): Promise<boolean> {
+  const r = await env.DB.prepare(
+    `UPDATE assr_items SET qty = ? WHERE id = ? AND assr_id = ?`
+  )
+    .bind(qty, itemId, assrId)
+    .run();
+  return (r.meta.changes ?? 0) > 0;
+}
+
 // ── Attachments ───────────────────────────────────────────────
 
 export function assrAttachmentKey(
