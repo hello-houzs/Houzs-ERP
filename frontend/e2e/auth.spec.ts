@@ -6,6 +6,8 @@ import {
   AUTH_TOKEN_KEY,
   apiLogin,
   isSkippableStagingError,
+  missingCredentialsMaySkip,
+  stagingProofRequired,
 } from "./fixtures";
 
 // PR #854's target copy, verbatim. The login screen deliberately does NOT
@@ -25,7 +27,7 @@ test.describe("auth", () => {
     // Both tests need a well-formed email to get past the form's own
     // required/type=email validation; skip cleanly when no credential resolves.
     test.skip(
-      !credsConfigured,
+      missingCredentialsMaySkip(credsConfigured, stagingProofRequired),
       "Staging credentials not configured — set STAGING_E2E_EMAIL / STAGING_E2E_PASSWORD (or the in-repo staging-seed fallback).",
     );
   });

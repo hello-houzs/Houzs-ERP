@@ -53,26 +53,40 @@ Resolution precedence (`fixtures.ts`):
    workflow). Staging is an isolated Supabase with no prod data, so this is a
    test fixture, not a production secret.
 
-Set the two secrets to use a different account. If both resolve empty, the
-auth-dependent specs **skip** with a clear annotation instead of failing.
+Set the two secrets to use a different account. Optional local runs may skip a
+known setup/unavailability gap; automated workflow runs require proof and fail.
 
 Skip-vs-fail on login:
 
-- **Both creds empty** -> skip (nothing to run).
-- **`5xx` on login** (paused free-tier Supabase / cold Worker) -> skip. A
-  sleeping environment reads as "not proven right now", not "the app is broken".
-- **`401`/`403` with the in-repo FALLBACK account** -> skip with an annotation
-  telling the owner to run the "Staging Seed (one-off)" workflow (which
+- **Both creds empty** -> optional local run skips; required proof fails.
+- **`5xx` on login** (paused free-tier Supabase / cold Worker) -> optional local
+  run skips; required proof fails because staging availability is part of the gate.
+- **`401`/`403` with the in-repo FALLBACK account** -> optional local run skips
+  with an annotation; required proof fails, telling the owner to run the
+  "Staging Seed (one-off)" workflow (which
   provisions `hello@houzscentury.com` as `houzs1234`) or to set the secrets. A
   fixture account that a given staging DB was never seeded with is a setup gap,
   not an app bug.
 - **`401`/`403` with OWNER-SUPPLIED secrets** -> **fail red**. The owner
   asserted those are valid, so their rejection is a real signal.
 
-> Note: as observed on 2026-07-19, the current staging DB does not have the
-> in-repo fixture account provisioned (login 401), so an unattended run skips
-> the three auth-dependent specs. Run the staging-seed workflow or set the
-> secrets to get live green proofs.
+The automated post-deploy, nightly and manual GitHub workflow sets
+`STAGING_E2E_REQUIRE_PROOF=true`. In that mode the two setup/unavailability
+conditions above also fail red: an automated run may not report success while
+the authenticated SO/company/login proofs were skipped. The skip behavior is
+retained only for optional local exploration; local operators can set the same
+environment variable to request the fail-closed contract.
+
+For `workflow_run`, checkout is pinned to the triggering deploy's
+`workflow_run.head_sha`; scheduled and manual runs use their own event SHA.
+This keeps the browser proof and deployed application on the same source rather
+than accidentally testing newer default-branch specs against an older deploy.
+
+> Note: as observed on 2026-07-21, the current staging DB did not accept the
+> in-repo fixture account: the scheduled workflow reported success with three
+> skipped authenticated specs and only one unauthenticated assertion. After
+> this change that state is intentionally red. Run the staging-seed workflow or
+> set valid `STAGING_E2E_*` secrets before treating the smoke gate as healthy.
 
 ## Run
 
@@ -84,6 +98,7 @@ npx playwright install chromium
 
 npm test                 # all three specs against staging
 npm run test:list        # list tests without running (parse check)
+npm run test:policy      # browser-free required-proof policy checks
 npm run typecheck        # tsc --noEmit on the specs
 npm run test:report      # open the HTML report after a run
 ```
