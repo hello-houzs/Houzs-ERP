@@ -1,0 +1,126 @@
+# How this codebase carries its own knowledge
+
+Written 2026-07-21, after the owner asked the right question: *"surely a developer
+doesn't grope through the whole system before building something?"*
+
+No, they don't — not in any large ERP shop. What they have instead is a small set
+of documents with **defined jobs**, so that arriving at an unfamiliar module costs
+minutes instead of hours. This file describes that system: which layers exist, what
+belongs in each, and the one rule that decides where a new fact goes.
+
+Read this once. Then you will know where to look, and where to write.
+
+---
+
+## 1. The layers, and the job of each
+
+| Layer | File | Its job | Rots? |
+|---|---|---|---|
+| Agent entry point | `CLAUDE.md` | Rules, conventions, traps. Auto-loaded into every session. | **Yes — keep it thin** |
+| Navigation, judgement | `docs/CODEBASE-MAP.md` | What each area is FOR. Which trees are dead. What must change in pairs. | Yes — hand-written |
+| Navigation, facts | `docs/generated/` | Route inventory, migration trees, largest files, desktop/mobile pairing. | **No — generated** |
+| Per-module guide | `docs/modules/<module>.md` | Everything needed to work in ONE module without reading the others. | Yes — hand-written |
+| Bug ledger | `BUG-HISTORY.md` | Symptom → root cause → fix, per bug. Mandatory, owner rule. | No — append-only |
+| Incident post-mortem | `docs/*-coe.md` | A serious outage: what broke, why, what changed. | No — append-only |
+| Human knowledge base | Obsidian vault (`Houzs ERP/`) | Architecture and business reasoning **for people**. | Outside this repo |
+
+### Current state, honestly
+
+Every layer above exists except one: **`docs/modules/` holds a single guide
+(`sales-order.md`).** The pattern was started and not continued, so SCM, Service
+Cases, Delivery/TMS, PMS, Announcements and the OCR scan flow have no guide — which
+is precisely why working in them still starts with exploration. That is the largest
+remaining gap in this system, and the one worth closing next.
+
+## 2. The rule that decides where a fact goes
+
+> **A fact belongs in the layer that will be forced to update it when it changes.**
+
+That is the whole doctrine. Everything below follows from it.
+
+- A fact that changes on **every merge** (route counts, file sizes, module lists)
+  must be **generated**, never typed. If it is typed, nothing forces the update and
+  it will be wrong within weeks — and a confidently wrong doc costs more than a
+  missing one, because the next reader trusts it.
+- A fact that changes when **someone edits a specific file** belongs in a doc that
+  lives beside that file, so the same PR touches both.
+- A fact that only changes when a **decision** changes belongs in the map or a
+  module guide, where a human will re-read it.
+- If a fact is in **none** of those, it belongs nowhere. Delete it.
+
+### What this cost us before it was written down
+
+`CLAUDE.md` is loaded into every session, and it stated as fact that the data store
+was "D1 SQLite" and that migrations live in `src/db/migrations/`. Both were wrong
+for over a month after the Postgres cutover. The second one is expensive: a
+migration written to that tree ships, passes CI, merges — and production never
+changes, because `deploy.yml` runs `pg-migrate.mjs` against `migrations-pg/`.
+
+`docs/CODEBASE-MAP.md` was a good map generated 2026-06-18 and never regenerated.
+By July it claimed 82 route modules against a real 122, and its endpoint inventory
+described modules deleted in the strip-to-core cutover. Worse, **nothing pointed at
+it** — `CLAUDE.md` did not mention it once, so sessions never learned it existed and
+explored from scratch every time.
+
+Neither failure was carelessness. Both were structural: the facts were hand-typed in
+places nothing forced anyone to revisit. Hence the rule above, and hence
+`backend/scripts/gen-codebase-map.mjs`.
+
+## 3. Where to write a new thing
+
+| You learned… | Write it… |
+|---|---|
+| A bug's root cause | `BUG-HISTORY.md`, same PR as the fix. Mandatory. |
+| Why an approach was rejected | The module guide, or the map's Traps section |
+| A new module's shape | `docs/modules/<module>.md` |
+| A rule every session must obey | `CLAUDE.md` — but only if it is short and stable |
+| A number, count, or inventory | Nowhere. Teach the generator to emit it. |
+| Business reasoning for people | Obsidian |
+
+## 4. Why agent-facing knowledge lives in the repo, not Obsidian
+
+Obsidian is the better tool for a person thinking. It is the wrong home for
+knowledge an agent must act on, for three concrete reasons:
+
+1. **It is outside the repo**, so a PR that changes the code is never asked to
+   change it. Nothing forces the update — see the rule in §2.
+2. **It cannot be generated or checked.** Counts and inventories there are typed by
+   hand and go stale silently.
+3. **It is not always reachable.** The Obsidian MCP is registered at user scope;
+   sessions without it cannot read the vault at all. Repo docs always work.
+
+So: **Obsidian for humans, `docs/` for agents.** They are counterparts, not rivals.
+When something is true for both audiences, the repo version is the source of truth
+and the vault paraphrases it.
+
+## 5. The names for this, if you want to read more
+
+None of this is invented here. The industry names, so you can search them:
+
+- **Docs-as-code** — documentation lives in the repo, is reviewed in PRs, and is
+  generated wherever it can be. The umbrella practice this file describes.
+- **Module guide / service catalog** — one document per module so a developer can
+  work in it without reading the rest. `docs/modules/` is this.
+- **ADR (Architecture Decision Record)** — a short record of a decision and its
+  reasoning, written when the decision is made. The map's Traps section and the
+  module guides carry ours informally.
+- **COE (Correction of Error)** — AWS's term for a blameless post-mortem.
+  `docs/system-foundation-coe.md` already follows it; `BUG-HISTORY.md` is the
+  lightweight per-bug version.
+- **Internal Developer Portal** — the productised version of all of the above.
+  Spotify's Backstage is the reference implementation.
+- **Context engineering** — the AI-agent-specific discipline: deciding what an
+  agent sees before it starts work. `CLAUDE.md` plus the map is our version of it.
+- **Domain-Driven Design / bounded contexts** — the architectural half. The reason
+  a developer only needs their own module is that the modules have real boundaries.
+  Where ours are weak, a 12,000-line file is usually the symptom.
+
+## 6. Keeping this true
+
+- `npm --prefix backend run audit:map` regenerates `docs/generated/`. Run it when
+  you add routes, migrations or mobile screens. It is deliberately **not** a CI
+  merge gate — a stale navigation doc must never block a deploy.
+- The hand-written layers have no automation. They stay true only because the rule
+  in §2 keeps them small enough to be worth re-reading. **If a hand-written doc
+  starts filling up with numbers, that is the signal to teach the generator
+  instead.**

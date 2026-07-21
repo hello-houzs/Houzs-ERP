@@ -22,6 +22,15 @@ cutover, and pointed at a migration directory that production does not read.
   scratch; it is the hand-written judgement layer.
 - **`docs/generated/`** — the mechanical inventory (routes, migrations,
   largest files), regenerated from the tree so it cannot drift.
+- **`docs/modules/<module>.md`** — everything needed to work in ONE module
+  without reading the others. Read the guide for the module you are touching
+  before touching it.
+
+**Where does a new fact go?** `docs/KNOWLEDGE-SYSTEM.md` answers that, and
+explains why these layers exist. One rule decides it: *a fact belongs in the
+layer that will be forced to update it when it changes.* A number that shifts
+every merge must be GENERATED, never typed — that is exactly how this file
+came to claim the database was D1 SQLite for a month after the cutover.
 
 Do not open a 5,000+ line file whole. Several pages and route modules run
 past 8,000 lines and one past 12,000. Locate with grep, then read the line
@@ -155,6 +164,7 @@ Not generic narrative.
 
 ## See also
 
+- **`docs/KNOWLEDGE-SYSTEM.md`** — the layers, what belongs where, and why
 - **`docs/CODEBASE-MAP.md`** — start here for anything you would otherwise
   go exploring for; `docs/generated/` for the mechanical inventory
 - **`BUG-HISTORY.md`** — read the entries for a subsystem before touching it
