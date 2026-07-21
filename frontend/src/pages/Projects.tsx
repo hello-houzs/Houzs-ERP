@@ -931,6 +931,9 @@ const PROJECTS_LIST_FILTER_KEYS = [
   // Kept in the URL keys list so any old bookmark with ?stage=… still
   // parses without throwing.
   "stage",
+  // `mine=all` — field/sales cohort's "My events" toggle OFF state (absent =
+  // ON, so the slim bar defaults to their own events). See ProjectsListView.
+  "mine",
   "section",
   "search",
   "brand",
@@ -941,7 +944,7 @@ const PROJECTS_LIST_FILTER_KEYS = [
 ] as const;
 
 function ProjectsListView() {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const { unreadByProject } = useNotifications();
@@ -955,6 +958,7 @@ function ProjectsListView() {
   const month = params.get("month") || "";
   const section = params.get("section") || "";
   const status = params.get("status") || "";
+  const stage = params.get("stage") || "";
   const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
   function patchParams(patch: Record<string, string>) {
     const next = new URLSearchParams(params);
@@ -970,6 +974,7 @@ function ProjectsListView() {
   const setMonth = (v: string) => patchParams({ month: v, page: "1" });
   const setSection = (v: string) => patchParams({ section: v, page: "1" });
   const setStatus = (v: string) => patchParams({ status: v, page: "1" });
+  const setStage = (v: string) => patchParams({ stage: v, page: "1" });
   const setPage = (n: number) => patchParams({ page: String(n) });
 
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
@@ -998,6 +1003,39 @@ function ProjectsListView() {
   // chip label / document title server-side). Export is unaffected.
   const [myPending, setMyPending] = useLocalStorage<boolean>("projects:myPending", false);
 
+  // Owner 2026-07-21: field/sales roles (Sales Exec/Mgr except Sales Director,
+  // plus Driver/Helper/Storekeeper) get the SAME slimmed filter bar as mobile —
+  // only "My events", "Setup", "Dismantle" (no section pills / brand-year-month
+  // -status dropdowns / My-pending / Hide-completed). Mirrors the cohort logic
+  // in MobilePMS ProjectListView so pc + phone stay in lockstep.
+  const _pos = (user?.position_name ?? "").trim();
+  const _dept = (user?.department_name ?? "").trim();
+  const _isDirector =
+    !!user?.permissions?.includes("*") ||
+    /\b(super admin|sales director|finance manager)\b/i.test(_pos);
+  const _isDriver = /\bdriver\b/i.test(_pos);
+  // Helpers/storekeepers are FORCE-scoped to their assigned events server-side
+  // (isCrewScopedUser in backend); drivers are not (they opt in).
+  const _isForceScopedCrew = /\bhelper\b/i.test(_pos) || /storekeeper/i.test(_pos);
+  const _isCrew = _isDriver || _isForceScopedCrew;
+  const _isSalesExec = (/sales/i.test(_dept) || /^sales/i.test(_pos)) && !_isDirector;
+  const restrictedCohort = _isCrew || _isSalesExec;
+  const cohortTickOnly = can("projects.checklist.tick") && !can("projects.write");
+  // "My events" is a REAL toggle only for drivers (server doesn't force their
+  // scope and their assigned_to_me arm actually filters). Helpers/storekeepers
+  // are force-scoped and sales are row-scoped server-side, so for them the
+  // button is cosmetic (always on) — sending assigned_to_me for a sales user
+  // would filter to crew arms and wrongly return zero rows. OFF state is
+  // encoded as ?mine=all (absent = default on).
+  const canToggleMyEvents = _isDriver && cohortTickOnly;
+  const crewSeeAll = params.get("mine") === "all";
+  const myEventsActive = restrictedCohort && (canToggleMyEvents ? !crewSeeAll : true);
+  const sendAssignedToMe = canToggleMyEvents && !crewSeeAll;
+  // Pill styling copied from <FilterPills/> so the cohort bar reads identically.
+  const cohortPillCls = (active: boolean) =>
+    "whitespace-nowrap rounded px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-all duration-150 " +
+    (active ? "bg-primary text-white shadow-sm" : "text-ink-secondary hover:bg-primary-soft hover:text-primary");
+
   // ?focus=ID — Overview inbox deep-links straight to the detail page.
   useFocusFromUrl((id) => navigate(`/projects/${id}`, { replace: true }));
 
@@ -1012,24 +1050,29 @@ function ProjectsListView() {
     () =>
       api.get(
         `/api/projects${buildQuery({
-          brand: brand || undefined,
-          year: year || undefined,
-          month: month || undefined,
-          section: section || undefined,
-          exclude_done: excludeDoneParam,
-          my_pending: myPending ? 1 : undefined,
+          // Cohort uses ONLY stage + assigned_to_me + search; the section /
+          // brand / year / month / status / my_pending filters are hidden from
+          // them, so force those undefined to keep their list unfiltered.
+          brand: restrictedCohort ? undefined : brand || undefined,
+          year: restrictedCohort ? undefined : year || undefined,
+          month: restrictedCohort ? undefined : month || undefined,
+          section: restrictedCohort ? undefined : section || undefined,
+          stage: restrictedCohort && stage ? stage : undefined,
+          assigned_to_me: sendAssignedToMe ? 1 : undefined,
+          exclude_done: restrictedCohort ? undefined : excludeDoneParam,
+          my_pending: restrictedCohort ? undefined : myPending ? 1 : undefined,
           search,
           // Status is filtered SERVER-side (the list endpoint's `status`
           // param), so the list stays paginated (per_page=perPage) even while
           // a status pill is active — no more fetch-all page-1 workaround.
-          status: status || undefined,
+          status: restrictedCohort ? undefined : status || undefined,
           page,
           per_page: perPage,
           include_archived: showArchived ? 1 : undefined,
           ...sortParams,
         })}`
       ),
-    [brand, year, month, section, status, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir],
+    [brand, year, month, section, status, stage, restrictedCohort, sendAssignedToMe, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir],
     // Paginated + filter-switched list: keep the current rows on screen while
     // the next page/filter loads instead of flashing an empty table.
     { keepPreviousData: true }
@@ -1057,14 +1100,18 @@ function ProjectsListView() {
       for (let pg = 1; pg <= 500; pg++) {
         const res = await api.get<Paginated<ProjectRow>>(
           `/api/projects${buildQuery({
-            brand: brand || undefined,
-            year: year || undefined,
-            month: month || undefined,
-            section: section || undefined,
-            exclude_done: excludeDoneParam,
+            // Mirror the on-screen filter set, incl. the cohort's slim bar
+            // (stage + assigned_to_me), so the export matches what they see.
+            brand: restrictedCohort ? undefined : brand || undefined,
+            year: restrictedCohort ? undefined : year || undefined,
+            month: restrictedCohort ? undefined : month || undefined,
+            section: restrictedCohort ? undefined : section || undefined,
+            stage: restrictedCohort && stage ? stage : undefined,
+            assigned_to_me: sendAssignedToMe ? 1 : undefined,
+            exclude_done: restrictedCohort ? undefined : excludeDoneParam,
             // my_pending intentionally OMITTED — export is the full filtered list.
             search,
-            status: status || undefined,
+            status: restrictedCohort ? undefined : status || undefined,
             page: pg,
             per_page: per,
             include_archived: showArchived ? 1 : undefined,
@@ -1336,6 +1383,40 @@ function ProjectsListView() {
       </DashboardGrid>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
+        {restrictedCohort ? (
+          /* Owner 2026-07-21: field/sales cohort gets the mobile-style slim bar
+             — only My events / Setup / Dismantle. Styled to match FilterPills. */
+          <div className="inline-block max-w-full overflow-hidden rounded-md border border-border bg-surface shadow-stone align-middle">
+            <div className="no-scrollbar flex items-center gap-0.5 overflow-x-auto p-1 [&>*]:shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  if (canToggleMyEvents) patchParams({ mine: crewSeeAll ? "" : "all", page: "1" });
+                }}
+                title={canToggleMyEvents ? "Show only events you're assigned to" : "You see your own events"}
+                className={cohortPillCls(myEventsActive)}
+                style={canToggleMyEvents ? undefined : { cursor: "default" }}
+              >
+                My events
+              </button>
+              <button
+                type="button"
+                onClick={() => setStage(stage === "setup" ? "" : "setup")}
+                className={cohortPillCls(stage === "setup")}
+              >
+                Setup
+              </button>
+              <button
+                type="button"
+                onClick={() => setStage(stage === "dismantle" ? "" : "dismantle")}
+                className={cohortPillCls(stage === "dismantle")}
+              >
+                Dismantle
+              </button>
+            </div>
+          </div>
+        ) : (
+        <>
         {/* Tasklist-section filter pills — replaces the old draft /
             setup / dismantle / completed stage filter. Sections are
             pulled live so any custom workflow shows up here too. */}
@@ -1449,6 +1530,8 @@ function ProjectsListView() {
           />
           Show archived
         </label>
+        </>
+        )}
       </div>
 
       {/* View toggle — cards (P2 design) vs the full data table. */}
