@@ -58,10 +58,20 @@ const EXPECTED_WHITELIST: Record<string, Record<string, AccessLevel>> = {
   Driver: {
     "scm.transportation": "view",
     "scm.transportation.drivers": "view", // inherits the L1 parent
+    // Projects / PMS view (owner 2026-07-21): drivers open all events; edits
+    // stay permission-gated to their own role-badged checklist tasks.
+    // finances / maintenance carry explicit none rows (asserted by the
+    // all-else-none sweep).
+    projects: "view",
+    "projects.list": "view", // inherits the L1 parent
+    "projects.calendar": "view", // inherits the L1 parent
   },
   Helper: {
     "scm.transportation": "view",
     "scm.transportation.drivers": "view",
+    projects: "view",
+    "projects.list": "view",
+    "projects.calendar": "view",
   },
   Storekeeper: {
     "scm.transportation": "view",

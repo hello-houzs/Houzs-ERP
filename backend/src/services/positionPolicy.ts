@@ -228,6 +228,19 @@ const FLAGS_SALES_DIRECTOR: PositionAccessFlags = {
 const DRIVER_HELPER_ROWS: readonly PolicyRow[] = [
   // Delivery Planning board — view only. L1 grant; drivers inherits view.
   { page_key: "scm.transportation", level: "view" },
+  // Projects / PMS — view (owner 2026-07-21: drivers & helpers "open all
+  // events", editing stays limited to their own role-badged checklist tasks,
+  // which the projects.checklist.tick permission + the role-label gates on
+  // the status/attachment routes already enforce). This restores what the
+  // old position_page_access matrix gave positions 16/17 (projects,
+  // projects.list, projects.calendar = view) and what the mobile PMS driver
+  // portal has been using since 2026-07-09 — the 07-18 fold dropped it and
+  // locked drivers out of every event ("Couldn't load this project").
+  // finances / maintenance carry an explicit none so the L1 view does not
+  // cascade onto them (same pattern as the Storekeeper warehouse denials).
+  { page_key: "projects", level: "view" },
+  { page_key: "projects.finances", level: "none" },
+  { page_key: "projects.maintenance", level: "none" },
 ];
 
 const STOREKEEPER_ROWS: readonly PolicyRow[] = [
