@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, test } from "vitest";
 
 const pgMigration = Object.values(
-  import.meta.glob("../src/db/migrations-pg/0165_idempotency_phase2_constraints.sql", {
+  import.meta.glob("../src/db/migrations-pg/0167_idempotency_phase2_constraints.sql", {
     eager: true,
     query: "?raw",
     import: "default",
