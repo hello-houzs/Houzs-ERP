@@ -5752,11 +5752,11 @@ function VerificationCard({
           <InlineEdit
             label="Inspection Visit Date"
             type="date"
-            value={c.customer_pickup_at}
-            onSave={(v) => patch({ customer_pickup_at: v || null })}
+            value={c.inspection_visit_at}
+            onSave={(v) => patch({ inspection_visit_at: v || null })}
           />
           <div className="flex flex-wrap items-center gap-2 rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
-            {c.customer_pickup_at ? (
+            {c.inspection_visit_at ? (
               <>
                 <span>
                   On the <b>Delivery Planning</b> board as an unscheduled

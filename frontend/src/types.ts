@@ -194,6 +194,9 @@ export interface AssrCase {
   supplier_pickup_at?: string | null;
   // Mig 107 — date we collect the faulty item from the customer's house.
   customer_pickup_at?: string | null;
+  /* Mig 127 — on-site own-team inspection visit date, de-conflated from
+     customer_pickup_at; drives a distinct INSPECTION leg on Delivery Planning. */
+  inspection_visit_at?: string | null;
   // Mig 0073 — who performs the issue inspection: 'own' | 'supplier'.
   // Lives on the Under Verification stage since mig 0105.
   inspection_by?: "own" | "supplier" | null;

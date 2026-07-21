@@ -851,7 +851,7 @@ deliveryPlanning.get('/', async (c) => {
       // untouched (see the ASSR union after this map for the 'assr' rows).
       row_type: 'so' as 'so' | 'assr' | 'dp',
       ref: null as string | null,
-      job_kind: null as 'customer_pickup' | 'delivery' | null,
+      job_kind: null as 'customer_pickup' | 'delivery' | 'inspection' | null,
       // DP-Order job type (DELIVERY/PICKUP/SERVICE/SETUP/DISMANTLE/SUPPLIER_PICKUP)
       // — only 'dp' rows carry it; SO/ASSR rows are null (union parity).
       dp_job_type: null as string | null,
@@ -986,16 +986,20 @@ deliveryPlanning.get('/', async (c) => {
               phone         AS phone,
               location      AS location,
               customer_pickup_at AS customer_pickup_at,
+              inspection_visit_at AS inspection_visit_at,
+              inspection_by AS inspection_by,
               do_date       AS do_date,
               addr1 AS addr1, addr2 AS addr2, addr3 AS addr3, addr4 AS addr4
          FROM assr_cases
         WHERE closed_at IS NULL
           AND archived_at IS NULL
-          AND (customer_pickup_at IS NOT NULL OR do_date IS NOT NULL)`,
+          AND (customer_pickup_at IS NOT NULL OR do_date IS NOT NULL
+               OR (inspection_visit_at IS NOT NULL AND inspection_by = 'own'))`,
     ).all<{
       id: number | null; assr_no: string | null; status: string | null;
       customer_name: string | null; phone: string | null; location: string | null;
-      customer_pickup_at: string | null; do_date: string | null;
+      customer_pickup_at: string | null; inspection_visit_at: string | null;
+      inspection_by: string | null; do_date: string | null;
       addr1: string | null; addr2: string | null; addr3: string | null; addr4: string | null;
     }>();
 
@@ -1014,8 +1018,12 @@ deliveryPlanning.get('/', async (c) => {
       // effective/board date is that trigger date so it lands in the schedule
       // column. A date-but-not-yet-delivered case = PENDING_SCHEDULE (reuse the
       // existing enum). Stock columns are null/'—' for ASSR rows.
-      const legs: Array<{ jobKind: 'customer_pickup' | 'delivery'; date: string }> = [];
+      const legs: Array<{ jobKind: 'customer_pickup' | 'delivery' | 'inspection'; date: string }> = [];
       if (a.customer_pickup_at) legs.push({ jobKind: 'customer_pickup', date: a.customer_pickup_at });
+      // Own-team on-site inspection visit — a distinct fleet leg. Supplier-done
+      // inspections are handled on the supplier side, so they never surface here
+      // (the SELECT already gates this to inspection_by = 'own').
+      if (a.inspection_visit_at && a.inspection_by === 'own') legs.push({ jobKind: 'inspection', date: a.inspection_visit_at });
       if (a.do_date)            legs.push({ jobKind: 'delivery',        date: a.do_date });
 
       for (const leg of legs) {
@@ -1512,7 +1520,7 @@ const scheduleSchema = z.object({
   // ASSR ONLY (type='assr'): which driving date the board row represents, so the
   // scheduleDate write-back targets the matching assr_cases column
   // (customer_pickup_at vs do_date). Ignored for so | do.
-  jobKind: z.enum(['customer_pickup', 'delivery']).nullable().optional(),
+  jobKind: z.enum(['customer_pickup', 'delivery', 'inspection']).nullable().optional(),
   // ── Optional trip wiring ───────────────────────────────────────────────────
   // Scheduling an order onto a trip. Either tripId (append to an existing trip)
   // OR {lorryId, driverId, tripDate?} (find-or-create a trip for that lorry+date).
@@ -1560,7 +1568,7 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
   /* ── ASSR (Service Case) schedule write-back ─────────────────────────────────
      Two-way editing of the board date: writing scheduleDate updates the case's
      DRIVING date on public.assr_cases. Which column depends on jobKind —
-     'customer_pickup' → customer_pickup_at, 'delivery' → do_date. No trip/crew
+     'customer_pickup' → customer_pickup_at, 'inspection' → inspection_visit_at, 'delivery' → do_date. No trip/crew
      wiring for ASSR legs (out of scope). Kept fully SEPARATE from the SO/DO path
      below, which stays byte-for-byte unchanged. assr_cases is PUBLIC → c.env.DB. */
   if (type === 'assr') {
@@ -1569,7 +1577,9 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
     if (!Number.isFinite(caseId)) return c.json({ error: 'bad_id', reason: 'assr id must be numeric' }, 400);
     // jobKind decides the target column. Default to 'delivery' (do_date) when
     // absent — the frontend row carries job_kind and should always send it.
-    const col = p.jobKind === 'customer_pickup' ? 'customer_pickup_at' : 'do_date';
+    const col = p.jobKind === 'customer_pickup' ? 'customer_pickup_at'
+      : p.jobKind === 'inspection' ? 'inspection_visit_at'
+      : 'do_date';
     try {
       const res = await c.env.DB.prepare(
         `UPDATE assr_cases SET ${col} = ?, updated_at = datetime('now')
@@ -1579,7 +1589,7 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
     } catch (e) {
       return c.json({ error: 'update_failed', reason: String((e as Error).message).slice(0, 200) }, 500);
     }
-    return c.json({ ok: true, assr: { id: caseId, job_kind: col === 'do_date' ? 'delivery' : 'customer_pickup', [col]: p.scheduleDate }, trip: null });
+    return c.json({ ok: true, assr: { id: caseId, job_kind: col === 'do_date' ? 'delivery' : col === 'inspection_visit_at' ? 'inspection' : 'customer_pickup', [col]: p.scheduleDate }, trip: null });
   }
 
   const wantsTrip = p.tripId != null || p.lorryId != null;

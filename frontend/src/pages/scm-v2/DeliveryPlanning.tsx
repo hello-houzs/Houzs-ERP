@@ -145,6 +145,10 @@ function TypeChip({ order }: { order: PlanningOrder }) {
       label = 'Cust. pickup';
       tone = '#0c3f39';
       bg = 'rgba(232, 107, 58, 0.12)';
+    } else if (order.job_kind === 'inspection') {
+      label = 'Inspection';
+      tone = '#5a3fa0';
+      bg = 'rgba(90, 63, 160, 0.12)';
     } else {
       label = 'Delivery';
       tone = '#2f5d4f';
@@ -764,9 +768,9 @@ export const DeliveryPlanning = () => {
          two kinds read apart at a glance. */
       key: 'row_type', label: 'Type', width: 130, groupable: true,
       accessor: (o) => <TypeChip order={o} />,
-      searchValue: (o) => (isDp(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup customer pickup' : 'Delivery') : 'SO delivery'),
-      groupValue: (o) => (isDp(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup' : 'Delivery') : 'SO delivery'),
-      exportValue: (o) => (isDp(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup' : 'Delivery') : 'SO delivery'),
+      searchValue: (o) => (isDp(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup customer pickup' : o.job_kind === 'inspection' ? 'Inspection' : 'Delivery') : 'SO delivery'),
+      groupValue: (o) => (isDp(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup' : o.job_kind === 'inspection' ? 'Inspection' : 'Delivery') : 'SO delivery'),
+      exportValue: (o) => (isDp(o) ? dpLabel(o) : isAssr(o) ? (o.job_kind === 'customer_pickup' ? 'Cust. pickup' : o.job_kind === 'inspection' ? 'Inspection' : 'Delivery') : 'SO delivery'),
     },
     {
       /* SO No. for SO rows; the ASSR ref (assr_no) for service-case rows. */

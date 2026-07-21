@@ -796,6 +796,9 @@ const PATCH_FIELDS = [
   "supplier_pickup_at", "items_ready_at",
   // Mig 107 — date we collect the faulty item from the customer's house
   "customer_pickup_at",
+  // Mig 127 — on-site OWN-TEAM inspection visit date, de-conflated from
+  // customer_pickup_at; drives a distinct INSPECTION leg on Delivery Planning.
+  "inspection_visit_at",
   // Mig 074 — v3.1 fields
   "inspection_result", "email_for_survey",
   // Mig 081 — verification card (Under Verification → Pending Solution gate)
@@ -836,7 +839,7 @@ const FIELD_LABELS: Record<string, string> = {
   supplier_invoice_ref: "Supplier Invoice Ref", cost_notes: "Cost Notes",
   sla_hours: "SLA Hours", deadline_at: "Deadline",
   supplier_pickup_at: "Supplier Pickup Date", items_ready_at: "Supplier Return / Item Ready Date",
-  customer_pickup_at: "Customer Pickup Date",
+  customer_pickup_at: "Customer Pickup Date", inspection_visit_at: "Inspection Visit Date",
   inspection_result: "Inspection Result", email_for_survey: "Survey Email",
   verification_outcome: "Verification Outcome", verified_root_cause: "Verified Root Cause",
   qc_receipt_date: "QC Receipt Date", goods_returned_note: "Goods Returned Note",
