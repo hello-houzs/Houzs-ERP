@@ -176,8 +176,23 @@ dataset = "houzs_erp_metrics"
 #                          deploys never break on missing keys.
 
 [triggers]
-# Cron schedule (kept under the Workers free-plan trigger cap). After the
-# strip-to-core cutover the AutoCount pulls + gamify jobs are gone; what runs:
+# Cron schedule. This line USED to read "kept under the Workers free-plan trigger
+# cap" — written 2026-04-30 (7b98025b, which folded the monthly gifting reset into
+# the daily batch to shed a trigger) and true THEN. It is not the constraint now:
+# the `houzs-scan-ocr` Queues producer/consumer bound above is a Workers PAID
+# product and cannot exist on the free plan, and production runs on it since
+# 2026-07-04 (PR #260). Repo evidence therefore proves PAID, not free; the exact
+# plan + change date live in a billing console this repo cannot see, so nothing
+# here asserts them (docs/cloudflare-plan-cap-coe.md §3, §5).
+#
+# Consolidating to three triggers is still the right shape — fewer cold starts,
+# one place to reason about the daily batch — so the schedule is UNCHANGED. Do
+# not read the old cap into it, and do not treat "we are on Paid" as licence to
+# un-batch the SCM subrequest diet, which is a latency and cost discipline in its
+# own right (same COE, §4).
+#
+# After the strip-to-core cutover the AutoCount pulls + gamify jobs are gone;
+# what runs:
 #   */5    → Hyperdrive keep-warm ping + durable email-outbox drain
 #   */30   → ASSR per-stage alert scan + scheduled lead-time activations
 #   0 2    → Daily batch: SLA escalation, ASSR daily digest, project
