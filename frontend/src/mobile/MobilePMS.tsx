@@ -385,10 +385,23 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
   // events they're crewed on (setup/dismantle assignment, FK or crew JSON;
   // owner 2026-07-16) with "All" one tap away. Everyone else sees the normal
   // full list with no extra chip.
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const tickOnly = can("projects.checklist.tick") && !can("projects.write");
   const [assignedOnly, setAssignedOnly] = useState<boolean | null>(null);
   const showAssigned = tickOnly && (assignedOnly ?? true);
+  // Owner 2026-07-21: field/sales roles (Sales Executive/Manager except Sales
+  // Director, plus Driver/Helper/Storekeeper) get a slimmed filter bar — only
+  // "My events", "Setup", "Dismantle" (no All / Draft / Live / Completed).
+  const _pos = (user?.position_name ?? "").trim();
+  const _dept = (user?.department_name ?? "").trim();
+  const _isDirector = !!user?.permissions?.includes("*") || /\b(super admin|sales director|finance manager)\b/i.test(_pos);
+  const _isCrew = /\b(driver|helper)\b/i.test(_pos) || /storekeeper/i.test(_pos);
+  const _isSalesExec = (/sales/i.test(_dept) || /^sales/i.test(_pos)) && !_isDirector;
+  const restrictedCohort = _isCrew || _isSalesExec;
+  const visibleStageFilters = restrictedCohort
+    ? STAGE_FILTERS.filter(([k]) => k === "setup" || k === "dismantle")
+    : STAGE_FILTERS;
+  const myEventsOn = tickOnly ? showAssigned : true; // sales are already scoped to their events
   /* Debounced search term — the value actually sent to the server (and keyed
      into the infinite query) so a keystroke doesn't fire a request per
      character. 300ms after the operator stops typing the list re-runs from
@@ -482,16 +495,16 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
           </div>
         </div>
         <div className="chips" style={{ marginTop: 11 }}>
-          {tickOnly && (
+          {(tickOnly || restrictedCohort) && (
             <button
-              onClick={() => setAssignedOnly(!showAssigned)}
-              className={showAssigned ? "chip on" : "chip"}
-              style={showAssigned ? undefined : { borderColor: "#bcdcd7", color: "#16695f" }}
+              onClick={() => { if (tickOnly) setAssignedOnly(!showAssigned); }}
+              className={myEventsOn ? "chip on" : "chip"}
+              style={myEventsOn ? undefined : { borderColor: "#bcdcd7", color: "#16695f" }}
             >
               My events
             </button>
           )}
-          {STAGE_FILTERS.map(([k, label]) => (
+          {visibleStageFilters.map(([k, label]) => (
             <button key={k} onClick={() => setStageFilter(k)} className={stageFilter === k ? "chip on" : "chip"}>{label}</button>
           ))}
         </div>
@@ -816,9 +829,10 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     return false;
   };
   const visibleChecklist = (data?.checklist ?? []).filter((it) => !itemHidden(it));
-  // Reversed 2026-07-16: crew (driver/helper/storekeeper) now VIEW+DOWNLOAD the
-  // Filled floorplan (previously hidden). Keep the prop for future per-role use.
-  const hideFilledPlan = false;
+  // Owner 2026-07-21 (re-reversed): the Filled floorplan tile is hidden from
+  // crew again — their Floor Plans card keeps Display (banner), Unfilled
+  // (view/download) and the stock-transfer records (view/download).
+  const hideFilledPlan = isDriverCrew || isStorekeeper;
   // Owner 2026-07-18: PIC assignment AND Sales-Attending assignment are open to
   // EVERYONE holding projects.write EXCEPT the Sales Director — same single
   // logic layer as the desktop ProjectTeamSection (canAssignPeople). This
@@ -1074,11 +1088,15 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 /* `canEdit !== false` treated BOTH an absent pms block and an
                    omitted flag as writable. Now the server's answer, fail-closed. */
                 canWrite={canWrite && access.canEdit && !archived}
+                /* Crew manage the setup/dismantle photos (owner 2026-07-21);
+                   the backend re-gates on being crewed on the phase. */
+                canPhoto={(isDriverCrew || isStorekeeper) && !archived}
                 busy={busy}
                 setBusy={setBusy}
                 patchProject={patchProject}
                 notify={notify}
                 reloadPhotos={reloadPhotos}
+                confirm={confirm}
               />
             )}
 
@@ -1099,9 +1117,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               />
             )}
 
-            {/* Crew (driver/helper/storekeeper) doc tiles (owner 2026-07-21) —
-                same card style as sales: Setup/Dismantle Image editable on
-                top, then the confirmed download set view-only. Replaces their
+            {/* Crew (driver/helper/storekeeper) doc tiles (owner 2026-07-21 v2)
+                — same card style as sales, ALL view/download-only (their photo
+                work lives in Setup & Dismantle's phase photos). Replaces their
                 tasklist rows (hidden above). */}
             {(isDriverCrew || isStorekeeper) && (
               <SalesDocsCard
@@ -2102,7 +2120,7 @@ const isoTimePart = (iso: string | null | undefined): string => {
 // PUT /:id/phase-photos/upload → POST /:id/phase-photos). Schedule/driver/
 // lorry all persist via PATCH /:id.
 function SetupDismantle({
-  projectId, project, photos, drivers, lorries, canWrite, busy, setBusy, patchProject, notify, reloadPhotos,
+  projectId, project, photos, drivers, lorries, canWrite, canPhoto, busy, setBusy, patchProject, notify, reloadPhotos, confirm,
 }: {
   projectId: number;
   project: ProjectDetail["project"];
@@ -2110,11 +2128,16 @@ function SetupDismantle({
   drivers: FleetStaff[];
   lorries: Lorry[];
   canWrite: boolean;
+  /** Owner 2026-07-21: crew (driver/helper/storekeeper) manage the phase
+   *  photos (upload / replace / remove / view) without canWrite — the
+   *  backend gates on being crewed on that phase. */
+  canPhoto?: boolean;
   busy: boolean;
   setBusy: SetBusy;
   patchProject: (body: Record<string, unknown>) => Promise<boolean>;
   notify: NotifyFn;
   reloadPhotos: () => void;
+  confirm: ConfirmFn;
 }) {
   const setupPhoto = photos.find((ph) => ph.phase === "setup");
   const dismantlePhoto = photos.find((ph) => ph.phase === "dismantle");
@@ -2142,11 +2165,13 @@ function SetupDismantle({
           drivers={drivers}
           lorries={lorries}
           canWrite={canWrite}
+          canPhoto={canPhoto}
           busy={busy}
           setBusy={setBusy}
           patchProject={patchProject}
           notify={notify}
           reloadPhotos={reloadPhotos}
+          confirm={confirm}
         />
         <div style={{ height: 1, background: "#e3e6e0", margin: "14px 0" }} />
         <PhaseBlock
@@ -2157,11 +2182,13 @@ function SetupDismantle({
           drivers={drivers}
           lorries={lorries}
           canWrite={canWrite}
+          canPhoto={canPhoto}
           busy={busy}
           setBusy={setBusy}
           patchProject={patchProject}
           notify={notify}
           reloadPhotos={reloadPhotos}
+          confirm={confirm}
         />
       </div>
     </details>
@@ -2205,7 +2232,7 @@ function StaffSelect({
 }
 
 function PhaseBlock({
-  kind, projectId, project, photo, drivers, lorries, canWrite, busy, setBusy, patchProject, notify, reloadPhotos,
+  kind, projectId, project, photo, drivers, lorries, canWrite, canPhoto: canPhotoProp, busy, setBusy, patchProject, notify, reloadPhotos, confirm,
 }: {
   kind: "Setup" | "Dismantle";
   projectId: number;
@@ -2214,12 +2241,17 @@ function PhaseBlock({
   drivers: FleetStaff[];
   lorries: Lorry[];
   canWrite: boolean;
+  canPhoto?: boolean;
   busy: boolean;
   setBusy: SetBusy;
   patchProject: (body: Record<string, unknown>) => Promise<boolean>;
   notify: NotifyFn;
   reloadPhotos: () => void;
+  confirm: ConfirmFn;
 }) {
+  // Photo controls open to crew as well as writers (owner 2026-07-21); the
+  // schedule/crew fields stay canWrite-only.
+  const canPhoto = canWrite || !!canPhotoProp;
   const fileRef = useRef<HTMLInputElement | null>(null);
   const accent = kind === "Setup" ? "#16695f" : "#a16a2e";
   const phase = kind.toLowerCase() as "setup" | "dismantle";
@@ -2365,9 +2397,9 @@ function PhaseBlock({
       )}
       <button
         type="button"
-        disabled={busy || (!photoKey && !canWrite)}
-        onClick={() => { if (photoKey) setPhotoOpen(true); else if (canWrite) fileRef.current?.click(); }}
-        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 0, overflow: "hidden", cursor: photoKey || canWrite ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
+        disabled={busy || (!photoKey && !canPhoto)}
+        onClick={() => { if (photoKey) setPhotoOpen(true); else if (canPhoto) fileRef.current?.click(); }}
+        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 0, overflow: "hidden", cursor: photoKey || canPhoto ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
       >
         {photoKey ? (
           <R2Thumb r2Key={photoKey} style={{ width: 64, height: 54, flex: "none" }} />
@@ -2377,12 +2409,34 @@ function PhaseBlock({
           </div>
         )}
         <div style={{ padding: "7px 0", minWidth: 0 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canWrite ? " · tap to upload" : ""}</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canPhoto ? " · tap to upload" : ""}</div>
           <div style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{uploaderCredit(photo)}</div>
         </div>
       </button>
-      {photoKey && canWrite && (
-        <button className="tinybtn" disabled={busy} style={{ marginTop: 6 }} onClick={() => fileRef.current?.click()}>Replace photo</button>
+      {photoKey && canPhoto && (
+        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+          <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Replace photo</button>
+          <button
+            className="tinybtn"
+            disabled={busy}
+            style={{ color: "#a13a34" }}
+            onClick={async () => {
+              if (!photo) return;
+              if (!(await confirm({ title: `Remove the ${kind.toLowerCase()} photo?`, confirmLabel: "Remove", danger: true }))) return;
+              setBusy(true);
+              try {
+                await api.del(`/api/projects/phase-photos/${photo.id}`);
+                void reloadPhotos();
+              } catch (e) {
+                await notify({ title: "Remove failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Remove
+          </button>
+        </div>
       )}
       <input ref={fileRef} type="file" accept="image/*,.pdf,.mp4,.mov,.webm" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadPhoto(f); }} />
       {photoOpen && photoKey && (
@@ -2416,6 +2470,9 @@ type DocTile = {
   /** Pin to the DRIVER-badged variant when a title exists in two roles. */
   driverOnly?: boolean;
   remarkTile?: boolean;
+  /** Owner 2026-07-21 (crew Decoration): media area shows the item's remark
+   *  AND the files are listed below, view/download-only. */
+  remarkWithFiles?: boolean;
   requirePhotoRemark?: boolean;
   /** Full-width tile (spans both grid columns). */
   fullWidth?: boolean;
@@ -2435,17 +2492,14 @@ const SALES_DOC_TILES: ReadonlyArray<DocTile> = [
   { label: "Event Complete Image", match: /^event complete image/i, fullWidth: true, mediaH: 108 },
 ];
 
-// ── Crew (driver/helper/storekeeper) tile set (owner 2026-07-21) ──
-// Same card style as sales. Editable pair on top = the DRIVER-badged
-// Setup/Dismantle Image (crew upload/remove them — roleLabelAdmits on the
-// backend). The rest are the owner's confirmed download set — view only.
+// ── Crew (driver/helper/storekeeper) tile set (owner 2026-07-21 v2) ──
+// Same card style as sales, ALL view/download-only — crew's own photo work
+// (setup/dismantle) moved to the Setup & Dismantle section's phase photos.
+// Decoration shows its remark AND its files (view remark + download).
 const CREW_DOC_TILES: ReadonlyArray<DocTile> = [
-  { label: "Setup Image", match: /^setup image/i, driverOnly: true },
-  { label: "Dismantle Image", match: /^dismantle image/i },
   { label: "Stock Out Transfer Record", match: /^stock out/i, readOnly: true },
-  { label: "3D Design", match: /^3d design/i, readOnly: true },
   { label: "Permit", match: /permit/i, readOnly: true },
-  { label: "Decoration", match: /^deco/i, readOnly: true },
+  { label: "Decoration", match: /^deco/i, readOnly: true, remarkWithFiles: true },
   { label: "Blank Floorplan", match: /^blank floor/i, readOnly: true, fullWidth: true },
 ];
 
@@ -2492,7 +2546,9 @@ function SalesDocsCard({
   if (tiles.length === 0) return null;
 
   const doneCount = tiles.filter((t) =>
-    t.remarkTile ? !!(t.item?.notes ?? "").trim() : t.files.length > 0
+    t.remarkTile ? !!(t.item?.notes ?? "").trim()
+    : t.remarkWithFiles ? (t.files.length > 0 || !!(t.item?.notes ?? "").trim())
+    : t.files.length > 0
   ).length;
 
   const startUpload = async (t: (typeof tiles)[number]) => {
@@ -2576,6 +2632,16 @@ function SalesDocsCard({
   };
 
   const openTile = async (t: (typeof tiles)[number]) => {
+    if (t.remarkWithFiles) {
+      // Files win the tap (they carry the download); the remark is already
+      // visible on the tile face, and surfaces in full when there's no file.
+      if (t.files.length > 0) { setView({ items: t.files, idx: t.files.length - 1 }); return; }
+      const txt = (t.item?.notes ?? "").trim();
+      await notify(txt
+        ? { title: t.label, body: txt }
+        : { title: t.label, body: "No remark or file here yet.", tone: "info" });
+      return;
+    }
     if (t.remarkTile) {
       if (t.readOnly) {
         // View-only: surface the full remark (the tile truncates long text).
@@ -2604,7 +2670,9 @@ function SalesDocsCard({
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
           {tiles.map((t) => {
             const latest = t.files[t.files.length - 1];
-            const hasContent = t.remarkTile ? !!(t.item?.notes ?? "").trim() : t.files.length > 0;
+            const hasContent = t.remarkTile ? !!(t.item?.notes ?? "").trim()
+              : t.remarkWithFiles ? (t.files.length > 0 || !!(t.item?.notes ?? "").trim())
+              : t.files.length > 0;
             const mediaH = t.mediaH ?? 80;
             return (
               <div key={t.label} style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden", background: "#fff", ...(t.fullWidth ? { gridColumn: "1 / -1" } : {}) }}>
@@ -2615,9 +2683,9 @@ function SalesDocsCard({
                   onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (!busy) void openTile(t); } }}
                   style={{ cursor: "pointer" }}
                 >
-                  {t.remarkTile ? (
+                  {t.remarkTile || t.remarkWithFiles ? (
                     <div style={{ height: mediaH, padding: "8px 10px", fontSize: 11, lineHeight: 1.45, color: (t.item?.notes ?? "").trim() ? "#414539" : "#9aa093", overflow: "hidden", background: "#faf9f5" }}>
-                      {(t.item?.notes ?? "").trim() || (canTick && !t.readOnly ? "Tap to write the remark…" : "No remark yet.")}
+                      {(t.item?.notes ?? "").trim() || (canTick && !t.readOnly && !t.remarkWithFiles ? "Tap to write the remark…" : "No remark yet.")}
                     </div>
                   ) : latest && /^image\//.test(latest.content_type ?? "") ? (
                     <R2Thumb r2Key={latest.r2_key} style={{ width: "100%", height: mediaH }} />
@@ -2627,7 +2695,7 @@ function SalesDocsCard({
                   <div style={{ padding: "7px 9px 4px" }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{t.label}</div>
                     <span className="rbadge" style={{ background: hasContent ? "#e2f0e9" : "#f0f1ed", color: hasContent ? "#2f8a5b" : "#9aa093" }}>
-                      {t.remarkTile
+                      {t.remarkTile || (t.remarkWithFiles && t.files.length === 0)
                         ? (hasContent ? "DONE" : "NONE")
                         : (hasContent ? `${t.files.length} FILE${t.files.length === 1 ? "" : "S"}` : "NONE")}
                     </span>
@@ -2636,7 +2704,25 @@ function SalesDocsCard({
                 {/* Owner 2026-07-17: the editable photo tiles list every uploaded
                     file by name — tap the name to VIEW it first; × removes it
                     (confirm-guarded). Upload stays its own button below. */}
-                {!t.remarkTile && !t.readOnly && t.atts.length > 0 && (
+                {/* remarkWithFiles (crew Decoration): the files listed by name,
+                    view/download-only — tap opens the lightbox. */}
+                {t.remarkWithFiles && t.atts.length > 0 && (
+                  <div style={{ padding: "0 9px 8px", display: "flex", flexDirection: "column", gap: 5 }}>
+                    {t.atts.map((a, i) => (
+                      <button
+                        key={a.id}
+                        type="button"
+                        className="tinybtn"
+                        style={{ minWidth: 0, display: "inline-flex", alignItems: "center", gap: 5 }}
+                        onClick={() => setView({ items: t.files, idx: i })}
+                        title={a.file_name ?? undefined}
+                      >
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.file_name || "File"}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!t.remarkTile && !t.remarkWithFiles && !t.readOnly && t.atts.length > 0 && (
                   <div style={{ padding: "0 9px 6px", display: "flex", flexDirection: "column", gap: 5 }}>
                     {t.atts.map((a, i) => (
                       <span key={a.id} style={{ display: "inline-flex", alignItems: "stretch" }}>

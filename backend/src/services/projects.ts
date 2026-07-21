@@ -110,12 +110,20 @@ async function describeUser(env: Env, userId: number | null): Promise<string | n
 export async function getUserPhasesOnProject(
   env: Env,
   projectId: number,
-  userId: number
+  userId: number,
+  /** Owner 2026-07-21: the per-lorry crew editor stores people as
+   *  {"name":"X","phone":…} JSON (setup_crew / dismantle_crew) with NO user
+   *  ids, so id-only matching missed everyone crewed that way. Names come
+   *  from the users master (fleet/staff picker), so a lowercase '"<name>"'
+   *  containment match is an exact-name match — same rule listProjects'
+   *  assigned_user_name arm uses. */
+  userName?: string | null
 ): Promise<Array<"setup" | "dismantle">> {
   if (!userId) return [];
   const row = await env.DB.prepare(
     `SELECT setup_driver_user_id, setup_helper_1_id, setup_helper_2_id,
-            dismantle_driver_user_id, dismantle_helper_1_id, dismantle_helper_2_id
+            dismantle_driver_user_id, dismantle_helper_1_id, dismantle_helper_2_id,
+            setup_crew, dismantle_crew
        FROM projects WHERE id = ?`
   )
     .bind(projectId)
@@ -126,20 +134,27 @@ export async function getUserPhasesOnProject(
       dismantle_driver_user_id: number | null;
       dismantle_helper_1_id: number | null;
       dismantle_helper_2_id: number | null;
+      setup_crew: string | null;
+      dismantle_crew: string | null;
     }>();
   if (!row) return [];
+  const nm = (userName ?? "").trim().toLowerCase();
+  const inCrewJson = (json: string | null): boolean =>
+    !!nm && (json ?? "").toLowerCase().includes(`"${nm}"`);
   const phases: Array<"setup" | "dismantle"> = [];
   if (
     row.setup_driver_user_id === userId ||
     row.setup_helper_1_id === userId ||
-    row.setup_helper_2_id === userId
+    row.setup_helper_2_id === userId ||
+    inCrewJson(row.setup_crew)
   ) {
     phases.push("setup");
   }
   if (
     row.dismantle_driver_user_id === userId ||
     row.dismantle_helper_1_id === userId ||
-    row.dismantle_helper_2_id === userId
+    row.dismantle_helper_2_id === userId ||
+    inCrewJson(row.dismantle_crew)
   ) {
     phases.push("dismantle");
   }
