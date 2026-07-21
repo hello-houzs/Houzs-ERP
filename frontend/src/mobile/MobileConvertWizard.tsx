@@ -14,35 +14,35 @@ import "./mobile.css";
  *
  *   target "do"  → New Delivery Order  from a Sales Order   (line + qty picker)
  *   target "si"  → New Sales Invoice   from a Delivery Order (line + qty picker)
- *   target "grn" → New Goods Receipt   from PO(s)            (whole-PO, 1 supplier)
+ *   target "grn" → New Goods Receipt   from PO(s)            (line + qty picker, DRAFT)
  *   target "po"  → New Purchase Order  from a Sales Order    (line + qty picker)
  *
  * A full-height, .hz-m-scoped flow with three steps:
  *   1. pick a SOURCE document (or, for GRN, one-or-more POs of ONE supplier)
- *   2. pick the convertible LINES + qty (skipped for GRN — it receives all)
+ *   2. pick the convertible LINES + qty (GRN: received qty per line)
  *   3. create — POST the confirmed convert endpoint, then onCreated(newDocNo)
  *
  * Presentation ports the owner's mobile design classes VERBATIM (mobile.css):
  * the header is .hdr + .ey eyebrow; the source picker rows reuse the SO-list
  * idiom (.so-row / .so-row-head / .so-row-name / .so-grid / .so-k / .so-v /
  * .spill); the GRN supplier filters are .chip; the line/qty step uses .card
- * rows with .fld / .fld-i qty inputs; the GRN review uses the .so-card /
- * .so-hd / .so-ti / .so-bd / .fld form idiom; and the create action is a
- * sticky .actbar / .btn. No redesign — same markup, owner's classes.
+ * rows with the − qty + stepper; the GRN Delivery-Note/Notes use the .so-card /
+ * .so-bd / .fld form idiom; and the create action is a sticky .actbar / .btn.
  *
  * Convertible lines come from the SAME per-line "remaining" GETs the desktop
  * pickers use (verified against backend/src/scm/routes):
- *   SO→DO / SO→PO : GET /delivery-orders-mfg/deliverable-so-lines?docNos=<docNo>
- *                   → { lines:[{ soItemId, docNo, itemCode, description, qty,
- *                       remaining, unitPriceCenti, debtorName, ... }] }
- *   DO→SI         : GET /sales-invoices/invoiceable-do-lines?doIds=<id>
- *                   → { lines:[{ doItemId, doNumber, itemCode, description,
- *                       remaining, unitPriceCenti, debtorName, ... }] }
+ *   SO→DO  : GET /delivery-orders-mfg/deliverable-so-lines?docNos=<docNo>  (qty − delivered)
+ *   SO→PO  : GET /mfg-purchase-orders/outstanding-so-items                 (qty − po_qty_picked
+ *            + sofa MRP rollup — the OUTSTANDING axis; returns all, scoped by soDocNo)
+ *   DO→SI  : GET /sales-invoices/invoiceable-do-lines?doIds=<id>           (remaining pool)
+ *   GRN    : GET /grns/outstanding-po-items                                (qty − received_qty;
+ *            returns all outstanding PO lines, scoped to the selected poIds)
  *
  * Create responses (the new doc number we hand to onCreated):
  *   DO  POST /delivery-orders-mfg/from-sos   → { id, doNumber, movementErrors? }
  *   SI  POST /sales-invoices/from-dos        → { id, invoiceNumber, ... }
- *   GRN POST /grns/from-pos                  → { id, grnNumber, poCount, ... }
+ *   GRN POST /grns  { asDraft:true, items }  → { id, grnNumber } (DRAFT — NOT auto-posted;
+ *                    operator posts it from the receipt, PATCH /:id/post writes stock)
  *   PO  POST /mfg-purchase-orders/from-sos   → { created:[{ poNumber, ... }], total }
  *
  * Short-stock handling (DO): authedFetch already intercepts the 409 short_stock
@@ -120,6 +120,38 @@ type DoInvoiceableLine = {
   doItemId: string; doNumber: string; itemCode: string; description: string | null;
   remaining: number; unitPriceCenti: number; debtorName: string | null;
 };
+// SO→PO — the OUTSTANDING axis (qty − po_qty_picked + sofa MRP rollup), from
+// /mfg-purchase-orders/outstanding-so-items (the SAME stock-aware shortage view
+// the desktop PurchaseOrderFromSo picker uses). `remainingQty` is the pooled
+// shortage; the endpoint returns EVERY outstanding SO line, so we scope to the
+// picked SO's doc_no client-side.
+type OutstandingSoLine = {
+  soItemId: string; soDocNo: string; itemCode: string; description: string | null;
+  qty: number; poQtyPicked: number; remainingQty: number; unitPriceCenti: number;
+};
+// GRN — outstanding PO lines (qty − received_qty > 0) from
+// /grns/outstanding-po-items (the SAME source as the desktop GrnFromPo picker).
+// Carries the per-line fields the New-GRN create needs to build a DRAFT receipt.
+type OutstandingPoLine = {
+  poItemId: string; poId: string; supplierId: string; itemCode: string;
+  description: string | null; itemGroup: string | null; variants: unknown;
+  deliveryDate: string | null; warehouseLocationId: string | null;
+  qty: number; receivedQty: number; remainingQty: number; unitPriceCenti: number;
+};
+
+// A GRN pick line in the local UI — the outstanding PO line + a per-line
+// received qty (mirrors the desktop GrnFromPo Pick Qty). The whole-PO
+// /grns/from-pos endpoint auto-POSTs (writes stock at once) with no per-line
+// qty; this drives a per-line DRAFT create instead.
+type GrnPickLine = {
+  poItemId: string; poId: string; supplierId: string;
+  itemCode: string; description: string | null; itemGroup: string | null;
+  variants: unknown; unitPriceCenti: number;
+  origQty: number;       // ordered qty
+  remaining: number;     // outstanding (qty − received_qty)
+  checked: boolean;
+  qty: string;           // received qty to book this pass (as typed)
+};
 
 // A picker line in the local UI (unified across the two GET shapes).
 type PickLine = {
@@ -174,8 +206,9 @@ export function MobileConvertWizard({
      the picks server-side and answers `{ created: [...], total }` — so the
      middleware's claim covers the whole batch and a replay returns all N
      poNumbers verbatim. One request, one claim, one response: nothing to
-     collapse. Same for the grn branch, where N selected POs converge into ONE
-     grnNumber (poCount counts SOURCES, not documents raised). */
+     collapse. Same for the grn branch, where the N selected POs' lines are
+     received into ONE DRAFT GRN via a single POST /grns — one request, one
+     grnNumber, so a replay returns that same grnNumber verbatim. */
   const idemKey = useIdempotencyKey();
 
   // step 1 → source picked ; step 2 → lines/qty (or GRN supplier confirm) ; step 3 handled by submit.
@@ -260,6 +293,29 @@ export function MobileConvertWizard({
     enabled: meta.hasLinePicker && !!selectedSourceId,
     queryKey: ["convert-lines", target, selectedSourceId],
     queryFn: async () => {
+      if (target === "po") {
+        // SO→PO reads the OUTSTANDING axis (qty − po_qty_picked + sofa MRP
+        // rollup), NOT the deliverable axis (qty − delivered). The deliverable
+        // axis is wrong for a PO: a fully-PO'd-but-undelivered line would 409
+        // dead on submit, a delivered-but-unpurchased restock PO could never be
+        // raised, and sofa qty (MRP-pooled) would be off. Mirrors the desktop
+        // PurchaseOrderFromSo picker (useOutstandingSoItems). The endpoint
+        // returns EVERY outstanding SO line, so scope to the picked SO's doc_no.
+        const res = await authedFetch<{ items?: OutstandingSoLine[] }>(
+          `/mfg-purchase-orders/outstanding-so-items`,
+        );
+        return (res.items ?? [])
+          .filter((l) => str(l.soDocNo) === str(selectedSourceId))
+          .map<PickLine>((l) => ({
+            lineId: l.soItemId,
+            label: str(pick(l, "description")) || str(pick(l, "itemCode")) || "—",
+            origQty: Number(l.qty) || 0,
+            remaining: Number(l.remainingQty) || 0,
+            unitPriceCenti: Number(l.unitPriceCenti) || 0,
+            checked: true,
+            qty: String(Number(l.remainingQty) || 0),
+          }));
+      }
       if (meta.source === "so") {
         const res = await authedFetch<{ lines?: SoDeliverableLine[] }>(
           `/delivery-orders-mfg/deliverable-so-lines?docNos=${encodeURIComponent(selectedSourceId!)}`,
@@ -310,6 +366,53 @@ export function MobileConvertWizard({
     [picks],
   );
 
+  // ── GRN line picker (the from-POs flow) ─────────────────────────────────────
+  // The whole-PO /grns/from-pos endpoint AUTO-POSTs (writes stock at once) with
+  // no per-line qty and no pre-post review. Instead we fetch the outstanding PO
+  // lines (same source as the desktop GrnFromPo picker), let the operator set a
+  // per-line received qty, and create a DRAFT via POST /grns (no auto-post) so
+  // it can be reviewed + posted from the receipt — and partially received.
+  const [grnLines, setGrnLines] = useState<GrnPickLine[]>([]);
+  const grnLinesQuery = useQuery({
+    enabled: target === "grn" && selectedPoIds.length > 0,
+    queryKey: ["convert-grn-lines", [...selectedPoIds].sort().join(",")],
+    queryFn: async () => {
+      const res = await authedFetch<{ items?: OutstandingPoLine[] }>(`/grns/outstanding-po-items`);
+      const set = new Set(selectedPoIds.map((x) => str(x)));
+      return (res.items ?? [])
+        .filter((r) => set.has(str(r.poId)))
+        .filter((r) => (Number(r.remainingQty) || 0) > 0)
+        .map<GrnPickLine>((r) => ({
+          poItemId: str(r.poItemId),
+          poId: str(r.poId),
+          supplierId: str(r.supplierId),
+          itemCode: str(r.itemCode),
+          description: (pick(r, "description") as string | undefined) ?? null,
+          itemGroup: (pick(r, "itemGroup") as string | undefined) ?? null,
+          variants: r.variants ?? null,
+          unitPriceCenti: Number(r.unitPriceCenti) || 0,
+          origQty: Number(r.qty) || 0,
+          remaining: Number(r.remainingQty) || 0,
+          checked: true,
+          qty: String(Number(r.remainingQty) || 0),
+        }));
+    },
+    staleTime: 15_000,
+  });
+  useEffect(() => {
+    if (grnLinesQuery.data) setGrnLines(grnLinesQuery.data);
+  }, [grnLinesQuery.data]);
+  const setGrnLine = (id: string, patch: Partial<GrnPickLine>) =>
+    setGrnLines((prev) => prev.map((l) => (l.poItemId === id ? { ...l, ...patch } : l)));
+  const grnPicks = useMemo(
+    () => grnLines.filter((l) => l.checked && clampQty(l.qty, l.remaining) >= 1),
+    [grnLines],
+  );
+  const grnPickedTotalCenti = useMemo(
+    () => grnPicks.reduce((a, l) => a + l.unitPriceCenti * clampQty(l.qty, l.remaining), 0),
+    [grnPicks],
+  );
+
   // ── Submit (step 3) ─────────────────────────────────────────────────────────
   async function submit() {
     if (submitting) return;
@@ -353,11 +456,43 @@ export function MobileConvertWizard({
         newDocNo = created.map((p) => str(p.poNumber)).filter(Boolean).join(", ");
         await qc.invalidateQueries({ queryKey: ["mobile-module"] });
       } else {
-        // GRN — receives all lines of the selected POs (one supplier).
-        const body: Record<string, unknown> = { purchaseOrderIds: selectedPoIds };
+        // GRN — create a DRAFT with per-line received qty (NO auto-post). The
+        // whole-PO /grns/from-pos endpoint always lands POSTED (grns.ts:1600-1601)
+        // and receives every line in full (grns.ts:1609), so partial receipt is
+        // impossible and "adjust later" means reversing an already-posted GRN.
+        // Instead we post the generic /grns create with asDraft:true + explicit
+        // per-line items — exactly how the desktop GrnFromPo picker feeds the New
+        // GRN form (GrnFromPo.tsx:376-398,464-465 → GrnNew's asDraft path). The
+        // operator reviews the draft and posts it from the receipt (that PATCH
+        // /:id/post is the single stock-writing chokepoint). Header supplier/PO
+        // come off the first picked line (mirror GrnNew's hasPicks derivation);
+        // warehouseId is omitted so the server resolves it from the PO lines —
+        // identical to the old from-pos behaviour (rejects a mixed-warehouse
+        // batch rather than silently defaulting into China/transit).
+        const first = grnPicks[0];
+        const body: Record<string, unknown> = {
+          asDraft: true,
+          supplierId: first?.supplierId,
+          purchaseOrderId: first?.poId,
+          items: grnPicks.map((l) => {
+            const q = clampQty(l.qty, l.remaining);
+            return {
+              purchaseOrderItemId: l.poItemId,
+              materialKind: "mfg_product",
+              materialCode: l.itemCode,
+              materialName: l.description || l.itemCode,
+              qtyReceived: q,
+              qtyAccepted: q,
+              qtyRejected: 0,
+              unitPriceCenti: l.unitPriceCenti,
+              itemGroup: l.itemGroup,
+              variants: l.variants,
+            };
+          }),
+        };
         if (deliveryNoteRef.trim()) body.deliveryNoteRef = deliveryNoteRef.trim();
         if (notes.trim()) body.notes = notes.trim();
-        const res = await authedFetch<{ grnNumber?: string }>("/grns/from-pos",
+        const res = await authedFetch<{ grnNumber?: string }>("/grns",
           idempotentInit(idemKey, {
             method: "POST",
             body: JSON.stringify(body),
@@ -382,8 +517,8 @@ export function MobileConvertWizard({
     }
   }
 
-  // Can we submit? DO/SI/PO need >=1 pick; GRN-from-POs needs >=1 selected PO.
-  const canCreate = meta.hasLinePicker ? picks.length > 0 : selectedPoIds.length > 0;
+  // Can we submit? DO/SI/PO need >=1 line pick; GRN needs >=1 line with qty >=1.
+  const canCreate = meta.hasLinePicker ? picks.length > 0 : grnPicks.length > 0;
 
   // Spec #convert sub-line: "From {{source_doc_no}}" once a source is chosen.
   // Single-source → the picked SO doc_no / DO number; GRN → "N Purchase Orders".
@@ -401,10 +536,10 @@ export function MobileConvertWizard({
     return row ? str(row.do_number) : "";
   }, [meta.source, selectedPoIds, selectedSourceId, sourceQuery.data]);
 
-  // Spec step labels: 1 = pick source, 2 = pick lines (or GRN review).
+  // Spec step labels: 1 = pick source, 2 = pick lines (GRN sets received qty).
   const stepLabel = step === 1
     ? "Select source"
-    : meta.hasLinePicker ? "Select lines to convert" : "Review the receipt";
+    : meta.hasLinePicker ? "Select lines to convert" : "Set received quantities";
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -485,13 +620,16 @@ export function MobileConvertWizard({
             onChangeSource={() => { setSelectedSourceId(null); setLines([]); }}
           />
         ) : (
-          <GrnReviewStep
-            count={selectedPoIds.length}
+          <GrnLinesStep
+            loading={grnLinesQuery.isLoading}
+            error={!!grnLinesQuery.error}
+            lines={grnLines}
             deliveryNoteRef={deliveryNoteRef}
             notes={notes}
+            onSetLine={setGrnLine}
             onRef={setDeliveryNoteRef}
             onNotes={setNotes}
-            onChangeSource={() => { setSelectedPoIds([]); setSupplierFilter(null); }}
+            onChangeSource={() => { setSelectedPoIds([]); setSupplierFilter(null); setGrnLines([]); }}
           />
         )}
       </div>
@@ -499,19 +637,26 @@ export function MobileConvertWizard({
       {/* Sticky footer — only shown on step 2 (the create action). */}
       {step === 2 && (
         <footer className="actbar">
-          {meta.hasLinePicker && (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
-              <span style={{ fontSize: 11.5, color: "#767b6e" }}>{picks.length} {picks.length === 1 ? "line" : "lines"}</span>
-              <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "#0c3f39" }}>{fmtCenti(pickedTotalCenti)}</span>
-            </div>
-          )}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
+            {meta.hasLinePicker ? (
+              <>
+                <span style={{ fontSize: 11.5, color: "#767b6e" }}>{picks.length} {picks.length === 1 ? "line" : "lines"}</span>
+                <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "#0c3f39" }}>{fmtCenti(pickedTotalCenti)}</span>
+              </>
+            ) : (
+              <>
+                <span style={{ fontSize: 11.5, color: "#767b6e" }}>{grnPicks.length} {grnPicks.length === 1 ? "line" : "lines"}</span>
+                <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "#0c3f39" }}>{fmtCenti(grnPickedTotalCenti)}</span>
+              </>
+            )}
+          </div>
           <button
             className="btn"
             disabled={!canCreate || submitting}
             onClick={submit}
             style={{ opacity: !canCreate || submitting ? 0.55 : 1 }}
           >
-            {submitting ? "Creating…" : `Create ${meta.docTitle}`}
+            {submitting ? "Creating…" : target === "grn" ? "Create draft Goods Receipt" : `Create ${meta.docTitle}`}
           </button>
         </footer>
       )}
@@ -700,26 +845,104 @@ function LinesStep({
   );
 }
 
-// ── Step 2 (GRN): whole-PO review, no line picker ────────────────────────────
-function GrnReviewStep({
-  count, deliveryNoteRef, notes, onRef, onNotes, onChangeSource,
+// ── Step 2 (GRN): per-line received-qty picker + a reviewable DRAFT ──────────
+// The old flow had NO line picker and posted the whole PO to /grns/from-pos,
+// which auto-POSTs (writes stock at once) and receives every line in full. This
+// lets the operator set a received qty per line (default = outstanding) and
+// creates a DRAFT — nothing moves stock until they post the receipt. Mirrors the
+// desktop GrnFromPo Pick-Qty picker (GrnFromPo.tsx:376-398) + the New-GRN form.
+function GrnLinesStep({
+  loading, error, lines, deliveryNoteRef, notes, onSetLine, onRef, onNotes, onChangeSource,
 }: {
-  count: number;
+  loading: boolean;
+  error: boolean;
+  lines: GrnPickLine[];
   deliveryNoteRef: string;
   notes: string;
+  onSetLine: (id: string, patch: Partial<GrnPickLine>) => void;
   onRef: (v: string) => void;
   onNotes: (v: string) => void;
   onChangeSource: () => void;
 }) {
+  if (loading) return <><ChangeSource onClick={onChangeSource} label="Change selection" /><Muted>Loading lines…</Muted></>;
+  if (error) return <><ChangeSource onClick={onChangeSource} label="Change selection" /><Muted danger>Couldn't load the receivable lines. Please try again.</Muted></>;
+  if (!lines.length) {
+    return (
+      <>
+        <ChangeSource onClick={onChangeSource} label="Change selection" />
+        <Muted>Nothing left to receive on the selected order(s).</Muted>
+      </>
+    );
+  }
+
   return (
     <>
       <ChangeSource onClick={onChangeSource} label="Change selection" />
-      <div className="so-card">
-        <div className="so-hd"><h2 className="so-ti">Receiving {count} Purchase {count === 1 ? "Order" : "Orders"}</h2></div>
+      <div style={{ fontSize: 11, color: "#a16a2e", padding: "0 2px 10px" }}>
+        Set the quantity received per line. This creates a DRAFT Goods Receipt — review it and post it from the receipt to move stock (nothing is received yet).
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+        {lines.map((l) => {
+          const qtyNum = clampQty(l.qty, l.remaining);
+          const ofQty = l.origQty > 0 ? l.origQty : l.remaining;
+          const dec = () => onSetLine(l.poItemId, { qty: String(Math.max(1, qtyNum - 1)) });
+          const inc = () => onSetLine(l.poItemId, { qty: String(clampQty(String(qtyNum + 1), l.remaining)) });
+          return (
+            <div key={l.poItemId} className="card" style={{ padding: "11px 12px", borderColor: l.checked ? "var(--teal)" : undefined }}>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={l.checked}
+                  onChange={(e) => onSetLine(l.poItemId, { checked: e.target.checked })}
+                  style={{ marginTop: 2, width: 16, height: 16, flex: "none", accentColor: "#16695f" }}
+                />
+                <span style={{ minWidth: 0, flex: 1 }}>
+                  <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.description || l.itemCode}</span>
+                  <span className="tnum" style={{ display: "block", marginTop: 3, fontSize: 11, color: "#767b6e" }}>
+                    Outstanding ×{l.remaining} of {ofQty} · {fmtCenti(l.unitPriceCenti)} each
+                  </span>
+                </span>
+              </label>
+              {l.checked && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 9, paddingTop: 9, borderTop: "1px solid #eceee9" }}>
+                  <div style={{ display: "inline-flex", alignItems: "center", border: "1px solid #d6d9d2", borderRadius: 8 }}>
+                    <button
+                      type="button"
+                      aria-label="Decrease quantity"
+                      onClick={dec}
+                      disabled={qtyNum <= 1}
+                      style={{ width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", color: qtyNum <= 1 ? "#c2c6bd" : "#16695f", background: "none", border: "none", fontFamily: "inherit", fontSize: 17, cursor: qtyNum <= 1 ? "default" : "pointer" }}
+                    >
+                      −
+                    </button>
+                    <input
+                      className="tnum"
+                      inputMode="numeric"
+                      value={l.qty}
+                      onChange={(e) => onSetLine(l.poItemId, { qty: e.target.value })}
+                      onBlur={() => onSetLine(l.poItemId, { qty: String(clampQty(l.qty, l.remaining)) })}
+                      aria-label="Quantity received"
+                      style={{ width: 40, height: 30, textAlign: "center", border: "none", borderLeft: "1px solid #eceee9", borderRight: "1px solid #eceee9", background: "none", outline: "none", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: "#11140f" }}
+                    />
+                    <button
+                      type="button"
+                      aria-label="Increase quantity"
+                      onClick={inc}
+                      disabled={qtyNum >= l.remaining}
+                      style={{ width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center", color: qtyNum >= l.remaining ? "#c2c6bd" : "#16695f", background: "none", border: "none", fontFamily: "inherit", fontSize: 17, cursor: qtyNum >= l.remaining ? "default" : "pointer" }}
+                    >
+                      +
+                    </button>
+                  </div>
+                  <span className="tnum" style={{ fontSize: 13, fontWeight: 800, color: "#0c3f39" }}>{fmtCenti(l.unitPriceCenti * qtyNum)}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="so-card" style={{ marginTop: 12 }}>
         <div className="so-bd">
-          <div style={{ fontSize: 11.5, color: "#767b6e" }}>
-            Every line of the selected order{count === 1 ? "" : "s"} is received in full. Adjust quantities from the Goods Receipt detail afterwards if needed.
-          </div>
           <label className="fld">
             <span className="fld-l">Delivery Note Ref</span>
             <input className="fld-i" value={deliveryNoteRef} onChange={(e) => onRef(e.target.value)} placeholder="Supplier DN number (optional)" />
@@ -771,6 +994,11 @@ function humanize(msg: string): string {
     grn_not_posted: "Only a posted Goods Receipt can be converted. Post it first.",
     grn_not_found: "That Goods Receipt no longer exists. Refresh and try again.",
     grn_id_required: "Select a Goods Receipt first.",
+    warehouse_required: "These Purchase Orders don't share one receive-into warehouse. Fix the PO line warehouses, or receive them per warehouse on the desktop.",
+    po_not_receivable: "One of the selected Purchase Orders is no longer open for receipt. Refresh and try again.",
+    nothing_outstanding: "All selected Purchase Order lines are already fully received.",
+    supplier_required: "The selected lines are missing a supplier. Refresh and try again.",
+    items_required: "Select at least one line to receive.",
     do_item_not_found: "One of the lines no longer exists. Refresh and try again.",
     not_authenticated: "Your session expired. Please sign in again.",
     load_failed: "Couldn't load the source data. Please try again.",
