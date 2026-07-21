@@ -1244,7 +1244,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                           <div className="money" style={{ fontSize: 10, fontWeight: 700, color: BROWN }}>{String(get(it, "itemCode", "item_code") ?? "—")}</div>
                           <div style={{ fontSize: 12, fontWeight: 600, color: INK, marginTop: 2 }}>{String(get(it, "itemDescription", "item_description") ?? "—")}</div>
                         </div>
-                        <span style={{ fontSize: 11, color: MUTED }}>×{String(get(it, "qty") ?? 1)}</span>
+                        <MobileItemQty c={c} it={it} busy={busy} onChanged={refetch} notify={notify} />
                         <button
                           onClick={() => removeItem(it)}
                           disabled={busy}
@@ -2739,6 +2739,37 @@ function PhotoGrid({
 
 // Per-item remark — prints in the ITEMS table's REMARK column on both
 // print copies (Nick 2026-07-15). Saves on blur; empty clears it.
+// Per-item quantity stepper (Nick 2026-07-20) — − N + inline in the
+// Product info card; saves immediately, feeds the print QTY column.
+function MobileItemQty({ c, it, busy, onChanged, notify }: { c: Any; it: Any; busy: boolean; onChanged: () => void; notify: ReturnType<typeof useNotify> }) {
+  const caseId = Number(get(c, "id"));
+  const itemId = Number(get(it, "id"));
+  const qty = Math.max(1, Number(get(it, "qty") ?? 1));
+  const [saving, setSaving] = useState(false);
+  const dis = busy || saving;
+  const set = async (next: number) => {
+    const clamped = Math.max(1, Math.round(next));
+    if (clamped === qty || dis) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/assr/${caseId}/items/${itemId}`, { qty: clamped });
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't update quantity", body: e?.message || "Please try again.", tone: "error" });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const btn: React.CSSProperties = { flex: "none", width: 24, height: 26, border: "none", background: "transparent", color: INK, fontSize: 15, fontWeight: 700, lineHeight: 1, cursor: dis ? "default" : "pointer" };
+  return (
+    <div style={{ flex: "none", display: "flex", alignItems: "center", border: `1px solid ${DIM}`, borderRadius: 8, background: FIELD_BG }}>
+      <button onClick={() => set(qty - 1)} disabled={dis || qty <= 1} aria-label="Decrease quantity" style={{ ...btn, opacity: dis || qty <= 1 ? 0.4 : 1 }}>−</button>
+      <span className="money" style={{ minWidth: 20, textAlign: "center", fontSize: 12, fontWeight: 700, color: INK }}>{qty}</span>
+      <button onClick={() => set(qty + 1)} disabled={dis} aria-label="Increase quantity" style={{ ...btn, opacity: dis ? 0.4 : 1 }}>+</button>
+    </div>
+  );
+}
+
 function MobileItemRemark({ c, it, busy, onChanged, notify }: { c: Any; it: Any; busy: boolean; onChanged: () => void; notify: ReturnType<typeof useNotify> }) {
   const caseId = Number(get(c, "id"));
   const itemId = Number(get(it, "id"));
