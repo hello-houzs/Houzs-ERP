@@ -116,7 +116,8 @@ const CJK_FAMILY = 'NotoSansSC';
    text) for documents with real Chinese. Both are fetched only when a document
    needs them, then browser-cached. */
 type CjkTier = 'punct' | 'hanzi';
-const TIER_FACES: Record<CjkTier, Record<'normal' | 'bold', string>> = {
+type FontAssetUrl = `/fonts/${string}.ttf`;
+const TIER_FACES: Record<CjkTier, Record<'normal' | 'bold', FontAssetUrl>> = {
   punct: { normal: '/fonts/noto-sans-sc-punct-400.ttf', bold: '/fonts/noto-sans-sc-punct-700.ttf' },
   hanzi: { normal: '/fonts/noto-sans-sc-hanzi-400.ttf', bold: '/fonts/noto-sans-sc-hanzi-700.ttf' },
 };
@@ -160,7 +161,7 @@ const collectCodepoints = (value: unknown, into: Set<number>, depth = 0): void =
 
 /* base64 for addFileToVFS. Chunked because a 1.1 MB face is ~1.1 M arguments —
    one spread of that size blows the call stack. */
-const fetchFaceBase64 = async (url: string): Promise<string> => {
+const fetchFaceBase64 = async (url: FontAssetUrl): Promise<string> => {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url} → ${res.status}`);
   const bytes = new Uint8Array(await res.arrayBuffer());

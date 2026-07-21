@@ -123,7 +123,7 @@ const inboxBustAfterWrite: MiddlewareHandler<{ Bindings: Env }> = async (c, next
 // Outermost: one structured access-log line + X-Request-Id per request.
 app.use("*", requestLog);
 
-app.use("*", cors());
+app.use("*", cors({ origin: "*", exposeHeaders: ["X-Request-Id"] }));
 
 // D1 -> Supabase cutover: swap env.DB for the Postgres-backed shim on every
 // request, before auth + routes. Remove once all paths use Drizzle/postgres.js.
@@ -317,6 +317,7 @@ app.onError((err, c) => {
   // every error is readable by the SPA. (Matches cors() default origin "*".)
   const res = new Response(base.body, base);
   res.headers.set("Access-Control-Allow-Origin", "*");
+  res.headers.set("Access-Control-Expose-Headers", "X-Request-Id");
   return res;
 });
 

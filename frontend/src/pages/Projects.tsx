@@ -100,6 +100,13 @@ import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery, humanHttpMessage, tokenStore } from "../api/client";
 import { companyHeader } from "../lib/activeCompany";
+import {
+  consumeCorrelated,
+  correlateError,
+  correlatedFetch,
+  requestIdFromError,
+  requestIdFromResponse,
+} from "../lib/requestCorrelation";
 import { MediaLightbox } from "../components/MediaLightbox";
 import { ResetFiltersButton } from "../components/ResetFiltersButton";
 import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime, todayInAppTz } from "../lib/utils";
@@ -12169,7 +12176,7 @@ function ImportCsvPanel({
     setSubmitting(true);
     try {
       // Raw text body (POST text/csv) — api helpers all assume JSON, so
-      // we call fetch directly. Auth token is the same one api uses — read it
+      // we call the correlated raw-body transport. Auth token is the same one api uses — read it
       // THROUGH tokenStore, not from localStorage: a session-only login (Remember
       // me unchecked, or the owner's view-as) keeps the token in sessionStorage,
       // and the old inline read sent `Bearer ` and 401'd.
@@ -12180,7 +12187,7 @@ function ImportCsvPanel({
       try { signal = AbortSignal.timeout(120_000); } catch { signal = undefined; }
       let resp: Response;
       try {
-        resp = await fetch(`${api.baseUrl}/api/projects/import/csv`, {
+        resp = await correlatedFetch(`${api.baseUrl}/api/projects/import/csv`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${token}`,
@@ -12195,12 +12202,21 @@ function ImportCsvPanel({
         });
       } catch (err) {
         if (err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError")) {
-          throw new Error("The server took too long to respond. Please check your connection and try again.");
+          throw correlateError(
+            new Error("The server took too long to respond. Please check your connection and try again."),
+            requestIdFromError(err),
+          );
         }
         throw err;
       }
-      if (!resp.ok) throw new Error(humanHttpMessage(resp.status, await resp.text().catch(() => "")));
-      const data = (await resp.json()) as { imported: number; errors: string[]; total_rows: number };
+      if (!resp.ok) throw correlateError(
+        new Error(humanHttpMessage(resp.status, await resp.text().catch(() => ""))),
+        requestIdFromResponse(resp),
+      );
+      const data = await consumeCorrelated(
+        resp,
+        () => resp.json() as Promise<{ imported: number; errors: string[]; total_rows: number }>,
+      );
       setResult(data);
       if (data.imported > 0) toast.success(`Imported ${data.imported} of ${data.total_rows} row(s)`);
       onDone();

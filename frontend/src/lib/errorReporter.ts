@@ -40,9 +40,10 @@
 // so the pipeline is still exercised before production.
 // ---------------------------------------------------------------------------
 
-import { api } from "../api/client";
+import { api, requestIdFromError } from "../api/client";
 import { readAuthToken } from "./authToken";
 import { companyHeader } from "./activeCompany";
+import { correlatedFetch } from "./requestCorrelation";
 
 declare const __BUILD_ID__: string;
 const BUILD_ID = typeof __BUILD_ID__ !== "undefined" ? __BUILD_ID__ : "dev";
@@ -91,9 +92,12 @@ function toMessage(err: unknown): string {
   }
 }
 
-function toStack(err: unknown): string | undefined {
-  if (err instanceof Error && err.stack) return err.stack.slice(0, MAX_STACK);
-  return undefined;
+export function formatReportedStack(err: unknown): string | undefined {
+  const requestId = requestIdFromError(err);
+  const stack = err instanceof Error && err.stack ? err.stack : "";
+  if (!requestId) return stack ? stack.slice(0, MAX_STACK) : undefined;
+  const suffix = `\nRequest-Id: ${requestId}`;
+  return `${stack.slice(0, Math.max(0, MAX_STACK - suffix.length))}${suffix}`.trim();
 }
 
 function enqueue(message: string, stack: string | undefined): void {
@@ -150,7 +154,7 @@ function flush(): void {
     // logout + 403 toast listeners, and invalidates SWR caches -- all behaviour
     // changes a crash reporter must never cause. keepalive lets the batch
     // survive a tab close / the reload the user is about to click.
-    void fetch(`${api.baseUrl}/api/client-errors`, {
+    void correlatedFetch(`${api.baseUrl}/api/client-errors`, {
       method: "POST",
       keepalive: true,
       headers: {
@@ -178,7 +182,7 @@ export function reportClientError(err: unknown, context?: string): void {
   inReporter = true;
   try {
     const base = toMessage(err);
-    enqueue(context ? `[${context}] ${base}` : base, toStack(err));
+    enqueue(context ? `[${context}] ${base}` : base, formatReportedStack(err));
   } catch {
     // A reporter bug is dropped, never surfaced.
   } finally {
@@ -203,7 +207,7 @@ export function installGlobalErrorReporting(): void {
       // Non-capture listener: resource load failures (img/script tags) do not
       // bubble to window, so only real script errors arrive here.
       const err = ev.error ?? ev.message;
-      enqueue(toMessage(err), toStack(ev.error));
+      enqueue(toMessage(err), formatReportedStack(ev.error));
     } catch {
       // dropped
     } finally {
@@ -216,7 +220,7 @@ export function installGlobalErrorReporting(): void {
     inReporter = true;
     try {
       const reason = (event as PromiseRejectionEvent).reason;
-      enqueue(toMessage(reason), toStack(reason));
+      enqueue(toMessage(reason), formatReportedStack(reason));
     } catch {
       // dropped
     } finally {
