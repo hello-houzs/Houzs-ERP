@@ -1286,12 +1286,15 @@ export async function lookupSOItems(
     // scm."mfg_sales_orders" reads. `cancelled` is a REAL Postgres boolean on
     // the SCM table (2990's convention — not the Houzs 0/1 flag convention), so
     // the drop-cancelled filter runs in JS below rather than as a SQL predicate.
+    // No ORDER BY: a 2990 SO whose lines all carry a NULL line_no (an import
+    // that never stamped the ordinal) came back EMPTY through env.DB while an SO
+    // with 0/1/2 line_no returned fine — ordering by an all-NULL column is the
+    // only difference, and the picker doesn't need a guaranteed order anyway.
     const rows = await env.DB.prepare(
       `SELECT item_code, description, qty, cancelled
          FROM scm."mfg_sales_order_items"
         WHERE doc_no = ?
-          AND item_code IS NOT NULL AND item_code <> ''
-        ORDER BY line_no`
+          AND item_code IS NOT NULL AND item_code <> ''`
     )
       .bind(docNo)
       .all<{ item_code: string; description: string | null; qty: number | null; cancelled: unknown }>();
