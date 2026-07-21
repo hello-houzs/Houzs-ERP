@@ -1042,11 +1042,12 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             </details>
 
-            {/* tasklist — REMOVED for the sales cohort (owner 2026-07-17):
-                their six deliverables live in the SalesDocsCard tiles and the
+            {/* tasklist — REMOVED for the sales cohort (owner 2026-07-17) and
+                for crew (owner 2026-07-21): their deliverables live in the
+                doc-tile cards (SalesDocsCard / CREW_DOC_TILES) and the
                 floorplans in the FloorPlans card, so the row list was pure
                 duplication for them. Everyone else keeps the full tasklist. */}
-            {!isSalesExecMgr && <TasklistSectionView
+            {!isSalesExecMgr && !(isDriverCrew || isStorekeeper) && <TasklistSectionView
               sections={data.sections}
               items={visibleChecklist}
               progress={data.section_progress}
@@ -1089,6 +1090,26 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 The tasklist rows stay; this is the visual hub on top. */}
             {isSalesStaff && !isMgt && (
               <SalesDocsCard
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy}
+                setBusy={setBusy}
+                notify={notify}
+                prompt={prompt}
+                confirm={confirm}
+                reload={reload}
+              />
+            )}
+
+            {/* Crew (driver/helper/storekeeper) doc tiles (owner 2026-07-21) —
+                same card style as sales: Setup/Dismantle Image editable on
+                top, then the confirmed download set view-only. Replaces their
+                tasklist rows (hidden above). */}
+            {(isDriverCrew || isStorekeeper) && (
+              <SalesDocsCard
+                tiles={CREW_DOC_TILES}
+                title="Event documents"
                 checklist={data.checklist}
                 attachments={data.checklist_attachments}
                 canTick={canTick && !archived}
@@ -2344,10 +2365,12 @@ function PhaseBlock({
 // Arrangement per the owner's Card-Editor screenshot (2026-07-17): Weekend
 // full-width on top, Permit+Deco side by side, Setup Image+Defect List side
 // by side, Event Complete Image full-width at the bottom.
-const SALES_DOC_TILES: ReadonlyArray<{
+type DocTile = {
   label: string;
   match: RegExp;
   salesPicOnly?: boolean;
+  /** Pin to the DRIVER-badged variant when a title exists in two roles. */
+  driverOnly?: boolean;
   remarkTile?: boolean;
   requirePhotoRemark?: boolean;
   /** Full-width tile (spans both grid columns). */
@@ -2357,7 +2380,9 @@ const SALES_DOC_TILES: ReadonlyArray<{
   /** Owner 2026-07-17: BD-owned items — sales VIEW + DOWNLOAD only, no
    *  edit/upload/remove from this card. */
   readOnly?: boolean;
-}> = [
+};
+
+const SALES_DOC_TILES: ReadonlyArray<DocTile> = [
   { label: "Weekend Activity", match: /^weekend/i, remarkTile: true, fullWidth: true, readOnly: true },
   { label: "Permit", match: /permit/i, readOnly: true },
   { label: "Decoration", match: /^deco/i, readOnly: true },
@@ -2366,8 +2391,24 @@ const SALES_DOC_TILES: ReadonlyArray<{
   { label: "Event Complete Image", match: /^event complete image/i, fullWidth: true, mediaH: 108 },
 ];
 
+// ── Crew (driver/helper/storekeeper) tile set (owner 2026-07-21) ──
+// Same card style as sales. Editable pair on top = the DRIVER-badged
+// Setup/Dismantle Image (crew upload/remove them — roleLabelAdmits on the
+// backend). The rest are the owner's confirmed download set — view only.
+const CREW_DOC_TILES: ReadonlyArray<DocTile> = [
+  { label: "Setup Image", match: /^setup image/i, driverOnly: true },
+  { label: "Dismantle Image", match: /^dismantle image/i },
+  { label: "Stock Out Transfer Record", match: /^stock out/i, readOnly: true },
+  { label: "3D Design", match: /^3d design/i, readOnly: true },
+  { label: "Permit", match: /permit/i, readOnly: true },
+  { label: "Decoration", match: /^deco/i, readOnly: true },
+  { label: "Blank Floorplan", match: /^blank floor/i, readOnly: true, fullWidth: true },
+];
+
 function SalesDocsCard({
   checklist, attachments, canTick, busy, setBusy, notify, prompt, confirm, reload,
+  tiles: tileDefs = SALES_DOC_TILES,
+  title = "Setup & Dismantle documents",
 }: {
   checklist?: ChecklistItem[];
   attachments?: TaskAttachment[];
@@ -2378,16 +2419,20 @@ function SalesDocsCard({
   prompt: PromptFn;
   confirm: ConfirmFn;
   reload: () => void;
+  /** Tile set — defaults to the sales six; crew pass CREW_DOC_TILES. */
+  tiles?: ReadonlyArray<DocTile>;
+  title?: string;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const pendingRef = useRef<{ itemId: number; caption?: string } | null>(null);
   const [view, setView] = useState<{ items: MediaItem[]; idx: number } | null>(null);
 
-  const tiles = SALES_DOC_TILES.map((t) => {
+  const tiles = tileDefs.map((t) => {
     const item = (checklist ?? []).find(
       (it) =>
         t.match.test((it.title || "").trim()) &&
-        (!t.salesPicOnly || (it.role_label ?? "").trim().toUpperCase() === "SALES PIC")
+        (!t.salesPicOnly || (it.role_label ?? "").trim().toUpperCase() === "SALES PIC") &&
+        (!t.driverOnly || (it.role_label ?? "").trim().toUpperCase() === "DRIVER")
     );
     const atts = item
       ? (attachments ?? []).filter((a) => !a.archived_at && a.item_id === item.id)
@@ -2507,7 +2552,7 @@ function SalesDocsCard({
   return (
     <details className="pacc" open>
       <summary>
-        <span className="psec-t">Setup &amp; Dismantle documents</span>
+        <span className="psec-t">{title}</span>
         <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{doneCount}/{tiles.length}</span>
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
