@@ -439,7 +439,16 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     const p = new URLSearchParams();
     p.set("page", String(page));
     p.set("per_page", String(PMS_PAGE_SIZE));
-    if (stageFilter !== "all") p.set("stage", stageFilter);
+    if (stageFilter !== "all") {
+      // Field/sales cohort's Setup/Dismantle filter on date-derived event PHASE
+      // (the `stage` enum is unmaintained — never reaches 'dismantle'). The full
+      // stage bar (mgt/admin) keeps the raw stage enum. Mirrors desktop f.phase.
+      if (restrictedCohort && (stageFilter === "setup" || stageFilter === "dismantle")) {
+        p.set("phase", stageFilter);
+      } else {
+        p.set("stage", stageFilter);
+      }
+    }
     if (debouncedQ) p.set("search", debouncedQ);
     if (showAssigned) p.set("assigned_to_me", "1");
     return p.toString();
@@ -569,6 +578,18 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
                         {r.brand && <ListChip>{r.brand}</ListChip>}
                         {where && <ListChip>{where}</ListChip>}
+                      </div>
+                    )}
+                    {/* Crew cards: the caller's own due pending tasks (owner
+                        2026-07-21) — my_pending_titles is attached server-side
+                        for driver/helper/storekeeper callers only. */}
+                    {!!(r as any).my_pending_titles && (
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                        {String((r as any).my_pending_titles).split("|").map((t: string) => (
+                          <span key={t} className="rbadge" style={{ background: "#fdf1e3", color: "#a16a2e" }}>
+                            ⏳ {t}
+                          </span>
+                        ))}
                       </div>
                     )}
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 8, borderTop: "1px solid #f0f1ed" }}>

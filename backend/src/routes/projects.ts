@@ -796,6 +796,12 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     pending_sales_attending: pendingSalesAttending || undefined,
     pending_agreement: pendingAgreement || undefined,
     stage: c.req.query("stage"),
+    // Date-derived event phase for the field/sales slim bar (owner 2026-07-21).
+    // Only "setup" | "dismantle" are honoured; anything else is ignored.
+    phase:
+      c.req.query("phase") === "setup" || c.req.query("phase") === "dismantle"
+        ? (c.req.query("phase") as "setup" | "dismantle")
+        : undefined,
     brand: c.req.query("brand"),
     state: c.req.query("state") || undefined,
     event_type_id: eventTypeParam ? parseInt(eventTypeParam, 10) : undefined,
@@ -825,6 +831,13 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
       isCrewScopedUser(user) || c.req.query("assigned_to_me") === "1" ? user?.id : undefined,
     assigned_user_name:
       isCrewScopedUser(user) || c.req.query("assigned_to_me") === "1" ? user?.name ?? undefined : undefined,
+    // Crew list cards show the caller's own due pending tasks (owner
+    // 2026-07-21): drivers/helpers/storekeepers all work the DRIVER-badged
+    // items, so every crew caller gets the DRIVER titles attached per row.
+    pending_titles_label:
+      isCrewScopedUser(user) || /^(driver|helper|storekeeper)$/i.test(user?.role_name ?? "")
+        ? "DRIVER"
+        : undefined,
   });
   // Server-side finance strip (rule 3): the list SELECTs pf.rental /
   // total_sales / contractor_cost per row. Blank them for any non-director

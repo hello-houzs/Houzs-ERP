@@ -329,6 +329,22 @@ export function rewriteDialect(sql: string): string {
         continue;
       }
 
+      // group_concat(x[, sep]) -> string_agg((x)::text, sep). SQLite defaults
+      // the separator to ','; Postgres string_agg REQUIRES it, so the 1-arg
+      // form gets an explicit ','.
+      m = rest.match(/^group_concat\s*\(/i);
+      if (m) {
+        const open = i + m[0].length - 1;
+        const grp = matchParen(sql, open);
+        if (grp) {
+          const args = splitArgs(grp.inner);
+          const sep = args.length > 1 ? rewriteDialect(args.slice(1).join(",")) : "','";
+          out += `string_agg((${rewriteDialect(args[0])})::text, ${sep})`;
+          i = grp.end;
+          continue;
+        }
+      }
+
       // char(n) -> chr(n)
       if (rest.slice(0, 5).toLowerCase() === "char(") {
         out += "chr(";

@@ -1202,6 +1202,13 @@ export function stripSetupDismantle<
 
 export interface ListProjectsFilters {
   stage?: string;
+  /** Date-derived event phase for the field/sales slim filter bar (owner
+   *  2026-07-21). The `stage` enum is unmaintained (never reaches
+   *  'dismantle'), so Setup/Dismantle filter on the event dates instead:
+   *  "setup" = event not finished yet (build-up ahead / running);
+   *  "dismantle" = event has ended but isn't closed (teardown pending).
+   *  Cancelled events are excluded from both. */
+  phase?: "setup" | "dismantle";
   brand?: string;
   event_type_id?: number;
   search?: string;
@@ -1281,6 +1288,11 @@ export interface ListProjectsFilters {
    *  master, so an exact quoted-name match is reliable). Pass BOTH fields. */
   assigned_user_id?: number;
   assigned_user_name?: string;
+  /** Owner 2026-07-21: attach each row's OPEN role-badged tasks (due-gated,
+   *  '|'-joined titles) as `my_pending_titles`, so the crew "My events" cards
+   *  can show what's pending on their side. Set by the route for crew callers
+   *  (label 'DRIVER'); whitelist-validated before interpolation. */
+  pending_titles_label?: string;
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -1324,6 +1336,22 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
       where.push(`p.stage IN (${stages.map(() => "?").join(",")})`);
       binds.push(...stages);
     }
+  }
+  // Date-derived Setup / Dismantle (owner 2026-07-21) — replaces the stale
+  // `stage` enum for the field/sales slim bar. Same date idiom the pending
+  // lanes use (substr(...,1,10) vs a YYYY-MM-DD MYT string).
+  if (f.phase === "setup") {
+    // Event not finished yet → build-up is ahead or it's currently running.
+    where.push(
+      "substr(COALESCE(p.end_date, p.start_date), 1, 10) >= ? AND COALESCE(p.status,'') <> 'cancelled'"
+    );
+    binds.push(todayMyt());
+  } else if (f.phase === "dismantle") {
+    // Event has ended but isn't closed (not marked completed) → teardown pending.
+    where.push(
+      "substr(COALESCE(p.end_date, p.start_date), 1, 10) < ? AND COALESCE(p.stage,'') <> 'completed' AND COALESCE(p.status,'') <> 'cancelled'"
+    );
+    binds.push(todayMyt());
   }
   if (f.brand) {
     where.push("p.brand = ?");
@@ -1616,6 +1644,23 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
          CASE WHEN p.start_date IS NULL THEN 1 ELSE 0 END,
          p.start_date DESC, p.id DESC`;
 
+  // Crew "My events" cards: the caller's own open role tasks, due-gated with
+  // the same MYT rule as the my_pending lanes. Interpolated (no bind juggling
+  // in the SELECT list) — label is whitelist-validated, dueToday is our own
+  // YYYY-MM-DD string.
+  const ptl =
+    f.pending_titles_label && /^[A-Z ]{2,20}$/.test(f.pending_titles_label)
+      ? f.pending_titles_label
+      : null;
+  const pendingTitlesCol = ptl
+    ? `,
+            (SELECT group_concat(c3.title, '|') FROM project_checklist c3
+              WHERE c3.project_id = p.id
+                AND c3.status NOT IN ('done', 'na')
+                AND c3.role_label = '${ptl}'
+                AND substr(COALESCE(c3.due_date, p.start_date), 1, 10) <= '${dueToday}') as my_pending_titles`
+    : "";
+
   const rows = await env.DB.prepare(
     `SELECT p.id, p.code, p.name, p.stage, p.status, p.brand,
             p.start_date, p.end_date,
@@ -1672,7 +1717,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                 AND (c.status IN ('done', 'na')
                      OR EXISTS (SELECT 1 FROM project_checklist_attachments a
                                  WHERE a.item_id = c.id
-                                   AND a.archived_at IS NULL))) as sales_tasks_done
+                                   AND a.archived_at IS NULL))) as sales_tasks_done${pendingTitlesCol}
        FROM projects p
        LEFT JOIN project_event_types et ON et.id = p.event_type_id
        LEFT JOIN project_finance pf ON pf.project_id = p.id

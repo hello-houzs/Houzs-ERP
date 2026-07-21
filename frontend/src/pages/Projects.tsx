@@ -931,6 +931,9 @@ const PROJECTS_LIST_FILTER_KEYS = [
   // Kept in the URL keys list so any old bookmark with ?stage=… still
   // parses without throwing.
   "stage",
+  // `phase=setup|dismantle` — field/sales cohort's date-derived Setup/Dismantle
+  // filter (the `stage` enum is unmaintained). See ProjectsListView.
+  "phase",
   // `mine=all` — field/sales cohort's "My events" toggle OFF state (absent =
   // ON, so the slim bar defaults to their own events). See ProjectsListView.
   "mine",
@@ -958,7 +961,9 @@ function ProjectsListView() {
   const month = params.get("month") || "";
   const section = params.get("section") || "";
   const status = params.get("status") || "";
-  const stage = params.get("stage") || "";
+  // Cohort "Setup"/"Dismantle" pick a date-derived event PHASE (not the stale
+  // `stage` enum) — see the field/sales slim bar below + backend f.phase.
+  const phase = params.get("phase") || "";
   const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
   function patchParams(patch: Record<string, string>) {
     const next = new URLSearchParams(params);
@@ -974,7 +979,7 @@ function ProjectsListView() {
   const setMonth = (v: string) => patchParams({ month: v, page: "1" });
   const setSection = (v: string) => patchParams({ section: v, page: "1" });
   const setStatus = (v: string) => patchParams({ status: v, page: "1" });
-  const setStage = (v: string) => patchParams({ stage: v, page: "1" });
+  const setPhase = (v: string) => patchParams({ phase: v, page: "1" });
   const setPage = (n: number) => patchParams({ page: String(n) });
 
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
@@ -1057,7 +1062,7 @@ function ProjectsListView() {
           year: restrictedCohort ? undefined : year || undefined,
           month: restrictedCohort ? undefined : month || undefined,
           section: restrictedCohort ? undefined : section || undefined,
-          stage: restrictedCohort && stage ? stage : undefined,
+          phase: restrictedCohort && phase ? phase : undefined,
           assigned_to_me: sendAssignedToMe ? 1 : undefined,
           exclude_done: restrictedCohort ? undefined : excludeDoneParam,
           my_pending: restrictedCohort ? undefined : myPending ? 1 : undefined,
@@ -1072,7 +1077,7 @@ function ProjectsListView() {
           ...sortParams,
         })}`
       ),
-    [brand, year, month, section, status, stage, restrictedCohort, sendAssignedToMe, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir],
+    [brand, year, month, section, status, phase, restrictedCohort, sendAssignedToMe, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir],
     // Paginated + filter-switched list: keep the current rows on screen while
     // the next page/filter loads instead of flashing an empty table.
     { keepPreviousData: true }
@@ -1106,7 +1111,7 @@ function ProjectsListView() {
             year: restrictedCohort ? undefined : year || undefined,
             month: restrictedCohort ? undefined : month || undefined,
             section: restrictedCohort ? undefined : section || undefined,
-            stage: restrictedCohort && stage ? stage : undefined,
+            phase: restrictedCohort && phase ? phase : undefined,
             assigned_to_me: sendAssignedToMe ? 1 : undefined,
             exclude_done: restrictedCohort ? undefined : excludeDoneParam,
             // my_pending intentionally OMITTED — export is the full filtered list.
@@ -1401,15 +1406,15 @@ function ProjectsListView() {
               </button>
               <button
                 type="button"
-                onClick={() => setStage(stage === "setup" ? "" : "setup")}
-                className={cohortPillCls(stage === "setup")}
+                onClick={() => setPhase(phase === "setup" ? "" : "setup")}
+                className={cohortPillCls(phase === "setup")}
               >
                 Setup
               </button>
               <button
                 type="button"
-                onClick={() => setStage(stage === "dismantle" ? "" : "dismantle")}
-                className={cohortPillCls(stage === "dismantle")}
+                onClick={() => setPhase(phase === "dismantle" ? "" : "dismantle")}
+                className={cohortPillCls(phase === "dismantle")}
               >
                 Dismantle
               </button>
@@ -1619,6 +1624,20 @@ function ProjectsListView() {
                       {r.name}
                     </div>
                     {meta && <div className="mt-0.5 truncate text-[11.5px] text-ink-muted">{meta}</div>}
+                    {/* Crew cards: the caller's own due pending tasks — attached
+                        server-side (my_pending_titles) for crew callers only. */}
+                    {!!(r as any).my_pending_titles && (
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {String((r as any).my_pending_titles).split("|").map((t: string) => (
+                          <span
+                            key={t}
+                            className="inline-flex items-center rounded-full border border-warning-text/30 bg-warning-bg px-2 py-0.5 text-[10px] font-semibold text-warning-text"
+                          >
+                            ⏳ {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     <div className="mt-2">
                       <ProgressBar pct={r.progress_pct ?? 0} />
                     </div>
