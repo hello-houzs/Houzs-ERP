@@ -1116,17 +1116,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reload={reload}
             />
 
-            {/* rental & payment (PMS PAYMENT-gated) */}
-            {paymentVisible && !cohort5 && (
-              <RentalPayment
-                status={p.payment_status ?? null}
-                canWrite={canWrite && !archived}
-                busy={busy}
-                setBusy={setBusy}
-                notify={notify}
-                onSet={(status) => patchPayment(id, status, setBusy, notify, reload)}
-              />
-            )}
+            {/* Rental & Payment card removed on mobile (owner 2026-07-20): it
+                duplicated the task list's PAYMENT section (Rental Payment +
+                Security Deposit), which owner/directors already see there. */}
 
             {/* financial snapshot (finance-gated) — design v7 places P&L as the
                 FINAL card, after the logistics + money sections. */}
