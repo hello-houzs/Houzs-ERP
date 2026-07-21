@@ -96,7 +96,7 @@ export type Region = string;
 
 const FALLBACK_DEFAULT_REGION = 'KL';
 const FALLBACK_REGIONS: Array<{ key: Region; label: string }> = [
-  { key: 'KL', label: 'Klang Valley' }, { key: 'NORTHERN', label: 'Northern' },
+  { key: 'KL', label: 'KL/Selangor' }, { key: 'NORTHERN', label: 'Northern' },
   { key: 'SOUTHERN', label: 'Southern' }, { key: 'EAST_COAST', label: 'East Coast' },
   { key: 'EM', label: 'East Malaysia' },
 ];

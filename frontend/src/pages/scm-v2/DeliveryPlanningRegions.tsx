@@ -4,7 +4,7 @@
 // delivery-planning-regions.ts). One simple master editor: list the region
 // buckets (Code · Name · Sort · Active) with create / edit-in-place / delete.
 //
-// The live buckets are the owner-maintained geographic regions (Klang Valley /
+// The live buckets are the owner-maintained geographic regions (KL/Selangor /
 // Northern / Southern / East Coast / East Malaysia); the owner adds more here and
 // they show up automatically as tabs on Delivery Planning (the board reads this
 // master).
@@ -25,6 +25,7 @@ import {
   useCreateDeliveryPlanningRegion,
   useUpdateDeliveryPlanningRegion,
   useDeleteDeliveryPlanningRegion,
+  useStateDeliveryRegions,
   sortOrderOf,
   type RegionMasterRow,
 } from '../../vendor/scm/lib/delivery-planning-regions-queries';
@@ -44,6 +45,34 @@ export const DeliveryPlanningRegions = () => {
   const notify = useNotify();
   const askConfirm = useConfirm();
   const updateMutate = update.mutate;
+
+  /* Read-only "Areas" column: which states fall under each region, derived LIVE
+     from the state→region mapping (state_delivery_regions) — so it can never
+     drift from the actual routing. Spelling variants (WP KL, Melaka/Malacca,
+     Penang/Pulau Pinang, WP Labuan) collapse to one human label so the cell reads
+     cleanly. The mapping itself is edited in SO Maintenance, not here. */
+  const stateRegions = useStateDeliveryRegions();
+  const areasByCode = useMemo<Record<string, string[]>>(() => {
+    const AREA_LABEL: Record<string, string> = {
+      'kuala lumpur': 'Kuala Lumpur', 'wp kuala lumpur': 'Kuala Lumpur', 'w p kuala lumpur': 'Kuala Lumpur',
+      'pulau pinang': 'Penang', 'penang': 'Penang',
+      'melaka': 'Melaka', 'malacca': 'Melaka',
+      'labuan': 'Labuan', 'wp labuan': 'Labuan', 'w p labuan': 'Labuan',
+    };
+    const pretty = (s: string) => {
+      const k = s.toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim();
+      return AREA_LABEL[k] ?? s;
+    };
+    const byCode: Record<string, Set<string>> = {};
+    for (const s of stateRegions.data ?? []) {
+      for (const code of s.regionCodes) {
+        (byCode[code] ??= new Set<string>()).add(pretty(s.stateKey));
+      }
+    }
+    const out: Record<string, string[]> = {};
+    for (const [code, set] of Object.entries(byCode)) out[code] = [...set].sort();
+    return out;
+  }, [stateRegions.data]);
 
   /* Per-row uncommitted edits (name / sort_order), keyed by id — committed on
      blur / Enter / the Save affordance (matches the SO Maintenance dropdown
@@ -123,6 +152,19 @@ export const DeliveryPlanningRegions = () => {
       sortFn: (a, b) => a.name.localeCompare(b.name),
     },
     {
+      key: 'areas',
+      label: 'Areas',
+      width: 300,
+      accessor: (r) => {
+        const areas = areasByCode[r.code] ?? [];
+        if (areas.length === 0) return <span style={{ color: 'var(--fg-muted)' }}>—</span>;
+        const text = areas.join(', ');
+        return <span title={text} style={{ fontSize: 'var(--fs-12)' }}>{text}</span>;
+      },
+      searchValue: (r) => (areasByCode[r.code] ?? []).join(', '),
+      filterValue: (r) => (areasByCode[r.code] ?? []).join(', '),
+    },
+    {
       key: 'sortOrder',
       label: 'Sort',
       width: 100,
@@ -197,14 +239,14 @@ export const DeliveryPlanningRegions = () => {
       },
     },
   // edits drives the inline buffers; updateMutate/del.isPending the controls.
-  ], [edits, updateMutate, update.isPending, del.isPending]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [edits, areasByCode, updateMutate, update.isPending, del.isPending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-4">
       <PageHeader
         eyebrow="Delivery"
         title="Delivery Regions"
-        description="The region buckets (tabs) on Delivery Planning. Assign which states fall under each region in SO Maintenance."
+        description="The region buckets (tabs) on Delivery Planning, with the areas each one covers. Assign which states fall under each region in SO Maintenance."
         actions={
           <Button variant="primary" size="md" onClick={() => setCreating(true)}>
             <Plus {...ICON} />
@@ -226,7 +268,7 @@ export const DeliveryPlanningRegions = () => {
         searchPlaceholder="Search regions…"
         groupBanner={false}
         isLoading={regions.isLoading}
-        emptyMessage="No regions yet — add your delivery buckets (e.g. Klang Valley / Northern / Southern) to get started."
+        emptyMessage="No regions yet — add your delivery buckets (e.g. KL/Selangor / Northern / Southern) to get started."
       />
 
       {creating && <CreateRegionDrawer onClose={() => setCreating(false)} nextSort={(regions.data?.reduce((m, r) => Math.max(m, sortOrderOf(r)), 0) ?? 0) + 1} />}
