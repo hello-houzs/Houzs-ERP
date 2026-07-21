@@ -599,6 +599,12 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
         w.forEach((d, idx) => {
           if (d && byDay[d]) byDay[d].forEach((e) => { if (e.kind !== "holiday") cells.push({ e, idx }); });
         });
+        // Owner 2026-07-21: group the week's bars by the shared STATE->venue rule.
+        // byDay sorts WITHIN a day (for the day sheet), but the week bar-list was
+        // flattened day-major, so a multi-day fair's per-day bars — and all
+        // same-state fairs — scattered across the weekday columns. Sorting cells
+        // keeps each fair (and each state) together.
+        cells.sort((a, b) => compareCalendarEvents(a.e, b.e));
         // v7 shows up to 4 event bars per week (all when Expand-all is on); the
         // overflow "+N more" expands every bar inline.
         const cap = expand ? cells.length : 4;

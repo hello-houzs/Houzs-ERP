@@ -1,5 +1,11 @@
 ## 2026-07-21
 
+### [MEDIUM] Mobile calendar scattered same-state / same-fair bars across the weekday columns (owner-visible on a full month)
+- **Symptom.** On the mobile Calendar grid an owner viewing the whole-company calendar saw the same fair (same state + venue) repeated as a diagonal "staircase" with different states interleaved — MELAKA, PENANG, KL, then MELAKA again — instead of each state / fair stacked together. Worst on accounts that see every fair; a month of multi-day exhibitions made it dramatic.
+- **Root cause (traced).** `MobileCalendar.tsx` sorts events WITHIN each day (`byDay`, via the shared `compareCalendarEvents` STATE->venue rule — this feeds the day sheet), but the week bar-list `cells` was flattened day-major (`w.forEach((d, idx) => byDay[d].forEach(...))`), each bar indented by its weekday. Because a multi-day fair emits one bar per in-range day (the deliberate #933 per-day expansion), its per-day bars land in different day-buckets and scatter across the week; states were never grouped across days.
+- **Fix.** Sort the flattened `cells` array once by `compareCalendarEvents(a.e, b.e)` (state -> venue -> organizer -> brand) before the cap/render, so the whole week's bars group by state then fair. The v7 UI, the weekday indent, the per-day day-tap behavior and the desktop grid are unchanged; reuses the existing shared comparator (already imported).
+- **Ref:** `fix/mobile-calendar-state-sort`, 2026-07-21. Frontend only, no migration.
+
 ### [HIGH] Caller-controlled request IDs could inject unbounded log/telemetry context; browser failures could not be traced back to the matching Worker request
 - **Symptom.** The Worker copied any `X-Request-Id` into console logs and an Analytics Engine blob without validation, while the SPA did not send or retain an ID. An oversized or control-character-bearing header could pollute or forge the incident trail, and a reported frontend 4xx/5xx or upload failure had no reliable lookup key for its backend request. (The ID is a blob, not an Analytics Engine index; this was payload/log hygiene, not index-cardinality growth.)
 - **Root cause (traced).** `requestLog` trusted the raw request header and generated only 32 bits when absent; CORS did not expose the response header; the main JSON and binary fetch paths discarded the echoed ID when constructing errors.
