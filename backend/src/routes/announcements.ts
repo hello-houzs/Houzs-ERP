@@ -506,15 +506,36 @@ function sdBlockedFromRow(scope: SdScope, row: AnnouncementRow, userId: number |
 }
 
 // ============================================================
-// LIST — newest first.
+// LIST — newest first. Open to every authed user; NO permission gate.
 //   · Managers (`*` wildcard or announcements.write, i.e. composers) get the
 //     FULL admin list: every active + inactive + expired row.
-//   · Everyone else with announcements.read gets ONLY live announcements
-//     addressed to THEM (owner rule 2026-07: audience-targeted content —
-//     same active + not-expired + audience filter as /banner). Server-side;
-//     the composer's targeting can't be bypassed by a read-only caller.
+//   · Everyone else gets ONLY live announcements addressed to THEM (owner
+//     rule 2026-07: audience-targeted content — same active + not-expired +
+//     audience filter as /banner). Server-side; the composer's targeting
+//     can't be bypassed by a read-only caller.
+//
+// WHY NO announcements.read GATE (owner restated 2026-07-21). That verb is the
+// ADMIN list/composer permission — no ordinary salesperson holds it, positions
+// get no matrix backfill. Gating this endpoint on it meant the notice pop-up's
+// "Read SOP" / "View details" button (which rides /banner, ungated) sent every
+// non-admin to a 403. The mobile shell already treats announcements as readable
+// by EVERY active user (MobileApp's row carries alwaysShow and reads /banner);
+// this closes the desktop half of that divergence. What protects the data is
+// NOT the door but the AUDIENCE FILTER below — which is exactly the same one
+// /banner has always run for the same ungated cohort, so nothing becomes
+// visible here that /banner did not already show that caller. WRITE stays on
+// announcements.write: create / edit / remind / delete / read-receipts are
+// untouched.
 // ============================================================
-app.get("/", requirePermissionOrSalesDirector("announcements.read"), async (c) => {
+app.get("/", async (c) => {
+  // Authentication is still mandatory — the /api/* auth wall (index.ts) is what
+  // supplies `user`, and every filter below is keyed on their id / dept /
+  // position. Mirror /banner's explicit check rather than trusting the wall:
+  // a missing user must 401, never fall through to an unscoped list.
+  const user = c.get("user");
+  if (!user || !user.id) {
+    return c.json({ success: false, error: "Your session has expired. Please sign in again." }, 401);
+  }
   // System per-user notices (source='scan' slip-scan results, source=
   // 'service_case' service-case assignments) are delivered only through the
   // /banner + mobile Announcements screen — they must NOT clutter this office
@@ -524,9 +545,8 @@ app.get("/", requirePermissionOrSalesDirector("announcements.read"), async (c) =
       `SELECT * FROM announcements WHERE source IS NULL ORDER BY created_at DESC`,
     )
     .all<AnnouncementRow>();
-  const user = c.get("user");
   const allowed = allowedCompanyIds(c);
-  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  const granted = user.permissions_set ?? user.permissions ?? [];
   const isManager =
     hasPermission(granted, "*") || hasPermission(granted, "announcements.write");
   const sd = salesDirectorScope(c);
@@ -539,7 +559,7 @@ app.get("/", requirePermissionOrSalesDirector("announcements.read"), async (c) =
         // A Sales Director sees + manages their OWN posts here regardless of
         // active/expiry (so the desktop page isn't empty for them), plus their
         // normal audience feed. Full managers already saw everything above.
-        if (sd.restricted && (r.createdBy ?? r.created_by ?? null) === user!.id) {
+        if (sd.restricted && (r.createdBy ?? r.created_by ?? null) === user.id) {
           return true;
         }
         return (
@@ -547,9 +567,9 @@ app.get("/", requirePermissionOrSalesDirector("announcements.read"), async (c) =
           notExpired(r.expiresAt ?? r.expires_at ?? null) &&
           userCanSee(
             r,
-            user!.id,
-            user!.department_id ?? null,
-            user!.position_id ?? null,
+            user.id,
+            user.department_id ?? null,
+            user.position_id ?? null,
           )
         );
       });
