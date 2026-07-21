@@ -78,7 +78,7 @@ const STAGE_LABEL: Record<string, string> = {
   pending_review: "Pending Review",
   under_verification: "Under Verification",
   pending_solution: "Pending Solution",
-  pending_supplier_pickup: "Pending Supplier Pickup",
+  pending_supplier_pickup: "Supplier Pickup / Return",
   pending_item_ready: "Pending Item Ready",
   pending_delivery_service: "Pending Delivery / Service",
   completed: "Completed",
@@ -672,7 +672,8 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       ${!isSupplier ? `
       <div class="status-pills">
         <div class="status-pill"><span class="cap">Service</span><span class="val">${esc(servicePillLabel)}</span></div>
-        <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>
+        <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>${subStatusLabel ? `
+        <div class="status-pill"><span class="cap">Sub-Status</span><span class="val">${esc(subStatusLabel)}</span></div>` : ""}
       </div>` : `
       <div class="status-pills">
         <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>${subStatusLabel ? `
