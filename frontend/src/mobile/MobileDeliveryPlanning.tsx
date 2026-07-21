@@ -1,12 +1,17 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { lineIdentity } from "@2990s/shared";
 import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
-import { HC_SUBSTATUS_VALUES } from "../vendor/scm/lib/delivery-planning-queries";
+import {
+  HC_SUBSTATUS_VALUES,
+  useDeliveryPlanningLines,
+  type PlanningLineItem,
+} from "../vendor/scm/lib/delivery-planning-queries";
 import { fmtCenti } from "../lib/scm";
 import { formatDate } from "../lib/utils";
 import { useAuth } from "../auth/AuthContext";
@@ -107,7 +112,12 @@ type BoardRow = {
   time_confirmed?: boolean | null;
   arrival_at?: string | null;
   departure_at?: string | null;
+  // Cross-border (EM/SG) DO-execution dates — provided by /delivery-planning
+  // from the latest DO. Needed so an EM/SG stop's shipout + arriving-port can be
+  // entered on mobile (desktop parity with DeliveryFieldsDrawer).
+  shipout_date?: string | null;
   customer_delivered_date?: string | null;
+  eta_arriving_port?: string | null;
   delivery_substatus?: string | null;
   crew: Crew;
   delivery_orders?: DeliveryOrderRef[];
@@ -1174,12 +1184,15 @@ function StopDetail({
   const qc = useQueryClient();
   const notify = useNotify();
   const confirm = useConfirm();
-  /* Cutting a DO is the Office department's job (owner 2026-07-17), and the
-     backend now 403s the Sales cohort on /delivery-orders-mfg/from-sos. Drivers
-     and Office are unaffected — they are not the Sales cohort. Same ONE helper
-     the desktop board and every other DO control resolve through. */
+  /* Operating a DO — cutting one (/from-sos) AND advancing its status
+     (/status: IN_TRANSIT / DELIVERED) — is the Office department's job (owner
+     2026-07-17), and the backend 403s the Sales cohort on BOTH. Drivers and
+     Office are unaffected — they are not the Sales cohort. Same ONE helper the
+     desktop board and every other DO control resolve through, so the Convert +
+     Start/Arrived/POD actions share this single gate (was Convert-only, which
+     left the status buttons ungated once a DO existed). */
   const { user, can, pageAccess } = useAuth();
-  const canConvertToDo = canOperateDeliveryOrders(user, can, pageAccess);
+  const canOperateDo = canOperateDeliveryOrders(user, can, pageAccess);
   /* One key for the one DO this stop can cut (lib/idempotency.ts). NOT on
      fix/so-idempotency's list — it names the DO hook, and this surface reaches
      /delivery-orders-mfg/from-sos through a bare authedFetch instead — but it is
@@ -1336,7 +1349,7 @@ function StopDetail({
     if (doId) return true;
     // Start/Arrive auto-cut the DO when there isn't one. A caller who may not
     // create a DO must be TOLD, not walked into a 403 they can't read.
-    if (!canConvertToDo) {
+    if (!canOperateDo) {
       await notify({
         title: "No delivery order yet",
         body: "This stop has no delivery order, and creating one is handled by the Office team. Ask Office to raise the DO, then start this stop.",
@@ -1348,11 +1361,15 @@ function StopDetail({
   };
 
   const onStart = async () => {
+    // Advancing DO status is Office-only (backend 403s the Sales cohort). The
+    // button is already withheld for a view-only user; guard the handler too.
+    if (!canOperateDo) return;
     if (!(await requireDo())) return;
     start.mutate();
   };
 
   const onComplete = async () => {
+    if (!canOperateDo) return;
     if (!(await requireDo())) return;
     const go = await confirm({
       title: "Mark delivered?",
@@ -1598,7 +1615,7 @@ function StopDetail({
 
         {/* No DO yet → offer to cut one on the spot (desktop board's Convert-to-DO,
             identical endpoint) so the driver isn't dead-ended. */}
-        {!doId && canConvertToDo && (
+        {!doId && canOperateDo && (
           <button
             onClick={onConvert}
             disabled={convert.isPending}
@@ -1664,26 +1681,10 @@ function StopDetail({
           />
         )}
 
-        {/* Goods to deliver (item list). The feed carries no line-level detail,
-            so we surface one branded summary line; per-item spec/qty is not
-            available from /delivery-planning. */}
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div className="card-h">
-            <span className="card-t">Goods to deliver</span>
-            <span className="card-sub">open order for lines</span>
-          </div>
-          <PdItem
-            n={
-              (order.branding && order.branding.trim()) ||
-              "Delivery order lines"
-            }
-            spec={
-              latestDo(order)?.do_number
-                ? `Delivery order ${latestDo(order)?.do_number}`
-                : `Sales order ${order.so_doc_no}`
-            }
-          />
-        </div>
+        {/* Goods to deliver — per-line item + variant, fetched from the SHARED
+            /delivery-planning/:docNo/lines endpoint (the SAME hook the desktop
+            board's expand-row drill-down uses). See GoodsToDeliverCard. */}
+        <GoodsToDeliverCard order={order} />
 
         {/* Disposal callout. */}
         {disposal && (
@@ -1872,21 +1873,22 @@ function StopDetail({
               </div>
             )}
 
-            {/* Step 1 — On the way. */}
+            {/* Step 1 — On the way. Action buttons are Office-only (canOperateDo);
+                a view-only user sees the completed steps but no action. */}
             {started ? (
               <TrackStep
                 tone="teal"
                 label="On the way"
                 time={startAt ? `${startAt} · ${eff}` : eff}
               />
-            ) : (
+            ) : canOperateDo ? (
               <TrackButton
                 onClick={onStart}
                 busy={busy}
                 label={start.isPending ? "Starting…" : "Start — I'm on the way"}
                 icon="arrow"
               />
-            )}
+            ) : null}
 
             {/* Step 2 — Arrived. */}
             {arrived ? (
@@ -1896,7 +1898,7 @@ function StopDetail({
                 time={arriveAt ? `${arriveAt} · ${eff}` : eff}
                 border
               />
-            ) : started ? (
+            ) : started && canOperateDo ? (
               <TrackButton
                 onClick={onStart}
                 busy={busy}
@@ -1914,7 +1916,7 @@ function StopDetail({
                 border
                 check
               />
-            ) : arrived ? (
+            ) : arrived && canOperateDo ? (
               <TrackButton
                 onClick={onComplete}
                 busy={busy}
@@ -1925,6 +1927,21 @@ function StopDetail({
                 primary
               />
             ) : null}
+
+            {/* View-only (Sales cohort): status writes are the Office team's job.
+                Say so plainly instead of leaving an empty timeline. */}
+            {!canOperateDo && !done && (
+              <div
+                style={{
+                  fontSize: 11.5,
+                  color: "var(--mut2)",
+                  padding: "9px 0 2px",
+                  lineHeight: 1.4,
+                }}
+              >
+                Updating this stop&apos;s status is handled by the Office team.
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1932,12 +1949,56 @@ function StopDetail({
   );
 }
 
+/* ── GoodsToDeliver — per-line item + variant for the stop, from the SHARED
+   /delivery-planning/:docNo/lines endpoint (the SAME hook the desktop board's
+   expand-row drill-down uses; scoped to the caller's allowed companies so a
+   cross-company row doesn't 404). Cancelled lines are filtered (desktop parity:
+   PlanningExpandedLines filters `!it.cancelled`). Name + variant use the shared
+   lineIdentity rule (code dropped, description2 kept) — the same rule the POD
+   checklist + the DO detail use. Falls back to a single branded summary line
+   when the lines can't be read, so this never regresses below the summary-only
+   card it replaced.
+   ─────────────────────────────────────────────────────────────────────────── */
+function GoodsToDeliverCard({ order }: { order: BoardRow }) {
+  const linesQ = useDeliveryPlanningLines(order.so_doc_no);
+  const lines = ((linesQ.data ?? []) as PlanningLineItem[]).filter((l) => !l.cancelled);
+  const doNo = latestDo(order)?.do_number;
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="card-h">
+        <span className="card-t">Goods to deliver</span>
+        <span className="card-sub">
+          {lines.length ? `${lines.length} line${lines.length === 1 ? "" : "s"}` : "open order for lines"}
+        </span>
+      </div>
+      {linesQ.isLoading ? (
+        <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "11px 13px" }}>Loading lines{"…"}</div>
+      ) : lines.length ? (
+        lines.map((l) => {
+          const ident = lineIdentity({ code: l.item_code, description: l.description, variant: l.description2 });
+          return <PdItem key={l.id} n={ident.primary || EM} spec={ident.secondary} q={l.qty} />;
+        })
+      ) : (
+        <PdItem
+          n={(order.branding && order.branding.trim()) || "Delivery order lines"}
+          spec={doNo ? `Delivery order ${doNo}` : `Sales order ${order.so_doc_no}`}
+        />
+      )}
+    </div>
+  );
+}
+
 /* ── DeliveryFieldsCard — the HC delivery-execution fields, read + Edit→Save.
-   Mirrors the desktop DeliveryFieldsDrawer's DO-execution group (the subset a
-   driver touches on the road): time window + confirmed, arrival/departure clock,
-   customer-delivered date, and the HC "Remark 4" delivery sub-status. Save posts
-   ONLY the changed fields to PATCH /delivery-planning/so/:id/fields via the same
-   camelCase keys the drawer sends. Blank clears (the endpoint stores '' → null).
+   Mirrors the desktop DeliveryFieldsDrawer's DO-execution group: time window +
+   confirmed, arrival/departure clock, SHIPOUT DATE + ARRIVING PORT (EM/SG
+   cross-border), customer-delivered date, and the HC "Remark 4" delivery
+   sub-status. Save posts ONLY the changed fields to PATCH
+   /delivery-planning/so/:id/fields via the same camelCase keys the drawer sends
+   (shipoutDate / etaArrivingPort are accepted by that endpoint). Blank clears
+   (the endpoint stores '' → null). NOTE: arrives_em_warehouse_date is NOT edited
+   here — the desktop drawer does not write it either (it is a read-only grid
+   field; the FE HcFieldsPatch omits it), so adding it would create a new
+   divergence rather than close one.
    ─────────────────────────────────────────────────────────────────────────── */
 // A TIMESTAMPTZ ISO → the value <input type="datetime-local"> wants.
 const toDtLocal = (iso: string | null | undefined): string =>
@@ -1967,7 +2028,9 @@ function DeliveryFieldsCard({
       timeConfirmed: !!order.time_confirmed,
       arrivalAt: toDtLocal(order.arrival_at),
       departureAt: toDtLocal(order.departure_at),
+      shipoutDate: toDateInput(order.shipout_date),
       customerDeliveredDate: toDateInput(order.customer_delivered_date),
+      etaArrivingPort: order.eta_arriving_port ?? "",
       deliverySubstatus: order.delivery_substatus ?? "",
     }),
     [order],
@@ -1988,8 +2051,11 @@ function DeliveryFieldsCard({
     if (form.timeConfirmed !== initial.timeConfirmed) body.timeConfirmed = form.timeConfirmed;
     if (form.arrivalAt !== initial.arrivalAt) body.arrivalAt = form.arrivalAt || null;
     if (form.departureAt !== initial.departureAt) body.departureAt = form.departureAt || null;
+    if (form.shipoutDate !== initial.shipoutDate) body.shipoutDate = form.shipoutDate || null;
     if (form.customerDeliveredDate !== initial.customerDeliveredDate)
       body.customerDeliveredDate = form.customerDeliveredDate || null;
+    if (form.etaArrivingPort !== initial.etaArrivingPort)
+      body.etaArrivingPort = form.etaArrivingPort || null;
     if (form.deliverySubstatus !== initial.deliverySubstatus)
       body.deliverySubstatus = form.deliverySubstatus || null;
     if (Object.keys(body).length === 0) {
@@ -2064,11 +2130,29 @@ function DeliveryFieldsCard({
             />
           </label>
           <label style={{ display: "block", marginBottom: 10 }}>
+            <span className="fld-l">Shipout date (EM/SG)</span>
+            <input
+              type="date"
+              value={form.shipoutDate}
+              onChange={(e) => set("shipoutDate", e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "block", marginBottom: 10 }}>
             <span className="fld-l">Customer delivered date</span>
             <input
               type="date"
               value={form.customerDeliveredDate}
               onChange={(e) => set("customerDeliveredDate", e.target.value)}
+              style={inputStyle}
+            />
+          </label>
+          <label style={{ display: "block", marginBottom: 10 }}>
+            <span className="fld-l">ETA / arriving port (EM/SG)</span>
+            <input
+              value={form.etaArrivingPort}
+              placeholder="Port / shipment ref e.g. KUC3012008"
+              onChange={(e) => set("etaArrivingPort", e.target.value)}
               style={inputStyle}
             />
           </label>
@@ -2136,7 +2220,13 @@ function DeliveryFieldsCard({
           )}
           {pdRow("Departure", order.departure_at ? hhmm(order.departure_at) : EM, false)}
           {pdRow("Arrival", order.arrival_at ? hhmm(order.arrival_at) : EM, true)}
-          {pdRow("Delivered date", dm(order.customer_delivered_date), false)}
+          {pdRow("Shipout date", dm(order.shipout_date), false)}
+          {pdRow("Delivered date", dm(order.customer_delivered_date), true)}
+          {pdRow(
+            "Arriving port",
+            (order.eta_arriving_port && order.eta_arriving_port.trim()) || EM,
+            false,
+          )}
           {pdRow(
             "Delivery status",
             (order.delivery_substatus && order.delivery_substatus.trim()) || EM,

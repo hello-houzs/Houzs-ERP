@@ -13,6 +13,8 @@ import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull, ALLOWED_SLIP_MIMES } from "../vendor/scm/lib/slip";
 import { todayMyt } from "../vendor/scm/lib/dates";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
+import { useAuth } from "../auth/AuthContext";
+import { canOperateDeliveryOrders } from "../auth/salesAccess";
 import "./mobile.css";
 
 /* Proof-of-Delivery (POD) — mobile driver screen for confirming a Delivery
@@ -51,8 +53,10 @@ type DoHeader = {
 type DoItem = {
   id: string;
   description: string | null;
+  description2: string | null;
   item_code: string | null;
   qty: number | null;
+  cancelled?: boolean;
 };
 /* How many rows the docNo lookup asks for. The server's `q` is NOT a do_number
    lookup — it is a substring OR across eight columns (do_number, so_doc_no,
@@ -79,6 +83,15 @@ const isCancelled = (status: string | null): boolean => (status ?? "").toUpperCa
 export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: () => void; onDone?: () => void }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
+  /* DO OPERATE gate — mirrors the desktop DeliveryOrderDetailV2 `canWriteDo`
+     (canOperateDeliveryOrders) and the SAME gate the delivery-planning board +
+     MobileModuleDetail status actions use. Confirming a delivery DEDUCTS STOCK +
+     SYNCS THE SO, so a view-only user (the Sales cohort) must not reach it — the
+     Confirm action AND the collect-balance panel are gated on this; reads stay
+     open (off, not hide). MobileApp already withholds the POD entry for these
+     users, so this is the defence-in-depth layer on the actions themselves. */
+  const { user, can, pageAccess } = useAuth();
+  const canOperate = canOperateDeliveryOrders(user, can, pageAccess);
 
   /* Resolve docNo (a DO number) → the DO row (carries the UUID every other route
      keys on). ASK THE SERVER FOR THE ONE DOCUMENT, don't scan the org's DOs on a
@@ -107,7 +120,12 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
   const paymentsQ = useDeliveryOrderPayments(doId);
 
   const h = detailQ.data?.deliveryOrder as DoHeader | undefined;
-  const items = (detailQ.data?.items ?? []) as DoItem[];
+  /* CANCELLED lines are excluded from the driver checklist AND the "delivered
+     X/N" count — desktop parity: DeliveryOrderDetailV2 filters `!l.cancelled`.
+     Without this a cancelled line entered the tick-list and inflated N, so a
+     fully-delivered DO could never read 100%. Filtering here fixes both the
+     render and `deliveredCount`/`items.length` below in one place. */
+  const items = ((detailQ.data?.items ?? []) as DoItem[]).filter((l) => !l.cancelled);
 
   /* MONEY IS EITHER KNOWN OR UNKNOWN — never "assume zero".
      `paymentsQ.data ?? []` folded a FAILED payments read into "no payments"
@@ -225,7 +243,10 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
     collectBalance && balanceCenti !== null && balanceCenti > 0 ? balanceCenti : null;
 
   const confirmDelivered = async () => {
-    if (busy || !doId || !h) return;
+    // Defence-in-depth: the Confirm button is already withheld for a view-only
+    // user, but the delivery write (stock + SO sync) must never fire without the
+    // operate gate even if the button is somehow reached.
+    if (busy || !doId || !h || !canOperate) return;
     const notes: string[] = [];
     if (deliveredCount < items.length) {
       notes.push(`Only ${deliveredCount} of ${items.length} items are ticked.`);
@@ -368,6 +389,10 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {items.length ? items.map((it) => {
                 const on = !!ticked[it.id];
+                // Description ONCE, code dropped, VARIANT (description2) kept —
+                // mirror DeliveryOrderDetailV2's
+                // `lineIdentity({ code, description, variant: l.description2 })`.
+                const ident = lineIdentity({ code: it.item_code, description: it.description, variant: it.description2 });
                 return (
                   <div
                     key={it.id}
@@ -382,19 +407,21 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                         </svg>
                       )}
                     </span>
-                    {/* Description ONCE, code NOT displayed — the shared rule
-                        (vendor/shared/line-identity.ts). Desktop and mobile are
-                        ONE logic layer, so this POD row follows the same rule as
-                        the desktop DO detail. The QTY is NOT a duplicate and
-                        stays on the second line; only the code (and the "·" that
-                        joined it) is dropped. This row has no variant
-                        vocabulary — no item_group / variants / description2 —
-                        so no variant is passed. */}
+                    {/* Description ONCE, code NOT displayed, VARIANT KEPT — the
+                        shared rule (vendor/shared/line-identity.ts). Desktop and
+                        mobile are ONE logic layer, so this POD row follows the
+                        DO detail exactly. The variant (a 2-seater vs a 3-seater)
+                        is the driver's only tell between otherwise-identical
+                        lines, so it renders on its own line; the QTY stays below
+                        it and only the code (and its "·") is dropped. */}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>
-                        {lineIdentity({ code: it.item_code, description: it.description }).primary || "—"}
+                        {ident.primary || "—"}
                       </div>
-                      <div style={{ fontSize: 11, color: "var(--mut)" }} className="tnum">{"×"}{it.qty ?? 0}</div>
+                      {ident.secondary && (
+                        <div style={{ fontSize: 11, color: "var(--mut)" }}>{ident.secondary}</div>
+                      )}
+                      <div style={{ fontSize: 11, color: "var(--mut2)" }} className="tnum">{"×"}{it.qty ?? 0}</div>
                     </div>
                   </div>
                 );
@@ -476,6 +503,12 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
               </button>
             </div>
 
+            {/* OWNER RULING PENDING: mobile-only delivery-collect-payment panel —
+                desktop has no equivalent; gated defensively pending owner decision
+                to keep or remove. Gated on canOperate so a view-only user cannot
+                record a payment (POST /payments) here. */}
+            {canOperate && (
+              <>
             {/* Collect balance — order total minus payments recorded so far (design balance row). */}
             <div className="fld-l" style={{ margin: "18px 0 8px" }}>Collect balance</div>
             <div style={{ background: "var(--card)", border: "1px solid var(--line-card)", borderRadius: 13, padding: "13px 14px" }}>
@@ -552,6 +585,8 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                 </>
               )}
             </div>
+              </>
+            )}
 
             {actionError && <div style={{ marginTop: 14, fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{actionError}</div>}
           </>
@@ -560,10 +595,17 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
 
       {/* .actbar — primary confirm action (design POD footer) */}
       <footer className="actbar">
-        {!loading && !notFound && !loadError && h && !delivered && !cancelled && (
+        {!loading && !notFound && !loadError && h && !delivered && !cancelled && canOperate && (
           <button type="button" className="btn" disabled={busy} onClick={confirmDelivered} style={{ opacity: busy ? 0.6 : 1, cursor: busy ? "default" : "pointer" }}>
             {busy ? "Working…" : "Confirm delivered →"}
           </button>
+        )}
+        {/* View-only (Sales cohort): confirming a delivery is the Office team's
+            job. State it plainly instead of showing a button the backend 403s. */}
+        {!loading && !notFound && !loadError && h && !delivered && !cancelled && !canOperate && (
+          <div style={{ textAlign: "center", fontSize: 11.5, color: "var(--mut2)", padding: 6 }}>
+            You can view this delivery, but confirming it is handled by the Office team.
+          </div>
         )}
         {!loading && !notFound && !loadError && h && delivered && (
           <div style={{ textAlign: "center", fontSize: 11.5, color: "var(--green)", padding: 6, fontWeight: 700 }}>This delivery is confirmed delivered.</div>
