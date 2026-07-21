@@ -4,7 +4,7 @@
 // The planning board: which live Sales Orders still need delivering, organised
 // by a top row of 4 DELIVERY-STATE tabs (Pending Delivery / Pending Schedule /
 // Overdue / Delivered, each with a live count) and a region chip row of
-// CONFIG-DRIVEN buckets classified by customer STATE (All · KL/Selangor ·
+// CONFIG-DRIVEN buckets classified by customer STATE (All · KL/SEL ·
 // Northern · Southern · East Coast · East Malaysia — owner-maintained in
 // Delivery Regions).
 // Both the active state tab and the active region (bucket key) live in the URL
@@ -718,7 +718,7 @@ export const DeliveryPlanning = () => {
      the list yet (kept in sync with the live Delivery Regions config). */
   const regionTabs = useMemo<RegionTab[]>(() => {
     const masters = data?.regions ?? [
-      { key: 'KL', label: 'KL/Selangor' }, { key: 'NORTHERN', label: 'Northern' },
+      { key: 'KL', label: 'KL/SEL' }, { key: 'NORTHERN', label: 'Northern' },
       { key: 'SOUTHERN', label: 'Southern' }, { key: 'EAST_COAST', label: 'East Coast' },
       { key: 'EM', label: 'East Malaysia' },
     ];

@@ -30,7 +30,7 @@ export const DELIVERY_STATE_LABEL: Record<DeliveryState, string> = {
 
 // A region is a CONFIG-DRIVEN bucket code (migration 0053) derived from the
 // customer's STATE (not the line warehouse). The live buckets are the geographic
-// regions KL/Selangor · Northern · Southern · East Coast · EM (East Malaysia:
+// regions KL/SEL · Northern · Southern · East Coast · EM (East Malaysia:
 // Sabah/Sarawak/Labuan) — Singapore folds into Southern — but the owner can add
 // more in the Delivery Regions master, so a region code is an OPEN string (not a
 // fixed union). 'ALL' is the no-filter param; the rest are bucket codes.
