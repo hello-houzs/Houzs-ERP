@@ -297,23 +297,45 @@ export function MobileCalendar({
   // Normalize projects (+ optionally tasks) into grid events, then filter.
   const events = useMemo<CalEvent[]>(() => {
     const out: CalEvent[] = [];
+    // A project occupies EVERY day from start_date through end_date, not just
+    // its start day — the desktop Projects calendar spans the same range
+    // (Projects.tsx: s = start_date, e = end_date || start_date; its day modal
+    // matches projects where s <= day && e >= day). The mobile grid draws one
+    // bar per day (no spanning bars), so we emit an event for each in-range day;
+    // this is what makes tapping day 11/12/13 of a 10–13 fair surface it instead
+    // of reading "no projects that day". Clamp to the visible month so a fair
+    // straddling a month boundary paints only its in-month days (and a day
+    // number can't collide with the adjacent month), and key by day so the
+    // per-day bars carry unique React keys. end_date is inclusive and falls back
+    // to start_date for a single-day event.
+    const monthFirst = iso(year, month, 1);
+    const lastDom = new Date(year, month + 1, 0).getDate();
+    const monthLast = iso(year, month, lastDom);
     for (const p of projects) {
-      out.push({
-        key: `p-${p.id}`,
-        kind: "project",
-        projectId: p.id,
-        date: p.start_date.slice(0, 10),
-        label: p.code ? `[${p.brand ?? "—"}] ${p.name}` : p.name,
-        barLabel: projectBarLabel(p),
-        color: statusColor(p.status),
-        brand: p.brand,
-        section: p.active_section_name,
-        organizer: p.organizer,
-        status: p.status,
-        sub: p.venue || p.state || null,
-        state: p.state,
-        venue: p.venue,
-      });
+      const start = p.start_date.slice(0, 10);
+      const end = (p.end_date || p.start_date).slice(0, 10);
+      if (start > monthLast || end < monthFirst) continue; // no overlap this month
+      const fromDom = start > monthFirst ? dayOf(start) : 1;
+      const toDom = end < monthLast ? dayOf(end) : lastDom;
+      for (let dom = fromDom; dom <= toDom; dom++) {
+        const date = iso(year, month, dom);
+        out.push({
+          key: `p-${p.id}-${date}`,
+          kind: "project",
+          projectId: p.id,
+          date,
+          label: p.code ? `[${p.brand ?? "—"}] ${p.name}` : p.name,
+          barLabel: projectBarLabel(p),
+          color: statusColor(p.status),
+          brand: p.brand,
+          section: p.active_section_name,
+          organizer: p.organizer,
+          status: p.status,
+          sub: p.venue || p.state || null,
+          state: p.state,
+          venue: p.venue,
+        });
+      }
     }
     if (showTasks) {
       for (const t of tasks) {
