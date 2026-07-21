@@ -772,6 +772,7 @@ consignmentOrders.post('/', async (c) => {
       p_name:  customerName,
       p_phone: normPhone,
       p_email: typeof body.email === 'string' && body.email.trim() ? body.email.trim() : null,
+      p_company_id: activeCompanyId(c) ?? null,  // mig 0164 — scope resolve to active company
     });
     if (customerErr) {
       console.error('[consignment-order] customer resolve failed:', customerErr.message ?? customerErr);

@@ -3294,6 +3294,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
       p_name:  customerName,
       p_phone: normPhone,
       p_email: typeof body.email === 'string' && body.email.trim() ? body.email.trim() : null,
+      p_company_id: activeCompanyId(c) ?? null,  // mig 0164 — scope resolve to the active company
     });
     if (customerErr) {
       console.error('[mfg-so] customer resolve failed:', customerErr.message ?? customerErr);
@@ -6206,6 +6207,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
       const { data: rid } = await sb.rpc('upsert_customer_by_name_phone', {
         p_name: nm, p_phone: ph,
         p_email: typeof body['email'] === 'string' && (body['email'] as string).trim() ? (body['email'] as string).trim() : null,
+        p_company_id: activeCompanyId(c) ?? null,  // mig 0164
       });
       resolvedNewCustomerId = (rid as string | null) ?? null;
       if (resolvedNewCustomerId) {
