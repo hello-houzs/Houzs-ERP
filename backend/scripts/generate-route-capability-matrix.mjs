@@ -65,6 +65,14 @@ function relativeFile(filePath) {
   return path.relative(repoRoot, filePath).replaceAll("\\", "/");
 }
 
+// A route's provenance is recorded as `file:line`, but the LINE number is
+// volatile: any unrelated edit to a route file shifts it. Drift checks must
+// compare the stable source FILE, never the line, or a cosmetic shift jams
+// every deploy (see the --check block). Strips a trailing `:<line>` only.
+function stripSourceLine(source) {
+  return source.replace(/:\d+$/, "");
+}
+
 function printCompact(node, source) {
   return node.getText(source).replaceAll(/\s+/g, " ").trim();
 }
@@ -496,7 +504,14 @@ const consumedDuplicateAllowlist = new Set();
 for (const [key, sources] of duplicateDeclarations) {
   const expectedSources = duplicateAllowlistByKey.get(key);
   if (!expectedSources) throw new Error(`Unreviewed duplicate route declaration: ${key} at ${sources.join(", ")}`);
-  assertSamePaths(`Duplicate route ${key}`, sources, expectedSources);
+  // Match on the source FILE set only. The allowlist keeps file:line for humans,
+  // but the line is volatile; a duplicate added/removed/moved to another file
+  // still changes the file set and is caught, while a pure line shift is not.
+  const actualFiles = sources.map(stripSourceLine).sort();
+  const expectedFiles = expectedSources.map(stripSourceLine).sort();
+  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+    throw new Error(`Duplicate route ${key} drifted. Found=${sources.join(", ")} Allowlisted=${expectedSources.join(", ")}`);
+  }
   consumedDuplicateAllowlist.add(key);
 }
 const staleDuplicateAllowlist = [...duplicateAllowlistByKey.keys()].filter((key) => !consumedDuplicateAllowlist.has(key));
@@ -568,11 +583,24 @@ const summaryBody = [
 ].join("\n");
 
 if (checkOnly) {
-  if (!fs.existsSync(outputPath) || fs.readFileSync(outputPath, "utf8") !== body) {
+  // The `source` column keeps each route's provenance as `file:line` for humans,
+  // but the LINE number is volatile: any unrelated edit to a route file shifts
+  // it, which made a byte-exact drift check (#917) read the checked-in matrix as
+  // "stale" even when every route's semantics were identical. That coupling
+  // jammed all prod + staging deploys and every PR's backend CI twice on
+  // 2026-07-21 (see BUG-HISTORY). Compare with the trailing `:<line>` of the
+  // source column stripped, so the gate still fires on real drift — a route
+  // added/removed, or a changed method / path / auth boundary / company boundary
+  // / gate / mutation, or a route moving to a different source FILE — but not on
+  // a pure within-file line shift. Splitting on \r?\n also keeps the compare
+  // line-ending agnostic (autocrlf checks this artifact out as CRLF on Windows).
+  const driftComparable = (text) =>
+    text.split(/\r?\n/).map(stripSourceLine).join("\n");
+  if (!fs.existsSync(outputPath) || driftComparable(fs.readFileSync(outputPath, "utf8")) !== driftComparable(body)) {
     console.error(`Route capability matrix is stale. Run: node backend/scripts/generate-route-capability-matrix.mjs`);
     process.exit(1);
   }
-  if (!fs.existsSync(summaryPath) || fs.readFileSync(summaryPath, "utf8") !== summaryBody) {
+  if (!fs.existsSync(summaryPath) || driftComparable(fs.readFileSync(summaryPath, "utf8")) !== driftComparable(summaryBody)) {
     console.error(`Route capability summary is stale. Run: node backend/scripts/generate-route-capability-matrix.mjs`);
     process.exit(1);
   }
