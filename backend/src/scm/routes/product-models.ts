@@ -37,16 +37,22 @@ import type { Env, Variables } from '../env';
 export const productModels = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // ── Public photo proxy (PR — Commander 2026-05-27) ─────────────────────────
-// Registered BEFORE the global supabaseAuth middleware so the POS catalog
-// can render Model photos via plain <img src> tags (no Bearer header on
-// image requests). Security: this handler validates the requested key
-// against the Model's stored photo_url before streaming, so a guessed
-// key can't leak a blob from another Model's prefix or an unrelated R2
-// object. Uses the service-role Supabase client to read the row since
-// no JWT is provided.
-productModels.get('/:id/photo/:key', async (c) => {
+// Exported so it can ALSO be mounted OUTSIDE /api/scm (routes/public-images.ts).
+// Houzs gates all of /api/scm behind requireScmAccess + the global auth (main
+// index.ts), which the same-origin Houzs SPA passes via its session cookie —
+// but the 2990 POS is a DIFFERENT origin using Bearer auth, so its <img src>
+// requests carry no Houzs cookie and 401. 2990 serves Model photos from an
+// auth-free proxy (apps/api product-models.ts:35, before its own supabaseAuth);
+// we replicate that by mounting this handler pre-auth. Security: validates the
+// requested key against the Model's stored photo_url before streaming, so a
+// guessed key can't leak another Model's blob. Service-role client (no JWT).
+// The .schema('scm') is REQUIRED — product_models lives in scm; a bare .from()
+// hits the empty public.product_models and 404s every photo (BUG-HISTORY 2026-07-20).
+export const modelPhotoProxyHandler = async (c: Context<{ Bindings: Env; Variables: Variables }>) => {
   const id = c.req.param('id');
-  const key = decodeURIComponent(c.req.param('key'));
+  const rawKey = c.req.param('key');
+  if (!id || !rawKey) return c.json({ error: 'bad_request' }, 400);
+  const key = decodeURIComponent(rawKey);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -56,6 +62,7 @@ productModels.get('/:id/photo/:key', async (c) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const { data: model } = await sb
+    .schema('scm')
     .from('product_models')
     .select('photo_url')
     .eq('id', id)
@@ -77,7 +84,8 @@ productModels.get('/:id/photo/:key', async (c) => {
       'cache-control': 'public, max-age=3600',
     },
   });
-});
+};
+productModels.get('/:id/photo/:key', modelPhotoProxyHandler);
 
 // ── Gallery photo proxy (PUBLIC) ─────────────────────────────────────────────
 // Multi-photo gallery (scm.product_model_photos, migration 0060). Same shape

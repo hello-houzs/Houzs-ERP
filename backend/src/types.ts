@@ -81,6 +81,11 @@ export type Env = {
   // regression). Parsed once via scm/lib/costing-enabled.isCostingDisplayEnabled.
   // Mirrors the FE build-time COSTING_DISPLAY_ENABLED, but THIS is authoritative.
   COSTING_DISPLAY_ENABLED?: string;
+  // CUTOVER FLIP SWITCH (task #15). "true" = Houzs owns the 2990- doc namespace
+  // (post-flip) so the mirror guards stop blocking; unset/"false" = pre-flip
+  // read-only mirror. Parsed via scm/lib/companyScope.houzsOwns2990. Flip in the
+  // same deploy as the POS VITE_BACKEND_TARGET=houzs (see wrangler.toml).
+  HOUZS_OWNS_2990?: string;
   // Mail Center inbound ingest secret (shared with the standalone
   // houzs-mail-inbound CF Email Worker / IMAP bridge). The pre-auth
   // POST /api/mail-center/inbound route 503s until this is set and >= 16 chars.

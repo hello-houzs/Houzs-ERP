@@ -15,6 +15,7 @@ import { specialAddons } from "./routes/special-addons";
 import { fabricLibrary } from "./routes/fabric-library";
 import { mfgProducts } from "./routes/mfg-products";
 import { productModels } from "./routes/product-models";
+import { posPools } from "./routes/pos-pools";
 import { sofaCompartmentPhotos } from "./routes/sofa-compartment-photos";
 import { maintenanceConfig } from "./routes/maintenance-config";
 import { maintenancePush } from "./routes/maintenance-push";
@@ -141,9 +142,22 @@ scm.use("/delivery-fees/*", scmAreaGuard("scm.procurement.products", { openRead:
 scm.route("/delivery-fees", deliveryFees);
 scm.use("/fabric-tier-addon/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/fabric-tier-addon", fabricTierAddonConfig);
-scm.use("/pwp-rules/*", scmAreaGuard("scm.procurement.products"));
+// openRead (2026-07-20, POS cutover) — PWP (换购) is an in-cart SALE-flow read:
+// the POS reads eligibility rules + the seller's reserved codes for every
+// salesperson, same class as the SO-FLOW REFERENCE READS above. No cost/margin
+// on these reads.
+//
+// pwp-RULES = admin eligibility config the POS only READS → openRead on the
+// Products admin area (writes stay edit-gated for admins). pwp-CODES = the POS
+// CART surface (reserve / free / validate — "a salesperson owns their reserved
+// codes", pwp-codes.ts), so it is homed on scm.sales.orders with writeLevel
+// 'view': a Sales Executive (scm.sales = view) can reserve/free a 换购 voucher
+// for their own cart line — the same least-privilege hatch as /quotes + /slips.
+// This settles task #13's PWP write-gate under the L2 provisioning model; a flat
+// scm.access holder is unaffected (the guard falls through for non-L2 callers).
+scm.use("/pwp-rules/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/pwp-rules", pwpRules);
-scm.use("/pwp-codes/*", scmAreaGuard("scm.procurement.products"));
+scm.use("/pwp-codes/*", scmAreaGuard("scm.sales.orders", { writeLevel: "view" }));
 scm.route("/pwp-codes", pwpCodes);
 // SO-FLOW REFERENCE READS (openRead, 2026-07-04) — special-addons,
 // fabric-library, mfg-products, product-models, maintenance-config,
@@ -161,6 +175,11 @@ scm.use("/mfg-products/*", scmAreaGuard("scm.procurement.products", { openRead: 
 scm.route("/mfg-products", mfgProducts);
 scm.use("/product-models/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/product-models", productModels);
+// POS repoint (cutover P2) — the 2990 POS reads its whole catalog + configurator
+// pools here. openRead so any authenticated salesperson past the coarse umbrella
+// can GET; the handlers select SELLING-only columns (#625). company-scoped.
+scm.use("/pos-pools/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.route("/pos-pools", posPools);
 // Houzs → 2990 option-list push. NO openRead — DELIBERATE: the dry-run report
 // echoes 2990's master config, which carries sellingPriceSen / costSen, i.e.
 // 2990's retail AND cost sides. Opening it would hand that to any scoped
@@ -395,7 +414,12 @@ scm.route("/staff", staff);
 scm.route("/fabric-colours", fabricColours);
 // Wired 2026-06-20 — Order Add-ons tab (Products page). CRUD over scm.addons,
 // replacing the supabase-direct read/write the 2990 UI used.
-scm.use("/addons/*", scmAreaGuard("scm.procurement.products"));
+// openRead (cutover audit 2026-07-21): GET is a SELLING-side handover picklist
+// (Dispose / Lift-&-carry add-on charges) the POS New-SO form reads for every
+// salesperson — same class as /special-addons + /so-dropdown-options, which are
+// openRead. A pure-L2 Sales Executive (scm.procurement.*=none) must read it to
+// build an order; writes (admin CRUD) stay edit-gated. No cost on these rows.
+scm.use("/addons/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/addons", addons);
 // Ported 2026-06-21 — vendored SCM consumers already shipped (404'd at runtime).
 // document-flow: read-only SAP-B1 relationship graph GET /document-flow/:type/:id

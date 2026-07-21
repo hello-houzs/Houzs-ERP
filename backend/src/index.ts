@@ -7,6 +7,7 @@ import { TRANSIENT_CONN_RE } from "./db/d1-compat";
 // Ported 2990's SCM modules (furniture supply chain). Talk to the `scm` Postgres
 // schema via supabase-js; namespaced under /api/scm/*, owner-only during the port.
 import scmApp from "./scm";
+import { publicScmImages } from "./scm/routes/public-images";
 import { idempotency } from "./middleware/idempotency";
 import { requestLog } from "./middleware/requestLog";
 import assr from "./routes/assr";
@@ -97,6 +98,7 @@ import { runProjectDueReminders } from "./services/projectReminders";
 import { distillAllSalespersonRules, warmCatalogCacheForCron, processScanQueueMessage } from "./scm/routes/scan-so";
 import { runAgentHeartbeat } from "./services/agent-scheduler";
 import { getSupabaseService } from "./db/supabase";
+import { reapOnce } from "./scm/lib/reaper";
 import { getBranding } from "./services/branding";
 // AutoCount inbound SO pull — restored 2026-07-14. Reads SO from the AutoCount
 // middleware and upserts the local `sales_orders` mirror (read-only against
@@ -193,6 +195,13 @@ app.route("/api/assr-form-intake", assrFormIntake);
 
 // Auth gate for everything else under /api/*. Mounted AFTER the
 // public API routes above so they stay unauthenticated.
+// PUBLIC image proxies for the cross-origin POS — MUST be mounted BEFORE the
+// global `auth` + `requireScmAccess` gates so a plain <img src> (no Bearer, no
+// same-origin cookie) reaches them. Only these two GET routes are exposed; every
+// other /api/scm/* path is untouched and still hits the gates below. Mirrors how
+// 2990's api serves Model photos auth-free. See scm/routes/public-images.ts.
+app.route("/api/scm", publicScmImages);
+
 app.use("/api/*", auth);
 
 // Opt-in request idempotency (no-op unless the client sends an
@@ -425,6 +434,22 @@ export default {
           );
         }
       }
+      // Slip reaper (mirrors 2990's */10 orphan-slip sweep, which retires with
+      // 2990's apps/api). Leases up to 100 orphan pending_slip_uploads rows
+      // (5-min lease, SKIP LOCKED via lease_orphan_slips), deletes each R2 blob,
+      // marks the row failed — reclaims leaked payment-slip objects from
+      // abandoned/failed uploads. Idempotent; best-effort (a failure can never
+      // break the other crons).
+      ctx.waitUntil(
+        reapOnce(getSupabaseService(env), env, `cron-${event.scheduledTime}`)
+          .then((r) => {
+            if (r.claimed > 0 || r.errors > 0)
+              console.log(
+                `[cron slip-reaper] claimed=${r.claimed} deleted=${r.deleted} errors=${r.errors} remaining=${r.remaining}`
+              );
+          })
+          .catch((e) => console.error("[cron slip-reaper]", e))
+      );
     } else if (event.cron === "0 2 * * *") {
       // Daily 02:00 UTC slot: SLA escalation + ASSR digest + project reminders.
       ctx.waitUntil(

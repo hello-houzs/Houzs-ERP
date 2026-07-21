@@ -42,7 +42,7 @@ import {
   deriveSalesLocationFromState,
   deriveWarehouseIdFromState,
 } from '../routes/mfg-sales-orders';
-import { activeCompanyId, isMirroredDocNo } from './companyScope';
+import { activeCompanyId, isMirroredDocNo, houzsOwns2990 } from './companyScope';
 import { todayMyt } from './my-time';
 
 /* The Supabase client threaded through the routes is loosely typed (`any` in
@@ -86,8 +86,11 @@ type AmendmentRow = {
    library functions reachable from any future caller, and because the doc-no
    marker needs no Context: the guard still holds on the `c`-less call the
    signature allows, where a company_id lookup would silently no-op. */
-function assertNotMirrored(docNo: string, fn: string): void {
-  if (isMirroredDocNo(docNo)) {
+function assertNotMirrored(docNo: string, fn: string, c?: Context<any>): void {
+  // Flip-gated (task #15): post-flip (HOUZS_OWNS_2990) Houzs owns the 2990-
+  // namespace and its revision engines may rewrite these SOs/POs. c is absent in
+  // the unit tests → guard stays active (pre-flip default).
+  if (isMirroredDocNo(docNo) && !houzsOwns2990(c?.env)) {
     throw new Error(`${fn}: ${docNo} belongs to 2990 and cannot be revised from Houzs`);
   }
 }
@@ -233,7 +236,7 @@ export async function applySoAmendment(
   if (!amdRow) throw new Error('applySoAmendment: amendment not found');
   const amendment = amdRow as AmendmentRow;
   const docNo = amendment.so_doc_no;
-  assertNotMirrored(docNo, 'applySoAmendment');
+  assertNotMirrored(docNo, 'applySoAmendment', c);
 
   const { data: lineRows, error: lineErr } = await sb
     .from('so_amendment_lines')
@@ -736,7 +739,7 @@ export async function reviseBoundPo(
   if (amdErr) throw new Error(`reviseBoundPo: amendment load failed: ${amdErr.message}`);
   if (!amdRow) throw new Error('reviseBoundPo: amendment not found');
   const docNo = (amdRow as AmendmentRow).so_doc_no;
-  assertNotMirrored(docNo, 'reviseBoundPo');
+  assertNotMirrored(docNo, 'reviseBoundPo', c);
 
   /* (2) The SO's company — the ADD-line supplier binding is scoped to it. The SO,
      and every PO bound to it, belong to this company; the REQUEST's active

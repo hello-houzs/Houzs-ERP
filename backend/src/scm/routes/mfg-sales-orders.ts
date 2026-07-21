@@ -71,7 +71,7 @@ import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { warehouseLabel } from '../lib/warehouse-label';
 import {
   scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
-  isMirroredDocNo, mintsIntoMirroredNamespace,
+  isMirroredDocNo, mintsIntoMirroredNamespace, houzsOwns2990,
   MIRRORED_SO_READONLY, MIRRORED_SO_CREATE_BLOCKED,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY,
 } from '../lib/companyScope';
@@ -206,7 +206,9 @@ mfgSalesOrders.use('*', async (c, next) => {
     try { s = decodeURIComponent(seg); } catch { /* not encoded — test the raw segment */ }
     return isMirroredDocNo(s);
   });
-  if (touchesMirrored) return c.json(MIRRORED_SO_READONLY, 409);
+  // Flip-gated (task #15): pre-flip a 2990- doc is a read-only mirror; once
+  // HOUZS_OWNS_2990 the POS writes them natively, so the readonly wall lifts.
+  if (touchesMirrored && !houzsOwns2990(c.env)) return c.json(MIRRORED_SO_READONLY, 409);
   return next();
 });
 
@@ -2102,7 +2104,7 @@ mfgSalesOrders.get('/customer-search', async (c) => {
   const { data, error } = await scopeToCompany(
     sb
       .from('mfg_sales_orders')
-      .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, created_at')
+      .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, customer_id, customer_race, customer_birthday, customer_gender, created_at')
       .ilike('debtor_name', `%${esc}%`)
       .not('status', 'in', '("CANCELLED","DRAFT")'),
     c,
@@ -2118,6 +2120,8 @@ mfgSalesOrders.get('/customer-search', async (c) => {
     building_type: string | null;
     emergency_contact_name: string | null; emergency_contact_phone: string | null;
     emergency_contact_relationship: string | null;
+    customer_id: string | null;
+    customer_race: string | null; customer_birthday: string | null; customer_gender: string | null;
     created_at: string;
   };
   /* Per-identity COALESCE (Loo 2026-06-06 follow-up: "link them with address
@@ -2132,6 +2136,10 @@ mfgSalesOrders.get('/customer-search', async (c) => {
     ['address1', 'address1'], ['address2', 'address2'], ['city', 'city'],
     ['postcode', 'postcode'], ['customerState', 'customer_state'],
     ['buildingType', 'building_type'],
+    // Cutover #14 read-side: coalesce the SO-captured marketing demographics so
+    // picking a returning customer prefills race/birthday/gender (all required
+    // for a new customer) from their newest order that carries each.
+    ['race', 'customer_race'], ['birthday', 'customer_birthday'], ['gender', 'customer_gender'],
   ] as const;
   /* Emergency contact coalesces as a GROUP, not per field (Loo 2026-06-12:
      copy it over like the address) — name/phone/relationship describe ONE
@@ -2170,6 +2178,10 @@ mfgSalesOrders.get('/customer-search', async (c) => {
       postcode:      r.postcode,
       customerState: r.customer_state,
       buildingType:  r.building_type,
+      customerId:    r.customer_id,
+      race:          r.customer_race,
+      birthday:      r.customer_birthday,
+      gender:        r.customer_gender,
       ...emergencyOf(r),
       lastDocNo:     r.doc_no,
       lastOrderAt:   r.created_at,
@@ -2861,7 +2873,11 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      overwrites this order's header and delete-then-reinserts its lines as 2990's
      — a real order, silently gone. Refuse the create instead: the collision has
      to be impossible, not merely detected. */
-  if (mintsIntoMirroredNamespace(c as unknown as Context<any>)) {
+  // Flip-gated (task #15): pre-flip Houzs must not mint into 2990's namespace;
+  // post-flip (HOUZS_OWNS_2990) Houzs IS the minter, so the create-block lifts.
+  // The 2990 SO outbox must be fully drained + its minter stopped BEFORE the
+  // flip so the two systems can never both hand out the same number.
+  if (mintsIntoMirroredNamespace(c as unknown as Context<any>) && !houzsOwns2990(c.env)) {
     return c.json(MIRRORED_SO_CREATE_BLOCKED, 409);
   }
   /* PR #46 — accept customerName as alias for debtorName (rename in flight).
@@ -4591,6 +4607,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     customer_state: (body.customerState as string) ?? null,
     /* Task #121 — country snapshot auto-derived above. */
     customer_country: customerCountrySnapshot,
+    /* Cutover #14 (mig 0158) — POS marketing demographics captured ON the SO,
+       hidden (never surfaced on SO/PDF/UI). 2990 kept these on the customers
+       table; owner ruled they slot onto the SO here. Capture-only at create. */
+    customer_race: (body.customerRace as string) ?? null,
+    customer_birthday: (body.customerBirthday as string) ?? null,
+    customer_gender: (body.customerGender as string) ?? null,
     customer_delivery_date: (body.customerDeliveryDate as string) ?? null,
     /* PR #144 — Commander: "当我已经 create 好了这个 sales order 的时候，
        为什么我点进去 edit processing 的 delivery date 时，怎么没看到呢".
