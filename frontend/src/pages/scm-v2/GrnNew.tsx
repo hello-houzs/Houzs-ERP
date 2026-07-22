@@ -7,7 +7,7 @@
 //   1. Single PO dropdown (or ?poId= deep link from a PO detail "Receive
 //      Goods") → its outstanding lines load into the items grid.
 //   2. "From PO (multi)" picker (/grns/from-po) → multi-select PO lines across
-//      one supplier, stashed to sessionStorage['grnFromPoPicks'], which this
+//      one supplier, stashed in the scoped `grnFromPoPicks` handoff, which this
 //      form reads ONCE on mount and loads as lines (supplier locked, header
 //      purchaseOrderId = first pick's PO id; each line keeps its own
 //      purchase_order_item_id so received_qty rolls up to every source PO).
@@ -34,6 +34,7 @@ import { Button } from '@2990s/design-system';
 import { activeOptions, buildVariantSummary, fmtDateOrDash, isServiceLine, maintPickerValues } from '@2990s/shared';
 import { useCreateGrn, usePostGrn } from '../../vendor/scm/lib/grn-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, removeScmHandoff, writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { useActiveCurrencies, rateFor } from '../../vendor/scm/lib/currencies-queries';
 import { CurrencySelect } from '../../vendor/scm/components/CurrencySelect';
 import { usePurchaseOrderDetail, usePurchaseOrders, useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
@@ -270,24 +271,19 @@ export const GrnNew = () => {
     if (readPicksRef.current) return;
     readPicksRef.current = true;
 
-    let raw: string | null = null;
-    try { raw = sessionStorage.getItem('grnFromPoPicks'); } catch { /* ignore */ }
-    if (!raw) {
+    const newPicks = readScmHandoff<GrnFromPoPick[]>('grnFromPoPicks');
+    if (!newPicks) {
       // No round-trip picks → drop any stale stashed draft (e.g. the picker was
       // cancelled, which navigates away) so a fresh New GRN starts clean.
-      try { sessionStorage.removeItem('grnNewDraft'); } catch { /* ignore */ }
+      removeScmHandoff('grnNewDraft');
       setPicksResolved(true); // no picks — release the warehouse-default effect
       return;
     }
-    try { sessionStorage.removeItem('grnFromPoPicks'); } catch { /* ignore */ }
-
-    let newPicks: GrnFromPoPick[] = [];
-    try { const r = JSON.parse(raw); if (Array.isArray(r)) newPicks = r as GrnFromPoPick[]; } catch { /* malformed */ }
+    removeScmHandoff('grnFromPoPicks');
 
     // Restore the draft saved before we left for the picker (header + lines).
-    let draft: GrnNewDraft | null = null;
-    try { const d = sessionStorage.getItem('grnNewDraft'); if (d) draft = JSON.parse(d) as GrnNewDraft; } catch { /* ignore */ }
-    try { sessionStorage.removeItem('grnNewDraft'); } catch { /* ignore */ }
+    const draft = readScmHandoff<GrnNewDraft>('grnNewDraft');
+    removeScmHandoff('grnNewDraft');
 
     if (draft) {
       if (draft.receivedAt) setReceivedAt(draft.receivedAt);
@@ -399,7 +395,10 @@ export const GrnNew = () => {
       lines, picks, receivedAt, deliveryNoteRef, notes, warehouseId,
       selPoId, manualSupplierId, allocationMethod, manualCurrency,
     };
-    try { sessionStorage.setItem('grnNewDraft', JSON.stringify(draft)); } catch { /* quota */ }
+    if (!writeScmHandoff('grnNewDraft', draft)) {
+      setDialog({ title: 'Unable to continue', body: 'This browser could not safely store the current GRN draft. Nothing was discarded; free some browser storage and try again.' });
+      return;
+    }
     navigate('/scm/grns/from-po');
   };
 

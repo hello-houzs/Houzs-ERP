@@ -24,6 +24,9 @@ import {
 import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
 import { StatCard } from '../../components/StatCard';
+import { SearchProgress } from '../../components/SearchProgress';
+import { SearchScopeHint } from '../../components/SearchScopeHint';
+import { useDebouncedSearchTerm, useSearchResultTransition } from '../../hooks/useServerSearch';
 import { formatVariantKey, fmtCenti, fmtDate, fmtQty } from '@2990s/shared';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -333,29 +336,59 @@ const BalancesTab = ({
   search: string;
   onDrilldown: (code: string, name: string) => void;
 }) => {
-  const { data, isLoading, error } = useInventoryProductTotals({
-    search: search.trim() || undefined,
+  const { requestTerm } = useDebouncedSearchTerm(search);
+  const { data, isLoading, isFetching, isPlaceholderData, error } = useInventoryProductTotals({
+    search: requestTerm.trim() || undefined,
     category: category === 'all' ? undefined : category,
   });
   const rows: InventoryProductTotal[] = useMemo(() => data ?? [], [data]);
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  // Category changes also change the query key. React Query deliberately keeps
+  // the previous category as placeholderData, so treat that payload as stale
+  // even when the search term itself did not change.
+  const resultsAreStale = searchTransition.resultsAreStale || isPlaceholderData;
+  const searching = searchTransition.isSearching || (isPlaceholderData && !error);
+  const visibleRows = resultsAreStale ? [] : rows;
 
   const stats = useMemo(() => ({
-    totalQty: rows.reduce((s, r) => s + (r.total_qty ?? 0), 0),
-    distinctSku: rows.length,
-    totalValue: rows.reduce((s, r) => s + (r.total_value_sen ?? 0), 0),
-  }), [rows]);
+    totalQty: visibleRows.reduce((s, r) => s + (r.total_qty ?? 0), 0),
+    distinctSku: visibleRows.length,
+    totalValue: visibleRows.reduce((s, r) => s + (r.total_value_sen ?? 0), 0),
+  }), [visibleRows]);
+
+  // `visibleRows` is deliberately EMPTY while a search/filter is in flight, so
+  // these three aggregates are all 0 — and "Inventory Value RM 0.00" is a
+  // sentence, not a spinner. Mark them unknown until the rows they summarise are
+  // the rows actually on screen. An error is unknown too: the aggregate would
+  // otherwise describe a list that failed to load.
+  const statsPending = isLoading || searching || resultsAreStale || Boolean(error);
 
   return (
     <>
       <div className={STAT_GRID_3}>
-        <StatCard label="Total Qty" value={fmtQty(stats.totalQty)} />
-        <StatCard label="Distinct SKUs" value={stats.distinctSku} />
-        <StatCard label="Inventory Value" value={fmtRm(stats.totalValue)} />
+        <StatCard label="Total Qty" value={fmtQty(stats.totalQty)} pending={statsPending} />
+        <StatCard label="Distinct SKUs" value={stats.distinctSku} pending={statsPending} />
+        <StatCard label="Inventory Value" value={fmtRm(stats.totalValue)} pending={statsPending} />
       </div>
 
       <p className={styles.eyebrow}>
-        {isLoading ? 'Loading…' : `${rows.length} SKU rows · double-click a row to see per-warehouse breakdown`}
+        {isLoading || searching ? 'Loading…' : `${visibleRows.length} SKU rows · double-click a row to see per-warehouse breakdown`}
       </p>
+      <SearchProgress active={searching} label={search.trim() ? searchTransition.statusText : 'Loading inventory…'} />
+      <SearchScopeHint
+        scope="server"
+        searching={searching}
+        countPending={isLoading || Boolean(error) || resultsAreStale}
+        resultCount={visibleRows.length}
+        term={search}
+      />
 
       {error && !isLoading && (
         <div className={BANNER_ERR}>
@@ -365,14 +398,15 @@ const BalancesTab = ({
       )}
 
       <DataGrid<InventoryProductTotal>
-        rows={rows}
+        rows={visibleRows}
         columns={BALANCE_COLUMNS}
         storageKey="dg-inventory-balances"
         exportName="Inventory Balances"
         rowKey={(r) => r.product_code}
         searchPlaceholder="Search SKUs…"
+        hideSearch
         groupBanner={false}
-        isLoading={isLoading}
+        isLoading={isLoading || searching}
         emptyMessage="No SKUs match the filters."
         onRowDoubleClick={(r) => onDrilldown(r.product_code, r.product_name)}
         rowStyle={() => ({ cursor: 'pointer' })}
@@ -681,6 +715,10 @@ const BatchesTab = ({
           />
         </div>
       </div>
+      <p className="text-[10px] text-ink-muted" data-search-scope>
+        Searches batches assembled from up to 1,000 loaded lot rows only
+        {q ? ` · ${batches.length.toLocaleString()} matches` : ''}
+      </p>
 
       <div className={STAT_GRID_3}>
         <StatCard label="Open Batches" value={stats.batchCount} />
@@ -706,6 +744,7 @@ const BatchesTab = ({
         exportName="Inventory Batches"
         rowKey={(b) => `${b.warehouseId}|${b.batchNo}`}
         searchPlaceholder="Search batches…"
+        hideSearch
         groupBanner={false}
         isLoading={isLoading}
         emptyMessage={`No open batches${q ? ' match the search' : ''}.`}
@@ -871,6 +910,7 @@ const ProductBreakdownDrawer = ({
   const balances = (breakdown.data?.balances ?? []).filter((b) => b.product_code === code);
   const totalQty = balances.reduce((s, b) => s + (b.qty ?? 0), 0);
   const totalVal = balances.reduce((s, b) => s + (b.value_sen ?? 0), 0);
+  const breakdownPending = breakdown.data === undefined || Boolean(breakdown.error);
 
   return (
     <div
@@ -895,8 +935,11 @@ const ProductBreakdownDrawer = ({
         </div>
 
         <div className={`${STAT_GRID_3} mt-4`}>
-          <StatCard label="Total Qty" value={fmtQty(totalQty)} />
-          <StatCard label="Total Value" value={fmtRm(totalVal)} />
+          {/* Both are reduces over `balances`, which is [] until the breakdown
+              resolves — so the drawer would open on a confident "RM 0.00" for a
+              SKU that may well hold stock. Unknown until it is known. */}
+          <StatCard label="Total Qty" value={fmtQty(totalQty)} pending={breakdownPending} />
+          <StatCard label="Total Value" value={fmtRm(totalVal)} pending={breakdownPending} />
         </div>
 
         {/* Per-warehouse × attribute-composition breakdown. One row per
@@ -1239,6 +1282,9 @@ const CogsTab = ({
           label="Total COGS"
           value={fmtRm(totalCogs)}
           subtitle={`${cogs.length} consumptions`}
+          /* Sum over an empty-because-unloaded list. RM 0.00 for "we haven't
+             fetched the consumptions yet" is a lie the operator can act on. */
+          pending={isLoading}
         />
       </div>
 

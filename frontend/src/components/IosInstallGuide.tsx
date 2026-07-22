@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Share, Plus, X } from "lucide-react";
 import { isIosInstallable } from "../pwa";
+import { shouldShowPwaPrompt } from "./pwaDismissal";
 
 /**
  * IosInstallGuide — manual "Add to Home Screen" coach for iOS Safari, which
@@ -16,9 +17,7 @@ export function IosInstallGuide() {
   useEffect(() => {
     if (!isIosInstallable()) return;
     try {
-      const v = localStorage.getItem(DISMISS_KEY);
-      const ageDays = (Date.now() - (v ? parseInt(v, 10) : 0)) / 86400000;
-      if (ageDays >= NAG_AFTER_DAYS) setShow(true);
+      setShow(shouldShowPwaPrompt(DISMISS_KEY, NAG_AFTER_DAYS));
     } catch {
       setShow(true);
     }

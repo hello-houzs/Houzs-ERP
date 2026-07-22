@@ -1,0 +1,121 @@
+// Read-only post-deploy proof for the Pages frontend.
+// Verifies that the root shell, a deep SPA route, its emitted entry chunk and
+// the service worker are mutually consistent after Cloudflare propagation.
+
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const target = process.argv[2];
+if (!target) {
+  console.error("Usage: npm run smoke -- https://frontend.example.com");
+  process.exit(2);
+}
+
+let base;
+try {
+  base = new URL(target);
+  if (!/^https?:$/.test(base.protocol)) throw new Error("unsupported protocol");
+} catch {
+  console.error(`[frontend-smoke] invalid URL: ${target}`);
+  process.exit(2);
+}
+
+base.pathname = base.pathname.replace(/\/$/, "");
+const attempts = Math.max(1, Number(process.env.FRONTEND_SMOKE_ATTEMPTS ?? 8));
+const retryDelayMs = Math.max(0, Number(process.env.FRONTEND_SMOKE_RETRY_MS ?? 2_000));
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const get = (path) => fetch(new URL(path, `${base.href}/`), {
+  cache: "no-store",
+  redirect: "follow",
+  headers: { "user-agent": "houzs-frontend-release-smoke/1" },
+});
+
+function entryPath(html) {
+  return html.match(/<script[^>]+type=["']module["'][^>]+src=["']([^"']+\.js)["']/i)?.[1]
+    ?? html.match(/<script[^>]+src=["']([^"']+\.js)["'][^>]+type=["']module["']/i)?.[1];
+}
+
+const dist = join(dirname(fileURLToPath(import.meta.url)), "..", "dist");
+let expectedEntry;
+let expectedVersion;
+try {
+  expectedEntry = entryPath(readFileSync(join(dist, "index.html"), "utf8"));
+  expectedVersion = readFileSync(join(dist, "sw.js"), "utf8")
+    .match(/const VERSION = "([^"]+)";/)?.[1];
+} catch {
+  // The actionable message below covers both a missing and malformed build.
+}
+if (!expectedEntry || !expectedVersion || expectedVersion.includes("__SW_BUILD_ID__")) {
+  console.error("[frontend-smoke] local dist is missing or unstamped; run `npm run build` before smoke.");
+  process.exit(2);
+}
+
+async function proveRelease() {
+  const rootResponse = await get("/");
+  const rootBody = await rootResponse.text();
+  if (!rootResponse.ok || !rootResponse.headers.get("content-type")?.includes("text/html")) {
+    throw new Error(`root returned ${rootResponse.status} ${rootResponse.headers.get("content-type") ?? "no content-type"}`);
+  }
+  const rootEntry = entryPath(rootBody);
+  if (!rootEntry) throw new Error("root HTML has no module entry chunk");
+  if (rootEntry !== expectedEntry) {
+    throw new Error(`latest build has not propagated: expected ${expectedEntry}, received ${rootEntry}`);
+  }
+
+  const deepResponse = await get("/scm/sales-orders");
+  const deepBody = await deepResponse.text();
+  if (!deepResponse.ok || !deepResponse.headers.get("content-type")?.includes("text/html")) {
+    throw new Error(`deep route returned ${deepResponse.status} ${deepResponse.headers.get("content-type") ?? "no content-type"}`);
+  }
+  const deepEntry = entryPath(deepBody);
+  if (deepEntry !== rootEntry) {
+    throw new Error(`root/deep route build mismatch: ${rootEntry} vs ${deepEntry ?? "<missing>"}`);
+  }
+
+  const chunkResponse = await get(rootEntry);
+  const chunkBody = await chunkResponse.text();
+  const chunkType = chunkResponse.headers.get("content-type") ?? "";
+  if (!chunkResponse.ok || !/(?:java|ecma)script/i.test(chunkType) || /^\s*<!doctype html/i.test(chunkBody)) {
+    throw new Error(`entry chunk returned ${chunkResponse.status} ${chunkType || "no content-type"}`);
+  }
+  if (!/immutable/i.test(chunkResponse.headers.get("cache-control") ?? "")) {
+    throw new Error("entry chunk is missing immutable cache policy");
+  }
+
+  const swResponse = await get("/sw.js");
+  const swBody = await swResponse.text();
+  if (!swResponse.ok || swBody.includes("__SW_BUILD_ID__")) {
+    throw new Error(`service worker is unavailable or unstamped (${swResponse.status})`);
+  }
+  if (!/max-age=0|no-cache|no-store/i.test(swResponse.headers.get("cache-control") ?? "")) {
+    throw new Error("service worker can be served without revalidation");
+  }
+  const version = swBody.match(/const VERSION = "([^"]+)";/)?.[1];
+  if (!version) throw new Error("service worker has no release version");
+  if (version !== expectedVersion) {
+    throw new Error(`latest service worker has not propagated: expected ${expectedVersion}, received ${version}`);
+  }
+
+  return { entry: rootEntry, version, finalUrl: rootResponse.url };
+}
+
+let lastError;
+let passedRelease;
+for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  try {
+    passedRelease = await proveRelease();
+    break;
+  } catch (error) {
+    lastError = error;
+    console.warn(`[frontend-smoke] attempt ${attempt}/${attempts}: ${error instanceof Error ? error.message : String(error)}`);
+    if (attempt < attempts) await pause(retryDelayMs);
+  }
+}
+
+if (passedRelease) {
+  console.log(`[frontend-smoke] PASS ${passedRelease.finalUrl} entry=${passedRelease.entry} sw=${passedRelease.version}`);
+} else {
+  console.error(`[frontend-smoke] FAIL ${base.href}: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+  process.exitCode = 1;
+}

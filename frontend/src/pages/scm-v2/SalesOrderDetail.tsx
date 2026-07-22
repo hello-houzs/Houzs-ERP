@@ -21,7 +21,7 @@ import {
   type CSSProperties,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, FileText, Pencil, Plus, X, Printer, Save,
   DollarSign, Lock, History, ChevronDown, Ban, Share2, Check, Trash2,
@@ -77,7 +77,8 @@ import { todayMyt } from '../../vendor/scm/lib/dates';
    verbatim and pins the rest to Asia/Kuala_Lumpur. */
 import { formatDate } from '../../lib/utils';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
-import { PaymentsTable } from '../../vendor/scm/components/PaymentsTable';
+import { PaymentsTable, type PaymentDraft } from '../../vendor/scm/components/PaymentsTable';
+import { completePaymentRetryDraft, consumePaymentRetryNavigationState, readPaymentRetryHandoff, readPaymentRetryNavigationState } from '../../lib/paymentRetryHandoff';
 import { DocumentRelationshipMapModal } from '../../components/scm-v2/DocumentRelationshipMapModal';
 import { useSoRelationshipMap } from './so-relationship-map';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
@@ -603,6 +604,31 @@ export const SalesOrderDetail = () => {
   const [isEditing, setIsEditing] = useState(
     editSearchParams.get('edit') === '1',
   );
+  const location = useLocation();
+  const [paymentRetryState, setPaymentRetryState] = useState<{ documentId: string; drafts: PaymentDraft[] } | null>(null);
+  const paymentRetryDrafts = paymentRetryState && paymentRetryState.documentId === docNo
+    ? paymentRetryState.drafts
+    : [];
+  useEffect(() => {
+    if (!docNo) return;
+    const stored = readPaymentRetryHandoff('so', docNo)?.drafts ?? [];
+    const navigated = readPaymentRetryNavigationState(location.state, 'so', docNo);
+    const byKey = new Map([...stored, ...navigated].map((draft) => [draft.idempotencyKey, draft]));
+    setPaymentRetryState({ documentId: docNo, drafts: [...byKey.values()] });
+    if (location.state && typeof location.state === 'object' && 'paymentRetry' in location.state) {
+      navigate(
+        { pathname: location.pathname, search: location.search, hash: location.hash },
+        { replace: true, state: consumePaymentRetryNavigationState(location.state) },
+      );
+    }
+  }, [docNo, location.hash, location.pathname, location.search, location.state, navigate]);
+  const paymentRetryCommitted = (draft: PaymentDraft) => {
+    if (!docNo || !draft.idempotencyKey) return;
+    completePaymentRetryDraft('so', docNo, draft.idempotencyKey);
+    setPaymentRetryState((current) => current?.documentId === docNo
+      ? { ...current, drafts: current.drafts.filter((row) => row.idempotencyKey !== draft.idempotencyKey) }
+      : current);
+  };
   const [relMapOpen, setRelMapOpen] = useState(false);
   /* Relationship-map chain + destinations — SHARED with SalesOrderDetailV2 so the
      two SO detail surfaces can't drift again. Called here (not at the render site)
@@ -2096,7 +2122,14 @@ export const SalesOrderDetail = () => {
           the normal case — that is what a Balance figure is FOR. Only CANCELLED
           stays shut (a cancelled order takes no money); the no-naked-edits rule
           is unchanged, so it is still Edit-then-type for everything but DRAFT. */}
+      {paymentRetryDrafts.length > 0 && (
+        <div className={styles.bannerWarn} role="status">
+          This order exists, but {paymentRetryDrafts.length} payment row{paymentRetryDrafts.length === 1 ? '' : 's'} were not confirmed saved.
+          The rows below are a temporary retry copy; save each payment to confirm it on the server.
+        </div>
+      )}
       <PaymentsTable
+        key={header.doc_no}
         docNo={header.doc_no}
         grandTotalCenti={header.local_total_centi}
         currency={header.currency}
@@ -2104,6 +2137,8 @@ export const SalesOrderDetail = () => {
         draftUnlocked={isDraftSo}
         slip={{ slipKey: header.slip_key, fetcher: fetchSoSlipUrl }}
         defaultCollectedBy={selfStaffMatch?.id ?? ''}
+        initialDrafts={paymentRetryDrafts}
+        onDraftCommitted={paymentRetryCommitted}
       />
 
       {/* ── CUSTOMER SIGNATURE — moved directly below Payments (Wei Siang

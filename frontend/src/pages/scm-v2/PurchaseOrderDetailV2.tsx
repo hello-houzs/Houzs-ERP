@@ -30,6 +30,7 @@ import {
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
+import { DATA_TABLE_LAYOUT_FAMILIES } from "../../components/dataTableLayoutFamilies";
 import {
   DetailGrid,
   DetailMain,
@@ -908,6 +909,7 @@ function PurchaseOrderDetailV2ReadOnly() {
             <Section title={`Line items · ${items.length}`}>
               <DataTable<PoItemRow>
                 tableId={`po-lines-${id}`}
+                layoutFamily={DATA_TABLE_LAYOUT_FAMILIES.purchaseOrderLines}
                 rows={items}
                 loading={false}
                 columns={lineColumns}

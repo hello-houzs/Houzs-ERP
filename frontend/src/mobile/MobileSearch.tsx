@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api/client";
 import { HighlightedText } from "../lib/highlight";
 import { formatDate } from "../lib/utils";
+import {
+  GLOBAL_SEARCH_MIN_LENGTH,
+  useGlobalSearchResults,
+  type SearchHit,
+  type SearchHitType,
+} from "../lib/globalSearch";
 import "./mobile.css";
 
 /**
@@ -22,22 +27,6 @@ import "./mobile.css";
  *   - product     → products module list
  *   - user        → members module list
  */
-
-export type SearchHitType =
-  | "project"
-  | "assr_case"
-  | "user"
-  | "sales_order"
-  | "product";
-
-export interface SearchHit {
-  type: SearchHitType;
-  id: string | number;
-  title: string;
-  subtitle?: string | null;
-  date?: string | null;
-  link: string;
-}
 
 /** Typed navigation intent emitted when a hit is tapped. The shell decides
  *  which screen each maps to (see MobileApp). The service-case / product /
@@ -107,49 +96,12 @@ export function MobileSearch({
   onNavigate: (nav: SearchNav) => void;
 }) {
   const [q, setQ] = useState("");
-  const [hits, setHits] = useState<SearchHit[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { term, hits, loading, error } = useGlobalSearchResults(q);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
-
-  // Debounced fetch — same contract as the desktop palette. A fresh
-  // AbortController per run cancels the in-flight request when the term changes
-  // or the screen closes, so a slow response for a stale term can never
-  // overwrite a newer one (nor setState after unmount).
-  useEffect(() => {
-    const term = q.trim();
-    if (term.length < 2) {
-      setHits([]);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    const ctrl = new AbortController();
-    const t = setTimeout(async () => {
-      try {
-        const res = await api.get<{ hits: SearchHit[] }>(
-          `/api/search?q=${encodeURIComponent(term)}`,
-          { signal: ctrl.signal },
-        );
-        setHits(res.hits ?? []);
-      } catch (e) {
-        if (ctrl.signal.aborted) return;
-        setError(e instanceof Error ? e.message : "Something went wrong.");
-      } finally {
-        if (!ctrl.signal.aborted) setLoading(false);
-      }
-    }, 250);
-    return () => {
-      clearTimeout(t);
-      ctrl.abort();
-    };
-  }, [q]);
 
   const groups = useMemo(() => {
     const map = new Map<SearchHitType, SearchHit[]>();
@@ -162,8 +114,6 @@ export function MobileSearch({
       (g) => g.items.length > 0,
     );
   }, [hits]);
-
-  const term = q.trim();
 
   return (
     <div
@@ -180,6 +130,7 @@ export function MobileSearch({
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Search orders, projects, cases, products, people…"
+              aria-label="Search orders, projects, service cases, products and people"
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
@@ -194,21 +145,26 @@ export function MobileSearch({
       </header>
 
       <div className="scroll" style={{ padding: 12, paddingBottom: 40 }}>
-        {term.length < 2 && (
+        {term.length === 0 && (
           <div style={{ padding: "40px 16px", textAlign: "center", color: "var(--mut2)", fontSize: 12.5 }}>
-            Type at least 2 characters to search across sales orders, projects, service cases, products and people.
+            Start typing to search across sales orders, projects, service cases, products and people.
           </div>
         )}
-        {term.length >= 2 && loading && (
-          <div style={{ padding: "30px 0", textAlign: "center", color: "var(--mut2)", fontSize: 12.5 }}>Searching…</div>
+        {term.length > 0 && term.length < GLOBAL_SEARCH_MIN_LENGTH && (
+          <div role="status" aria-live="polite" style={{ padding: "40px 16px", textAlign: "center", color: "var(--mut2)", fontSize: 12.5 }}>
+            Type 1 more character to search everywhere.
+          </div>
+        )}
+        {term.length >= GLOBAL_SEARCH_MIN_LENGTH && loading && (
+          <div role="status" aria-live="polite" style={{ padding: "30px 0", textAlign: "center", color: "var(--mut2)", fontSize: 12.5 }}>Searching for “{term}”…</div>
         )}
         {error && (
-          <div style={{ margin: "8px 0", borderRadius: 10, border: "1px solid #e6c3c3", background: "#fbeded", padding: "10px 12px", fontSize: 12, color: "var(--red)" }}>
+          <div role="alert" style={{ margin: "8px 0", borderRadius: 10, border: "1px solid #e6c3c3", background: "#fbeded", padding: "10px 12px", fontSize: 12, color: "var(--red)" }}>
             Couldn't search right now. Please try again.
           </div>
         )}
-        {term.length >= 2 && !loading && !error && hits.length === 0 && (
-          <div style={{ padding: "40px 16px", textAlign: "center", color: "var(--mut2)", fontSize: 12.5 }}>
+        {term.length >= GLOBAL_SEARCH_MIN_LENGTH && !loading && !error && hits.length === 0 && (
+          <div role="status" aria-live="polite" style={{ padding: "40px 16px", textAlign: "center", color: "var(--mut2)", fontSize: 12.5 }}>
             No matches for "{term}". Try a different keyword.
           </div>
         )}

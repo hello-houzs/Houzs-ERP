@@ -1,5 +1,6 @@
-import { describe, expect, test } from "vitest";
-import { DEFAULT_OFFSET, clampOffset } from "./assistantLauncherPosition";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { DEFAULT_OFFSET, clampOffset, readStoredOffset } from "./assistantLauncherPosition";
+import { bindBrowserStorageIdentity, clearBrowserStorageIdentity } from "../lib/storageIdentity";
 
 // The disc's drag maths is pure (clampOffset) — the DOM gesture just feeds it
 // pointer deltas. Locking the clamp here is what guarantees the disc can never
@@ -9,8 +10,19 @@ import { DEFAULT_OFFSET, clampOffset } from "./assistantLauncherPosition";
 const DISC = 56; // rendered disc size (h-14 w-14)
 const VW = 1280;
 const VH = 800;
+let storedValue: string | null = null;
 
 describe("AssistantLauncher clampOffset", () => {
+  beforeEach(() => {
+    bindBrowserStorageIdentity(1);
+    storedValue = null;
+    vi.stubGlobal("localStorage", {
+      getItem: () => storedValue,
+    });
+  });
+
+  afterEach(() => clearBrowserStorageIdentity());
+
   test("default anchor is the bottom-right area (small positive offsets)", () => {
     // Bottom-right means SMALL right/bottom offsets from those edges.
     expect(DEFAULT_OFFSET.right).toBeGreaterThan(0);
@@ -42,5 +54,15 @@ describe("AssistantLauncher clampOffset", () => {
     const narrow = clampOffset(wide, DISC, DISC, 400, 400);
     expect(narrow.right).toBe(400 - DISC - 8);
     expect(narrow.right).toBeLessThan(wide.right);
+  });
+
+  test.each([
+    JSON.stringify({ right: null, bottom: 24 }),
+    JSON.stringify({ right: "88", bottom: 24 }),
+    '{"right":1e999,"bottom":24}',
+    "not-json",
+  ])("rejects a corrupt or non-finite stored offset: %s", (raw) => {
+    storedValue = raw;
+    expect(readStoredOffset()).toEqual(DEFAULT_OFFSET);
   });
 });

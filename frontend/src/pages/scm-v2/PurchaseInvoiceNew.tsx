@@ -39,6 +39,7 @@ import {
   usePostPurchaseInvoice,
 } from '../../vendor/scm/lib/purchase-invoice-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, removeScmHandoff } from '../../lib/scmHandoffStorage';
 import { useGrnDetail } from '../../vendor/scm/lib/grn-queries';
 import { useActiveCurrencies, rateFor } from '../../vendor/scm/lib/currencies-queries';
 import { CurrencySelect } from '../../vendor/scm/components/CurrencySelect';
@@ -188,14 +189,9 @@ export const PurchaseInvoiceNew = () => {
     // line id → ticked qty. Outside picker mode, prefill every accepted line.
     let pickQtyById: Map<string, number> | null = null;
     if (fromPicks) {
-      try {
-        const raw = sessionStorage.getItem('piFromGrnPicks');
-        if (raw) {
-          const arr = JSON.parse(raw) as Array<{ grnItemId: string; qty: number }>;
-          pickQtyById = new Map(arr.map((p) => [p.grnItemId, Number(p.qty ?? 0)]));
-        }
-      } catch { pickQtyById = null; }
-      sessionStorage.removeItem('piFromGrnPicks');
+      const picks = readScmHandoff<Array<{ grnItemId: string; qty: number }>>('piFromGrnPicks');
+      if (picks) pickQtyById = new Map(picks.map((p) => [p.grnItemId, Number(p.qty ?? 0)]));
+      removeScmHandoff('piFromGrnPicks');
     }
     const next: DraftLine[] = (grnQ.data.items ?? [])
       // Remaining-to-bill = accepted − already-invoiced − returned-to-supplier.

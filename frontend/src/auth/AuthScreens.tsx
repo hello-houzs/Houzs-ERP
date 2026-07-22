@@ -1,5 +1,5 @@
 import { useEffect, useState, lazy, Suspense, type ReactNode } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "./AuthContext";
 import { signInErrorMessage } from "./loginErrors";
@@ -19,6 +19,7 @@ import { validatePasswordStrength } from "../lib/passwordStrength";
 import { useIsMobile } from "../mobile/useIsMobile";
 import { AmbientSnow } from "../components/AmbientSnow";
 import { consumeCorrelated, correlatedFetch } from "../lib/requestCorrelation";
+import { readRememberedEmail } from "../lib/rememberedEmail";
 
 // Code-split the mobile app: desktop users never download it, and it stays out
 // of the initial JS bundle (keeps the bundle-budget CI gate green).
@@ -245,7 +246,7 @@ export function LoginScreen() {
   // (owner: "remember me remember 不到我的户口"). Only the email is stored, never
   // the password — so the operator doesn't retype their account every time.
   const [email, setEmail] = useState(() => {
-    try { return localStorage.getItem("auth:lastEmail") ?? ""; } catch { return ""; }
+    return readRememberedEmail();
   });
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
@@ -548,6 +549,7 @@ export function BootstrapScreen() {
 // ──────────────────────────────────────────────────────────
 export function AcceptInviteScreen() {
   const { acceptInvite } = useAuth();
+  const navigate = useNavigate();
   // Token arrives via the real public route (/invite/:token); the old
   // email links used a #invite= hash, still accepted for backward-compat.
   const { token: routeToken } = useParams<{ token: string }>();
@@ -604,6 +606,9 @@ export function AcceptInviteScreen() {
     setBusy(true);
     try {
       await acceptInvite(token, name, password);
+      // RootApp reads the live Router location, so this crosses from the
+      // invite-only tree into the authenticated staff/mobile shell.
+      navigate("/", { replace: true });
     } catch (e: any) {
       setErr(e?.message || "Couldn't accept invitation");
     } finally {

@@ -23,7 +23,12 @@
 //     size-capped, and fail-soft on quota / corruption.
 
 import type { QueryClient } from "@tanstack/react-query";
-import { tokenStore } from "../api/client";
+import { authSessionFingerprint, subscribeAuthTokenChange } from "./authToken";
+import {
+  getActiveCompanyId,
+  hasStoredCompanySelection,
+  subscribeActiveCompany,
+} from "./activeCompany";
 
 // Injected at build time by vite.config `define`. Unique per deploy.
 declare const __BUILD_ID__: string;
@@ -32,19 +37,34 @@ const NS_PREFIX = "houzs-rq-snapshot:";
 const BUILD_PREFIX = `${NS_PREFIX}${BUILD_ID}:`;
 const MAX_BYTES = 1_500_000; // ~1.5 MB — skip the write if the snapshot exceeds it
 const DEBOUNCE_MS = 1200;
+const IDLE_TIMEOUT_MS = 5000;
 
 // The snapshot is namespaced by BUILD (payload-shape drift, HOOKKA bug 1b/2f) AND
 // by ACTIVE COMPANY — a cold open after switching company must NOT hydrate the
 // other company's list (multi-company isolation). Both are read at call time
 // because the active company can change during a session.
 function activeCompany(): string {
-  try {
-    const raw = localStorage.getItem("houzs.activeCompanyId");
-    const n = raw ? Number(raw) : NaN;
-    return Number.isFinite(n) && n > 0 ? String(n) : "0";
-  } catch {
-    return "0";
-  }
+  return String(getActiveCompanyId() ?? 0);
+}
+
+/**
+ * Is the "0" bucket honest right now?
+ *
+ * `getActiveCompanyId()` is null in two very different situations: a
+ * single-company install where nobody ever picks a company (0 genuinely means
+ * "the backend hostname default"), and a brand-new tab on a multi-company
+ * install in the moments before /auth/me says who we are. Hydrating the "0"
+ * snapshot in the SECOND case can paint the default company's rows into a tab
+ * that is about to resolve to another company — the exact cross-company
+ * staleness the company namespace exists to prevent.
+ *
+ * The two are distinguishable: a browser where somebody has ever picked a
+ * company carries a durable per-user record. When one exists and this tab has
+ * not resolved yet, hydration waits for adoption instead of guessing.
+ */
+function companyBucketIsTrustworthy(): boolean {
+  if (getActiveCompanyId() !== null) return true;
+  return !hasStoredCompanySelection();
 }
 // Identity fingerprint for the CURRENT session. The bearer token is the only
 // identity signal available synchronously at module-init time (hydrate runs
@@ -53,17 +73,7 @@ function activeCompany(): string {
 // while making the namespace change the moment the signed-in user changes.
 // Empty string when signed out.
 function sessionFp(): string {
-  let token = "";
-  try {
-    token = tokenStore.get();
-  } catch {
-    return "";
-  }
-  if (!token) return "";
-  // djb2 — we need a stable bucket per token, not cryptographic strength.
-  let h = 5381;
-  for (let i = 0; i < token.length; i++) h = ((h << 5) + h + token.charCodeAt(i)) | 0;
-  return (h >>> 0).toString(36);
+  return authSessionFingerprint();
 }
 
 /** Prefix owned by the CURRENT build + signed-in session (all companies). */
@@ -135,10 +145,14 @@ function isListKey(key: readonly unknown[]): boolean {
 }
 
 /** Serialize the whitelisted list queries to localStorage. */
-function save(qc: QueryClient): void {
+function save(qc: QueryClient, company: string, session: string): void {
   // Signed out → never write. Otherwise a sign-out mid-debounce would persist the
   // outgoing user's rows under the anonymous key.
-  if (!sessionFp()) return;
+  // This QueryClient belongs to the company/session that installed persistence.
+  // A company switch stores the new company id before reloading, and `pagehide`
+  // then fires while this page still holds the OLD company's cache. Never write
+  // those rows into the newly selected company's namespace.
+  if (!session || sessionFp() !== session || activeCompany() !== company) return;
   try {
     const out: Record<string, unknown> = {};
     for (const q of qc.getQueryCache().getAll()) {
@@ -148,7 +162,7 @@ function save(qc: QueryClient): void {
     }
     const json = JSON.stringify(out);
     if (json.length > MAX_BYTES) return;
-    localStorage.setItem(snapKey(), json);
+    localStorage.setItem(`${BUILD_PREFIX}${session}:${company}`, json);
   } catch {
     // quota exceeded / serialization error → skip this write.
   }
@@ -193,23 +207,129 @@ function hydrate(qc: QueryClient): void {
   }
 }
 
+let disposeInstalledPersist: (() => void) | undefined;
+
 /** Wire persistence: hydrate now (before first render) + save on cache changes. */
-export function installQueryPersist(qc: QueryClient): void {
-  if (typeof window === "undefined" || !("localStorage" in window)) return;
-  hydrate(qc);
+export function installQueryPersist(qc: QueryClient): () => void {
+  // This application owns one global QueryClient. Make accidental re-installs
+  // replace the previous wiring instead of accumulating cache/window listeners.
+  disposeInstalledPersist?.();
+  if (typeof window === "undefined" || !("localStorage" in window)) return () => {};
+  let hydrated = false;
+  if (companyBucketIsTrustworthy()) {
+    hydrate(qc);
+    hydrated = true;
+  }
+  // Capture the tenant context owned by this QueryClient. A delayed/flush save
+  // must not change destination merely because the switcher updated storage.
+  let installedCompany = activeCompany();
+  let installedSession = sessionFp();
+  // True only while this QueryClient was installed BEFORE the tab knew its
+  // tenant. A deliberate company switch is a different thing entirely — it is
+  // followed by a full reload, and its pending flush must keep writing to the
+  // OLD bucket (see the pagehide/visibilitychange test).
+  let awaitingCompany = getActiveCompanyId() === null;
+  let disposed = false;
   let timer: number | undefined;
+  let idleHandle: number | undefined;
+  let idleFallback: number | undefined;
+  const runSave = () => {
+    idleHandle = undefined;
+    idleFallback = undefined;
+    save(qc, installedCompany, installedSession);
+  };
+  const scheduleIdleSave = () => {
+    if (typeof window.requestIdleCallback === "function") {
+      idleHandle = window.requestIdleCallback(runSave, { timeout: IDLE_TIMEOUT_MS });
+    } else {
+      // Safari/WebViews without requestIdleCallback: yield at least one task so
+      // a large JSON snapshot never runs inside the query notification stack.
+      idleFallback = window.setTimeout(runSave, 0);
+    }
+  };
   const schedule = () => {
-    if (timer !== undefined) return;
+    if (disposed) return;
+    if (timer !== undefined || idleHandle !== undefined || idleFallback !== undefined) return;
     timer = window.setTimeout(() => {
       timer = undefined;
-      save(qc);
+      scheduleIdleSave();
     }, DEBOUNCE_MS);
   };
-  qc.getQueryCache().subscribe(schedule);
+  const unsubscribeCache = qc.getQueryCache().subscribe(schedule);
   // Flush the latest state when the tab is hidden/closed so a snapshot taken
   // <DEBOUNCE_MS after the last change isn't lost.
-  window.addEventListener("pagehide", () => save(qc));
-  window.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") save(qc);
+  const flush = () => {
+    if (timer !== undefined) window.clearTimeout(timer);
+    if (idleHandle !== undefined && typeof window.cancelIdleCallback === "function") {
+      window.cancelIdleCallback(idleHandle);
+    }
+    if (idleFallback !== undefined) window.clearTimeout(idleFallback);
+    timer = undefined;
+    idleHandle = undefined;
+    idleFallback = undefined;
+    save(qc, installedCompany, installedSession);
+  };
+  const onVisibilityChange = () => {
+    if (document.visibilityState === "hidden") flush();
+  };
+  window.addEventListener("pagehide", flush);
+  window.addEventListener("visibilitychange", onVisibilityChange);
+
+  const unsubscribeAuth = subscribeAuthTokenChange(() => {
+    // Token changes are explicit identity lifecycle events. Cancel any work
+    // owned by the previous identity and remove its list data before binding
+    // this QueryClient to the next session. A company switch emits no token
+    // event, so it cannot rebind and its old-cache flush remains refused.
+    cancelPending();
+    qc.removeQueries({
+      predicate: (query) => isListKey(query.queryKey as readonly unknown[]),
+    });
+    installedSession = sessionFp();
+    installedCompany = activeCompany();
+    awaitingCompany = getActiveCompanyId() === null;
+    hydrated = hydrated && !awaitingCompany;
+    if (!installedSession) clearQuerySnapshots();
   });
+
+  // On a cold open in a new tab the active company resolves AFTER install:
+  // adoptActiveCompanyForUser runs when /auth/me lands. Bind to the bucket that
+  // is now known to be right and take the hydration deliberately skipped above.
+  // Strictly the FIRST resolution — a later switch must not re-point this
+  // client, or a queued flush would relabel one company's rows as another's.
+  const unsubscribeCompany = subscribeActiveCompany(() => {
+    if (!awaitingCompany) return;
+    if (getActiveCompanyId() === null) return;
+    awaitingCompany = false;
+    cancelPending();
+    installedCompany = activeCompany();
+    if (!hydrated) {
+      hydrate(qc);
+      hydrated = true;
+    }
+  });
+
+  function cancelPending(): void {
+    if (timer !== undefined) window.clearTimeout(timer);
+    if (idleHandle !== undefined && typeof window.cancelIdleCallback === "function") {
+      window.cancelIdleCallback(idleHandle);
+    }
+    if (idleFallback !== undefined) window.clearTimeout(idleFallback);
+    timer = undefined;
+    idleHandle = undefined;
+    idleFallback = undefined;
+  }
+
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    cancelPending();
+    unsubscribeCache();
+    unsubscribeAuth();
+    unsubscribeCompany();
+    window.removeEventListener("pagehide", flush);
+    window.removeEventListener("visibilitychange", onVisibilityChange);
+    if (disposeInstalledPersist === dispose) disposeInstalledPersist = undefined;
+  };
+  disposeInstalledPersist = dispose;
+  return dispose;
 }

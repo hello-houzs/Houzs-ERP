@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 
-export function useLocalStorage<T>(key: string, initial: T): [T, (v: T | ((prev: T) => T)) => void] {
+export function useLocalStorage<T>(
+  key: string,
+  initial: T,
+  legacyKey?: string,
+  sanitize?: (value: unknown) => T,
+): [T, (v: T | ((prev: T) => T)) => void] {
   const [value, setValue] = useState<T>(() => {
     try {
-      const raw = localStorage.getItem(key);
+      const raw = localStorage.getItem(key) ?? (legacyKey ? localStorage.getItem(legacyKey) : null);
       if (raw === null) return initial;
-      return JSON.parse(raw) as T;
+      const parsed: unknown = JSON.parse(raw);
+      return sanitize ? sanitize(parsed) : parsed as T;
     } catch {
       return initial;
     }

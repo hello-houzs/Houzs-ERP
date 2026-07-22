@@ -33,6 +33,8 @@ import {
   requestIdFromError,
   requestIdFromResponse,
 } from '../../../lib/requestCorrelation';
+import { companyHeader } from '../../../lib/activeCompany';
+import { abortableDelay, combineAbortSignals } from '../../../lib/abort';
 
 // `||` not `??`: the CI build inlines VITE_API_URL as an EMPTY STRING when the
 // repo var is unset, and `'' ?? default` keeps `''`. PROD fallback is now
@@ -66,13 +68,23 @@ function timeoutSignal(path: string): AbortSignal | undefined {
   try { return AbortSignal.timeout(ms); } catch { return undefined; } // pre-2022 browsers
 }
 
+/** Keep caller cancellation and the request deadline active together. */
 async function fetchWithTimeout(url: string, init: RequestInit, path: string): Promise<Response> {
   const callerSignal = init.signal;
+  const deadlineSignal = timeoutSignal(path);
   try {
-    return await correlatedFetch(url, { ...init, signal: callerSignal ?? timeoutSignal(path) });
+    // Correlated fetch (main) + BOTH signals live (this branch): a caller that
+    // passes its own signal must still get the request deadline, and a
+    // caller-initiated cancellation is re-thrown verbatim rather than reworded
+    // as a timeout.
+    return await correlatedFetch(url, {
+      ...init,
+      signal: combineAbortSignals(callerSignal, deadlineSignal),
+    });
   } catch (e) {
     const requestId = requestIdFromError(e);
-    if (!callerSignal && e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+    if (callerSignal?.aborted) throw e;
+    if (deadlineSignal?.aborted && e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
       /* A timed-out READ is just a read — "try again" is sound advice. A timed-out
          WRITE is not: aborting the fetch does not abort the Worker, so the save
          may already have committed. What we may honestly tell the operator turns
@@ -203,19 +215,10 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
   // localStorage key DIRECTLY here to keep this vendored file self-contained
   // (same style as the auth:token read above). Absent → NO header → backend
   // falls back to its hostname default, so single-company Houzs is unchanged.
-  const activeCompanyId = (() => {
-    try {
-      const raw = localStorage.getItem('houzs.activeCompanyId');
-      const n = raw ? Number(raw) : NaN;
-      return Number.isFinite(n) && n > 0 ? String(n) : null;
-    } catch {
-      return null;
-    }
-  })();
   const headers = {
     ...(init?.headers ?? {}),
     authorization: `Bearer ${token}`,
-    ...(activeCompanyId ? { 'X-Company-Id': activeCompanyId } : {}),
+    ...companyHeader(),
     ...(typeof init?.body === 'string' ? { 'content-type': 'application/json' } : {}),
   };
   // Weak-wifi / Hyperdrive cold-start resilience (ported from HOOKKA
@@ -233,10 +236,11 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
     try {
       res = await fetchWithTimeout(`${API_URL}${path}`, { ...init, headers }, path);
     } catch (e) {
-      if (isGet && attempt < 4) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
+      if (init?.signal?.aborted) throw e;
+      if (isGet && attempt < 4) { await abortableDelay(600 + attempt * 1200, init?.signal); continue; }
       throw e;
     }
-    if (res.status === 503 && isGet && attempt < 4) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
+    if (res.status === 503 && isGet && attempt < 4) { await abortableDelay(600 + attempt * 1200, init?.signal); continue; }
     // Cold Hyperdrive pool answers 503 with a "database briefly unavailable" body
     // BEFORE the handler/DB runs, so a mutation never executed → safe to retry
     // (no double-write). Retry ONLY this specific cold-pool 503 for mutations, so
@@ -244,7 +248,7 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
     if (res.status === 503 && !isGet && attempt < 4) {
       const warmText = await res.clone().text().catch(() => '');
       if (/briefly unavailable|warming up|try again in a moment/i.test(warmText)) {
-        await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue;
+        await abortableDelay(600 + attempt * 1200, init?.signal); continue;
       }
     }
     break;

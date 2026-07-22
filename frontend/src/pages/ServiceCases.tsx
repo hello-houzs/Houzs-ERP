@@ -66,9 +66,15 @@ import { InlineEdit } from "../components/InlineEdit";
 import { ExpandableText } from "../components/ExpandableText";
 import { StatCard } from "../components/StatCard";
 import { useQuery } from "../hooks/useQuery";
+import { useSearchResultTransition } from "../hooks/useServerSearch";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
-import { useLocalStorage } from "../hooks/useLocalStorage";
+import {
+  booleanPreference,
+  enumPreference,
+  pageSizePreference,
+  useIdentityPreference,
+} from "../hooks/useIdentityPreference";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
@@ -285,9 +291,10 @@ export function ServiceCases() {
   // and a raw 403 toast on every write. Gate on the same permission the nav
   // uses so both agree.
   const canManageService = can("service_cases.manage");
-  const [storedView, setStoredView] = useLocalStorage<ServiceView>(
+  const [storedView, setStoredView] = useIdentityPreference<ServiceView>(
     "assr:view",
-    "cases"
+    "cases",
+    enumPreference(SERVICE_VIEWS),
   );
   const urlView = params.get("view") as ServiceView | null;
   // `assr:view` persists the last view rendered, so anyone who opened Service
@@ -388,12 +395,12 @@ function CasesView({
   const [stage, setStage] = useState<StageFilter>("ALL");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [perPage, setPerPage] = useLocalStorage<number>("pp:assr", 50);
-  const [showArchived, setShowArchived] = useLocalStorage<boolean>("assr:showArchived", false);
-  const [myCases, setMyCases] = useLocalStorage<boolean>("assr:myCases", false);
+  const [perPage, setPerPage] = useIdentityPreference("pp:assr", 50, pageSizePreference([10, 25, 50, 100, 200]));
+  const [showArchived, setShowArchived] = useIdentityPreference("assr:showArchived", false, booleanPreference);
+  const [myCases, setMyCases] = useIdentityPreference("assr:myCases", false, booleanPreference);
   // Hide completed cases from the working list — closed cases pile up
   // and ops mostly only cares about what's still open.
-  const [hideCompleted, setHideCompleted] = useLocalStorage<boolean>("assr:hideCompleted", false);
+  const [hideCompleted, setHideCompleted] = useIdentityPreference("assr:hideCompleted", false, booleanPreference);
   const [bulkSelected, setBulkSelected] = useState<Set<number>>(new Set());
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
   const [params, setParams] = useSearchParams();
@@ -435,7 +442,7 @@ function CasesView({
   };
 
   const list = useQuery<Paginated<AssrCase>>("assr-list",
-    () =>
+    (signal) =>
       api.get(
         `/api/assr${buildQuery({
           stage: stage === "ALL" ? undefined : stage,
@@ -447,13 +454,22 @@ function CasesView({
           assigned_to: myCases && user?.id ? user.id : undefined,
           creditor_code: creditorFilter || undefined,
           ...sortParams,
-        })}`
+        })}`,
+        { signal },
       ),
     [stage, search, page, perPage, showArchived, excludeStageParam, myCases, user?.id, creditorFilter, sort?.key, sort?.dir],
     // Paginated + stage/filter-switched list: keep the current rows visible
     // while the next page/filter loads instead of flashing an empty table.
     { keepPreviousData: true }
   );
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: search,
+    isFetching: list.fetching,
+    isPlaceholderData: list.placeholder,
+    hasData: list.data !== null,
+    hasError: Boolean(list.error),
+  });
 
   // Drop selections that are no longer on screen — keeps the bulk
   // toolbar count honest when you change pages or filters.
@@ -880,7 +896,7 @@ function CasesView({
 
       {caseView === "list" && (
       <>
-      {bulkSelected.size > 0 && (
+      {bulkSelected.size > 0 && !searchTransition.resultsAreStale && (
         <BulkActionsBar
           count={bulkSelected.size}
           allSelected={allSelected}
@@ -951,6 +967,10 @@ function CasesView({
           value: search,
           onChange: (v) => { setPage(1); setSearch(v); },
           placeholder: "Search ASSR no, SO no, Ref no, customer, phone…",
+          searching: searchTransition.isSearching,
+          countPending: list.loading || list.placeholder || Boolean(list.error) || searchTransition.resultsAreStale,
+          scope: "server",
+          totalRecords: list.data?.total,
         }}
         resetFilters={{
           active: !!(
@@ -977,7 +997,7 @@ function CasesView({
         }}
         columns={columns}
         rows={list.data?.data ?? null}
-        loading={list.loading}
+        loading={list.loading || searchTransition.isSearching}
         error={list.error}
         emptyLabel="No service cases"
         getRowKey={(r) => r.id}
@@ -987,7 +1007,7 @@ function CasesView({
         onSortChange={handleSortChange}
       />
 
-      {list.data && (
+      {list.data && !searchTransition.resultsAreStale && (
         <Pagination
           page={page}
           perPage={perPage}

@@ -14,6 +14,7 @@ import {
   type DriverRow,
 } from '../../vendor/scm/lib/drivers-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
+import { DATA_GRID_LAYOUT_KEYS } from '../../vendor/scm/components/dataGridLayoutKeys';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './Suppliers.module.css';
 
@@ -139,7 +140,7 @@ export const Drivers = () => {
       <DataGrid
         rows={drivers.data ?? []}
         columns={columns}
-        storageKey="dg-drivers"
+        storageKey={DATA_GRID_LAYOUT_KEYS.driversStandalone}
         rowKey={(d) => d.id}
         searchPlaceholder="Search drivers…"
         groupBanner={false}

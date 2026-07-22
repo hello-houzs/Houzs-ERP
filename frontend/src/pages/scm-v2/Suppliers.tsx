@@ -35,7 +35,8 @@ import {
   useSupplierCategoryPool,
 } from '../../vendor/scm/components/SupplyCategoryPicker';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
-import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
+import { SearchProgress } from '../../components/SearchProgress';
+import { useDebouncedSearchTerm, useSearchResultTransition } from '../../hooks/useServerSearch';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './Suppliers.module.css';
 
@@ -75,7 +76,7 @@ export const Suppliers = () => {
 
   const PAGE_SIZE = 50;
   // Debounce the search box so each keystroke doesn't fire a server round-trip.
-  const debouncedSearch = useDebouncedValue(search, 300);
+  const { requestTerm: debouncedSearch } = useDebouncedSearchTerm(search);
 
   // Maintained Supply Category pool (fallback: the default five). Declared up
   // here because it feeds both the filter chips AND the server query (the
@@ -114,7 +115,7 @@ export const Suppliers = () => {
     setSelectedIds(new Set());
   }, [status, category, page, debouncedSearch]);
 
-  const { data, isLoading, error } = useSuppliersPaged({
+  const { data, isLoading, isFetching, isPlaceholderData, error } = useSuppliersPaged({
     page,
     pageSize: PAGE_SIZE,
     status: status === 'all' ? undefined : status,
@@ -124,6 +125,15 @@ export const Suppliers = () => {
     category: category === FILTER_ALL ? undefined : category,
     pool: category === FILTER_MIXED ? pool : undefined,
   });
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: debouncedSearch,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const listLoading = isLoading || searchTransition.isSearching;
 
   const categoryChips: { value: string; label: string }[] = useMemo(
     () => [
@@ -266,6 +276,10 @@ export const Suppliers = () => {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
+            <SearchProgress
+              active={searchTransition.isSearching}
+              className="absolute right-3 top-1/2 -translate-y-1/2 bg-surface pl-2"
+            />
           </div>
         </div>
 
@@ -301,25 +315,25 @@ export const Suppliers = () => {
             and silently hide matches on other pages. Column sort / filters /
             show-hide still operate on the loaded page. */}
         <DataGrid
-          rows={rows}
+          rows={searchTransition.resultsAreStale ? [] : rows}
           columns={columns}
           storageKey="dg-suppliers"
           rowKey={(r) => r.id}
           hideSearch
           groupBanner={false}
-          isLoading={isLoading}
+          isLoading={listLoading}
           emptyMessage="No suppliers yet."
           onRowClick={(r) => navigate(`/scm/suppliers/${r.id}`)}
           selectable={{ selectedKeys: selectedIds, onToggle: toggle, onToggleAll: toggleAll }}
         />
 
-        <PaginationFooter
+        {!searchTransition.resultsAreStale && <PaginationFooter
           page={page}
           pageSize={PAGE_SIZE}
           total={total}
           onPrev={() => setPage((p) => Math.max(0, p - 1))}
           onNext={() => setPage((p) => p + 1)}
-        />
+        />}
       </div>
 
       {creating && (

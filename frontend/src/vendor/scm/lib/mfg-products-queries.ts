@@ -13,6 +13,7 @@ import { serviceNotify } from './dialog-service';
 import { verifiedSave, readbackGet, friendlySaveMessage } from './verified-save';
 import type { MaintPoolEntry } from '@2990s/shared';
 import { retryUnlessClientError } from '../../../lib/retryPolicy';
+import { getActiveCompanyId } from '../../../lib/activeCompany';
 import type {
   MaintenanceConfig as MfgMaintenanceConfig,
   MfgPricedOption,
@@ -206,11 +207,7 @@ export type ModelAllowedOptions = {
 // the reliance on that — matches how authed-fetch reads the same localStorage
 // key to stamp X-Company-Id. (Multi-company merge QA, 2026-07.)
 function activeCompanyKey(): string {
-  try {
-    return localStorage.getItem('houzs.activeCompanyId') ?? 'default';
-  } catch {
-    return 'default';
-  }
+  return String(getActiveCompanyId() ?? 'default');
 }
 
 export function useMfgProducts(opts?: {
@@ -220,12 +217,13 @@ export function useMfgProducts(opts?: {
 }) {
   return useQuery({
     queryKey: ['mfg-products', activeCompanyKey(), opts?.category ?? 'all', opts?.search ?? ''],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (opts?.category) params.set('category', opts.category);
       if (opts?.search) params.set('search', opts.search);
       const res = await authedFetch<{ products: MfgProductRow[] }>(
         `/mfg-products${params.toString() ? `?${params.toString()}` : ''}`,
+        { signal },
       );
       return res.products;
     },

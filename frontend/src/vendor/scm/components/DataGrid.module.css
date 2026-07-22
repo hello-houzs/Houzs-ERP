@@ -46,6 +46,11 @@
   flex-wrap: wrap;
 }
 .toolbarSpacer { flex: 1; }
+.searchGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
 .searchWrap {
   display: inline-flex;
   align-items: center;
@@ -55,6 +60,12 @@
   border-radius: var(--radius-md);
   padding: 4px 8px;
   min-width: 240px;
+}
+.searchScope {
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--fg-muted);
 }
 .searchInput {
   border: 0;

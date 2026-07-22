@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
+import { identityStorageKey } from "../lib/storageIdentity";
 
 /**
  * Persists a page's filters / tabs / sort choice across navigation.
@@ -25,7 +26,7 @@ export function useStickyFilters(
   keys?: readonly string[]
 ): ReturnType<typeof useSearchParams> {
   const [params, setParams] = useSearchParams();
-  const storageKey = `filters:${scope}`;
+  const storageKey = identityStorageKey(`filters:${scope}`);
   const restored = useRef(false);
 
   // Pick out only the allow-listed keys (or all if no list).
@@ -47,6 +48,7 @@ export function useStickyFilters(
     const current = pluck(params);
     if (current.toString() !== "") return;
     try {
+      if (!storageKey) return;
       const saved = localStorage.getItem(storageKey);
       if (!saved) return;
       // Pluck on restore too — legacy entries that contained keys
@@ -69,6 +71,7 @@ export function useStickyFilters(
   // Mirror URL → storage on every change.
   useEffect(() => {
     try {
+      if (!storageKey) return;
       const snap = pluck(params).toString();
       if (snap === "") localStorage.removeItem(storageKey);
       else localStorage.setItem(storageKey, snap);

@@ -9,9 +9,11 @@
 //
 // These tests drive a REAL QueryClient, so they assert cache behaviour rather
 // than string equality of a key.
-import { QueryClient } from "@tanstack/react-query";
+import { createElement, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
-import { buildQueryKey } from "./useQuery";
+import { buildQueryKey, useQuery as useHouzsQuery } from "./useQuery";
 
 /* Two callsites whose fetcher bodies are BYTE-IDENTICAL but which mean
    different things and return different data — `fetchA.toString() ===
@@ -99,5 +101,60 @@ describe("useQuery cache keys", () => {
     // callsite keyed "grns-paged" must NOT land on that root's entry.
     expect(buildQueryKey("grns-paged")[0]).toBe("uq");
     expect(buildQueryKey("grns-paged")).not.toEqual(["grns-paged"]);
+  });
+});
+
+describe("query cancellation", () => {
+  test("TanStack aborts a superseded request signal", async () => {
+    const qc = new QueryClient();
+    let firstSignal: AbortSignal | undefined;
+    const pending = qc.fetchQuery({
+      queryKey: buildQueryKey("search", ["A"]),
+      queryFn: ({ signal }) => {
+        firstSignal = signal;
+        return new Promise<string>(() => undefined);
+      },
+    });
+
+    await Promise.resolve();
+    await qc.cancelQueries({ queryKey: buildQueryKey("search", ["A"]), exact: true });
+
+    expect(firstSignal?.aborted).toBe(true);
+    await expect(pending).rejects.toBeTruthy();
+  });
+
+  test("the real wrapper cancels A when rerendered with A1 and only exposes A1", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const signals = new Map<string, AbortSignal>();
+    const resolvers = new Map<string, (value: string) => void>();
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: qc }, children);
+
+    const { result, rerender } = renderHook(
+      ({ term }: { term: string }) => useHouzsQuery(
+        "live-search",
+        (signal) => new Promise<string>((resolve, reject) => {
+          signals.set(term, signal!);
+          resolvers.set(term, resolve);
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+        [term],
+      ),
+      { initialProps: { term: "A" }, wrapper },
+    );
+
+    await waitFor(() => expect(signals.has("A")).toBe(true));
+    rerender({ term: "A1" });
+    await waitFor(() => expect(signals.get("A")?.aborted).toBe(true));
+    await waitFor(() => expect(signals.has("A1")).toBe(true));
+    resolvers.get("A1")?.("A1 results");
+
+    await waitFor(() => expect(result.current.data).toBe("A1 results"));
+    expect(result.current.error).toBeNull();
+    expect(qc.getQueryData(buildQueryKey("live-search", ["A"]))).toBeUndefined();
   });
 });

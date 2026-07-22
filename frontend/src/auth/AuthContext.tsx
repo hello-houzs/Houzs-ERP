@@ -11,6 +11,14 @@ import { api, tokenStore, onUnauthorized } from "../api/client";
 import { clearAll as clearApiCache } from "../api/cache";
 import { queryClient } from "../lib/queryClient";
 import { clearQuerySnapshots } from "../lib/query-persist";
+import { subscribeAuthTokenChange } from "../lib/authToken";
+import { subscribeActiveCompany } from "../lib/activeCompany";
+import {
+  bindBrowserStorageIdentity,
+  clearBrowserStorageIdentity,
+} from "../lib/storageIdentity";
+import { clearAllScmHandoffs } from "../lib/scmHandoffStorage";
+import { writeRememberedEmail } from "../lib/rememberedEmail";
 import type { AccessLevel, AuthUser } from "../types";
 
 /**
@@ -26,9 +34,26 @@ import type { AccessLevel, AuthUser } from "../types";
  * is the safe window: the login screen is the only thing mounted, so clear()
  * cannot race a live observer into an immediate refetch.
  */
-function resetSessionCaches(): void {
+function resetMemoryCaches(): void {
   queryClient.clear();
   clearApiCache();
+}
+
+/**
+ * Everything a session may take with it when it ends: transient nav handoffs,
+ * the bound storage identity, in-memory caches and the persisted query
+ * snapshots.
+ *
+ * It does NOT take the durable payment-retry intents. Those are payments the
+ * operator has already collected and the server has not accepted yet; a 401 is
+ * a routine event (a 7-day session simply expired) and must never be the reason
+ * money collected at the counter stops existing. clearAllScmHandoffs leaves
+ * them alone by design — see lib/scmHandoffStorage.
+ */
+function resetSessionCaches(): void {
+  clearAllScmHandoffs();
+  clearBrowserStorageIdentity();
+  resetMemoryCaches();
   clearQuerySnapshots();
 }
 
@@ -82,12 +107,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     for (let attempt = 0; ; attempt++) {
       try {
         const res = await api.get<{ user: AuthUser }>("/api/auth/me");
+        bindBrowserStorageIdentity(res.user.id);
         setState((prev) => ({ ...prev, user: res.user, loading: false }));
         return;
       } catch (e) {
         if ((e as { status?: number })?.status === 401) {
           tokenStore.clear();
-          clearQuerySnapshots();
+          resetSessionCaches();
           setState((prev) => ({ ...prev, user: null, loading: false }));
           return;
         }
@@ -151,9 +177,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return onUnauthorized(() => {
       tokenStore.clear();
-      clearQuerySnapshots();
+      resetSessionCaches();
       setState((prev) => ({ ...prev, user: null }));
     });
+  }, []);
+
+  useEffect(() => {
+    let reloading = false;
+    const reloadCleanly = (clearSnapshots: boolean) => {
+      if (reloading) return;
+      reloading = true;
+      clearAllScmHandoffs();
+      clearBrowserStorageIdentity();
+      if (clearSnapshots) resetSessionCaches();
+      else resetMemoryCaches();
+      setState((prev) => ({ ...prev, user: null, loading: true }));
+      window.location.reload();
+    };
+    const unsubscribeAuth = subscribeAuthTokenChange((_token, source) => {
+      if (source === "storage") reloadCleanly(true);
+    });
+    const unsubscribeCompany = subscribeActiveCompany((source) => {
+      if (source === "storage") reloadCleanly(false);
+    });
+    return () => {
+      unsubscribeAuth();
+      unsubscribeCompany();
+    };
   }, []);
 
   const login = useCallback(
@@ -165,8 +215,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Remember the account (email ONLY, never the password) so the login screen
       // pre-fills it next time — or forget it when Remember me is unchecked.
       try {
-        if (remember) localStorage.setItem("auth:lastEmail", email.trim());
-        else localStorage.removeItem("auth:lastEmail");
+        writeRememberedEmail(remember ? email : null);
       } catch { /* storage disabled (private mode) — non-fatal */ }
       // 2FA accounts get a challenge instead of a token — the caller collects a
       // code and calls verifyTotpLogin. No token is stored yet.
@@ -232,7 +281,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await api.post("/api/auth/logout");
     } catch {}
     tokenStore.clear();
-    clearQuerySnapshots();
+    resetSessionCaches();
     // Signing out is an identity-context change, and identity scopes every read
     // (own-vs-downline SO rows, finance fields, page access). Nothing from the
     // outgoing user may survive into the next sign-in. A logout is an SPA state

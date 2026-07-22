@@ -17,7 +17,8 @@ import { StatCard } from "../components/StatCard";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { useStickyFilters } from "../hooks/useStickyFilters";
-import { useLocalStorage } from "../hooks/useLocalStorage";
+import { enumPreference, useIdentityPreference } from "../hooks/useIdentityPreference";
+import { allSettledBounded } from "../lib/allSettledBounded";
 import { api, tokenStore } from "../api/client";
 import { prepareImageForUpload } from "../lib/imagePipeline";
 import { useAuth } from "../auth/AuthContext";
@@ -669,11 +670,12 @@ function MembersTab({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   // Card grid (reference look) vs. dense table. Grid is the default.
-  const [view, setView] = useLocalStorage<"grid" | "list">("team:view", "grid");
+  const [view, setView] = useIdentityPreference("team:view", "grid", enumPreference(["grid", "list"] as const));
   // Grid ordering (the table view has its own column sort).
-  const [gridSort, setGridSort] = useLocalStorage<"name" | "recent" | "status">(
+  const [gridSort, setGridSort] = useIdentityPreference(
     "team:gridSort",
     "name",
+    enumPreference(["name", "recent", "status"] as const),
   );
 
   // Per-user brand picker — opens a small modal scoped to one member.
@@ -1052,6 +1054,18 @@ function MembersTab({
 
   // ── Bulk selection (list view) ─────────────────────────────────
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const bulkBusyRef = useRef(false);
+  function beginBulk(): boolean {
+    if (bulkBusyRef.current) return false;
+    bulkBusyRef.current = true;
+    setBulkBusy(true);
+    return true;
+  }
+  function endBulk() {
+    bulkBusyRef.current = false;
+    setBulkBusy(false);
+  }
   function toggleSelect(id: number) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -1071,10 +1085,10 @@ function MembersTab({
   }
   async function bulkPatch(fields: Record<string, unknown>, label: string) {
     const ids = [...selectedIds];
-    if (ids.length === 0) return;
+    if (ids.length === 0 || !beginBulk()) return;
     try {
-      const results = await Promise.allSettled(
-        ids.map((id) => api.patch(`/api/users/${id}`, fields)),
+      const results = await allSettledBounded(
+        ids.map((id) => () => api.patch(`/api/users/${id}`, fields)),
       );
       const ok = results.filter((r) => r.status === "fulfilled").length;
       const failed = ids.length - ok;
@@ -1084,6 +1098,8 @@ function MembersTab({
       members.reload();
     } catch (e: any) {
       toast.error(e?.message || "Bulk action failed");
+    } finally {
+      endBulk();
     }
   }
 
@@ -1099,10 +1115,10 @@ function MembersTab({
   );
   async function bulkResendInvites() {
     const targets = selectedInvited;
-    if (targets.length === 0) return;
+    if (targets.length === 0 || !beginBulk()) return;
     try {
-      const results = await Promise.allSettled(
-        targets.map((u) =>
+      const results = await allSettledBounded(
+        targets.map((u) => () =>
           api.post<{ email_sent?: boolean }>(`/api/users/${u.id}/resend-invite`),
         ),
       );
@@ -1119,19 +1135,22 @@ function MembersTab({
       members.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed to resend invitations");
+    } finally {
+      endBulk();
     }
   }
   async function bulkResetPasswords() {
     const targets = selectedActive;
-    if (targets.length === 0) return;
+    if (targets.length === 0 || bulkBusyRef.current) return;
     const ok = await dialog.confirm(
       `Send a password-reset link to ${targets.length} active member${targets.length === 1 ? "" : "s"}?\n\n` +
         `Nothing changes for anyone who doesn't click — passwords and active sessions keep working. Each link expires in 1 hour. This does NOT touch pending invites.`,
     );
     if (!ok) return;
+    if (!beginBulk()) return;
     try {
-      const results = await Promise.allSettled(
-        targets.map((u) =>
+      const results = await allSettledBounded(
+        targets.map((u) => () =>
           api.post<{ email_sent?: boolean }>(`/api/users/${u.id}/reset-password`),
         ),
       );
@@ -1148,6 +1167,8 @@ function MembersTab({
       members.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed to send reset links");
+    } finally {
+      endBulk();
     }
   }
 
@@ -1169,6 +1190,7 @@ function MembersTab({
                 <input
                   type="checkbox"
                   checked={all}
+                  disabled={bulkBusy}
                   ref={(el) => {
                     if (el) el.indeterminate = some && !all;
                   }}
@@ -1187,6 +1209,7 @@ function MembersTab({
                 <input
                   type="checkbox"
                   checked={selectedIds.has(u.id)}
+                  disabled={bulkBusy}
                   onChange={() => toggleSelect(u.id)}
                   onClick={(e) => e.stopPropagation()}
                   className="h-3.5 w-3.5 cursor-pointer accent-[#a16a2e]"
@@ -1705,12 +1728,13 @@ function MembersTab({
         {view === "list" && selectedIds.size > 0 && (
           <div className="sticky bottom-3 z-20 mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-accent/40 bg-surface px-3 py-2 shadow-slab">
             <span className="text-[12px] font-semibold text-ink">
-              {selectedIds.size} selected
+              {bulkBusy ? "Working…" : `${selectedIds.size} selected`}
             </span>
             {selectedIds.size < selectableFiltered.length && (
               <button
                 type="button"
                 onClick={selectAllFiltered}
+                disabled={bulkBusy}
                 className="text-[11px] font-medium text-accent hover:underline"
               >
                 Select all {selectableFiltered.length}
@@ -1720,6 +1744,7 @@ function MembersTab({
             <button
               type="button"
               onClick={() => bulkPatch({ status: "active" }, "Enabled")}
+              disabled={bulkBusy}
               className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
             >
               <UserCheck size={12} /> Enable
@@ -1727,6 +1752,7 @@ function MembersTab({
             <button
               type="button"
               onClick={() => bulkPatch({ status: "disabled" }, "Disabled")}
+              disabled={bulkBusy}
               className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
             >
               <UserX size={12} /> Disable
@@ -1735,6 +1761,7 @@ function MembersTab({
               <button
                 type="button"
                 onClick={bulkResendInvites}
+                disabled={bulkBusy}
                 className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
                 title="Re-send the invitation email to the pending (not-yet-onboarded) members in your selection. Does not touch active members."
               >
@@ -1745,6 +1772,7 @@ function MembersTab({
               <button
                 type="button"
                 onClick={bulkResetPasswords}
+                disabled={bulkBusy}
                 className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
                 title="Send a password-reset link to the active members in your selection. Logs out their sessions; confirms first."
               >
@@ -1753,6 +1781,7 @@ function MembersTab({
             )}
             <select
               defaultValue=""
+              disabled={bulkBusy}
               onChange={(e) => {
                 if (e.target.value) {
                   bulkPatch({ department_id: Number(e.target.value) }, "Department updated");
@@ -1772,6 +1801,7 @@ function MembersTab({
             </select>
             <select
               defaultValue=""
+              disabled={bulkBusy}
               onChange={(e) => {
                 if (e.target.value) {
                   bulkPatch({ position_id: Number(e.target.value) }, "Position updated");
@@ -1792,6 +1822,7 @@ function MembersTab({
             <button
               type="button"
               onClick={clearSelect}
+              disabled={bulkBusy}
               className="ml-1 text-[11px] font-medium text-ink-muted transition-colors hover:text-err"
             >
               Clear

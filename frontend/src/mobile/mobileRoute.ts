@@ -21,6 +21,9 @@
  *  Orders list because they lack access is the same lie in a smaller form.
  */
 
+import { resolveAlias } from "../lib/routeAliases";
+import { isKnownStaffLocation } from "../routing/routeManifest";
+
 /** Where a URL points, once resolved. */
 export type MobileRoute =
   /** The app's own landing — the first bottom tab the user can open. */
@@ -39,7 +42,9 @@ export type MobileRoute =
   /** A real destination that this user's position may not open. */
   | { t: "locked"; label: string }
   /** No mobile screen exists for this path. The honest dead end. */
-  | { t: "desktop-only"; path: string };
+  | { t: "desktop-only"; path: string }
+  /** The URL exists on neither mobile nor desktop. */
+  | { t: "not-found"; path: string };
 
 export type MobileDestination = { to: string; label: string };
 
@@ -49,14 +54,59 @@ export type MobileDestination = { to: string; label: string };
  *  mobile destination and is matched as an exact path before we get here. */
 const SO_RESERVED_SEGMENTS = new Set(["new", "generate", "maintenance"]);
 
-function normalise(pathname: string): string {
+function normalisePath(pathname: string): string {
   const path = (pathname || "/").split("?")[0].split("#")[0];
   // Trailing slash is not a different page. Keep "/" itself intact.
   return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
 }
 
+function splitLocation(location: string): { path: string; query: string } {
+  const withoutHash = (location || "/").split("#")[0];
+  const queryAt = withoutHash.indexOf("?");
+  const rawPath = queryAt === -1 ? withoutHash : withoutHash.slice(0, queryAt);
+  const query = queryAt === -1 ? "" : withoutHash.slice(queryAt + 1);
+  return { path: normalisePath(rawPath), query };
+}
+
+function includesDeclaredQuery(requested: string, declared: string): boolean {
+  const requestedParams = new URLSearchParams(requested);
+  const declaredParams = new URLSearchParams(declared);
+  for (const key of new Set(declaredParams.keys())) {
+    const expected = declaredParams.getAll(key).sort();
+    const actual = requestedParams.getAll(key).sort();
+    if (actual.length !== expected.length) return false;
+    if (expected.some((value, index) => actual[index] !== value)) return false;
+  }
+  return true;
+}
+
 /**
- * @param pathname    `window.location.pathname` (query/hash tolerated).
+ * Whether a browser location names one declared mobile destination.
+ *
+ * Query-bearing destinations are distinct identities. In particular,
+ * `/team?tab=members` must never match `/team?tab=departments`: those rows can
+ * carry different gates and open different screens. A bare `/team` keeps the
+ * existing default-to-first-tab behaviour. Destinations without a declared
+ * query continue to tolerate incidental browser query parameters.
+ */
+export function mobileDestinationMatches(location: string, destination: string): boolean {
+  const requested = splitLocation(location);
+  const declared = splitLocation(destination);
+  if (requested.path !== declared.path) return false;
+  if (!declared.query) return true;
+  if (!requested.query) return true;
+  return includesDeclaredQuery(requested.query, declared.query);
+}
+
+/** Apply the same additive aliases as desktop before mobile route resolution. */
+function canonicalLocation(location: string): string {
+  const { path, query } = splitLocation(location);
+  const canonicalPath = resolveAlias(path) ?? path;
+  return query ? `${canonicalPath}?${query}` : canonicalPath;
+}
+
+/**
+ * @param location    Browser pathname + search + hash (query/hash tolerated).
  * @param visible     Destinations this user may open — MobileApp's already
  *                    permission-filtered menu + profile rows.
  * @param allKnown    Every destination the mobile app implements, gate ignored.
@@ -64,11 +114,12 @@ function normalise(pathname: string): string {
  *                    neither is `desktop-only`.
  */
 export function resolveMobileRoute(
-  pathname: string,
+  location: string,
   visible: readonly MobileDestination[],
   allKnown: readonly MobileDestination[],
 ): MobileRoute {
-  const path = normalise(pathname);
+  const canonical = canonicalLocation(location);
+  const { path } = splitLocation(canonical);
 
   // The PWA start_url and every post-login redirect land here. Must stay the
   // plain landing, or the app would open on a "not available" screen.
@@ -79,7 +130,7 @@ export function resolveMobileRoute(
   if (path === "/profile") return { t: "tab", tab: "profile" };
 
   const match = (list: readonly MobileDestination[]) =>
-    list.find((d) => normalise(d.to.split("?")[0]) === path);
+    list.find((d) => mobileDestinationMatches(canonical, d.to));
 
   const visibleHit = match(visible);
   if (visibleHit) return { t: "menu", to: visibleHit.to, label: visibleHit.label };
@@ -93,10 +144,16 @@ export function resolveMobileRoute(
   // to this user, since that is the permission the detail screen's data needs.
   const soDeep = /^\/scm\/sales-orders\/([^/]+)$/.exec(path);
   if (soDeep && !SO_RESERVED_SEGMENTS.has(soDeep[1])) {
-    const canSo = visible.some((d) => normalise(d.to.split("?")[0]) === "/scm/sales-orders");
+    const canSo = visible.some((d) => mobileDestinationMatches("/scm/sales-orders", d.to));
     if (!canSo) return { t: "locked", label: "Sales Orders" };
-    return { t: "so-detail", docNo: decodeURIComponent(soDeep[1]) };
+    try {
+      return { t: "so-detail", docNo: decodeURIComponent(soDeep[1]) };
+    } catch {
+      return { t: "not-found", path };
+    }
   }
 
-  return { t: "desktop-only", path };
+  return isKnownStaffLocation(path)
+    ? { t: "desktop-only", path }
+    : { t: "not-found", path };
 }

@@ -66,48 +66,37 @@ export function ProjectChat({
   const [liveById, setLiveById] = useState<Map<number, ActivityRow>>(
     () => new Map((activity ?? []).map((a) => [a.id, a]))
   );
+  const liveByIdRef = useRef(liveById);
   const [bootstrapped, setBootstrapped] = useState<boolean>(
     () => activity !== undefined
   );
+  const [loadFailed, setLoadFailed] = useState(false);
+  const projectIdRef = useRef(projectId);
+  const requestGenerationRef = useRef(0);
+  const refreshRef = useRef<() => void>(() => {});
 
   // Re-seed when the parent sends a fresh activity prop (e.g. after
   // a stage change triggers a full detail reload). New IDs get added;
   // existing ones replaced; nothing is dropped so locally-polled rows
   // that haven't made it into parent yet aren't lost.
   useEffect(() => {
-    if (!activity) return;
-    setLiveById((prev) => {
-      const next = new Map(prev);
-      for (const a of activity) next.set(a.id, a);
-      return next;
-    });
+    if (projectIdRef.current !== projectId) {
+      projectIdRef.current = projectId;
+      const next = new Map((activity ?? []).map((a) => [a.id, a]));
+      liveByIdRef.current = next;
+      setLiveById(next);
+      setBootstrapped(activity !== undefined);
+      setLoadFailed(false);
+      return;
+    }
+    if (activity === undefined) return;
+    const next = new Map(liveByIdRef.current);
+    for (const a of activity) next.set(a.id, a);
+    liveByIdRef.current = next;
+    setLiveById(next);
     setBootstrapped(true);
-  }, [activity]);
-
-  // Self-fetch path: when the parent didn't pass activity, pull the
-  // full history once on mount. After that the polling effect takes
-  // over with `since` to keep things minimal.
-  useEffect(() => {
-    if (activity !== undefined) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await api.get<{ data: ActivityRow[] }>(
-          `/api/projects/${projectId}/activity`
-        );
-        if (cancelled) return;
-        setLiveById(new Map((r.data ?? []).map((a) => [a.id, a])));
-      } catch {
-        // Silent — the poller will still try.
-      } finally {
-        if (!cancelled) setBootstrapped(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+    setLoadFailed(false);
+  }, [activity, projectId]);
 
   // "N new ↓" chip state — count of messages that arrived while the
   // user was scrolled away from the bottom.
@@ -137,47 +126,83 @@ export function ProjectChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  // Poll for new activity every 3s while the page is visible. Uses the
-  // max known created_at as the cursor so we only pull truly-new rows.
+  // Fetch immediately, then poll every 3s while visible. An empty chat has no
+  // cursor, so it retries the full-history endpoint until one exists.
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
+    let controller: AbortController | null = null;
+
     async function tick() {
-      if (document.hidden) return;
-      const maxTs = messages[messages.length - 1]?.created_at;
-      if (!maxTs) return;
+      if (cancelled || document.hidden || inFlight) return;
+      inFlight = true;
+      const generation = ++requestGenerationRef.current;
+      controller = new AbortController();
+      let maxTs = "";
+      for (const row of liveByIdRef.current.values()) {
+        if (row.created_at > maxTs) maxTs = row.created_at;
+      }
+      const path = maxTs
+        ? `/api/projects/${projectId}/activity?since=${encodeURIComponent(maxTs)}`
+        : `/api/projects/${projectId}/activity`;
       try {
         const r = await api.get<{ data: ActivityRow[] }>(
-          `/api/projects/${projectId}/activity?since=${encodeURIComponent(maxTs)}`
+          path,
+          { signal: controller.signal },
         );
-        if (cancelled) return;
+        if (
+          cancelled ||
+          controller.signal.aborted ||
+          generation !== requestGenerationRef.current
+        ) return;
         const incoming = r.data ?? [];
-        if (incoming.length === 0) return;
-        const addedWhileScrolledUp = wasAtBottomRef.current ? 0 : incoming.length;
-        setLiveById((prev) => {
-          const next = new Map(prev);
+        if (incoming.length > 0) {
+          const previous = liveByIdRef.current;
+          const next = new Map(previous);
           for (const a of incoming) next.set(a.id, a);
-          return next;
-        });
-        if (addedWhileScrolledUp > 0) {
-          setNewCount((c) => c + addedWhileScrolledUp);
+          const added = next.size - previous.size;
+          liveByIdRef.current = next;
+          setLiveById(next);
+          if (maxTs && !wasAtBottomRef.current && added > 0) {
+            setNewCount((c) => c + added);
+          }
+          if (added > 0) notifs.reload();
         }
-        notifs.reload();
+        setBootstrapped(true);
+        setLoadFailed(false);
       } catch {
-        // Silent — the next tick will retry.
+        if (
+          !cancelled &&
+          !controller.signal.aborted &&
+          generation === requestGenerationRef.current &&
+          liveByIdRef.current.size === 0
+        ) {
+          setLoadFailed(true);
+        }
+      } finally {
+        if (generation === requestGenerationRef.current) {
+          inFlight = false;
+          controller = null;
+        }
       }
     }
+    refreshRef.current = () => void tick();
+    void tick();
     const id = window.setInterval(tick, 3000);
     function onVis() {
-      if (!document.hidden) tick();
+      if (!document.hidden) void tick();
     }
     document.addEventListener("visibilitychange", onVis);
     return () => {
       cancelled = true;
+      requestGenerationRef.current += 1;
+      controller?.abort();
+      refreshRef.current = () => {};
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVis);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, messages.length]);
+  }, [projectId]);
 
   async function send() {
     const note = draft.trim();
@@ -189,18 +214,7 @@ export function ProjectChat({
       onPosted?.();
       // Mark as read right away — our own send shouldn't light up our bell.
       api.post(`/api/projects/${projectId}/read`, {}).catch(() => {});
-      // When self-fetching, refresh history so the new bubble appears
-      // before the next 3s poll tick.
-      if (activity === undefined) {
-        try {
-          const r = await api.get<{ data: ActivityRow[] }>(
-            `/api/projects/${projectId}/activity`
-          );
-          setLiveById(new Map((r.data ?? []).map((a) => [a.id, a])));
-        } catch {
-          // The poller will catch up.
-        }
-      }
+      refreshRef.current();
     } catch (e: any) {
       toast.error(e?.message || "Failed to send");
     } finally {
@@ -279,9 +293,14 @@ export function ProjectChat({
         ref={scrollRef}
         className="thin-scroll flex-1 space-y-2 overflow-y-auto px-3 py-3"
       >
-        {!bootstrapped && (
+        {!bootstrapped && !loadFailed && (
           <div className="py-10 text-center text-[11px] text-ink-muted">
             Loading messages…
+          </div>
+        )}
+        {!bootstrapped && loadFailed && (
+          <div className="py-10 text-center text-[11px] text-ink-muted">
+            Unable to load messages. Retrying…
           </div>
         )}
         {bootstrapped && messages.length === 0 && (

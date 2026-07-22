@@ -100,7 +100,7 @@ export function useGrnsPaged(params: { page: number; pageSize: number; status?: 
   if (sort) usp.set('sort', sort);
   return useQuery({
     queryKey: ['grns-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
-    queryFn: () => authedFetch<{ grns: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; posted: number; cancelled: number } }>(`/grns?${usp.toString()}`),
+    queryFn: ({ signal }) => authedFetch<{ grns: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; posted: number; cancelled: number } }>(`/grns?${usp.toString()}`, { signal }),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
     retry: retryUnlessClientError,

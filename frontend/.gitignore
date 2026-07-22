@@ -6,3 +6,9 @@ ds-bundle/
 .design-sync/learnings/
 .design-sync/node_modules
 .design-sync/tailwind-built.css
+
+# Local Chromium list-performance gate artifacts
+/perf-lab/report/
+/perf-lab/test-results/
+/perf-lab/perf-lab/
+/test-results/

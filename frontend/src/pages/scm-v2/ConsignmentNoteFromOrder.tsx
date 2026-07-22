@@ -9,7 +9,7 @@
 // A debtor-lock keeps the merge clean: once one line is ticked, lines of a
 // DIFFERENT debtor grey out — a note is for ONE debtor.
 //
-// Continue stashes the picked lines to sessionStorage['cnFromOrderPicks'] and
+// Continue stashes the picked lines in the scoped SCM handoff store and
 // opens the normal New Consignment Note form prefilled for review (?fromPicks=1).
 //
 // Routing: /scm/consignment-notes/from-order.
@@ -17,6 +17,7 @@
 
 import { useMemo, useState, type CSSProperties } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
@@ -240,7 +241,10 @@ export const ConsignmentNoteFromOrder = () => {
     }
 
     const firstDocNo = stash[0]?.orderDocNo ?? '';
-    sessionStorage.setItem('cnFromOrderPicks', JSON.stringify(stash));
+    if (!writeScmHandoff('cnFromOrderPicks', stash)) {
+      setDialog({ title: 'Unable to continue', body: 'This browser could not safely store your picked lines. Your selection is still here; free some browser storage and try again.' });
+      return;
+    }
     navigate(`/scm/consignment-notes/new?fromConsignmentOrder=${encodeURIComponent(firstDocNo)}&fromPicks=1`);
   };
 

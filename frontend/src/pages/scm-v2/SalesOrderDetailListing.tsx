@@ -752,7 +752,17 @@ export const SalesOrderDetailListing = () => {
             },
           ] as Array<{ label: string; value: string; tone?: 'success' | 'error' }>
         ).map(({ label, value, tone }) => (
-          <StatCard key={label} label={label} value={value} tone={tone} />
+          /* Every tile is a reduce over `visibleRows`, which is EMPTY until the
+             listing resolves — so "Revenue (RM) RM 0.00" would be a confident
+             statement about a report that has not loaded. Mark them unknown
+             until there are rows behind them. */
+          <StatCard
+            key={label}
+            label={label}
+            value={value}
+            tone={tone}
+            pending={query.isLoading || (query.isFetching && rawRows.length === 0) || Boolean(query.error)}
+          />
         ))}
       </div>
 

@@ -35,6 +35,7 @@ import {
   requestIdFromError,
   requestIdFromResponse,
 } from '../../../lib/requestCorrelation';
+import { companyHeader } from '../../../lib/activeCompany';
 // WO-7 image pipeline — same app-lib import boundary as authToken above.
 // NOTE: this is the UPLOAD pipeline (q0.8/2000px), NOT vendor/shared/
 // image-compress.ts — that one is OCR-tuned and feeds Claude vision.
@@ -54,21 +55,13 @@ const token = (): string => {
 };
 
 // Multi-company (Phase 0c): stamp the active company on every slip request so
-// the backend's companyContext resolves it. The id is written by the top-bar
-// switcher (src/lib/activeCompany.ts) under 'houzs.activeCompanyId'; read the
-// localStorage key DIRECTLY here to keep this vendored file self-contained
-// (same style as the auth:token read above). Absent → NO header → backend falls
-// back to its hostname default, so single-company Houzs is unchanged. Read it
-// FRESH per request so a mid-session company switch is picked up immediately.
-const companyHeader = (): Record<string, string> => {
-  try {
-    const raw = localStorage.getItem('houzs.activeCompanyId');
-    const n = raw ? Number(raw) : NaN;
-    return Number.isFinite(n) && n > 0 ? { 'X-Company-Id': String(n) } : {};
-  } catch {
-    return {};
-  }
-};
+// the backend's companyContext resolves it. The id comes from the SHARED
+// accessor (src/lib/activeCompany.ts) — the local re-implementation that read
+// 'houzs.activeCompanyId' straight out of localStorage is gone, because the key
+// is now session-scoped and a second copy of the rule silently sent the wrong
+// tenant. Absent → NO header → backend falls back to its hostname default, so
+// single-company Houzs is unchanged. Read FRESH per request so a mid-session
+// company switch is picked up immediately.
 
 /* These slip fetches bypass authedFetch's JSON handling but still use the
    shared correlated transport. Without their own deadline,
