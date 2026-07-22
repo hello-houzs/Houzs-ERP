@@ -346,7 +346,13 @@ export function LoginScreen() {
           <FieldLabel>Email</FieldLabel>
           <TextInput
             type="email"
-            autoComplete="email"
+            name="email"
+            /* Login USERNAME token — NOT "email" (a contact-info token that
+               makes browsers offer the address book / "Manage addresses"
+               instead of the saved login, so the paired password is never
+               offered). "username" pairs with current-password below so the
+               browser's password manager fills BOTH in one click. */
+            autoComplete="username"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@houzscentury.com"
@@ -357,6 +363,7 @@ export function LoginScreen() {
         <div>
           <FieldLabel>Password</FieldLabel>
           <PasswordInput
+            name="password"
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}

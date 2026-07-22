@@ -105,13 +105,13 @@ export function MobileLogin() {
             <div className="hz-lg-item" style={{ ...delay(3), display: "flex", flexDirection: "column", gap: 13, marginTop: 18 }}>
               <label style={{ display: "block" }}>
                 <span style={labelStyle}>Email or phone</span>
-                <input value={email} onChange={(e) => setEmail(e.target.value)} autoCapitalize="none" autoCorrect="off" inputMode="email"
+                <input value={email} onChange={(e) => setEmail(e.target.value)} name="email" autoComplete="username" autoCapitalize="none" autoCorrect="off" inputMode="email"
                   onKeyDown={(e) => { if (e.key === "Enter") document.getElementById("hz-pw")?.focus(); }} style={inputStyle} placeholder="you@houzscentury.com" />
               </label>
               <label style={{ display: "block" }}>
                 <span style={labelStyle}>Password</span>
                 <div style={{ position: "relative" }}>
-                  <input id="hz-pw" type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)}
+                  <input id="hz-pw" type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} name="password" autoComplete="current-password"
                     onKeyDown={(e) => { if (e.key === "Enter") onSignIn(); }} style={{ ...inputStyle, paddingRight: 44 }} placeholder="••••••••" />
                   <button
                     type="button"
