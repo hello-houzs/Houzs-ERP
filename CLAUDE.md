@@ -91,6 +91,42 @@ test-only now — which matters most for migrations, below.
   number at MERGE time by re-listing the tree, not when you branch — parallel
   PRs otherwise pick the same one.
 
+## ⚠️ Never ask the owner to run a query — build the check instead (owner rule)
+
+The owner is not a database console. If you need a fact that lives only in
+production, the answer is a script plus a `workflow_dispatch` workflow that
+reads it using `secrets.DATABASE_URL` — **not** a SQL snippet pasted into chat
+for him to run. Asking costs an interruption every single time, and it puts the
+production DSN in front of a human for what is usually a `SELECT`.
+
+Live example to copy: `backend/scripts/check-soak-gate.mjs` +
+`.github/workflows/soak-gate-check.yml`. Actions → **Soak gate check
+(read-only)** → Run workflow; the verdict appears as a run annotation.
+
+Rules for anything in this shape:
+
+- **Read-only means read-only.** One statement, no DDL, no writes, no
+  transaction. If a check needs to write, it is not this pattern.
+- **Manual trigger only.** Never put a production DB read on a schedule; it
+  turns a real query into CI noise nobody reads.
+- **Own concurrency group, never the deploy's.** A diagnostic must not queue
+  behind — or displace — a release.
+- **Exit 0 for every legitimate answer.** A red job reads as "the check broke".
+  The answer is the output. Reserve non-zero for an unreachable DB.
+- **Evidence is not a setting.** When a marker row is MISSING, say so and stop.
+  Never insert it to make a gate pass — that forges the exact evidence the gate
+  exists to check. (This is why `check-soak-gate.mjs` treats zero rows as its
+  own outcome, not as "false".)
+
+**Never accept a credential through chat, and never read one out.** On
+2026-07-22 an attempt to identify which database a local `.dev.vars` pointed at
+echoed the whole DSN, password included, into a transcript — the file's value
+was quoted, so the `sed` that was supposed to strip it did not match. If you
+must inspect a secret-bearing file, match the field you want and print only
+that; never print a line and never let a failed match fall through to the raw
+value. If one is exposed anyway: say so immediately, record the rotation task
+in the repo, and keep reminding until the owner confirms it is rotated.
+
 ## Desktop and mobile are one product
 
 `frontend/src/mobile` is a first-class surface, not a viewport tweak. Most
