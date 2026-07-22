@@ -1,5 +1,20 @@
 // ---------------------------------------------------------------------------
-// Self-hosted client error reporter (owner ruling: no Sentry).
+// Self-hosted client error reporter.
+//
+// DOWNSTREAM, ADDED 2026-07-22 — this module is UNCHANGED, but what happens to
+// its events after they land is not. The backend endpoint it POSTs to
+// (backend/src/routes/clientErrors.ts) now ALSO forwards each event to an
+// error tracker, so a white screen can raise an alert in minutes instead of
+// waiting for the 02:00 digest. That forward is inert until the owner sets the
+// SENTRY_DSN Worker secret, and it carries the SAME sanitized fields the
+// endpoint already stored — the privacy note below is still the complete list.
+// The relay deliberately lives on the server, not here: sending from the
+// browser would bake a DSN into a public bundle and hand the tracking service
+// every staff member's real IP address. See docs/error-tracking-options.md.
+//
+// The original "no Sentry" ruling that produced this module is not overturned:
+// the DSN decides who receives the events, and a self-hosted GlitchTip is the
+// same one-secret change as a hosted Sentry.
 //
 // Every uncaught frontend error becomes a row in the backend's client_errors
 // table (POST /api/client-errors) so IT hears about white-screens from the
