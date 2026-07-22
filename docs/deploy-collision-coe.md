@@ -1,8 +1,8 @@
 # Houzs ERP — Deploy Collision COE (Correction of Error)
 
-**Date:** 2026-07-17 (twice, in one evening: ~20:27 and ~21:32 MYT)
+**Date:** 2026-07-17 (twice, in one evening: ~20:27 and ~21:32 MYT); **again 2026-07-22** — see §1a
 **Trigger:** Nothing broke visibly, which is the whole problem. The owner's **view-as** flow was reported broken, fixed, merged — and stayed broken in production. Staff continued to hit bugs that had already been fixed on main. Every deploy in the window reported **green**.
-**Status:** Both episodes recovered. The mechanism is documented in code. **The real fix is NOT shipped** — see §5. The interim rule is a manual check after every burst merge.
+**Status:** All three episodes recovered. The mechanism is documented in code. **The real fix is still NOT shipped** — see §5; it is now written and open as PR #992. The interim rule is a manual check after every burst merge, and it did not happen on 2026-07-22.
 
 ---
 
@@ -27,6 +27,16 @@ Each of those three decisions is defensible in isolation. `cancel-in-progress: f
 - **The burst is in the PR timestamps.** Episode two: **#714 merged 13:25:27Z, #718 at 13:25:37Z, #719 at 13:26:14Z** — three merges inside 47 seconds. `e90e1017` records episode one as *"seven PRs merged back-to-back."*
 - **The staleness was measured against a named SHA, not estimated.** Episode one: prod's frontend had not moved since `b8bce7e7` (merge of #673, 2026-07-17 19:21 MYT), with `query-persist.ts`, `MobilePOD.tsx`, `Positions.tsx`, `types.ts` landed and unshipped. Episode two: stale since `abb908dc` (#717, 21:15 MYT), with 8 files including `lib/authToken.ts` — *"the view-as fix itself"* — plus `main.tsx`, `api/client.ts`, `pages/Projects.tsx` and four `vendor/scm/lib/*` modules. `1d35ae28`'s message states the consequence plainly: *"So #718 fixed the owner's view-as, merged, and did not ship. Every view-as session still breaks the whole /scm surface."*
 - **The mechanism is recorded in the source tree**, at `frontend/public/sw.js:316-329`, next to the constant that was bumped to recover.
+
+---
+
+## 1a. Third firing — 2026-07-22, and a rollback that was stopped by luck
+
+Five days after this COE was written, the same mechanism stranded **10 commits** of frontend, including the whole of #906 (214 files). Full trace in `BUG-HISTORY.md`, 2026-07-22, "The frontend sat 10 commits behind main". Two things it adds to the record:
+
+**It can strand everything, not just the middle of a burst.** On 2026-07-17 a run always survived and the fault was the survivor's diff window (§1 mechanism 3). On 2026-07-22 the run for `850014c` held the group for **40 minutes** — `changes` completed 02:39:40, `backend` did not start until 03:19:46 — and *all three* runs queued behind it were cancelled, main tip included. `gh run view 29887977202 --json jobs` returns no job rows: cancelled before a job existed. So mechanism 2 alone is sufficient; mechanism 3 is not required, and a fix that only corrects the diff window would not have helped here.
+
+**A slow run is a time machine, and nothing in the pipeline knows it.** `850014c` is an *ancestor* of the already-deployed `644d25d`. Its `wrangler deploy` would have published a Worker **older than the live one**, silently reverting #995, #994 and `8f17f39`. It was stopped only because `npm test` failed at step 7 — `850014c` predates the `cloudflare:test` fetchMock migration that #995 landed — so `pg-migrate`, `wrangler deploy` and the smoke check all skipped. **An unrelated red test is the only thing that prevented a production rollback.** `deploy.yml` has no check that the SHA it is about to publish descends from the SHA already live; with `cancel-in-progress: false` and a queue that can hold a run for 40 minutes, publishing an ancestor is a normal outcome, not a freak one.
 
 ---
 
@@ -62,8 +72,10 @@ Each of those three decisions is defensible in isolation. `cancel-in-progress: f
 
 | Item | Owner | Status |
 |------|-------|--------|
-| **`workflow_dispatch` + a `force` input on `deploy.yml`.** Named as the real fix in both `e90e1017` and `sw.js:326-327`. It needs *both*: `paths-filter` has no `github.event.before` on a dispatch, so a dispatch without a force input would compute an empty diff and skip both jobs — the same bug by another route. | Owner / whoever next touches `deploy.yml` | **NOT DONE.** Verified at `9db13349`: `deploy.yml` has no `workflow_dispatch` trigger. There is still no way to redeploy without pushing a commit. |
-| **A filter diff window that spans everything since the last successful deploy**, rather than one push's range. | Owner | Not attempted. This is the actual defect; `workflow_dispatch` is an escape hatch for it, not a cure. |
+| **`workflow_dispatch` + a `force` input on `deploy.yml`.** Named as the real fix in both `e90e1017` and `sw.js:326-327`. It needs *both*: `paths-filter` has no `github.event.before` on a dispatch, so a dispatch without a force input would compute an empty diff and skip both jobs — the same bug by another route. | Owner / whoever next touches `deploy.yml` | **WRITTEN, NOT MERGED — PR #992.** It solves the "no force input" trap by removing the condition instead of adding a flag: the `frontend` job becomes unconditional, so a dispatch always republishes. Both jobs are guarded on `refs/heads/main`. |
+| **A filter diff window that spans everything since the last successful deploy**, rather than one push's range. | Owner | Not attempted. PR #992 sidesteps it for the **frontend** by dropping the condition entirely; the **backend** job keeps the broken window. See the row below — that asymmetry is new and needs its own decision. |
+| **The backend keeps a diff window that #992 proves untrustworthy.** #992's premise is that a per-push path diff cannot prove what is live; its remedy is applied only to the frontend, on the stated grounds that a skipped Worker redeploy "costs a cold start, not correctness". That holds only while the filter's diff is right. When a backend-carrying run is cancelled, the surviving run's `event.before..sha` range does not contain those files, `backend` skips, and **merged Worker code plus its migrations sit undeployed until the next backend-touching push** — while the now-unconditional frontend ships at tip. New skew mode: a current frontend calling API routes the live Worker does not have. | Whoever merges #992 | **OPEN.** Fix is either to make `backend` unconditional too (costs Actions minutes the filter was added to save — see §1's 4,900-of-3,000 figure), or to set `dorny/paths-filter`'s `base:` to the SHA of the last **successful** Deploy run. |
+| **Refuse to publish an ancestor of what is already live.** `deploy.yml` publishes the run's own SHA with no ordering check, and the queue can hold a run for 40 minutes (§1a). On 2026-07-22 only a failing test stopped a rollback. | Whoever next touches `deploy.yml` | **OPEN, not attempted.** A `git merge-base --is-ancestor <deployed> <this-sha>` gate before `wrangler deploy` is a few lines and turns a silent revert into a red job. |
 | **Interim rule, in force now:** *after any burst merge, check that the last deploy's `frontend` job says **success**, not **skipped**.* Recorded at `sw.js:328-329`. | Everyone merging to main | Manual. It is a human check standing in for a pipeline guarantee, and it will be forgotten. |
 
 ---
