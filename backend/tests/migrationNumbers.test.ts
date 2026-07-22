@@ -36,7 +36,13 @@ const MIGRATION_GLOBS: Record<string, Record<string, unknown>> = {
    readability problem, not an execution one — which is exactly why it kept
    happening unnoticed. Frozen here so the ratchet catches the NEXT one. */
 const KNOWN_DUPLICATES: Record<string, string[]> = {
-  "src/db/migrations-pg": ["0029", "0091", "0092", "0093", "0094", "0104", "0108", "0112", "0123"],
+  // 0171 landed twice — `0171_idempotency_phase2_constraints.sql` and
+  // `0171_scm_warehouse_type_and_unify.sql` (#1039) merged in parallel from the
+  // same base and each picked the same next-free number. Both have deployed and
+  // are recorded in `_pg_migrations` under their full filenames — a rename here
+  // would only mislead about what production ran, so the number is frozen into
+  // the ratchet the same way the pre-test doubles were.
+  "src/db/migrations-pg": ["0029", "0091", "0092", "0093", "0094", "0104", "0108", "0112", "0123", "0171"],
   "src/db/migrations": ["010"],
 };
 
