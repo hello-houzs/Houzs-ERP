@@ -1,4 +1,4 @@
-# Mobile gap mockups (DESIGN ONLY - pending owner approval)
+# Mobile gap mockups (APPROVED by the owner, 2026-07-22)
 
 Approval-ready static mockups for the top 3 mobile coverage gaps surfaced by the
 mobile parity audit. These are **design proposals only** - no application code is
