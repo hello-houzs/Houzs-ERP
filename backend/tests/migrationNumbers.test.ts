@@ -44,6 +44,13 @@ const KNOWN_DUPLICATES: Record<string, string[]> = {
   //   3. #1040 then merged as `0175_scm_state_canonicalize.sql` — the same PR
   //      had already renamed to 0175 to duck the 0172 collision it saw at
   //      branch time.
+  //   4. That made 0175 a duplicate in turn. Renamed again to 0176 — which
+  //      0176_scm_region_and_snapshot_backfill.sql had taken in the meantime —
+  //      and finally to `0177_scm_warehouse_type_and_unify.sql`, the number read
+  //      off the tree AFTER merging the true tip of main rather than the base the
+  //      branch happened to start from. Five collisions on one file in one day:
+  //      the number has to be taken against the tip you are about to merge INTO,
+  //      not the tip you branched from.
   // Two 0175 files now on main, both applied under their own filenames in
   // `_pg_migrations`. Frozen here so the ratchet catches the NEXT one.
   "src/db/migrations-pg": ["0029", "0091", "0092", "0093", "0094", "0104", "0108", "0112", "0123", "0175"],
