@@ -213,11 +213,16 @@ function CompanySwitcher() {
     // observer to refetch — so a list kept showing the previous company until it
     // happened to remount. A full page reload is the bulletproof fix: nothing
     // stale can render because the whole app re-boots. We persist the new active
-    // company to localStorage FIRST (setActiveCompanyId is a synchronous
-    // localStorage write), so after the reload the app boots under the new company
-    // and every request carries the new X-Company-Id header. Company switches are
-    // rare + deliberate, so the reload cost is an acceptable trade for guaranteed
-    // zero cross-company staleness.
+    // company FIRST — setActiveCompanyId writes this tab's sessionStorage pick
+    // AND the durable per-user record synchronously — so after the reload the app
+    // boots under the new company and every request carries the new X-Company-Id
+    // header. Company switches are rare + deliberate, so the reload cost is an
+    // acceptable trade for guaranteed zero cross-company staleness.
+    //
+    // clearAllScmHandoffs drops the TRANSIENT navigation handoffs only. Staged
+    // payment-retry intents are company-scoped and stay put: they are money
+    // already collected, and switching company is not permission to destroy it
+    // (see lib/scmHandoffStorage).
     clearAllScmHandoffs();
     setActiveCompanyId(id);
     window.location.reload();

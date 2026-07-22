@@ -43,7 +43,6 @@ const IDLE_TIMEOUT_MS = 5000;
 // by ACTIVE COMPANY — a cold open after switching company must NOT hydrate the
 // other company's list (multi-company isolation). Both are read at call time
 // because the active company can change during a session.
-//
 function activeCompany(): string {
   return String(getActiveCompanyId() ?? 0);
 }

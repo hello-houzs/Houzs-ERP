@@ -1,7 +1,8 @@
 // Active-company store — Phase 0c of the multi-company merge.
 //
 // Holds the id of the company the top-bar switcher currently has selected,
-// persisted to localStorage so it survives a reload. The two authed fetch
+// persisted so it survives a reload AND the next login (see the two stores
+// described below, and the note on why the key is user-scoped). The authed fetch
 // layers (src/api/client.ts and src/vendor/scm/lib/authed-fetch.ts) read the
 // stored id and, WHEN SET, stamp an `X-Company-Id` header on every request so
 // the backend's companyContext middleware resolves that company. When UNSET
