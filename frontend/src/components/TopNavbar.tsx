@@ -1,6 +1,12 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Link, NavLink, useLocation } from "react-router-dom";
-import { Check, ChevronRight, ChevronsUpDown } from "lucide-react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import {
+  Check,
+  ChevronRight,
+  ChevronsUpDown,
+  LogOut,
+  UserRound,
+} from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { useBreadcrumbs } from "../hooks/useBreadcrumbs";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -89,28 +95,7 @@ export function TopNavbar() {
           <>
             <PresenceIndicator />
             <NotificationBell collapsed direction="down" align="end" />
-            <NavLink
-              to="/profile"
-              className="group flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-bg/60"
-              title={`${user.name || user.email} — Profile`}
-              aria-label="Profile"
-            >
-              <Avatar
-                userId={user.id}
-                hasImage={user.profile_pic_r2_key}
-                name={user.name}
-                email={user.email}
-                size={28}
-              />
-              <div className="hidden min-w-0 xl:block">
-                <div className="truncate text-[11.5px] font-semibold text-ink group-hover:text-accent">
-                  {user.name || user.email.split("@")[0]}
-                </div>
-                <div className="truncate text-[9.5px] text-ink-muted">
-                  {user.role_name}
-                </div>
-              </div>
-            </NavLink>
+            <ProfileMenu />
           </>
         )}
       </div>
@@ -448,4 +433,143 @@ function labelForPath(pathname: string): string {
   }
   const seg = segs[0] || "";
   return seg ? seg[0].toUpperCase() + seg.slice(1) : "";
+}
+
+// ── Profile menu ───────────────────────────────────────────
+// Nico 2026-07-14 — clicking the avatar in the top rail now opens a small
+// dropdown with Profile + Log out, instead of jumping straight to /profile
+// (which was a surprise for anyone reaching for a sign-out control). Follows
+// the CompanySwitcher popover pattern in this file: click-outside + Esc close.
+
+function ProfileMenu() {
+  const { user, logout } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const activeRoute = location.pathname === "/profile";
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (!wrapRef.current) return;
+      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [open]);
+
+  if (!user) return null;
+
+  async function onLogout() {
+    setOpen(false);
+    // Same rule as the company switcher: transient SCM navigation handoffs
+    // must not survive an SPA identity change, or the next user picks up the
+    // outgoing user's in-flight state.
+    clearAllScmHandoffs();
+    try {
+      await logout();
+    } finally {
+      // logout() clears the SPA session; route back to /login so the user
+      // lands somewhere sensible even when a stray page was open.
+      navigate("/login", { replace: true });
+    }
+  }
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "group flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-bg/60",
+          (open || activeRoute) && "bg-bg/60",
+        )}
+        title={`${user.name || user.email}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Account menu"
+      >
+        <Avatar
+          userId={user.id}
+          hasImage={user.profile_pic_r2_key}
+          name={user.name}
+          email={user.email}
+          size={28}
+        />
+        <div className="hidden min-w-0 xl:block">
+          <div
+            className={cn(
+              "truncate text-[11.5px] font-semibold text-ink",
+              !open && "group-hover:text-primary",
+            )}
+          >
+            {user.name || user.email.split("@")[0]}
+          </div>
+          <div className="truncate text-[9.5px] text-ink-muted">
+            {user.role_name}
+          </div>
+        </div>
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          aria-label="Account menu"
+          className="absolute right-0 top-[calc(100%+6px)] z-40 w-[220px] overflow-hidden rounded-lg border border-border bg-surface shadow-slab animate-toast-in"
+        >
+          {/* Identity strip — echoes who the menu belongs to; the chip alone
+              is easy to misread once the menu is open and the trigger's
+              hover state has dropped. */}
+          <div className="flex items-center gap-2.5 border-b border-border-subtle px-3 py-2.5">
+            <Avatar
+              userId={user.id}
+              hasImage={user.profile_pic_r2_key}
+              name={user.name}
+              email={user.email}
+              size={32}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[12.5px] font-semibold text-ink">
+                {user.name || user.email.split("@")[0]}
+              </div>
+              <div className="truncate text-[10.5px] text-ink-muted">
+                {user.email}
+              </div>
+            </div>
+          </div>
+          <div className="p-1">
+            <Link
+              to="/profile"
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className={cn(
+                "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[12.5px] font-medium text-ink transition-colors hover:bg-primary/[.07] hover:text-primary",
+                activeRoute && "bg-primary/[.07] text-primary",
+              )}
+            >
+              <UserRound size={14} className="shrink-0" />
+              Profile
+            </Link>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => void onLogout()}
+              className="mt-0.5 flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[12.5px] font-medium text-ink transition-colors hover:bg-err/[.08] hover:text-err"
+            >
+              <LogOut size={14} className="shrink-0" />
+              Log out
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
