@@ -35,7 +35,7 @@ these migrations:
 | `0086_warehouses_company_id.sql` | `company_id bigint` + backfilled to HOUZS; per-company index. |
 | `0087_master_codes_per_company.sql` | UNIQUE `(company_id, code)` (replaced `code`-unique). |
 | `0148_venue_binding.sql` | `is_showroom bool NOT NULL DEFAULT false` + `venue_name text`. |
-| `0171_scm_warehouse_type_and_unify.sql` | `scm.warehouse_type` enum + `type` column (NOT NULL); 2990 renames; cross-company copies for warehouse + service types. |
+| `0175_scm_warehouse_type_and_unify.sql` | `scm.warehouse_type` enum + `type` column (NOT NULL); 2990 renames; cross-company copies for warehouse + service types. |
 
 ### Type enum (mig 0171)
 
