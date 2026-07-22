@@ -62,9 +62,13 @@ BEGIN
   END IF;
 
   -- Match case- and separator-insensitively against every historical spelling.
-  -- Normalise the key first: uppercase, collapse whitespace, drop dots.
-  norm := regexp_replace(upper(norm), '\s+', ' ', 'g');
-  norm := replace(norm, '.', '');
+  -- Normalise the key: uppercase, REPLACE dots with a space (not drop them),
+  -- then collapse whitespace. Dot-to-space is what makes 'P.PINANG',
+  -- 'P. PINANG' and 'P PINANG' all collapse to the same key. Keep in sync
+  -- with `probeKey` in backend/src/scm/lib/canonical-state.ts.
+  norm := upper(norm);
+  norm := replace(norm, '.', ' ');
+  norm := regexp_replace(norm, '\s+', ' ', 'g');
   norm := btrim(norm);
 
   RETURN CASE norm

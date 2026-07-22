@@ -60,9 +60,11 @@ const ALIAS_MAP: ReadonlyMap<string, string> = new Map([
   ['TRENGGANU', 'Terengganu'],
 ]);
 
-/** Normalise a raw string for alias lookup: upper, collapse whitespace, drop dots. */
+/** Normalise a raw string for alias lookup: upper, then REPLACE dots with a
+ *  space (not just drop them) so `P.PINANG`, `P. PINANG` and `P PINANG` all
+ *  collapse to the same key. Then collapse whitespace, trim. */
 function probeKey(raw: string): string {
-  return raw.trim().toUpperCase().replace(/\s+/g, ' ').replace(/\./g, '').trim();
+  return raw.trim().toUpperCase().replace(/\./g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 /** Return the canonical Malaysian state name for the input, or the input
