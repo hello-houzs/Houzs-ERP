@@ -1,5 +1,5 @@
 -- ----------------------------------------------------------------------------
--- 0173 — 2990 delivery-region seed + warehouse rename snapshot backfill.
+-- 0176 — 2990 delivery-region seed + warehouse rename snapshot backfill.
 --
 -- Owner 2026-07-22 (compare-2990-houzs-masters audit + code review of 0171):
 --   1. `scm.state_delivery_regions` has 22 rows for HOUZS, 0 rows for 2990.
