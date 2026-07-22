@@ -303,6 +303,7 @@ async function handleResponse<T>(
   res: Response,
   path: string,
   method = "GET",
+  sentToken = "",
 ): Promise<T> {
   if (res.status === 401) {
     // Don't fire on the auth probe endpoints themselves — they're allowed
@@ -313,7 +314,20 @@ async function handleResponse<T>(
       path.startsWith("/api/auth/bootstrap") ||
       path.startsWith("/api/auth/accept-invite") ||
       path.startsWith("/api/auth/status");
-    if (!isAuthProbe) {
+    // A 401 may end the session ONLY when the failing request actually carried
+    // the CURRENT token. Two other shapes reached here and both nuked live
+    // logins (owner lockout, 2026-07-22):
+    //   1. Tokenless pre-auth queries — the login screen legitimately fires
+    //      /api/branding (useBranding falls back to host defaults on 401); its
+    //      rejection says nothing about any session.
+    //   2. Stale in-flight requests — a 401 minted against the PREVIOUS token
+    //      landing just after a fresh login must not clear the NEW token. With
+    //      a pre-auth 401 loop in flight, that race killed every sign-in
+    //      within milliseconds, which presented as "login succeeds, app never
+    //      enters" while sessions piled up server-side.
+    const invalidatesCurrentSession =
+      sentToken !== "" && sentToken === tokenStore.get();
+    if (!isAuthProbe && invalidatesCurrentSession) {
       for (const fn of unauthorizedListeners) fn();
     }
   }
@@ -391,7 +405,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       if (ms >= SLOW_FETCH_MS) {
         console.warn(`[perf] slow ${method} ${path} - ${ms}ms id=${responseId}`);
       }
-      return await handleResponse<T>(res, path, method);
+      return await handleResponse<T>(res, path, method, token);
     } catch (e) {
       const requestId = requestIdFromError(e);
       // Caller-initiated abort (e.g. a debounced typeahead superseding its own
