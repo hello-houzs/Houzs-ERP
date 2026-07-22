@@ -46,7 +46,7 @@ export function usePurchaseInvoicesPaged(params: { page: number; pageSize: numbe
   if (sort) usp.set('sort', sort);
   return useQuery({
     queryKey: ['purchase-invoices-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
-    queryFn: () => authedFetch<{ purchaseInvoices: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; posted: number; partial: number; paid: number; cancelled: number } }>(`/purchase-invoices?${usp.toString()}`),
+    queryFn: ({ signal }) => authedFetch<{ purchaseInvoices: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; posted: number; partial: number; paid: number; cancelled: number } }>(`/purchase-invoices?${usp.toString()}`, { signal }),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
     retry: retryUnlessClientError,

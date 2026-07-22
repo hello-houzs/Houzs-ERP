@@ -9,6 +9,8 @@ name: Deploy (Staging)
 # Prod's deploy.yml (push-to-`main`) is untouched — its trigger doesn't
 # overlap this one's, and `concurrency` is scoped per-environment so a
 # staging deploy never queues behind / cancels a prod deploy.
+# This workflow mirrors a release onto staging; it does not gate or promote the
+# separate production workflow.
 on:
   push:
     # Owner 2026-07-04: staging must TRACK prod — every main release also
@@ -18,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       skip_migrate:
-        description: 'Skip pg-migrate step (use when the staging DB is already at the latest schema — e.g. after a prod-snapshot clone)'
+        description: 'Skip applying migrations only; still require a read-only checksum/schema verification before deploying'
         required: false
         default: false
         type: boolean
@@ -62,20 +64,42 @@ jobs:
       # a deploy with no pending migration files is a no-op against
       # _pg_migrations and exits 0.
       #
-      # `skip_migrate` bail-out (workflow_dispatch input only): set to true
-      # when the staging DB is known to be at (or ahead of) the latest schema
-      # — e.g. after seeding staging from a prod snapshot, or when the pooler
-      # credentials are being rotated. push-to-`staging` deploys always run
-      # the step (default false).
-      # continue-on-error: the free-tier staging Supabase auto-pauses when
-      # idle; a paused DB must not fail every prod release's staging mirror.
-      # The worker still deploys and the schema heals on the first run after
-      # a dashboard Restore.
-      - if: ${{ !inputs.skip_migrate }}
-        continue-on-error: true
-        run: node scripts/pg-migrate.mjs
+      # `skip_migrate` (workflow_dispatch only) skips SQL application, never the
+      # gate: a read-only verify still requires a reachable DB, no drift, no
+      # unverified legacy rows and zero pending migrations before Worker deploy.
+      # Free-tier staging Supabase can auto-pause while idle. Retry transient
+      # wake-up/connection failures, but never swallow migration errors: schema
+      # drift or a persistently unavailable database must block the Worker
+      # deploy rather than releasing code against an unknown schema.
+      - name: Apply or verify staging migrations
+        shell: bash
+        run: |
+          if [ "$SKIP_MIGRATE" = "true" ]; then
+            echo "Migration application skipped by operator; running mandatory read-only verification"
+            node scripts/pg-migrate.mjs --verify-only
+            exit 0
+          fi
+
+          max_attempts=3
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "Migration attempt ${attempt}/${max_attempts}"
+            if node scripts/pg-migrate.mjs; then
+              exit 0
+            else
+              status=$?
+            fi
+
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              echo "::warning title=Staging migration retry::The staging database may be paused or waking. Retrying in $((attempt * 10)) seconds."
+              sleep $((attempt * 10))
+            fi
+          done
+
+          echo "::error title=Staging migration failed::Migrations are fail-closed after ${max_attempts} attempts. If Supabase staging is paused, restore it in the dashboard and re-run this workflow."
+          exit "$status"
         env:
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          SKIP_MIGRATE: ${{ inputs.skip_migrate || 'false' }}
           # GitHub-hosted runners have no IPv6 egress. Supabase's pooler
           # hostname resolves to both A and AAAA records; Node 22's default
           # DNS lookup follows the OS's returned order, which on ubuntu-latest

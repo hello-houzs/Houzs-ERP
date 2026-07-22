@@ -9,6 +9,7 @@ import {
   promptInstall,
   isStandalone,
 } from "../pwa";
+import { shouldShowPwaPrompt } from "./pwaDismissal";
 
 /**
  * Two banner-style PWA UI bits (Theme C · Ink & Petrol):
@@ -39,10 +40,7 @@ export function PwaBanners() {
       return;
     }
     try {
-      const v = localStorage.getItem(DISMISS_KEY);
-      const dismissedAt = v ? parseInt(v, 10) : 0;
-      const ageDays = (Date.now() - dismissedAt) / 86400000;
-      setShowInstall(ageDays >= NAG_AFTER_DAYS);
+      setShowInstall(shouldShowPwaPrompt(DISMISS_KEY, NAG_AFTER_DAYS));
     } catch {
       setShowInstall(true);
     }

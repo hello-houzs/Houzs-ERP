@@ -20,6 +20,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "./lib/queryClient";
 import { tokenStore } from "./api/client";
 import { canonicalRedirectUrl } from "./lib/canonicalHost";
+import { useAppSurface } from "./routing/appSurface";
 
 // Canonical-domain guard (owner 2026-07: "我要全部看到 .houzscentury.com").
 // Production also answers on the Cloudflare Pages default host
@@ -116,19 +117,58 @@ if (LOGIN_AS_HOSTS.has(window.location.hostname)) {
 //   /survey/:token       — tokenized customer satisfaction survey
 //   /track               — public case-lookup form (ASSR no + phone)
 //   /portal/case/:token  — customer-facing case view scoped by token
-// Detected by URL prefix up front so AuthProvider / AuthGate never
-// even get mounted for these trees.
-const path = window.location.pathname;
-const isSurvey = path.startsWith("/survey/");
-const isPortal = path === "/track" || path.startsWith("/track/") ||
-                 path === "/portal" || path.startsWith("/portal/");
-const isReset = path.startsWith("/reset/");
+// The selection is made from the LIVE Router location. It used to be frozen
+// here at module evaluation, so navigate("/") changed the address bar but left
+// reset/invite users trapped inside the old public-only route tree.
 // Invitation acceptance is a real public route (/invite/:token) so the
 // set-password screen works even when a session already exists (e.g. the
 // owner clicking the link while logged in). It needs AuthProvider for
 // acceptInvite(), but renders OUTSIDE AuthGate so a live session doesn't
 // short-circuit it into the dashboard.
-const isInvite = path.startsWith("/invite/");
+function RootApp() {
+  const surface = useAppSurface();
+  if (surface === "survey") {
+    return (
+      <Suspense fallback={<PublicFallback />}>
+        <SurveyPublic />
+      </Suspense>
+    );
+  }
+  if (surface === "portal") {
+    return (
+      <Suspense fallback={<PublicFallback />}>
+        <PortalApp />
+      </Suspense>
+    );
+  }
+  if (surface === "reset") {
+    return (
+      <Suspense fallback={<PublicFallback />}>
+        <Routes>
+          <Route path="/reset/:token" element={<ResetPassword />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+    );
+  }
+  if (surface === "invite") {
+    return (
+      <AuthProvider>
+        <Routes>
+          <Route path="/invite/:token" element={<AcceptInviteScreen />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AuthProvider>
+    );
+  }
+  return (
+    <AuthProvider>
+      <AuthGate>
+        <App />
+      </AuthGate>
+    </AuthProvider>
+  );
+}
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -140,35 +180,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <BrowserRouter>
       <ToastProvider>
        <DialogProvider>
-        {isSurvey ? (
-          <Suspense fallback={<PublicFallback />}>
-            <SurveyPublic />
-          </Suspense>
-        ) : isPortal ? (
-          <Suspense fallback={<PublicFallback />}>
-            <PortalApp />
-          </Suspense>
-        ) : isReset ? (
-          <Suspense fallback={<PublicFallback />}>
-            <Routes>
-              <Route path="/reset/:token" element={<ResetPassword />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </Suspense>
-        ) : isInvite ? (
-          <AuthProvider>
-            <Routes>
-              <Route path="/invite/:token" element={<AcceptInviteScreen />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </AuthProvider>
-        ) : (
-          <AuthProvider>
-            <AuthGate>
-              <App />
-            </AuthGate>
-          </AuthProvider>
-        )}
+        <RootApp />
         <PwaBanners />
        </DialogProvider>
       </ToastProvider>

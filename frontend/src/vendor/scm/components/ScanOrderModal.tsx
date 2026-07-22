@@ -85,8 +85,6 @@ import styles from './ScanOrderModal.module.css';
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
 
 /* ── Handoff contract with SalesOrderNew.tsx ───────────────────────────── */
-export const SCAN_PREFILL_KEY = 'soScanPrefill';
-
 export type ScanPrefillLine = {
   itemCode:       string;        // '' when no SKU matched — operator picks in the form
   itemGroup:      string;        // 'sofa' | 'bedframe' | 'mattress' | 'accessory' | 'service' | 'others'

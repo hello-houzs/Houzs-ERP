@@ -43,9 +43,12 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { ListErrorPanel, SearchPendingPanel, SearchProgress } from "../../components/SearchProgress";
+import { SearchScopeHint } from "../../components/SearchScopeHint";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { useBranding } from "../../hooks/useBranding";
 import { shortCompanyName } from "../../lib/branding";
+import { useDebouncedSearchTerm, useSearchResultTransition } from "../../hooks/useServerSearch";
 import {
   useMfgSalesOrdersPaged,
   useUpdateMfgSalesOrderStatus,
@@ -990,11 +993,7 @@ export function MfgSalesOrdersListV2() {
   // Debounced search — the URL `q` updates on every keystroke (so the input
   // stays controlled + shareable) but we only re-query the server 300ms after
   // the user stops typing.
-  const [debouncedSearch, setDebouncedSearch] = useState(search);
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(t);
-  }, [search]);
+  const { requestTerm: debouncedSearch } = useDebouncedSearchTerm(search);
   // Scan Order — handwritten slip OCR → DRAFT SO (ScanOrderModal). The modal
   // owns the whole flow: it enqueues a BACKGROUND job per slip (the same
   // /scan-so/enqueue path the mobile Scan screen uses) and the draft lands in
@@ -1004,13 +1003,28 @@ export function MfgSalesOrdersListV2() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [printingDocs, setPrintingDocs] = useState(false);
 
-  const { data, isLoading, error } = useMfgSalesOrdersPaged({
+  const { data, isLoading, isFetching, isPlaceholderData, error } = useMfgSalesOrdersPaged({
     page,
     pageSize,
     status,
     q: debouncedSearch,
     sort,
   });
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: debouncedSearch,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const listLoading = isLoading || searchTransition.isSearching;
+  // The list below is replaced by a pending panel while a search is in flight,
+  // and these tiles summarise the SAME payload - so a settled-looking "RM 0.00"
+  // (or the PREVIOUS term's money under a placeholder page) would outlive the
+  // rows it describes. Same flag SearchScopeHint already uses for its count.
+  const statsPending =
+    isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale;
   const updateStatus = useUpdateMfgSalesOrderStatus();
 
   // The server already filtered (status + search) and sorted this page; the
@@ -1876,6 +1890,7 @@ export function MfgSalesOrdersListV2() {
 
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
+              pending={statsPending}
               label="Total Orders"
               value={total.toLocaleString("en-MY")}
               subtitle="All matching orders"
@@ -1883,12 +1898,14 @@ export function MfgSalesOrdersListV2() {
               active
             />
             <StatCard
+              pending={statsPending}
               label="Revenue"
               value={fmtRm(stats.revenueCenti)}
               subtitle={stats.fullSet ? "All matching orders" : "Sum on this page"}
               rail="bg-accent"
             />
             <StatCard
+              pending={statsPending}
               label="Outstanding"
               value={fmtRm(stats.outstandingCenti)}
               subtitle={stats.fullSet ? "Balance due" : "Balance on this page"}
@@ -1896,6 +1913,7 @@ export function MfgSalesOrdersListV2() {
               rail="bg-err"
             />
             <StatCard
+              pending={statsPending}
               label="Paid"
               value={fmtRm(stats.paidCenti)}
               subtitle={stats.fullSet ? "Receipts to date" : "Receipts on this page"}
@@ -1925,6 +1943,12 @@ export function MfgSalesOrdersListV2() {
           placeholder="Search SO, customer, phone, ref…"
           className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
+        <SearchProgress
+          active={searchTransition.isSearching}
+          label={searchTransition.statusText}
+          className="mt-1.5"
+        />
+        <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={total} term={search} className="mt-1" />
       </div>
 
       {/* Mobile filter row — desktop pills live inside the sticky chrome above. */}
@@ -1938,8 +1962,14 @@ export function MfgSalesOrdersListV2() {
 
       {/* Phone → CardsGrid ALWAYS. Desktop → the view toggle decides. */}
       <div className="md:hidden">
-        <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
-        <div className="pb-24">
+        {error ? (
+          <ListErrorPanel message={(error as Error).message} />
+        ) : searchTransition.resultsAreStale ? (
+          <SearchPendingPanel label={searchTransition.statusText} />
+        ) : (
+          <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+        )}
+        {!searchTransition.resultsAreStale && <div className="pb-24">
           <PaginationFooter
             page={page}
             pageSize={pageSize}
@@ -1947,14 +1977,14 @@ export function MfgSalesOrdersListV2() {
             onPrev={() => setPageParam(page - 1)}
             onNext={() => setPageParam(page + 1)}
           />
-        </div>
+        </div>}
       </div>
 
       {/* Table / Cards (md+) */}
       <div className="hidden md:block">
       {view === "table" ? (
         <>
-          {selectedIds.size > 0 && (
+          {selectedIds.size > 0 && !searchTransition.resultsAreStale && (
             <div className="mb-3 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2.5 shadow-stone">
               <span className="text-[13px] font-semibold text-ink">
                 {selectedIds.size} selected
@@ -1980,7 +2010,7 @@ export function MfgSalesOrdersListV2() {
           <DataTable<SoRow>
             tableId="sales-orders-v2"
             rows={rows}
-            loading={isLoading}
+            loading={listLoading}
             error={error ? (error as Error).message ?? "Failed to load" : null}
             columns={columns}
             getRowKey={(r) => r.doc_no}
@@ -2006,6 +2036,12 @@ export function MfgSalesOrdersListV2() {
               value: search,
               onChange: setSearch,
               placeholder: "Search doc no, customer, phone, ref…",
+              debounceMs: 0,
+              searching: searchTransition.isSearching,
+              countPending: isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale,
+              searchingLabel: "Searching…",
+              scope: "server",
+              totalRecords: total,
             }}
             resetFilters={{
               active: filtersActive,
@@ -2013,13 +2049,13 @@ export function MfgSalesOrdersListV2() {
               label: "Reset layout",
             }}
           />
-          <PaginationFooter
+          {!searchTransition.resultsAreStale && <PaginationFooter
             page={page}
             pageSize={pageSize}
             total={total}
             onPrev={() => setPageParam(page - 1)}
             onNext={() => setPageParam(page + 1)}
-          />
+          />}
         </>
       ) : (
         <>
@@ -2032,6 +2068,8 @@ export function MfgSalesOrdersListV2() {
                 placeholder="Search doc no, customer, phone, ref…"
                 className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
               />
+              <SearchProgress active={searchTransition.isSearching} label="Searching…" />
+              <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={total} term={search} />
               {filtersActive && (
                 <button
                   type="button"
@@ -2043,14 +2081,18 @@ export function MfgSalesOrdersListV2() {
               )}
             </div>
           </div>
-          <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+          {error ? (
+            <ListErrorPanel message={(error as Error).message} />
+          ) : searchTransition.resultsAreStale ? (
+            <SearchPendingPanel label={searchTransition.statusText} />
+          ) : <><CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
           <PaginationFooter
             page={page}
             pageSize={pageSize}
             total={total}
             onPrev={() => setPageParam(page - 1)}
             onNext={() => setPageParam(page + 1)}
-          />
+          /></>}
         </>
       )}
       </div>

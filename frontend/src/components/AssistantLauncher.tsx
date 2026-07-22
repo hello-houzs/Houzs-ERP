@@ -39,7 +39,7 @@ import { cn } from "../lib/utils";
 import {
   DISC_SIZE_PX,
   DRAG_THRESHOLD_PX,
-  STORAGE_KEY,
+  assistantLauncherStorageKey,
   clampOffset,
   readStoredOffset,
   type Offset,
@@ -51,7 +51,15 @@ export function AssistantLauncher() {
   const location = useLocation();
 
   const btnRef = useRef<HTMLButtonElement | null>(null);
-  const [pos, setPos] = useState<Offset>(() => readStoredOffset());
+  const [pos, setPos] = useState<Offset>(() =>
+    clampOffset(
+      readStoredOffset(),
+      DISC_SIZE_PX,
+      DISC_SIZE_PX,
+      window.innerWidth,
+      window.innerHeight,
+    ),
+  );
   // Mirror of `pos` for the pointerup handler to read the latest spot without a
   // stale closure — and without persisting from inside a state updater (which
   // StrictMode would double-invoke).
@@ -140,7 +148,8 @@ export function AssistantLauncher() {
       // A real drag ended: persist the new spot and swallow the trailing click.
       suppressClick.current = true;
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(latestPos.current));
+        const key = assistantLauncherStorageKey();
+        if (key) localStorage.setItem(key, JSON.stringify(latestPos.current));
       } catch {
         // quota / privacy mode — the disc simply won't remember; not fatal
       }

@@ -413,6 +413,7 @@ export const ProductModels = () => {
         exportName="Product Models"
         rowKey={(m) => m.id}
         searchPlaceholder="Filter visible models…"
+        loadedSearchLimit={1000}
         onRowDoubleClick={(m) => setOpenModelId(m.id)}
         isLoading={isLoading}
         emptyMessage='No models match. Try clearing filters, or click "+ New Model" to create one.'

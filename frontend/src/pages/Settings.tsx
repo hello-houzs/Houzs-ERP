@@ -10,7 +10,7 @@ import { ListSkeleton } from "../components/Skeleton";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
-import { useLocalStorage } from "../hooks/useLocalStorage";
+import { pageSizePreference, useIdentityPreference } from "../hooks/useIdentityPreference";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useAuth } from "../auth/AuthContext";
 import { api, buildQuery } from "../api/client";
@@ -788,7 +788,7 @@ function ActivityLog() {
   const [type, setType] = useState("");
   const [logStatus, setLogStatus] = useState("");
   const [page, setPage] = useState(1);
-  const [perPage, setPerPage] = useLocalStorage<number>("pp:logs", 50);
+  const [perPage, setPerPage] = useIdentityPreference("pp:logs", 50, pageSizePreference([10, 25, 50, 100, 200]));
 
   const list = useQuery<Paginated<ExecutionLog>>("/api/logs:)}",
     () =>

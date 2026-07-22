@@ -1,4 +1,4 @@
-import { Fragment, useState, useMemo, useEffect, useRef } from "react";
+import { Fragment, useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate, useParams, Navigate, useSearchParams } from "react-router-dom";
 import {
@@ -58,6 +58,7 @@ import { compareCalendarEvents } from "../lib/calendarSort";
 import { toCSV, downloadCSV } from "../lib/csv";
 import { PnlCalendar } from "../components/PnlCalendar";
 import { DataTable, type Column } from "../components/DataTable";
+import { ListErrorPanel, SearchPendingPanel } from "../components/SearchProgress";
 import { StatusDot } from "../components/StatusDot";
 import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
@@ -74,6 +75,7 @@ import { InlineEdit } from "../components/InlineEdit";
 import { StatCard } from "../components/StatCard";
 import { DashboardGrid } from "../components/Dashboard";
 import { useQuery } from "../hooks/useQuery";
+import { useSearchResultTransition } from "../hooks/useServerSearch";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { Skeleton, ListSkeleton } from "../components/Skeleton";
@@ -86,10 +88,16 @@ import {
   type SalesEntry,
   type EntryStatus as SalesEntryStatus,
 } from "./Sales";
-import { useLocalStorage } from "../hooks/useLocalStorage";
+import {
+  booleanPreference,
+  enumPreference,
+  pageSizePreference,
+  useIdentityPreference,
+} from "../hooks/useIdentityPreference";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useStickyFilters } from "../hooks/useStickyFilters";
+import { useRafCoalescedHover } from "../hooks/useRafCoalescedHover";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
 import { isSalesStaff, isDirectorUser, isSalesDirectorUser } from "../auth/salesAccess";
@@ -792,9 +800,10 @@ export function Projects() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [storedView, setStoredView] = useLocalStorage<ProjectsView>(
+  const [storedView, setStoredView] = useIdentityPreference<ProjectsView>(
     "projects:view",
-    "list"
+    "list",
+    enumPreference(PROJECTS_VIEWS),
   );
   // Finances sub-page is DIRECTOR-level only (Super Admin, Sales Director,
   // Finance Manager, owner). Backed by the finance-viewer flag on /auth/me;
@@ -982,9 +991,9 @@ function ProjectsListView() {
   const setPhase = (v: string) => patchParams({ phase: v, page: "1" });
   const setPage = (n: number) => patchParams({ page: String(n) });
 
-  const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
+  const [perPage, setPerPage] = useIdentityPreference("pp:projects", 50, pageSizePreference([10, 25, 50, 100, 200]));
   // List render mode — cards (P2 design) vs the full data table. Default cards.
-  const [listMode, setListMode] = useLocalStorage<"cards" | "table">("projects:listMode", "cards");
+  const [listMode, setListMode] = useIdentityPreference("projects:listMode", "cards", enumPreference(["cards", "table"] as const));
   const [showCreate, setShowCreate] = useState(false);
   // Deep-link: the global "+" quick-action FAB opens the New Project modal via
   // /projects?new=1. Consume the flag once and strip it so refresh/back don't reopen.
@@ -997,16 +1006,16 @@ function ProjectsListView() {
     }
   }, [params, setParams]);
   const [showImport, setShowImport] = useState(false);
-  const [showArchived, setShowArchived] = useLocalStorage<boolean>("projects:showArchived", false);
+  const [showArchived, setShowArchived] = useIdentityPreference("projects:showArchived", false, booleanPreference);
   // Hide projects whose every tasklist section is complete — same
   // predicate as the section=__done filter, just inverted. Disabled
   // automatically when the user picks the Completed pill so the
   // controls don't fight each other.
-  const [hideCompleted, setHideCompleted] = useLocalStorage<boolean>("projects:hideCompleted", false);
+  const [hideCompleted, setHideCompleted] = useIdentityPreference("projects:hideCompleted", false, booleanPreference);
   // "My pending tasks" -- when on, the list shows only projects that have
   // a pending checklist item belonging to the caller's role (mapped to a
   // chip label / document title server-side). Export is unaffected.
-  const [myPending, setMyPending] = useLocalStorage<boolean>("projects:myPending", false);
+  const [myPending, setMyPending] = useIdentityPreference("projects:myPending", false, booleanPreference);
 
   // Owner 2026-07-21: field/sales roles (Sales Exec/Mgr except Sales Director,
   // plus Driver/Helper/Storekeeper) get the SAME slimmed filter bar as mobile —
@@ -1052,7 +1061,7 @@ function ProjectsListView() {
     hideCompleted && section !== "__done" ? 1 : undefined;
 
   const list = useQuery<Paginated<ProjectRow>>("/api/projects:",
-    () =>
+    (signal) =>
       api.get(
         `/api/projects${buildQuery({
           // Cohort uses ONLY stage + assigned_to_me + search; the section /
@@ -1075,13 +1084,22 @@ function ProjectsListView() {
           per_page: perPage,
           include_archived: showArchived ? 1 : undefined,
           ...sortParams,
-        })}`
+        })}`,
+        { signal },
       ),
     [brand, year, month, section, status, phase, restrictedCohort, sendAssignedToMe, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir],
     // Paginated + filter-switched list: keep the current rows on screen while
     // the next page/filter loads instead of flashing an empty table.
     { keepPreviousData: true }
   );
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: search,
+    isFetching: list.fetching,
+    isPlaceholderData: list.placeholder,
+    hasData: list.data !== null,
+    hasError: Boolean(list.error),
+  });
 
   // Status (Confirmed / Pending / Cancelled) is now filtered server-side via
   // the list endpoint's `status` param, so the rows the endpoint returns are
@@ -1089,7 +1107,7 @@ function ProjectsListView() {
   const rows = list.data?.data ?? null;
   // Non-null view of rows for the card list + right rail (rows itself stays
   // nullable for the DataTable's loading state).
-  const cardRows = rows ?? [];
+  const cardRows = searchTransition.resultsAreStale ? [] : rows ?? [];
 
   // Export = the FULL filtered project list (ALL pages), IGNORING the "My
   // pending tasks" toggle — that's a screen-only view (owner 2026-07-20). Loops
@@ -1572,8 +1590,10 @@ function ProjectsListView() {
       <div className={cn(listMode === "cards" && "grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_300px]")}>
       <div className="min-w-0">
       {listMode === "cards" ? (
-        list.loading && !list.data ? (
-          <div className="py-10 text-center text-[12px] text-ink-muted">Loading…</div>
+        list.error ? (
+          <ListErrorPanel message={list.error} />
+        ) : (list.loading && !list.data) || searchTransition.isSearching ? (
+          <SearchPendingPanel label={searchTransition.statusText} />
         ) : cardRows.length === 0 ? (
           <div className="rounded-xl border border-border bg-surface p-8 text-center text-[12px] text-ink-muted shadow-stone">
             No projects yet
@@ -1656,6 +1676,10 @@ function ProjectsListView() {
             value: search,
             onChange: (v) => setSearch(v),
             placeholder: "Search code, name, venue, organizer…",
+            searching: searchTransition.isSearching,
+            countPending: list.loading || list.placeholder || Boolean(list.error) || searchTransition.resultsAreStale,
+            scope: "server",
+            totalRecords: list.data?.total,
           }}
           resetFilters={{
             active: !!(search || brand || year || month || section || status),
@@ -1669,7 +1693,7 @@ function ProjectsListView() {
           }}
           columns={columns}
           rows={rows}
-          loading={list.loading}
+          loading={list.loading || searchTransition.isSearching}
           error={list.error}
           emptyLabel="No projects yet"
           getRowKey={(r) => r.id}
@@ -1734,7 +1758,7 @@ function ProjectsListView() {
       )}
       </div>
 
-      {list.data && (
+      {list.data && !searchTransition.resultsAreStale && (
         <Pagination
           page={page}
           perPage={perPage}
@@ -1788,11 +1812,13 @@ function CalendarTaskChip({
   task,
   onOpen,
   onHover,
+  onMove,
   onLeave,
 }: {
   task: CalendarTask;
   onOpen: () => void;
   onHover?: (e: React.MouseEvent) => void;
+  onMove?: (e: React.MouseEvent) => void;
   onLeave?: () => void;
 }) {
   const overdue = task.is_overdue === 1;
@@ -1807,7 +1833,7 @@ function CalendarTaskChip({
     <button
       onClick={onOpen}
       onMouseEnter={onHover}
-      onMouseMove={onHover}
+      onMouseMove={onMove}
       onMouseLeave={onLeave}
       className={cn(
         "group flex w-full items-center gap-1 rounded border px-1 py-0.5 text-left",
@@ -2126,9 +2152,10 @@ function FinanceListView() {
     patchParams({ include_archived: v ? "1" : "0", page: "1" });
   const setPage = (n: number) => patchParams({ page: String(n) });
 
-  const [perPage, setPerPage] = useLocalStorage<number>(
+  const [perPage, setPerPage] = useIdentityPreference(
     "pp:project-finance-by-project",
-    50
+    50,
+    pageSizePreference([10, 25, 50, 100, 200]),
   );
   const { sort, sortParams, handleSortChange } = useServerSort(() =>
     setPage(1)
@@ -2139,7 +2166,7 @@ function FinanceListView() {
   );
 
   const list = useQuery<FinanceByProjectResponse>("/api/projects/finance/by-project:)}",
-    () =>
+    (signal) =>
       api.get(
         `/api/projects/finance/by-project${buildQuery({
           date_from: dateFrom || undefined,
@@ -2151,13 +2178,22 @@ function FinanceListView() {
           page,
           per_page: perPage,
           ...sortParams,
-        })}`
+        })}`,
+        { signal },
       ),
     [dateFrom, dateTo, brand, stage, search, includeArchived, page, perPage, sort?.key, sort?.dir],
     // Paginated + filter-switched list: keep the current rows on screen while
     // the next page/filter loads instead of flashing an empty table.
     { keepPreviousData: true, enabled: canProjectFinance }
   );
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: search,
+    isFetching: list.fetching,
+    isPlaceholderData: list.placeholder,
+    hasData: list.data !== null,
+    hasError: Boolean(list.error),
+  });
 
   const columns: Column<FinanceProjectRow>[] = [
     {
@@ -2570,6 +2606,10 @@ function FinanceListView() {
           value: search,
           onChange: (v) => setSearch(v),
           placeholder: "Search project code, name, venue, organizer…",
+          searching: searchTransition.isSearching,
+          countPending: list.loading || list.placeholder || Boolean(list.error) || searchTransition.resultsAreStale,
+          scope: "server",
+          totalRecords: list.data?.total,
         }}
         resetFilters={{
           active: !!(
@@ -2590,7 +2630,7 @@ function FinanceListView() {
         }}
         columns={columns}
         rows={list.data?.data ?? null}
-        loading={list.loading}
+        loading={list.loading || searchTransition.isSearching}
         error={list.error}
         emptyLabel="No projects match these filters"
         getRowKey={(r) => r.id}
@@ -2599,7 +2639,7 @@ function FinanceListView() {
         onSortChange={handleSortChange}
       />
 
-      {list.data && (
+      {list.data && !searchTransition.resultsAreStale && (
         <Pagination
           page={page}
           perPage={perPage}
@@ -2990,6 +3030,251 @@ function daysBetween(fromIso: string, toIso: string): number {
   return Math.round((b - a) / 86400000);
 }
 
+type CalendarMode = "month" | "week";
+type CalendarCell = { date: Date; iso: string };
+type CalendarWeekSeg = {
+  project: CalendarProject;
+  startCol: number;
+  endCol: number;
+  clipLeft: boolean;
+  clipRight: boolean;
+  lane: number;
+};
+
+const CALENDAR_BAR_H = 18;
+const CALENDAR_LANE_GAP = 3;
+const CALENDAR_LANE_TOTAL = CALENDAR_BAR_H + CALENDAR_LANE_GAP;
+const EMPTY_CALENDAR_PROJECTS: CalendarProject[] = [];
+const EMPTY_CALENDAR_TASKS: CalendarTask[] = [];
+
+export function buildCalendarWindow(
+  mode: CalendarMode,
+  monthStr: string,
+  weekStartStr: string,
+): {
+  anchor: Date;
+  startDay: Date;
+  endDay: Date;
+  cells: CalendarCell[];
+  weekCount: number;
+  totalCells: number;
+  fromStr: string;
+  toStr: string;
+} {
+  let monthAnchor: Date;
+  if (/^\d{4}-\d{2}$/.test(monthStr)) {
+    monthAnchor = new Date(Number(monthStr.slice(0, 4)), Number(monthStr.slice(5, 7)) - 1, 1);
+  } else {
+    monthAnchor = new Date();
+    monthAnchor.setDate(1);
+  }
+
+  let weekAnchor: Date;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(weekStartStr)) {
+    weekAnchor = new Date(weekStartStr + "T00:00:00Z");
+  } else {
+    weekAnchor = new Date();
+    weekAnchor.setUTCHours(0, 0, 0, 0);
+  }
+  weekAnchor.setUTCDate(weekAnchor.getUTCDate() - ((weekAnchor.getUTCDay() + 6) % 7));
+
+  const anchor = mode === "week" ? weekAnchor : monthAnchor;
+  const weekCount = mode === "week" ? 1 : 6;
+  const totalCells = weekCount * 7;
+  let startDay: Date;
+  if (mode === "week") {
+    startDay = new Date(anchor);
+  } else {
+    const first = new Date(Date.UTC(anchor.getFullYear(), anchor.getMonth(), 1));
+    startDay = new Date(first);
+    startDay.setUTCDate(first.getUTCDate() - ((first.getUTCDay() + 6) % 7));
+  }
+  const endDay = new Date(startDay);
+  endDay.setUTCDate(startDay.getUTCDate() + totalCells - 1);
+  const cells: CalendarCell[] = [];
+  for (let i = 0; i < totalCells; i++) {
+    const date = new Date(startDay);
+    date.setUTCDate(startDay.getUTCDate() + i);
+    cells.push({ date, iso: date.toISOString().slice(0, 10) });
+  }
+  return {
+    anchor,
+    startDay,
+    endDay,
+    cells,
+    weekCount,
+    totalCells,
+    fromStr: startDay.toISOString().slice(0, 10),
+    toStr: endDay.toISOString().slice(0, 10),
+  };
+}
+
+/**
+ * Pure calendar projection. Keeping this outside React makes hover/popover and
+ * viewport-height renders O(1) with respect to project/task count: React only
+ * rebuilds the model when its actual data/filter/window inputs change.
+ */
+export function buildProjectsCalendarModel({
+  allProjects,
+  allTasks,
+  cells,
+  weekCount,
+  mode,
+  anchorMonth,
+  brand,
+  section,
+  organizer,
+  showTasks,
+  expandAll,
+}: {
+  allProjects: CalendarProject[];
+  allTasks: CalendarTask[];
+  cells: CalendarCell[];
+  weekCount: number;
+  mode: CalendarMode;
+  anchorMonth: number;
+  brand: string;
+  section: string;
+  organizer: string;
+  showTasks: boolean;
+  expandAll: boolean;
+}) {
+  const matchesSection = (project: CalendarProject): boolean => {
+    if (!section) return true;
+    const total = project.sections_total ?? 0;
+    const active = project.active_section_name ?? null;
+    if (section === "__done") return total > 0 && active == null;
+    if (section === "__none") return total === 0;
+    return active === section;
+  };
+
+  const projects = allProjects.filter((project) => {
+    if (brand && project.brand !== brand) return false;
+    if (!matchesSection(project)) return false;
+    if (organizer && (project.organizer || "") !== organizer) return false;
+    return true;
+  });
+  const projectById = new Map(projects.map((project) => [project.id, project] as const));
+  const tasks = showTasks
+    ? allTasks.filter((task) => {
+        if (brand && task.brand !== brand) return false;
+        if (organizer && (task.organizer || "") !== organizer) return false;
+        return !section || projectById.has(task.project_id);
+      })
+    : [];
+
+  const tasksByDate = new Map<string, CalendarTask[]>();
+  for (const task of tasks) {
+    const key = (task.due_date ?? "").slice(0, 10);
+    if (!key) continue;
+    const sameDay = tasksByDate.get(key);
+    if (sameDay) sameDay.push(task);
+    else tasksByDate.set(key, [task]);
+  }
+
+  const totalCells = cells.length;
+  const maxLanes = mode === "week" || expandAll ? Infinity : 3;
+  const weekSegs: CalendarWeekSeg[][] = Array.from({ length: weekCount }, () => []);
+  const overflowByCell: number[] = Array(totalCells).fill(0);
+  let renderedWeeks = 0;
+
+  for (let week = 0; week < weekCount; week++) {
+    const weekCells = cells.slice(week * 7, week * 7 + 7);
+    if (mode !== "month" || weekCells.some((cell) => cell.date.getUTCMonth() === anchorMonth)) {
+      renderedWeeks += 1;
+    }
+    const weekStart = weekCells[0].iso;
+    const weekEnd = weekCells[6].iso;
+    let monthFirstCol = 0;
+    let monthLastCol = 6;
+    if (mode === "month") {
+      monthFirstCol = -1;
+      for (let day = 0; day < 7; day++) {
+        if (weekCells[day].date.getUTCMonth() === anchorMonth) {
+          if (monthFirstCol === -1) monthFirstCol = day;
+          monthLastCol = day;
+        }
+      }
+    }
+
+    const segments: CalendarWeekSeg[] = [];
+    if (mode !== "month" || monthFirstCol !== -1) {
+      for (const project of projects) {
+        const start = project.start_date.slice(0, 10);
+        const end = (project.end_date || project.start_date).slice(0, 10);
+        if (end < weekStart || start > weekEnd) continue;
+        const clipLeft = start < weekStart;
+        const clipRight = end > weekEnd;
+        let startCol = clipLeft ? 0 : daysBetween(weekStart, start);
+        let endCol = clipRight ? 6 : daysBetween(weekStart, end);
+        if (mode === "month") {
+          if (endCol < monthFirstCol || startCol > monthLastCol) continue;
+          startCol = Math.max(startCol, monthFirstCol);
+          endCol = Math.min(endCol, monthLastCol);
+        }
+        segments.push({ project, startCol, endCol, clipLeft, clipRight, lane: 0 });
+      }
+    }
+
+    segments.sort(
+      (a, b) =>
+        compareCalendarEvents(a.project, b.project) ||
+        a.startCol - b.startCol ||
+        b.endCol - b.startCol - (a.endCol - a.startCol),
+    );
+    const lanes: CalendarWeekSeg[][] = [];
+    for (const segment of segments) {
+      let lane = lanes.findIndex((items) =>
+        items.every((item) => item.endCol < segment.startCol || item.startCol > segment.endCol),
+      );
+      if (lane === -1) {
+        lanes.push([segment]);
+        lane = lanes.length - 1;
+      } else {
+        lanes[lane].push(segment);
+      }
+      segment.lane = lane;
+    }
+    for (const segment of segments) {
+      if (segment.lane < maxLanes) {
+        weekSegs[week].push(segment);
+      } else {
+        for (let day = segment.startCol; day <= segment.endCol; day++) {
+          overflowByCell[week * 7 + day] += 1;
+        }
+      }
+    }
+  }
+
+  const barsAreaHByWeek = weekSegs.map((segments) => {
+    const lanesUsed = segments.reduce((max, segment) => Math.max(max, segment.lane + 1), 0);
+    return mode === "week" || expandAll
+      ? Math.max(lanesUsed, 1) * CALENDAR_LANE_TOTAL
+      : 3 * CALENDAR_LANE_TOTAL;
+  });
+  const cellBarsH = Array(totalCells).fill(0);
+  for (let week = 0; week < weekCount; week++) {
+    for (const segment of weekSegs[week]) {
+      for (let col = segment.startCol; col <= segment.endCol; col++) {
+        const index = week * 7 + col;
+        cellBarsH[index] = Math.max(cellBarsH[index], (segment.lane + 1) * CALENDAR_LANE_TOTAL);
+      }
+    }
+  }
+
+  return {
+    projects,
+    projectById,
+    tasks,
+    tasksByDate,
+    weekSegs,
+    overflowByCell,
+    barsAreaHByWeek,
+    cellBarsH,
+    renderedWeeks,
+  };
+}
+
 const PROJECTS_CALENDAR_FILTER_KEYS = [
   "brand",
   "stage",
@@ -3058,17 +3343,20 @@ function ProjectsCalendarView() {
   // showTasks / showHolidays are personal display prefs (checkbox toggles
   // on the legend, not data filters), so they stay in localStorage per
   // CLAUDE.md's URL-state convention.
-  const [showTasks, setShowTasks] = useLocalStorage<boolean>(
+  const [showTasks, setShowTasks] = useIdentityPreference(
     "projects:cal:showTasks",
-    false
+    false,
+    booleanPreference,
   );
-  const [showHolidays, setShowHolidays] = useLocalStorage<boolean>(
+  const [showHolidays, setShowHolidays] = useIdentityPreference(
     "projects:cal:showHolidays",
-    true
+    true,
+    booleanPreference,
   );
-  const [expandAll, setExpandAll] = useLocalStorage<boolean>(
+  const [expandAll, setExpandAll] = useIdentityPreference(
     "projects:cal:expandAll",
-    false
+    false,
+    booleanPreference,
   );
   const brandsQ = useQuery<{ data: string[] }>("/api/projects/brands", () =>
     api.get("/api/projects/brands")
@@ -3083,36 +3371,18 @@ function ProjectsCalendarView() {
   // ?mode=week swaps the 6×7 month grid for a single 1×7 row anchored
   // on `?week=YYYY-MM-DD` (Sunday). `?month=YYYY-MM` is the existing
   // monthly anchor; both URL params persist via stickyFilters.
-  const mode: "month" | "week" =
+  const mode: CalendarMode =
     params.get("mode") === "week" ? "week" : "month";
   const monthStr = params.get("month") || "";
   const weekStartStr = params.get("week") || "";
 
-  // Anchor for month mode = first of month.
-  const monthAnchor = (() => {
-    if (/^\d{4}-\d{2}$/.test(monthStr)) {
-      return new Date(Number(monthStr.slice(0, 4)), Number(monthStr.slice(5, 7)) - 1, 1);
-    }
-    const d = new Date();
-    d.setDate(1);
-    return d;
-  })();
-  // Anchor for week mode = the Sunday on or before the parsed date.
-  // Falls back to the Sunday of the current week.
-  const weekAnchor = (() => {
-    let d: Date;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(weekStartStr)) {
-      d = new Date(weekStartStr + "T00:00:00Z");
-    } else {
-      d = new Date();
-      d.setUTCHours(0, 0, 0, 0);
-    }
-    // Normalise to Monday of that week (UTC). (day + 6) % 7 so that
-    // Mon → 0 days back, Tue → 1, …, Sun → 6 days back.
-    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-    return d;
-  })();
-  const anchor = mode === "week" ? weekAnchor : monthAnchor;
+  // Stable across hover/popover renders: new Date objects here used to
+  // invalidate every downstream calendar projection on each mousemove.
+  const calendarWindow = useMemo(
+    () => buildCalendarWindow(mode, monthStr, weekStartStr),
+    [mode, monthStr, weekStartStr],
+  );
+  const { anchor, startDay, endDay, cells, weekCount, totalCells, fromStr, toStr } = calendarWindow;
 
   const setAnchor = (next: Date) => {
     if (mode === "week") {
@@ -3135,12 +3405,38 @@ function ProjectsCalendarView() {
   // Hover popover — replaces the native bar `title` tooltip with a
   // styled card carrying the project's basic info (code, brand, venue,
   // span, organizer, stage). Anchored to the cursor; cleared on leave.
-  const [barHover, setBarHover] = useState<
-    { project: CalendarProject; x: number; y: number } | null
-  >(null);
-  const [taskHover, setTaskHover] = useState<
-    { task: CalendarTask; x: number; y: number } | null
-  >(null);
+  // Mousemove can fire hundreds of times per second. Keep entry/exit immediate,
+  // but coalesce cursor-position updates to one React state update per frame.
+  const barHoverState = useRafCoalescedHover<{
+    project: CalendarProject;
+    x: number;
+    y: number;
+  }>();
+  const taskHoverState = useRafCoalescedHover<{
+    task: CalendarTask;
+    x: number;
+    y: number;
+  }>();
+  const barHover = barHoverState.hover;
+  const taskHover = taskHoverState.hover;
+  const enterBarHover = useCallback(
+    (project: CalendarProject, x: number, y: number) => barHoverState.enter({ project, x, y }),
+    [barHoverState.enter],
+  );
+  const moveBarHover = useCallback(
+    (project: CalendarProject, x: number, y: number) => barHoverState.move({ project, x, y }),
+    [barHoverState.move],
+  );
+  const leaveBarHover = barHoverState.leave;
+  const enterTaskHover = useCallback(
+    (task: CalendarTask, x: number, y: number) => taskHoverState.enter({ task, x, y }),
+    [taskHoverState.enter],
+  );
+  const moveTaskHover = useCallback(
+    (task: CalendarTask, x: number, y: number) => taskHoverState.move({ task, x, y }),
+    [taskHoverState.move],
+  );
+  const leaveTaskHover = taskHoverState.leave;
 
   // Wheel-over-grid navigates months (month mode). Refs keep the handler
   // reading the latest anchor/setAnchor without re-binding the listener;
@@ -3223,82 +3519,53 @@ function ProjectsCalendarView() {
 
   // Window: month = 6 weeks (42 cells) from the first Monday on/before
   // the 1st; week = 1 week (7 cells) from the week anchor.
-  const weekCount = mode === "week" ? 1 : 6;
-  const totalCells = weekCount * 7;
-
-  let startDay: Date;
-  if (mode === "week") {
-    startDay = new Date(anchor);
-  } else {
-    const first = new Date(Date.UTC(anchor.getFullYear(), anchor.getMonth(), 1));
-    startDay = new Date(first);
-    startDay.setUTCDate(first.getUTCDate() - ((first.getUTCDay() + 6) % 7));
-  }
-  const endDay = new Date(startDay);
-  endDay.setUTCDate(startDay.getUTCDate() + totalCells - 1);
-
-  const fromStr = startDay.toISOString().slice(0, 10);
-  const toStr = endDay.toISOString().slice(0, 10);
-
   const q = useQuery<{ projects: CalendarProject[]; tasks: CalendarTask[] }>("/api/projects/calendar/events?from=:&to=:",
     () => api.get(`/api/projects/calendar/events?from=${fromStr}&to=${toStr}`),
     [fromStr, toStr]
   );
 
-  // Build the cell grid (42 in month mode, 7 in week mode).
-  const cells: { date: Date; iso: string }[] = [];
-  for (let i = 0; i < totalCells; i++) {
-    const d = new Date(startDay);
-    d.setUTCDate(startDay.getUTCDate() + i);
-    cells.push({ date: d, iso: d.toISOString().slice(0, 10) });
-  }
-
-  const allProjects = q.data?.projects ?? [];
-  const allTasks = q.data?.tasks ?? [];
-
-  // Client-side filter so the server call stays cacheable at the
-  // month granularity. Projects that don't match are excluded; tasks
-  // inherit their project's brand via the join server-side already.
-  // Section semantics mirror the list view: "__done" → all sections
-  // complete; "__none" → no sections defined; otherwise match the
-  // project's active_section_name.
-  function matchesSection(p: CalendarProject): boolean {
-    if (!section) return true;
-    const total = p.sections_total ?? 0;
-    const active = p.active_section_name ?? null;
-    if (section === "__done") return total > 0 && active == null;
-    if (section === "__none") return total === 0;
-    return active === section;
-  }
-  const projects = allProjects.filter((p) => {
-    if (brand && p.brand !== brand) return false;
-    if (!matchesSection(p)) return false;
-    if (organizer && (p.organizer || "") !== organizer) return false;
-    return true;
-  });
-  const tasks = showTasks
-    ? allTasks.filter((t) => {
-        if (brand && t.brand !== brand) return false;
-        if (organizer && (t.organizer || "") !== organizer) return false;
-        // Tasks don't carry section info on the wire — match via the
-        // filtered project set so section filtering composes correctly.
-        if (section) {
-          const match = projects.find((p) => p.id === t.project_id);
-          if (!match) return false;
-        }
-        return true;
-      })
-    : [];
-
-  // Group tasks by date for fast lookup
-  const tasksByDate = new Map<string, CalendarTask[]>();
-  for (const t of tasks) {
-    const key = (t.due_date ?? "").slice(0, 10);
-    if (!key) continue;
-    const arr = tasksByDate.get(key) ?? [];
-    arr.push(t);
-    tasksByDate.set(key, arr);
-  }
+  const allProjects = q.data?.projects ?? EMPTY_CALENDAR_PROJECTS;
+  const allTasks = q.data?.tasks ?? EMPTY_CALENDAR_TASKS;
+  const anchorMonth = anchor.getMonth();
+  const calendarModel = useMemo(
+    () =>
+      buildProjectsCalendarModel({
+        allProjects,
+        allTasks,
+        cells,
+        weekCount,
+        mode,
+        anchorMonth,
+        brand,
+        section,
+        organizer,
+        showTasks,
+        expandAll,
+      }),
+    [
+      allProjects,
+      allTasks,
+      cells,
+      weekCount,
+      mode,
+      anchorMonth,
+      brand,
+      section,
+      organizer,
+      showTasks,
+      expandAll,
+    ],
+  );
+  const {
+    projects,
+    tasks,
+    tasksByDate,
+    weekSegs,
+    overflowByCell,
+    barsAreaHByWeek,
+    cellBarsH,
+    renderedWeeks,
+  } = calendarModel;
 
   // Calendar header shows the full month name (owner request 2026-07):
   // "November 2025", not "11/2025". Row/cell dates stay numeric elsewhere.
@@ -3326,19 +3593,10 @@ function ProjectsCalendarView() {
   // continuous bar from start to end with the project name on it — not
   // a chain of per-cell pills. Bars wrap at week boundaries; the
   // clipLeft/clipRight flags drive the rounded-corner + chevron hint.
-  type WeekSeg = {
-    project: CalendarProject;
-    startCol: number;
-    endCol: number;
-    clipLeft: boolean;
-    clipRight: boolean;
-    lane: number;
-  };
   // Layout constants for the per-week bar overlay. BAR_TOP_OFFSET puts the
   // bars below the day-number row; week mode's pill header needs a bigger one.
-  const BAR_H = 18;
-  const LANE_GAP = 3;
-  const LANE_TOTAL = BAR_H + LANE_GAP;
+  const BAR_H = CALENDAR_BAR_H;
+  const LANE_TOTAL = CALENDAR_LANE_TOTAL;
   const BAR_TOP_OFFSET = mode === "week" ? 52 : 24;
   // Compact month shows up to 3 project-event lanes per cell; extra bars fold
   // into "+N more". Tasks render separately (2 rows, pinned to the bottom).
@@ -3354,16 +3612,6 @@ function ProjectsCalendarView() {
     3 * 21 /* 3 bar lanes */ +
     16 /* project "+N more" line */ +
     (showTasks ? 70 : 8) /* 2 task rows when tasks shown, else just padding */;
-  let renderedWeeks = 0;
-  for (let w = 0; w < weekCount; w++) {
-    if (
-      mode !== "month" ||
-      Array.from({ length: 7 }).some(
-        (_, d) => cells[w * 7 + d].date.getUTCMonth() === anchor.getMonth(),
-      )
-    )
-      renderedWeeks++;
-  }
   const compactRowH =
     mode === "month" && !expandAll
       ? Math.max(
@@ -3371,107 +3619,6 @@ function ProjectsCalendarView() {
           availH ? Math.floor((availH - 34) / Math.max(renderedWeeks, 1)) : COMPACT_ROW_MIN,
         )
       : null;
-  const weekSegs: WeekSeg[][] = Array.from({ length: weekCount }, () => []);
-  const overflowByCell: number[] = Array(totalCells).fill(0);
-  for (let w = 0; w < weekCount; w++) {
-    const weekStart = cells[w * 7].iso;
-    const weekEnd = cells[w * 7 + 6].iso;
-    // In month mode, bars are clamped to the current-month columns so they
-    // never paint over the blanked leading/trailing adjacent-month cells.
-    let monthFirstCol = 0;
-    let monthLastCol = 6;
-    if (mode === "month") {
-      monthFirstCol = -1;
-      for (let d = 0; d < 7; d++) {
-        if (cells[w * 7 + d].date.getUTCMonth() === anchor.getMonth()) {
-          if (monthFirstCol === -1) monthFirstCol = d;
-          monthLastCol = d;
-        }
-      }
-    }
-    const segs: WeekSeg[] = [];
-    if (mode !== "month" || monthFirstCol !== -1) {
-      for (const p of projects) {
-        const s = p.start_date.slice(0, 10);
-        const e = (p.end_date || p.start_date).slice(0, 10);
-        if (e < weekStart || s > weekEnd) continue;
-        const clipLeft = s < weekStart;
-        const clipRight = e > weekEnd;
-        let startCol = clipLeft ? 0 : daysBetween(weekStart, s);
-        let endCol = clipRight ? 6 : daysBetween(weekStart, e);
-        if (mode === "month") {
-          if (endCol < monthFirstCol || startCol > monthLastCol) continue;
-          startCol = Math.max(startCol, monthFirstCol);
-          endCol = Math.min(endCol, monthLastCol);
-        }
-        segs.push({ project: p, startCol, endCol, clipLeft, clipRight, lane: 0 });
-      }
-    }
-    // Group by FAIR first — state (fixed geographic order, PENANG->JOHOR) ->
-    // venue -> organizer -> brand, shared with the mobile calendar so both
-    // surfaces order a day's fairs identically. startCol + length only break
-    // ties WITHIN a fair. Owner 2026-07-20: with the packing keys (startCol,
-    // length) ahead of the grouping, a fair's multi-day bars of differing
-    // lengths got split — JOHOR REX's two brands were separated by a KL bar
-    // because length outranked the grouping. Grouping first places a fair's
-    // bars consecutively, so the greedy lane packer below stacks them in
-    // adjacent lanes (the packer still guarantees valid, non-overlapping rows).
-    segs.sort(
-      (a, b) =>
-        compareCalendarEvents(a.project, b.project) ||
-        a.startCol - b.startCol ||
-        b.endCol - b.startCol - (a.endCol - a.startCol)
-    );
-    const lanes: WeekSeg[][] = [];
-    for (const seg of segs) {
-      let placed = -1;
-      for (let i = 0; i < lanes.length; i++) {
-        if (
-          lanes[i].every((s) => s.endCol < seg.startCol || s.startCol > seg.endCol)
-        ) {
-          lanes[i].push(seg);
-          placed = i;
-          break;
-        }
-      }
-      if (placed === -1) {
-        lanes.push([seg]);
-        placed = lanes.length - 1;
-      }
-      seg.lane = placed;
-    }
-    for (const seg of segs) {
-      if (seg.lane < MAX_LANES) {
-        weekSegs[w].push(seg);
-      } else {
-        for (let ci = seg.startCol; ci <= seg.endCol; ci++) {
-          overflowByCell[w * 7 + ci]++;
-        }
-      }
-    }
-  }
-
-  // Reserved bar-overlay height for WEEK mode (month uses uniform flex rows).
-  const barsAreaHByWeek = weekSegs.map((segs) => {
-    const lanesUsed = segs.reduce((m, s) => Math.max(m, s.lane + 1), 0);
-    return mode === "week" || expandAll
-      ? Math.max(lanesUsed, 1) * LANE_TOTAL
-      : 3 * LANE_TOTAL;
-  });
-  // Per-CELL reserved bar height (expand / week only): only as tall as the
-  // deepest bar lane that actually crosses THAT day, so a quiet cell's tasks
-  // sit right under its own bars instead of being shoved down by the busiest
-  // day in the week. (That was the leftover "Expand all" middle whitespace.)
-  const cellBarsH = Array(totalCells).fill(0);
-  for (let w = 0; w < weekCount; w++) {
-    for (const seg of weekSegs[w]) {
-      for (let col = seg.startCol; col <= seg.endCol; col++) {
-        const idx = w * 7 + col;
-        cellBarsH[idx] = Math.max(cellBarsH[idx], (seg.lane + 1) * LANE_TOTAL);
-      }
-    }
-  }
-
   return (
     <div>
       <PageHeader
@@ -3893,10 +4040,9 @@ function ProjectsCalendarView() {
                             key={t.id}
                             task={t}
                             onOpen={() => navigate(`/projects/${t.project_id}`)}
-                            onHover={(e) =>
-                              setTaskHover({ task: t, x: e.clientX, y: e.clientY })
-                            }
-                            onLeave={() => setTaskHover(null)}
+                            onHover={(e) => enterTaskHover(t, e.clientX, e.clientY)}
+                            onMove={(e) => moveTaskHover(t, e.clientX, e.clientY)}
+                            onLeave={leaveTaskHover}
                           />
                         ))}
                         {mode === "month" && !expandAll && cellTasks.length > 2 && (
@@ -3935,16 +4081,12 @@ function ProjectsCalendarView() {
                       key={`${w}-${seg.project.id}-${seg.startCol}`}
                       onClick={() => navigate(`/projects/${seg.project.id}`)}
                       onMouseEnter={(e) =>
-                        setBarHover({ project: seg.project, x: e.clientX, y: e.clientY })
+                        enterBarHover(seg.project, e.clientX, e.clientY)
                       }
                       onMouseMove={(e) =>
-                        setBarHover((h) =>
-                          h && h.project.id === seg.project.id
-                            ? { ...h, x: e.clientX, y: e.clientY }
-                            : h
-                        )
+                        moveBarHover(seg.project, e.clientX, e.clientY)
                       }
-                      onMouseLeave={() => setBarHover(null)}
+                      onMouseLeave={leaveBarHover}
                       style={{
                         position: "absolute",
                         left: `calc(${leftPct}% + 4px)`,

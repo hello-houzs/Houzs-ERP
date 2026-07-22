@@ -77,10 +77,10 @@ export const useConsignmentReturnsPaged = (params: {
   if (status) usp.set('status', status);
   if (q && q.trim()) usp.set('q', q.trim());
   if (sort) usp.set('sort', sort);
-  return useQuery({
+  return useQuery<{ deliveryReturns: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentReturnAggregates }>({
     queryKey: ['consignment-return', 'list-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    queryFn: () => authedFetch<{ deliveryReturns: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentReturnAggregates }>(`/consignment-returns?${usp.toString()}`),
+    queryFn: ({ signal }) => authedFetch<{ deliveryReturns: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentReturnAggregates }>(`/consignment-returns?${usp.toString()}`, { signal }),
     placeholderData: (prev: unknown) => prev as { deliveryReturns: unknown[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentReturnAggregates } | undefined,
     staleTime: 30_000,
     retry: retryUnlessClientError,

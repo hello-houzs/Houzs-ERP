@@ -22,9 +22,14 @@ import {
   FileText,
   Package,
 } from "lucide-react";
-import { api } from "../api/client";
 import { cn, formatDate } from "../lib/utils";
 import { HighlightedText } from "../lib/highlight";
+import {
+  GLOBAL_SEARCH_MIN_LENGTH,
+  useGlobalSearchResults,
+  type SearchHit,
+  type SearchHitType,
+} from "../lib/globalSearch";
 
 /**
  * Global Cmd+K palette.
@@ -41,22 +46,6 @@ import { HighlightedText } from "../lib/highlight";
  * Backend: GET /api/search?q=… returns up to ~6 hits per source,
  * each shaped like { type, id, title, subtitle?, date?, link }.
  */
-
-export type SearchHitType =
-  | "project"
-  | "assr_case"
-  | "user"
-  | "sales_order"
-  | "product";
-
-export interface SearchHit {
-  type: SearchHitType;
-  id: string | number;
-  title: string;
-  subtitle?: string | null;
-  date?: string | null;
-  link: string;
-}
 
 interface SearchContextValue {
   open: () => void;
@@ -119,67 +108,69 @@ export function GlobalSearchProvider({ children }: { children: ReactNode }) {
 
 function Palette({ onClose }: { onClose: () => void }) {
   const [q, setQ] = useState("");
-  const [hits, setHits] = useState<SearchHit[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { term, hits, loading, error } = useGlobalSearchResults(q);
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(
+    typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null),
+  );
   const navigate = useNavigate();
+
+  const closeAndRestoreFocus = useCallback(() => {
+    onClose();
+    window.requestAnimationFrame(() => {
+      const previous = restoreFocusRef.current;
+      if (previous?.isConnected) previous.focus();
+    });
+  }, [onClose]);
 
   // Focus the input on mount.
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  // Debounced fetch. A fresh AbortController per run cancels the in-flight
-  // request when the term changes or the palette closes, so a slow response for
-  // a stale term can never overwrite a newer one (nor setState after unmount).
+  // A new term must never retain the prior term's keyboard selection.
   useEffect(() => {
-    const term = q.trim();
-    if (term.length < 2) {
-      setHits([]);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    const ctrl = new AbortController();
-    const t = setTimeout(async () => {
-      try {
-        const res = await api.get<{ hits: SearchHit[] }>(
-          `/api/search?q=${encodeURIComponent(term)}`,
-          { signal: ctrl.signal }
-        );
-        setHits(res.hits);
-        setSelected(0);
-      } catch (e: any) {
-        if (ctrl.signal.aborted) return;
-        // e.message is already humanized by the API client; the fallback only
-        // fires on a non-Error throw and must be a sentence, not String(e).
-        setError(e?.message || "Search isn't working right now. Please try again.");
-      } finally {
-        if (!ctrl.signal.aborted) setLoading(false);
-      }
-    }, 250);
-    return () => {
-      clearTimeout(t);
-      ctrl.abort();
-    };
-  }, [q]);
+    setSelected(0);
+  }, [term]);
+
+  // Visual grouping is also the canonical keyboard order.
+  const groups = useMemo(() => groupHits(hits), [hits]);
+  const orderedHits = useMemo(() => groups.flatMap((group) => group.items), [groups]);
 
   // Esc / arrows / enter
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        closeAndRestoreFocus();
+        return;
+      }
+      if (e.key === "Tab") {
+        const focusable = Array.from(
+          dialogRef.current?.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+          ) ?? [],
+        ).filter((element) => element.getAttribute("aria-hidden") !== "true");
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
         return;
       }
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSelected((s) => Math.min(hits.length - 1, s + 1));
+        if (orderedHits.length > 0) {
+          setSelected((s) => Math.min(orderedHits.length - 1, s + 1));
+        }
         return;
       }
       if (e.key === "ArrowUp") {
@@ -188,15 +179,19 @@ function Palette({ onClose }: { onClose: () => void }) {
         return;
       }
       if (e.key === "Enter") {
+        // Native buttons handle their own Enter activation. Letting the event
+        // bubble into the palette handler would also open the keyboard-selected
+        // row (for example when the Close button has focus).
+        if (e.target !== inputRef.current) return;
         e.preventDefault();
-        const hit = hits[selected];
+        const hit = orderedHits[selected];
         if (hit) {
           navigate(hit.link);
-          onClose();
+          closeAndRestoreFocus();
         }
       }
     },
-    [hits, selected, navigate, onClose]
+    [orderedHits, selected, navigate, closeAndRestoreFocus]
   );
 
   // Keep the selected row scrolled into view.
@@ -205,22 +200,20 @@ function Palette({ onClose }: { onClose: () => void }) {
     el?.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
-  // Group hits by type for visual sectioning, while keeping a flat
-  // index for keyboard nav.
-  const groups = useMemo(() => groupHits(hits), [hits]);
-
   if (typeof document === "undefined") return null;
 
   return createPortal(
     <div
       className="fixed inset-0 z-[100] flex items-start justify-center bg-ink/40 px-4 pt-[12vh] backdrop-blur-sm"
-      onClick={onClose}
+      onClick={closeAndRestoreFocus}
     >
       <div
+        ref={dialogRef}
         className="w-full max-w-[640px] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl shadow-ink/20"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
         role="dialog"
+        aria-modal="true"
         aria-label="Global search"
       >
         {/* Search input row */}
@@ -231,16 +224,25 @@ function Palette({ onClose }: { onClose: () => void }) {
           />
           <input
             ref={inputRef}
+            type="search"
+            role="combobox"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search orders, projects, service cases, products, people…"
+            aria-label="Search orders, projects, service cases, products and people"
+            aria-controls="global-search-results"
+            aria-expanded={orderedHits.length > 0}
+            aria-activedescendant={
+              orderedHits[selected] ? `global-search-option-${orderedHits[selected]._idx}` : undefined
+            }
+            aria-autocomplete="list"
             className="flex-1 bg-transparent text-[14px] text-ink outline-none placeholder:text-ink-muted"
           />
           <kbd className="hidden rounded border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] text-ink-muted sm:inline">
             Esc
           </kbd>
           <button
-            onClick={onClose}
+            onClick={closeAndRestoreFocus}
             className="-mr-2 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-bg/60 hover:text-ink sm:-mr-1 sm:h-8 sm:w-8"
             aria-label="Close"
           >
@@ -249,28 +251,39 @@ function Palette({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Results */}
-        <div ref={listRef} className="max-h-[60vh] overflow-y-auto">
-          {q.trim().length < 2 && (
-            <EmptyHelp />
+        <div
+          ref={listRef}
+          id="global-search-results"
+          role="listbox"
+          aria-label="Search results"
+          className="max-h-[60vh] overflow-y-auto"
+        >
+          {term.length === 0 && <EmptyHelp />}
+          {term.length > 0 && term.length < GLOBAL_SEARCH_MIN_LENGTH && (
+            <div role="status" aria-live="polite" className="px-4 py-8 text-center text-[12px] text-ink-muted">
+              Type 1 more character to search everywhere.
+            </div>
           )}
-          {q.trim().length >= 2 && loading && (
-            <div className="px-4 py-6 text-center text-[12px] text-ink-muted">Searching…</div>
+          {term.length >= GLOBAL_SEARCH_MIN_LENGTH && loading && (
+            <div role="status" aria-live="polite" className="px-4 py-6 text-center text-[12px] text-ink-muted">
+              Searching for “{term}”…
+            </div>
           )}
           {error && (
-            <div className="m-3 rounded-md border border-err/30 bg-err/5 px-3 py-2 text-[12px] text-err">
+            <div role="alert" className="m-3 rounded-md border border-err/30 bg-err/5 px-3 py-2 text-[12px] text-err">
               Search failed: {error}
             </div>
           )}
-          {q.trim().length >= 2 && !loading && hits.length === 0 && !error && (
-            <div className="flex flex-col items-center gap-1 px-4 py-10 text-center">
+          {term.length >= GLOBAL_SEARCH_MIN_LENGTH && !loading && hits.length === 0 && !error && (
+            <div role="status" aria-live="polite" className="flex flex-col items-center gap-1 px-4 py-10 text-center">
               <Search size={20} className="text-ink-muted" />
-              <div className="text-[12.5px] text-ink">No matches for “{q}”.</div>
+              <div className="text-[12.5px] text-ink">No matches for “{term}”.</div>
               <div className="text-[10.5px] text-ink-muted">Try a different keyword.</div>
             </div>
           )}
           {hits.length > 0 &&
             groups.map((g) => (
-              <div key={g.type}>
+              <div key={g.type} role="group" aria-label={TYPE_META[g.type].label}>
                 <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border-subtle bg-bg/80 px-4 py-1.5 backdrop-blur-sm">
                   <span className="text-primary-ink">{TYPE_META[g.type].icon}</span>
                   <span className="text-[10px] font-bold uppercase tracking-wider text-primary-ink">
@@ -282,12 +295,12 @@ function Palette({ onClose }: { onClose: () => void }) {
                   <HitRow
                     key={`${item.type}-${item.id}`}
                     item={item}
-                    query={q}
+                    query={term}
                     isSelected={item._idx === selected}
                     onHover={() => setSelected(item._idx)}
                     onSelect={() => {
                       navigate(item.link);
-                      onClose();
+                      closeAndRestoreFocus();
                     }}
                   />
                 ))}
@@ -339,6 +352,9 @@ function HitRow({
   const meta = TYPE_META[item.type];
   return (
     <button
+      id={`global-search-option-${item._idx}`}
+      role="option"
+      aria-selected={isSelected}
       data-idx={item._idx}
       onMouseEnter={onHover}
       onClick={onSelect}
@@ -414,8 +430,7 @@ function EmptyHelp() {
   );
 }
 
-// Group hits by type while preserving a flat index used for keyboard
-// navigation. The flat index is attached as `_idx` on each item.
+// Group hits in the same order users see and keyboard navigation follows.
 function groupHits(hits: SearchHit[]): Array<{
   type: SearchHitType;
   items: Array<SearchHit & { _idx: number }>;
@@ -427,16 +442,25 @@ function groupHits(hits: SearchHit[]): Array<{
     "product",
     "user",
   ];
-  const map = new Map<SearchHitType, Array<SearchHit & { _idx: number }>>();
-  hits.forEach((h, i) => {
+  const map = new Map<SearchHitType, SearchHit[]>();
+  hits.forEach((h) => {
     const arr = map.get(h.type) ?? [];
-    arr.push({ ...h, _idx: i });
+    arr.push(h);
     map.set(h.type, arr);
   });
   const out: Array<{ type: SearchHitType; items: Array<SearchHit & { _idx: number }> }> = [];
+  let nextIndex = 0;
   for (const t of order) {
     const items = map.get(t);
-    if (items && items.length > 0) out.push({ type: t, items });
+    if (items && items.length > 0) {
+      out.push({
+        type: t,
+        items: items.map((item) => ({
+          ...item,
+          _idx: nextIndex++,
+        })),
+      });
+    }
   }
   return out;
 }
@@ -519,6 +543,7 @@ export function GlobalSearchTrigger({
         className
       )}
       title={`Search (${shortcut})`}
+      aria-label="Open global search"
     >
       <Search size={13} className="shrink-0 group-hover:text-primary" />
       <span className="flex-1 truncate">Search…</span>

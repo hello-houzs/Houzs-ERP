@@ -240,6 +240,7 @@ export const PurchaseConsignmentOrders = () => {
         exportName="Purchase Consignment Orders"
         rowKey={(po) => po.id}
         searchPlaceholder="Search orders…"
+        loadedSearchLimit={1000}
         groupBanner={false}
         onRowDoubleClick={(po) => navigate(`/scm/purchase-consignment-orders/${po.id}`)}
         expandable={{

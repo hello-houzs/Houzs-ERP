@@ -11,10 +11,10 @@
 // and renaming one without renaming every mirror of it fails SILENTLY and,
 // in two places, fails OPEN (a gated screen becomes visible to everyone):
 //
-//   · `frontend/src/mobile/MobileApp.tsx` `allowed()` resolves a mobile row's
-//     permission by looking its path up in `NAV_TABS` — and when no entry
-//     matches it returns TRUE. So renaming a `to:` in `Sidebar.tsx` without
-//     renaming the matching `MOBILE_MENU_GROUPS` row UNGATES that screen.
+//   · `frontend/src/mobile/MobileApp.tsx` resolves a mobile row's permission by
+//     matching its full destination (including a declared query) in `NAV_TABS`.
+//     Renaming only one side now fails CLOSED, but still silently removes the
+//     row for its intended cohort unless the mirrors move together.
 //   · `/scm/reports/fulfillment-costing` carries `requireFinanceViewer` on the
 //     Sidebar entry ONLY; the mobile row has no gate of its own and borrows it
 //     by path. Same for `/reports/fair-report` (`requireFairReport`) and
@@ -38,9 +38,10 @@
 // standardisation, with none of the identifier risk.
 //
 // ── SAFETY PROPERTY ───────────────────────────────────────────────────────
-// Each alias renders `<Navigate replace>` to its canonical path. It grants NO
-// access of its own: authorization is enforced entirely by the destination
-// route's existing guard, exactly as if the user had typed the canonical URL.
+// Desktop renders `<Navigate replace>` to the canonical path; the mobile shell
+// applies this same table before its own route + gate resolution. An alias
+// grants NO access of its own: authorization is enforced entirely by the
+// canonical destination, exactly as if the user had typed that URL. Desktop's
 // `replace` keeps the alias out of session history so Back behaves.
 //
 // When the renames in step 2 land, entries here flip direction (the old path

@@ -49,6 +49,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
+import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import {
   SOFA_MODULES,
   resolveSofaQuickPresets,
@@ -299,6 +300,7 @@ const SKU_ROW_HEIGHT_ESTIMATE = 34; // px; corrected at runtime by measuring a r
 const SkuMasterTab = () => {
   const [category, setCategory] = useState<MfgCategory | 'all'>('all');
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [editMode, setEditMode] = useState(false);
   /* Edit→Save (Commander 2026-06-15 — no 裸奔): in Edit Prices mode every cell
      edit stages into pendingEdits keyed by row id; NOTHING hits the server until
@@ -338,10 +340,12 @@ const SkuMasterTab = () => {
   // category/search (no limit/pagination). The DOM is now windowed below, but
   // the payload still scales with catalog size; a server-side cap / cursor is a
   // separate follow-up (out of scope for this DOM-virtualization change).
-  const { data: products, isLoading, error } = useMfgProducts({
+  const { data: products, isLoading, isFetching, error } = useMfgProducts({
     category: category === 'all' ? undefined : category,
-    search: search.trim() || undefined,
+    search: debouncedSearch.trim() || undefined,
   });
+  const searching =
+    search.trim() !== debouncedSearch.trim() || (!isLoading && isFetching);
   const config = useMaintenanceConfig('master');
   // Branding datalist options for the inline Mattress branding edit — pool
   // first, DISTINCT fallback. Rendered ONCE below (datalist#branding-pool-sku-master)
@@ -857,11 +861,17 @@ const SkuMasterTab = () => {
               type="search"
               className={styles.searchInput}
               placeholder="Search all products..."
+              aria-label="Search all products"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <Button variant="secondary" onClick={() => exportSkusCsv(rows, sofaSizes, tier, category)}>
+          {searching && (
+            <span role="status" aria-live="polite" className="text-[11px] font-semibold text-primary">
+              Searching…
+            </span>
+          )}
+          <Button variant="secondary" onClick={() => exportSkusCsv(rows, sofaSizes, tier, category)} disabled={searching}>
             <Download {...ICON_PROPS} />
             <span>Export SKUs</span>
           </Button>
@@ -875,7 +885,7 @@ const SkuMasterTab = () => {
           </Button>
           {/* PR #82 — only render the bulk Delete button when at least one row
               is ticked, so the toolbar stays compact in normal use. */}
-          {selectedIds.size > 0 && (
+          {!searching && selectedIds.size > 0 && (
             /* Was a secondary button tinted red via an inline --c-festive-b
                style; the design system has a first-class danger variant that
                carries the same read (err border + err text on surface). */
@@ -890,7 +900,7 @@ const SkuMasterTab = () => {
           )}
           {/* Bulk activate / deactivate (owner 2026-06-19). Inactive = hidden from
               POS + new-entry pickers, kept on existing docs, reversible. */}
-          {selectedIds.size > 0 && (
+          {!searching && selectedIds.size > 0 && (
             <>
               <Button variant="secondary" onClick={() => bulkSetStatus('INACTIVE')} disabled={statusing}>
                 <EyeOff {...ICON_PROPS} />
@@ -913,7 +923,7 @@ const SkuMasterTab = () => {
               </Button>
             </>
           ) : (
-            <Button variant="primary" onClick={() => setEditMode(true)}>
+            <Button variant="primary" onClick={() => setEditMode(true)} disabled={searching}>
               <Edit3 {...ICON_PROPS} />
               <span>Edit Prices</span>
             </Button>
@@ -984,10 +994,10 @@ const SkuMasterTab = () => {
           storageKey={gridStorageKey}
           exportName="SKU Master"
           rowKey={(r) => r.id}
-          searchPlaceholder="Filter visible products…"
+          hideSearch
           onRowDoubleClick={(r) => setSuppliersRow(r)}
           groupBanner={false}
-          isLoading={isLoading}
+          isLoading={isLoading || searching}
           emptyMessage="No products yet. Run the seed import if you just migrated the schema."
           toolbar={
             <label

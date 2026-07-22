@@ -166,6 +166,7 @@ export const Amendments = () => {
         exportName="Amendments"
         rowKey={(a) => a.id}
         searchPlaceholder="Search amendments…"
+        loadedSearchLimit={500}
         groupBanner={false}
         /* Open on DOUBLE-click (mirrors the GRN / PO list). */
         onRowDoubleClick={(a) => openRow(a)}

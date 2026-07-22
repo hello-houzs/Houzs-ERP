@@ -361,7 +361,7 @@ export function StockTakesListV2() {
             onRowClick={goDetail}
             exportName="stock-takes"
             emptyLabel={filtersActive ? "No takes match — try Reset layout." : "No stock takes yet."}
-            search={{ value: search, onChange: setSearch, placeholder: "Search take, warehouse, scope, notes…" }}
+            search={{ value: search, onChange: setSearch, placeholder: "Search take, warehouse, scope, notes…", scope: "server", totalRecords: filtered.length }}
             resetFilters={{ active: filtersActive, onReset: resetLayout, label: "Reset layout" }}
           />
         ) : (

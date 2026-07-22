@@ -1,0 +1,147 @@
+export type DataGridLayout = {
+  order: string[];
+  hidden: string[];
+  widths: Record<string, number>;
+  groupBy: string[];
+  pinned: string[];
+  sort: { key: string; dir: "asc" | "desc" } | null;
+};
+
+const VERSION = 1 as const;
+const MAX_COLUMN_KEYS = 500;
+// DataGrid's resize path accepts 40px and has no practical hard cap. Preserve
+// those valid legacy choices while bounding obviously corrupt numeric input.
+const MIN_WIDTH = 40;
+const MAX_WIDTH = 10_000;
+
+export const DEFAULT_DATA_GRID_LAYOUT: DataGridLayout = {
+  order: [],
+  hidden: [],
+  widths: {},
+  groupBy: [],
+  pinned: [],
+  sort: null,
+};
+
+type StoredLayout = {
+  version: typeof VERSION;
+  layout: DataGridLayout;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sanitizeKeys(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string" || item.length === 0 || seen.has(item)) continue;
+    seen.add(item);
+    result.push(item);
+    if (result.length >= MAX_COLUMN_KEYS) break;
+  }
+  return result;
+}
+
+function sanitizeWidths(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, number> = Object.create(null) as Record<string, number>;
+  let count = 0;
+  for (const [key, width] of Object.entries(value)) {
+    if (
+      key.length === 0 ||
+      key === "__proto__" ||
+      key === "prototype" ||
+      key === "constructor" ||
+      typeof width !== "number" ||
+      !Number.isFinite(width)
+    ) continue;
+    result[key] = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, width));
+    count += 1;
+    if (count >= MAX_COLUMN_KEYS) break;
+  }
+  return result;
+}
+
+function sanitizeSort(value: unknown): DataGridLayout["sort"] {
+  if (!isRecord(value)) return null;
+  if (typeof value.key !== "string" || value.key.length === 0) return null;
+  if (value.dir !== "asc" && value.dir !== "desc") return null;
+  return { key: value.key, dir: value.dir };
+}
+
+export function sanitizeDataGridLayout(value: unknown): DataGridLayout {
+  if (!isRecord(value)) return { ...DEFAULT_DATA_GRID_LAYOUT };
+  return {
+    order: sanitizeKeys(value.order),
+    hidden: sanitizeKeys(value.hidden),
+    widths: sanitizeWidths(value.widths),
+    groupBy: sanitizeKeys(value.groupBy),
+    pinned: sanitizeKeys(value.pinned),
+    sort: sanitizeSort(value.sort),
+  };
+}
+
+export function serializeDataGridLayout(layout: DataGridLayout): string {
+  const stored: StoredLayout = { version: VERSION, layout: sanitizeDataGridLayout(layout) };
+  return JSON.stringify(stored);
+}
+
+export type DecodedDataGridLayout = {
+  layout: DataGridLayout;
+  /** True only for the pre-version envelope shape, so callers can migrate it. */
+  legacy: boolean;
+  valid: boolean;
+};
+
+export function decodeDataGridLayout(raw: string): DecodedDataGridLayout {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) {
+      return { layout: { ...DEFAULT_DATA_GRID_LAYOUT }, legacy: false, valid: false };
+    }
+
+    if ("version" in parsed) {
+      if (parsed.version !== VERSION || !isRecord(parsed.layout)) {
+        return { layout: { ...DEFAULT_DATA_GRID_LAYOUT }, legacy: false, valid: false };
+      }
+      return { layout: sanitizeDataGridLayout(parsed.layout), legacy: false, valid: true };
+    }
+
+    // Pre-version DataGrid values stored the layout object directly. Accept and
+    // sanitize that one known shape; the reader rewrites it in the v1 envelope.
+    const knownFields = ["order", "hidden", "widths", "groupBy", "pinned", "sort"];
+    if (!knownFields.some((field) => field in parsed)) {
+      return { layout: { ...DEFAULT_DATA_GRID_LAYOUT }, legacy: false, valid: false };
+    }
+    return { layout: sanitizeDataGridLayout(parsed), legacy: true, valid: true };
+  } catch {
+    return { layout: { ...DEFAULT_DATA_GRID_LAYOUT }, legacy: false, valid: false };
+  }
+}
+
+export function readDataGridLayout(key: string): DataGridLayout {
+  if (typeof window === "undefined") return { ...DEFAULT_DATA_GRID_LAYOUT };
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return { ...DEFAULT_DATA_GRID_LAYOUT };
+    const decoded = decodeDataGridLayout(raw);
+    if (decoded.valid && decoded.legacy) {
+      window.localStorage.setItem(key, serializeDataGridLayout(decoded.layout));
+    }
+    return decoded.layout;
+  } catch {
+    return { ...DEFAULT_DATA_GRID_LAYOUT };
+  }
+}
+
+export function writeDataGridLayout(key: string, layout: DataGridLayout): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(key, serializeDataGridLayout(layout));
+  } catch {
+    // localStorage can be disabled or full. Layout persistence is best-effort.
+  }
+}

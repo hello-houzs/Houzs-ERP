@@ -1,4 +1,9 @@
 // ---------------------------------------------------------------------------
+
+import {
+  identityStorageKey,
+  subscribeBrowserStorageIdentity,
+} from "../../lib/storageIdentity";
 // Mail Center — view preferences (Gmail-style toggles) + the sender category
 // heuristic. All client-side; nothing here touches the backend or the API
 // contract.
@@ -31,7 +36,8 @@ export type MailViewPrefs = {
 // no-filter view; the other two are derived per-row (see classifyCategory).
 export type MailCategory = "all" | "primary" | "notifications";
 
-const KEY = "houzs-mail-prefs:v1";
+const KEY_BASE = "houzs-mail-prefs:v2";
+const currentKey = () => identityStorageKey(KEY_BASE);
 
 const DEFAULTS: MailViewPrefs = {
   density: "compact",
@@ -44,7 +50,9 @@ const DEFAULTS: MailViewPrefs = {
 function load(): MailViewPrefs {
   if (typeof window === "undefined") return { ...DEFAULTS };
   try {
-    const raw = window.localStorage.getItem(KEY);
+    const key = currentKey();
+    if (!key) return { ...DEFAULTS };
+    const raw = window.localStorage.getItem(key);
     if (!raw) return { ...DEFAULTS };
     const parsed = JSON.parse(raw) as Partial<MailViewPrefs>;
     return {
@@ -64,7 +72,8 @@ const listeners = new Set<() => void>();
 function persistAndNotify(): void {
   if (typeof window !== "undefined") {
     try {
-      window.localStorage.setItem(KEY, JSON.stringify(state));
+      const key = currentKey();
+      if (key) window.localStorage.setItem(key, JSON.stringify(state));
     } catch {
       // Quota / disabled storage — keep the in-memory copy so the session works.
     }
@@ -81,7 +90,18 @@ function persistAndNotify(): void {
 // Cross-tab sync: another tab flipping a toggle fires a storage event here.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
-    if (e.key !== KEY) return;
+    if (e.key !== null && e.key !== currentKey()) return;
+    state = load();
+    for (const cb of listeners) {
+      try {
+        cb();
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  subscribeBrowserStorageIdentity(() => {
     state = load();
     for (const cb of listeners) {
       try {

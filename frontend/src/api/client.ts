@@ -14,7 +14,10 @@ import {
 import { companyHeader } from "../lib/activeCompany";
 // The token's storage key + the read that knows about BOTH backing stores.
 // Shared with the vendored SCM fetch layer — see lib/authToken.
-import { AUTH_TOKEN_KEY as TOKEN_KEY, readAuthToken } from "../lib/authToken";
+// AUTH_TOKEN_KEY is no longer imported here: tokenStore below now delegates to
+// writeAuthToken/clearAuthToken instead of poking both stores itself, so the
+// session-only-logout suppression rule lives in exactly one place.
+import { clearAuthToken, readAuthToken, writeAuthToken } from "../lib/authToken";
 import {
   consumeCorrelated,
   correlateError,
@@ -22,6 +25,7 @@ import {
   requestIdFromError,
   requestIdFromResponse,
 } from "../lib/requestCorrelation";
+import { abortableDelay, abortReason, combineAbortSignals } from "../lib/abort";
 
 export { requestIdFromError } from "../lib/requestCorrelation";
 
@@ -44,21 +48,10 @@ export const tokenStore = {
   /** persistent = true (Remember me) → localStorage, survives browser close.
    *  persistent = false → sessionStorage, cleared when the tab/app closes. */
   set(token: string, persistent = true) {
-    try {
-      if (persistent) {
-        localStorage.setItem(TOKEN_KEY, token);
-        sessionStorage.removeItem(TOKEN_KEY);
-      } else {
-        sessionStorage.setItem(TOKEN_KEY, token);
-        localStorage.removeItem(TOKEN_KEY);
-      }
-    } catch {}
+    writeAuthToken(token, persistent);
   },
   clear() {
-    try {
-      localStorage.removeItem(TOKEN_KEY);
-      sessionStorage.removeItem(TOKEN_KEY);
-    } catch {}
+    clearAuthToken();
   },
 };
 
@@ -226,8 +219,6 @@ class HttpError extends Error {
   }
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 // Binary upload / download / blob fetches below bypass request()'s GET cap, so
 // a stalled Hyperdrive cold-start would hang the UI forever (staff stares at a
 // spinner with no way out). Give each its own AbortSignal deadline — generous
@@ -388,9 +379,11 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
         // Honour a caller-supplied signal alongside our own GET timeout: the
         // request aborts if EITHER fires. Without this the caller's signal was
         // silently dropped (overwritten by ctrl.signal).
-        signal: opts?.signal
-          ? AbortSignal.any([ctrl.signal, opts.signal])
-          : ctrl.signal,
+        // combineAbortSignals is AbortSignal.any with a manual fallback, so a
+        // runtime without AbortSignal.any still honours BOTH signals instead of
+        // throwing. `headers` above is a Headers instance, which also accepts a
+        // caller-supplied Headers object (a plain spread would drop one).
+        signal: combineAbortSignals(opts?.signal, ctrl.signal),
         headers,
       });
       const ms = Math.round(performance.now() - startedAt);
@@ -406,7 +399,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       // transient failure, so it must never be retried or reworded as a network
       // error. Our own GET timeout leaves opts.signal.aborted false, so it still
       // falls through to the retry path below.
-      if (opts?.signal?.aborted) throw e;
+      if (opts?.signal?.aborted) throw abortReason(opts.signal);
       // A 503 is the server's "transient — try again" contract; retry it for
       // idempotent GETs (within the GET budget) so a cold-start / connection
       // blip self-heals instead of surfacing as "Failed to load". Every other
@@ -414,13 +407,13 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       // errors fail fast and are never masked.
       if (e instanceof HttpError) {
         if (e.status === 503 && method === "GET" && attempt < retries) {
-          await sleep(600 + attempt * 1200);
+          await abortableDelay(600 + attempt * 1200, opts?.signal);
           continue;
         }
         // Cold-pool 503 (DB not yet touched) is safe to retry for mutations too,
         // so a save early after idle doesn't dump a raw 503 on the user.
         if (isColdPool503(e) && method !== "GET" && attempt < COLD_POOL_RETRIES) {
-          await sleep(600 + attempt * 1200);
+          await abortableDelay(600 + attempt * 1200, opts?.signal);
           continue;
         }
         throw e;
@@ -428,7 +421,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       // Network drop or our abort-timeout: retry idempotent GETs, since a
       // cold Hyperdrive connection has usually warmed by the next attempt.
       if (attempt < retries) {
-        await sleep(600 + attempt * 1200);
+        await abortableDelay(600 + attempt * 1200, opts?.signal);
         continue;
       }
       /* The save did not come back. NEVER fail quietly here (owner ruling

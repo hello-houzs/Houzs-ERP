@@ -52,6 +52,7 @@ import {
 } from '../../vendor/scm/lib/lorries-queries';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
+import { DATA_GRID_LAYOUT_KEYS } from '../../vendor/scm/components/dataGridLayoutKeys';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { LorryDetail } from './LorryDetail';
 import styles from './Suppliers.module.css';
@@ -217,7 +218,7 @@ const DriversSection = () => {
       <DataGrid
         rows={drivers.data ?? []}
         columns={columns}
-        storageKey="dg-drivers"
+        storageKey={DATA_GRID_LAYOUT_KEYS.fleetDrivers}
         exportName="Drivers"
         rowKey={(d) => d.id}
         searchPlaceholder="Search drivers…"

@@ -39,6 +39,12 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { useDebouncedValue } from '../lib/hooks';
 import { SkeletonRows } from './Skeleton';
 import { DateField } from './DateField';
+import {
+  DEFAULT_DATA_GRID_LAYOUT,
+  type DataGridLayout,
+  readDataGridLayout,
+  writeDataGridLayout,
+} from './dataGridLayoutStorage';
 import styles from './DataGrid.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -115,6 +121,11 @@ export type DataGridProps<T> = {
   /** row id accessor — required for selection + key */
   rowKey: (row: T) => string;
   searchPlaceholder?: string;
+  /** Optional exact loaded-set count for the client search hint. Defaults to
+      rows.length; pass a pre-filter count when the caller already narrowed rows. */
+  loadedSearchCount?: number;
+  /** Known upstream cap; makes client-only search scope explicit to operators. */
+  loadedSearchLimit?: number;
   /** Human filename stem for the "Export Excel" button, e.g. "Purchase Orders".
       Falls back to a cleaned storageKey when omitted. A YYYY-MM-DD date is
       appended automatically. (Wei Siang 2026-06-20 — storageKey filenames like
@@ -197,37 +208,7 @@ export type DataGridProps<T> = {
   hideSearch?: boolean;
 };
 
-type Layout = {
-  order: string[];
-  hidden: string[];
-  widths: Record<string, number>;
-  groupBy: string[];
-  pinned: string[];
-  sort: { key: string; dir: 'asc' | 'desc' } | null;
-};
-
-const DEFAULT_LAYOUT: Layout = {
-  order: [],
-  hidden: [],
-  widths: {},
-  groupBy: [],
-  pinned: [],
-  sort: null,
-};
-
-function readLayout(key: string): Layout {
-  if (typeof window === 'undefined') return DEFAULT_LAYOUT;
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return DEFAULT_LAYOUT;
-    const parsed = JSON.parse(raw) as Partial<Layout>;
-    return { ...DEFAULT_LAYOUT, ...parsed };
-  } catch { return DEFAULT_LAYOUT; }
-}
-function writeLayout(key: string, layout: Layout) {
-  if (typeof window === 'undefined') return;
-  try { window.localStorage.setItem(key, JSON.stringify(layout)); } catch { /* quota */ }
-}
+type Layout = DataGridLayout;
 
 const coerceSearchString = (v: ReactNode): string => {
   if (v == null || v === false) return '';
@@ -288,6 +269,7 @@ function DataGridInner<T>({
   storageKey,
   rowKey,
   searchPlaceholder = 'Search…',
+  loadedSearchCount,
   exportName,
   onRowDoubleClick,
   onRowClick,
@@ -305,6 +287,7 @@ function DataGridInner<T>({
   selectable,
   embedded = false,
   hideSearch = false,
+  loadedSearchLimit,
 }: DataGridProps<T>) {
   /* HOUZS-style inline expansion (PR so-list-houzs-port). Tracks the set of
      expanded row ids; rendering inserts a colSpan sub-<tr> directly under
@@ -319,11 +302,11 @@ function DataGridInner<T>({
       return n;
     });
   }, []);
-  const [layout, setLayoutRaw] = useState<Layout>(() => readLayout(storageKey));
+  const [layout, setLayoutRaw] = useState<Layout>(() => readDataGridLayout(storageKey));
   const setLayout = useCallback((updater: (l: Layout) => Layout) => {
     setLayoutRaw((prev) => {
       const next = updater(prev);
-      writeLayout(storageKey, next);
+      writeDataGridLayout(storageKey, next);
       return next;
     });
   }, [storageKey]);
@@ -873,7 +856,7 @@ function DataGridInner<T>({
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
       // persist final widths
-      setLayoutRaw((prev) => { writeLayout(storageKey, prev); return prev; });
+      setLayoutRaw((prev) => { writeDataGridLayout(storageKey, prev); return prev; });
       resizingRef.current = null;
     };
     window.addEventListener('mousemove', onMove);
@@ -904,7 +887,7 @@ function DataGridInner<T>({
     const w = Math.max(60, Math.min(420, Math.round(max * 7.5 + 20)));
     setLayout((l) => ({ ...l, widths: { ...l.widths, [key]: w } }));
   };
-  const resetLayout = () => setLayout(() => DEFAULT_LAYOUT);
+  const resetLayout = () => setLayout(() => ({ ...DEFAULT_DATA_GRID_LAYOUT }));
 
   /* ── Export to Excel (system-wide via DataGrid) ───────────────────────
      Exports exactly what the operator sees: the post-filter + post-search +
@@ -1154,16 +1137,23 @@ function DataGridInner<T>({
         {toolbar}
         <div className={styles.toolbarSpacer} />
         {!embedded && !hideSearch && (
-          <div className={styles.searchWrap}>
-            <Search {...ICON} aria-hidden />
-            <input
-              ref={searchRef}
-              className={styles.searchInput}
-              type="search"
-              placeholder={searchPlaceholder}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+          <div className={styles.searchGroup}>
+            <div className={styles.searchWrap}>
+              <Search {...ICON} aria-hidden />
+              <input
+                ref={searchRef}
+                className={styles.searchInput}
+                type="search"
+                placeholder={searchPlaceholder}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <div className={styles.searchScope} data-search-scope>
+              {loadedSearchLimit
+                ? `Searches up to ${loadedSearchLimit.toLocaleString()} loaded rows only`
+                : `Searches ${(loadedSearchCount ?? rows.length).toLocaleString()} loaded rows only`}
+            </div>
           </div>
         )}
         {/* Clear-all-filters — appears only when ≥1 column filter is active.

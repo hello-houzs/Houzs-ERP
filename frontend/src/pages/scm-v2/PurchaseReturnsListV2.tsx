@@ -25,6 +25,7 @@ import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
 import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
+import { SearchScopeHint } from "../../components/SearchScopeHint";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
@@ -431,6 +432,10 @@ export function PurchaseReturnsListV2() {
   const [printingDocs, setPrintingDocs] = useState(false);
 
   const { data, isLoading, error } = usePurchaseReturns();
+  // These tiles are reduces over a row set that is [] until the fetch lands (and
+  // stays [] if it fails), so a settled-looking "Refund Value RM 0.00" would
+  // describe a list nobody has read yet.
+  const statsPending = isLoading || Boolean(error);
   const postPr = usePostPurchaseReturn();
   const cancelPr = useCancelPurchaseReturn();
 
@@ -704,10 +709,10 @@ export function PurchaseReturnsListV2() {
         </div>
 
         <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
-          <StatCard label="Total Returns" value={stats.total.toLocaleString("en-MY")} subtitle="Scoped to current filter" rail="bg-primary" active />
-          <StatCard label="Credit Value" value={fmtRm(stats.credit)} subtitle="Money owed back to us" tone="success" rail="bg-synced" />
-          <StatCard label="Pending" value={fmtRm(stats.pending)} subtitle="Draft + Posted · awaiting credit note" tone="warning" rail="bg-accent-bright" />
-          <StatCard label="Settled" value={fmtRm(stats.settled)} subtitle="Completed · loop closed" rail="bg-accent" />
+          <StatCard pending={statsPending} label="Total Returns" value={stats.total.toLocaleString("en-MY")} subtitle="Scoped to current filter" rail="bg-primary" active />
+          <StatCard pending={statsPending} label="Credit Value" value={fmtRm(stats.credit)} subtitle="Money owed back to us" tone="success" rail="bg-synced" />
+          <StatCard pending={statsPending} label="Pending" value={fmtRm(stats.pending)} subtitle="Draft + Posted · awaiting credit note" tone="warning" rail="bg-accent-bright" />
+          <StatCard pending={statsPending} label="Settled" value={fmtRm(stats.settled)} subtitle="Completed · loop closed" rail="bg-accent" />
         </div>
 
         <div className="sticky top-0 z-10 -mx-4 mb-3 bg-bg/95 px-4 py-2 backdrop-blur-sm md:hidden">
@@ -718,6 +723,7 @@ export function PurchaseReturnsListV2() {
             placeholder="Search return, supplier, reason…"
             className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
+          <SearchScopeHint scope="loaded" loadedLimit={300} resultCount={filtered.length} term={search} className="mt-1 px-1" />
         </div>
 
         <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -776,7 +782,7 @@ export function PurchaseReturnsListV2() {
                 }}
                 exportName="purchase-returns"
                 emptyLabel={filtersActive ? "No purchase returns match — try Reset layout to clear filters." : "No purchase returns yet."}
-                search={{ value: search, onChange: setSearch, placeholder: "Search return, supplier, reason, source…" }}
+                search={{ value: search, onChange: setSearch, placeholder: "Search return, supplier, reason, source…", loadedLimit: 300 }}
                 resetFilters={{ active: filtersActive, onReset: resetLayout, label: "Reset layout" }}
               />
             </>
@@ -791,6 +797,7 @@ export function PurchaseReturnsListV2() {
                     placeholder="Search return, supplier, reason, source…"
                     className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
+                  <SearchScopeHint scope="loaded" loadedLimit={300} resultCount={filtered.length} term={search} />
                   {filtersActive && (
                     <button type="button" onClick={resetLayout} className="text-[12px] font-semibold text-primary hover:underline">Reset layout</button>
                   )}

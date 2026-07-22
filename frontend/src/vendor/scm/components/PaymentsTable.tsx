@@ -209,6 +209,8 @@ export type PaymentDraft = {
   idempotencyKey?:          string;
 };
 
+const EMPTY_PAYMENT_DRAFTS: PaymentDraft[] = [];
+
 export const newPaymentDraft = (defaultStaffId = ''): PaymentDraft => ({
   uid: Math.random().toString(36).slice(2, 10),
   idempotencyKey: newIdempotencyKey(),
@@ -328,6 +330,11 @@ type SavedModeProps = {
    *  row by email and passes it here. Falls back to the auth bridge when unset
    *  (HOOKKA / 2990, where the bridge does carry the id). '' / null = leave "—". */
   defaultCollectedBy?: string | null;
+  /** Temporary retry rows carried from a successfully-created SO whose payment
+   * follow-up failed. Deduplicated by their original idempotency key. */
+  initialDrafts?: PaymentDraft[];
+  /** Called only after a seeded/new draft is confirmed by the server. */
+  onDraftCommitted?: (draft: PaymentDraft) => void;
 };
 
 type DraftModeProps = {
@@ -449,7 +456,29 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
 
   /* SAVED-mode local drafts (pre-commit rows). DRAFT mode uses parent's
      `payments` array directly. */
-  const [savedDrafts, setSavedDrafts] = useState<PaymentDraft[]>([]);
+  const [savedDraftState, setSavedDraftState] = useState<{ docNo: string | null; drafts: PaymentDraft[] }>({ docNo: null, drafts: [] });
+  const savedDocNo = isSaved ? props.docNo : null;
+  const initialDrafts = isSaved ? ((props as SavedModeProps).initialDrafts ?? EMPTY_PAYMENT_DRAFTS) : EMPTY_PAYMENT_DRAFTS;
+  useEffect(() => {
+    if (!isSaved || !savedDocNo) return;
+    setSavedDraftState((current) => {
+      const base = current.docNo === savedDocNo ? current.drafts : [];
+      const keys = new Set(base.map((draft) => draft.idempotencyKey).filter(Boolean));
+      const incoming = initialDrafts.filter(
+        (draft) => draft.idempotencyKey && !keys.has(draft.idempotencyKey),
+      );
+      return { docNo: savedDocNo, drafts: incoming.length > 0 ? [...base, ...incoming] : base };
+    });
+  }, [isSaved, initialDrafts, savedDocNo]);
+  const savedDrafts = savedDraftState.docNo === savedDocNo ? savedDraftState.drafts : EMPTY_PAYMENT_DRAFTS;
+
+  const setSavedDrafts = (updater: PaymentDraft[] | ((current: PaymentDraft[]) => PaymentDraft[])) => {
+    if (!savedDocNo) return;
+    setSavedDraftState((current) => {
+      const base = current.docNo === savedDocNo ? current.drafts : [];
+      return { docNo: savedDocNo, drafts: typeof updater === 'function' ? updater(base) : updater };
+    });
+  };
 
   const persistedPayments: SoPayment[] = isSaved ? (paymentsQ.data ?? []) : [];
   const drafts: PaymentDraft[] = isSaved ? savedDrafts : (props as DraftModeProps).payments;
@@ -719,7 +748,10 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
       ...draftMethodFields(method, d),
     };
     addPayment.mutate(body as { docNo: string } & Record<string, unknown>, {
-      onSuccess: () => removeDraft(d.uid),
+      onSuccess: () => {
+        removeDraft(d.uid);
+        (props as SavedModeProps).onDraftCommitted?.(d);
+      },
       onError: (e) => {
         // eslint-disable-next-line no-console
         console.error('[payment] add failed:', e);

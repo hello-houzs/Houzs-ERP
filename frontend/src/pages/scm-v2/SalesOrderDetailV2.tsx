@@ -34,6 +34,7 @@ import {
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
+import { DATA_TABLE_LAYOUT_FAMILIES } from "../../components/dataTableLayoutFamilies";
 import {
   DetailGrid,
   DetailMain,
@@ -1086,6 +1087,7 @@ function SalesOrderDetailV2ReadOnly() {
             >
               <DataTable<SoItem>
                 tableId={`so-lines-${docNo}`}
+                layoutFamily={DATA_TABLE_LAYOUT_FAMILIES.salesOrderLines}
                 rows={items}
                 loading={false}
                 columns={lineColumns}

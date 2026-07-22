@@ -42,7 +42,8 @@ import {
   useConsignmentOrdersPaged, useUpdateConsignmentOrderStatus,
   useConsignmentOrderDetail,
 } from '../../vendor/scm/lib/consignment-order-queries';
-import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
+import { SearchProgress } from '../../components/SearchProgress';
+import { useDebouncedSearchTerm, useSearchResultTransition } from '../../hooks/useServerSearch';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { generateSalesOrderPdf } from '../../vendor/scm/lib/sales-order-pdf';
 import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
@@ -703,19 +704,28 @@ export const ConsignmentOrders = () => {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState('');
   // Debounce the search box so each keystroke doesn't fire a server round-trip.
-  const debouncedSearch = useDebouncedValue(search, 300);
+  const { requestTerm: debouncedSearch } = useDebouncedSearchTerm(search);
 
   /* Server-side pagination + search + outstanding overlay (mirrors Suppliers.tsx).
      Reset to page 0 whenever a server-query input changes so we never strand the
      operator on an out-of-range page. */
   useEffect(() => { setPage(0); }, [outstandingOnly, debouncedSearch]);
 
-  const { data, isLoading, error } = useConsignmentOrdersPaged({
+  const { data, isLoading, isFetching, isPlaceholderData, error } = useConsignmentOrdersPaged({
     page,
     pageSize: PAGE_SIZE,
     q: debouncedSearch.trim() || undefined,
     outstanding: outstandingOnly || undefined,
   });
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: debouncedSearch,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const listLoading = isLoading || searchTransition.isSearching;
 
   /* Server page rows + grand total. The outstanding overlay + free-text search
      are resolved server-side; the DataGrid's own per-column funnel filters +
@@ -995,6 +1005,7 @@ export const ConsignmentOrders = () => {
             background: 'var(--c-paper)', color: 'var(--c-ink)', fontSize: 12,
           }}
         />
+        <SearchProgress active={searchTransition.isSearching} className="ml-2" />
       </div>
 
       <ListingPickerDialog
@@ -1006,7 +1017,7 @@ export const ConsignmentOrders = () => {
       />
 
       <DataGrid<SoRow>
-        rows={baseRows}
+        rows={searchTransition.resultsAreStale ? [] : baseRows}
         columns={COLUMNS}
         storageKey={STORAGE_KEY}
         exportName="Consignment Orders"
@@ -1032,7 +1043,7 @@ export const ConsignmentOrders = () => {
         rowStyle={(r) => r.status === 'CANCELLED'
           ? { opacity: 0.55, filter: 'grayscale(0.6)' }
           : undefined}
-        isLoading={isLoading}
+        isLoading={listLoading}
         emptyMessage='No consignment orders yet — click "+ New Consignment Order" to start.'
         expandable={{
           renderExpansion: (row) => <ExpandedSoLines docNo={row.doc_no} canFinance={canFinance} />,
@@ -1107,14 +1118,14 @@ export const ConsignmentOrders = () => {
         }}
       />
 
-      <PaginationFooter
+      {!searchTransition.resultsAreStale && <PaginationFooter
         page={page}
         pageSize={PAGE_SIZE}
         total={total}
         noun="consignment orders"
         onPrev={() => setPage((p) => Math.max(0, p - 1))}
         onNext={() => setPage((p) => p + 1)}
-      />
+      />}
     </div>
   );
 };

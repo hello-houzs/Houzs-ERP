@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { MOBILE_MENU_GROUPS, PROFILE_ORG_ITEMS, type MobileMenuItem } from "./MobileApp";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { CAPABILITY_KEYS } from "../auth/capabilities";
+import { mobileDestinationMatches } from "./mobileRoute";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -40,17 +41,21 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * backend enforces on the screen's endpoint.
  */
 
-/** Every `to` in the desktop nav tree, query stripped. This is the set of paths
- *  `allowed()` can actually find a gate for; anything outside it fails open. */
-const navPaths = ((): Set<string> => {
-  const out = new Set<string>();
+/** Every complete `to` in the desktop nav tree. Queries are part of the
+ *  destination identity: /team?tab=members is not the gate for Departments.
+ *  A mobile destination with no exact declared gate fails closed. */
+const navDestinations = ((): string[] => {
+  const out: string[] = [];
   const walk = (t: NavTab) => {
-    if (t.to != null) out.add(t.to.split("?")[0]);
+    if (t.to != null) out.push(t.to);
     (t.children ?? []).forEach(walk);
   };
   NAV_TABS.forEach(walk);
   return out;
 })();
+
+const hasNavDestination = (to: string): boolean =>
+  navDestinations.some((navTo) => mobileDestinationMatches(to, navTo));
 
 /**
  * Rows that are ungated ON PURPOSE, each with the reason it has no permission to
@@ -111,8 +116,8 @@ function gateOf(item: MobileMenuItem): string | null {
       : null;
   }
   if (item.alwaysShow) return UNGATED_BY_DESIGN.has(path) ? "ungated by design (alwaysShow)" : null;
-  if (item.gateVia) return navPaths.has(item.gateVia.split("?")[0]) ? `gateVia ${item.gateVia}` : null;
-  if (navPaths.has(path)) return `NAV_TABS ${path}`;
+  if (item.gateVia) return hasNavDestination(item.gateVia) ? `gateVia ${item.gateVia}` : null;
+  if (hasNavDestination(item.to)) return `NAV_TABS ${item.to}`;
   return UNGATED_BY_DESIGN.has(path) ? "ungated by design (no nav entry)" : null;
 }
 
@@ -132,7 +137,7 @@ describe("mobile menu permission gates", () => {
     const appSrc = readFileSync(resolve(HERE, "MobileApp.tsx"), "utf8");
     const at = appSrc.indexOf("const allowed = (to: string)");
     expect(at, "allowed() not found in MobileApp.tsx — did it get renamed?").toBeGreaterThan(-1);
-    const decl = appSrc.slice(at, at + 320);
+    const decl = appSrc.slice(at, at + 640);
     expect(decl).toContain("matches.length === 0 ? false");
     expect(decl).not.toContain("matches.length === 0 ? true");
   });
@@ -162,7 +167,7 @@ describe("mobile menu permission gates", () => {
        gateOf() already returns null for a dead target, so the test above would
        catch it; this asserts it directly so the failure names the cause. */
     const dead = allRows
-      .filter((it) => it.gateVia && !navPaths.has(it.gateVia.split("?")[0]))
+      .filter((it) => it.gateVia && !hasNavDestination(it.gateVia))
       .map((it) => `${it.label} (${it.to}) -> gateVia ${it.gateVia}`);
     expect(
       dead,
@@ -184,7 +189,7 @@ describe("mobile menu permission gates", () => {
          `alwaysShow` AND gains a nav entry, it is gated for real and the
          exemption must go rather than sit here quietly claiming otherwise. */
       expect(
-        row!.alwaysShow === true || !navPaths.has(path),
+        row!.alwaysShow === true || !hasNavDestination(row!.to),
         `"${path}" is now gated for real (it has a NAV_TABS entry and no alwaysShow) — remove it from UNGATED_BY_DESIGN and let the real gate apply`,
       ).toBe(true);
     }
@@ -196,5 +201,23 @@ describe("mobile menu permission gates", () => {
        told before it ships — not after someone notices a page they should not
        be able to see. Sorted so the assertion does not depend on list order. */
     expect([...UNGATED_BY_DESIGN.keys()].sort()).toEqual(["/activity-inbox", "/announcements"]);
+  });
+
+  it("keeps Positions out of every mobile entry and route gate", () => {
+    expect(allRows.some((item) => item.to === "/team?tab=positions")).toBe(false);
+    expect(hasNavDestination("/team?tab=positions")).toBe(false);
+  });
+
+  it("gates every Team row on its exact query-bearing NAV_TABS destination", () => {
+    const teamRows = allRows.filter((item) => item.to.startsWith("/team?tab="));
+    expect(teamRows.map((item) => item.to).sort()).toEqual([
+      "/team?tab=departments",
+      "/team?tab=members",
+    ]);
+    for (const row of teamRows) {
+      const matches = navDestinations.filter((navTo) => mobileDestinationMatches(row.to, navTo));
+      expect(matches, `${row.to} must have exactly one gate`).toEqual([row.to]);
+    }
+    expect(mobileDestinationMatches("/team?tab=members", "/team?tab=departments")).toBe(false);
   });
 });

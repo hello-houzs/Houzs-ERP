@@ -31,6 +31,7 @@
 
 import { useMemo, useState, type CSSProperties } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
@@ -288,7 +289,10 @@ export const SalesInvoiceFromDo = () => {
     // All picks share one customer (the lock guarantees it); they may span several
     // DOs. Land on the first DO so its header seeds the form.
     const firstDoId = stash.map((s) => s.deliveryOrderId).sort()[0] ?? '';
-    sessionStorage.setItem('siFromDoPicks', JSON.stringify(stash));
+    if (!writeScmHandoff('siFromDoPicks', stash)) {
+      setDialog({ title: 'Unable to continue', body: 'This browser could not safely store your picked lines. Your selection is still here; free some browser storage and try again.' });
+      return;
+    }
     navigate(`/scm/sales-invoices/new?fromDo=${encodeURIComponent(firstDoId)}&fromPicks=1`);
   };
 

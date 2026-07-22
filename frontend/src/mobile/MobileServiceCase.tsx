@@ -9,6 +9,9 @@ import { useAuth } from "../auth/AuthContext";
 import { isSalesStaff } from "../auth/salesAccess";
 import { capability } from "../auth/capabilities";
 import { MobileVirtualList } from "./MobileVirtualList";
+import { SearchProgress } from "../components/SearchProgress";
+import { SearchScopeHint } from "../components/SearchScopeHint";
+import { useSearchResultTransition } from "../hooks/useServerSearch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../vendor/scm/components/ChoiceDialog";
@@ -255,8 +258,8 @@ function useSoSearch(q: string): { results: SoHit[]; loading: boolean } {
     queryKey: ["mobile-assr-so-search", needle],
     enabled: needle.length >= 2,
     staleTime: 30_000,
-    queryFn: () =>
-      api.get<{ results?: SoHit[] }>(`/api/assr/search-so?q=${encodeURIComponent(needle)}`),
+    queryFn: ({ signal }) =>
+      api.get<{ results?: SoHit[] }>(`/api/assr/search-so?q=${encodeURIComponent(needle)}`, { signal }),
   });
   return { results: data?.results ?? [], loading: isFetching };
 }
@@ -402,11 +405,11 @@ function CaseList({
   };
   type AssrListPage = { data?: Any[]; total?: number; page?: number; per_page?: number };
   const {
-    data, isLoading, error,
+    data, isLoading, isFetching, isPlaceholderData, error,
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
     queryKey: ["mobile-assr-list-paged", debouncedQ, sort, mineParam],
-    queryFn: ({ pageParam }) => api.get<AssrListPage>(`/api/assr?${buildParams(pageParam)}`),
+    queryFn: ({ pageParam, signal }) => api.get<AssrListPage>(`/api/assr?${buildParams(pageParam)}`, { signal }),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
       const loaded = pages.reduce((n, p) => n + (p.data?.length ?? 0), 0);
@@ -423,6 +426,14 @@ function CaseList({
      header note instead. Honest: with server pagination the full set isn't in
      memory, so these badges reflect loaded rows, not the whole table. */
   const totalCount = data?.pages[0]?.total ?? 0;
+  const searchTransition = useSearchResultTransition({
+    inputTerm: q,
+    requestTerm: debouncedQ,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const ch of CHIPS) c[ch.key] = all.filter(ch.match).length;
@@ -437,6 +448,7 @@ function CaseList({
     const active = CHIPS.find((c) => c.key === chip) ?? CHIPS[0];
     return all.filter((r) => active.match(r));
   }, [all, chip, user?.id]);
+  const visibleRows = searchTransition.resultsAreStale ? [] : rows;
 
   /* Infinite-scroll trigger — IntersectionObserver on a 1px sentinel at the
      list's bottom; fetches the next page as it nears the viewport (rootMargin
@@ -479,11 +491,13 @@ function CaseList({
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={GREY} strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search case · SO · Ref · customer · phone" />
           </div>
+          <SearchProgress active={searchTransition.isSearching} label="Searching…" />
           <select value={sort} onChange={(e) => setSort(e.target.value as "sla" | "no")} style={{ flex: "none", fontFamily: "inherit", fontSize: 12, color: "var(--mut)", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "0 8px", height: 38, appearance: "none", WebkitAppearance: "none" }}>
             <option value="sla">Sort: SLA</option>
             <option value="no">Sort: Case</option>
           </select>
         </div>
+        <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={totalCount} term={q} className="mt-1 px-1" />
         {/* status chips — petrol active pill with count badge (design SegChips) */}
         <div className="hz-scroll" style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 11, paddingBottom: 2 }}>
           {CHIPS.map((c) => {
@@ -517,14 +531,16 @@ function CaseList({
           <>
             {/* Count note — server total for All/Mine (cross-page); for the
                 client-side risk/urgent chips it can only reflect loaded rows. */}
-            <div style={{ fontSize: 11, color: MUTED, margin: "0 2px 10px" }}>
-              {chip === "urgent" || chip === "risk"
-                ? `${rows.length} shown (loaded)`
-                : `${totalCount} case${totalCount === 1 ? "" : "s"}`}
-            </div>
-            {rows.length > 0 && (
+            {!searchTransition.resultsAreStale && (
+              <div style={{ fontSize: 11, color: MUTED, margin: "0 2px 10px" }}>
+                {chip === "urgent" || chip === "risk"
+                  ? `${visibleRows.length} shown (loaded)`
+                  : `${totalCount} case${totalCount === 1 ? "" : "s"}`}
+              </div>
+            )}
+            {visibleRows.length > 0 && (
               <MobileVirtualList
-                items={rows}
+                items={visibleRows}
                 getKey={(r) => Number(get(r, "id"))}
                 estimateHeight={132}
                 renderItem={(r) => {
@@ -626,16 +642,16 @@ function CaseList({
                 risk/urgent chips can filter the loaded rows to zero while more
                 pages remain, and we still want those pages pulled so matches on
                 later pages surface. */}
-            {hasNextPage && (
+            {!searchTransition.isSearching && hasNextPage && (
               <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
             )}
             {/* "Loading more…" while the next page is in flight. */}
-            {isFetchingNextPage && (
+            {!searchTransition.isSearching && isFetchingNextPage && (
               <div style={{ textAlign: "center", padding: "14px 0 2px", fontSize: 11.5, color: MUTED }}>Loading more…</div>
             )}
             {/* Empty only once loading has truly settled — otherwise a
                 risk/urgent chip mid-load would flash "Nothing matches". */}
-            {!rows.length && !hasNextPage && !isFetchingNextPage && (
+            {!visibleRows.length && !searchTransition.isSearching && !hasNextPage && !isFetchingNextPage && (
               <div className="empty">
                 <div className="empty-t">Nothing matches</div>
                 <div className="empty-s">Try a different filter or search.</div>

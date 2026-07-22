@@ -48,6 +48,8 @@ import {
 import { authedFetch, humanApiError, parseSaveProblems } from '../../vendor/scm/lib/authed-fetch';
 import { SaveProblemsList, saveProblemsTitle } from '../../vendor/scm/components/SaveProblemsList';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, removeScmHandoff } from '../../lib/scmHandoffStorage';
+import { completePaymentRetryDraft, paymentRetryNavigationState, writePaymentRetryHandoff } from '../../lib/paymentRetryHandoff';
 import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
@@ -79,9 +81,7 @@ import { useFabricLibrary } from '../../vendor/scm/lib/queries';
    the SAME variant keys SoLineCard.toggleSpecial does and the special renders
    checked on the New SO line. */
 import { useSpecialAddons, type MfgProductRow } from '../../vendor/scm/lib/mfg-products-queries';
-import {
-  SCAN_PREFILL_KEY, type ScanPrefill, type ExtractedSlip,
-} from '../../vendor/scm/components/ScanOrderModal';
+import { type ScanPrefill, type ExtractedSlip } from '../../vendor/scm/components/ScanOrderModal';
 import {
   PaymentsTable, labelToApi, draftMethodFields, newPaymentDraft,
   missingMethodSubField, parseInstallmentMonths, type PaymentDraft,
@@ -364,9 +364,9 @@ export const SalesOrderNew = () => {
     if (preferred) setCustomerType((prev) => prev || preferred);
   }, [copyFromDocNo, copySeeded, customerTypeOpts]);
 
-  /* Scan-Order prefill — ?fromScan=1 + sessionStorage handoff from
+  /* Scan-Order prefill — ?fromScan=1 + scoped browser handoff from
      ScanOrderModal ("Scan Order" on the SO list). Same one-shot seeding
-     idea as copyFrom above, but via sessionStorage because the source is
+     idea as copyFrom above, but via the short-lived handoff store because the source is
      an OCR'd handwritten slip, not an existing SO. The key is consumed
      (removed) immediately so a refresh starts clean. Everything seeded
      here is a DRAFT the operator reviews — normal pricing/validation
@@ -374,7 +374,7 @@ export const SalesOrderNew = () => {
   const fromScan = searchParams.get('fromScan') === '1';
   const [scanSeeded, setScanSeeded] = useState(false);
   /* Original-slip R2 key from the scan handoff — survives in state past the
-     one-shot sessionStorage consume so it can ride onto the create body and
+     one-shot handoff consume so it can ride onto the create body and
      become the SO's "Original Slip" proof. '' for a non-scan / PDF order. */
   const [scanSlipImageKey, setScanSlipImageKey] = useState('');
   /* Payment-receipt R2 key from the scan handoff — parallel to the slip key
@@ -384,11 +384,8 @@ export const SalesOrderNew = () => {
   useEffect(() => {
     if (!fromScan || scanSeeded) return;
     setScanSeeded(true);
-    let payload: ScanPrefill | null = null;
-    try {
-      payload = JSON.parse(sessionStorage.getItem(SCAN_PREFILL_KEY) ?? 'null') as ScanPrefill | null;
-    } catch { payload = null; }
-    sessionStorage.removeItem(SCAN_PREFILL_KEY);
+    const payload = readScmHandoff<ScanPrefill>('soScanPrefill');
+    removeScmHandoff('soScanPrefill');
     if (!payload) return;
     if (payload.slipImageKey) setScanSlipImageKey(payload.slipImageKey);
     if (payload.receiptImageKey) setScanReceiptImageKey(payload.receiptImageKey);
@@ -576,6 +573,7 @@ export const SalesOrderNew = () => {
      since the SO doesn't have a docNo yet. We hold the rows here, then
      batch POST them to /:docNo/payments after create succeeds. */
   const [paymentDrafts, setPaymentDrafts] = useState<PaymentDraft[]>([]);
+  const [createdDocNo, setCreatedDocNo] = useState<string | null>(null);
 
   // ── Debtor autocomplete + warehouse lookup ─────────────────────────
   const debtors = useDebtorSearch(debtorName.trim().length >= 2 ? debtorName.trim() : '');
@@ -1150,15 +1148,15 @@ export const SalesOrderNew = () => {
     return { failed, skipped };
   };
 
-  const flushPaymentDrafts = async (docNo: string): Promise<{ failed: number }> => {
-    if (paymentDrafts.length === 0) return { failed: 0 };
-    const tasks = paymentDrafts
+  const paymentIntents = () => paymentDrafts.filter((d) => d.amountCenti > 0 && !d.receiptImageKey);
+
+  const flushPaymentDrafts = async (docNo: string, drafts: PaymentDraft[]): Promise<{ failedDrafts: PaymentDraft[] }> => {
+    const tasks = drafts
       /* Bug #3 (2026-06-24) — a receipt-backed deposit (scanned in the modal) is
          recorded through the SO-create body's deposit fields, not the strict
          per-payment route (which 400s without a slip session). Skip it here so
          it isn't double-booked. */
-      .filter((d) => d.amountCenti > 0 && !d.receiptImageKey)
-      .map(async (d) => {
+      .map((d) => async () => {
         const { method } = labelToApi(d.methodLabel);
         const body: { docNo: string } & Record<string, unknown> = {
           docNo,
@@ -1183,15 +1181,17 @@ export const SalesOrderNew = () => {
         Object.assign(body, draftMethodFields(method, d));
         try {
           await addPayment.mutateAsync(body);
-          return true;
+          if (d.idempotencyKey) completePaymentRetryDraft('so', docNo, d.idempotencyKey);
+          return null;
         } catch (e) {
           // eslint-disable-next-line no-console
           console.error('[payment] post failed for new SO:', e);
-          return false;
+          return d;
         }
       });
-    const results = await Promise.all(tasks);
-    return { failed: results.filter((ok) => !ok).length };
+    const results: Array<PaymentDraft | null> = [];
+    for (const task of tasks) results.push(await task());
+    return { failedDrafts: results.filter((draft): draft is PaymentDraft => draft !== null) };
   };
 
   /* ── Scan-review learning (fromScan only) ──────────────────────────────
@@ -1329,6 +1329,25 @@ export const SalesOrderNew = () => {
      form was opened from a scan (fromScan), "Save as Draft" is the primary
      button so scanned orders default to draft for operator review. */
   const onSave = (asDraft = false) => {
+    if (createdDocNo) {
+      const intents = paymentIntents();
+      if (intents.length === 0) {
+        navigate(`/scm/sales-orders/${createdDocNo}`);
+        return;
+      }
+      if (!writePaymentRetryHandoff('so', createdDocNo, intents)) {
+        void notify({
+          title: `Sales order ${createdDocNo} already exists; payments were not sent.`,
+          body: 'Browser storage is still unavailable. This page is keeping the payment rows; retry Save after storage is available.',
+          tone: 'error',
+        });
+        return;
+      }
+      navigate(`/scm/sales-orders/${createdDocNo}?edit=1&retryPayments=1`, {
+        state: paymentRetryNavigationState('so', createdDocNo, intents),
+      });
+      return;
+    }
     if (!debtorName.trim()) {
       notify({ title: 'Customer name is required.', tone: 'error' });
       return;
@@ -1537,7 +1556,12 @@ export const SalesOrderNew = () => {
              We don't gate navigation on success — if a payment fails the
              SO still exists, so we navigate to the Detail page where
              commander can re-enter the affected row. */
-          const { failed } = await flushPaymentDrafts(res.docNo);
+          const intents = paymentIntents();
+          const staged = intents.length === 0 || writePaymentRetryHandoff('so', res.docNo, intents);
+          const { failedDrafts } = staged
+            ? await flushPaymentDrafts(res.docNo, intents)
+            : { failedDrafts: intents };
+          const failed = failedDrafts.length;
           /* Line-card-redesign — Drain pendingPhotoFiles for every line
              after the SO + items exist. Same non-blocking pattern as
              payments: a photo failure leaves the SO intact and we
@@ -1547,8 +1571,10 @@ export const SalesOrderNew = () => {
           if (failed > 0) {
             await notify({
               title: `Sales order ${res.docNo} was created, but ${failed} ` +
-                `payment row${failed === 1 ? '' : 's'} failed to save.`,
-              body: `Please re-enter ${failed === 1 ? 'it' : 'them'} on the Detail page.`,
+                `payment row${failed === 1 ? '' : 's'} ${staged ? 'failed to save' : 'was not sent'}.`,
+              body: staged
+                ? 'The failed rows will be available to retry on the Detail page.'
+                : 'Browser storage was unavailable, so no payment request was attempted. The rows are carried to the Detail page for a safe retry.',
               tone: 'error',
             });
           }
@@ -1560,7 +1586,14 @@ export const SalesOrderNew = () => {
               tone: 'error',
             });
           }
-          navigate(`/scm/sales-orders/${res.docNo}`);
+          if (!staged) {
+            setCreatedDocNo(res.docNo);
+            return;
+          }
+          navigate(
+            `/scm/sales-orders/${res.docNo}${failed > 0 ? '?edit=1&retryPayments=1' : ''}`,
+            { state: failed > 0 ? paymentRetryNavigationState('so', res.docNo, failedDrafts) : undefined },
+          );
         },
         onError:   (err) => {
           /* Aggregated save-gate failure → list every reason (owner 2026-07-18),
@@ -1589,8 +1622,10 @@ export const SalesOrderNew = () => {
           validates and tells the operator EXACTLY what's missing. */}
       <PageHeader
         eyebrow="Sales order"
-        title="New Sales Order"
-        description="Customer, order info, delivery address, line items and payments — saved as one order."
+        title={createdDocNo ? `Complete Sales Order ${createdDocNo}` : 'New Sales Order'}
+        description={createdDocNo
+          ? 'The order already exists. Finish or remove the retained payment rows, then continue to its Detail page.'
+          : 'Customer, order info, delivery address, line items and payments — saved as one order.'}
         actions={
           <>
             {/* h-9 = the <Button> height — this link shares the rail with
@@ -1610,12 +1645,16 @@ export const SalesOrderNew = () => {
               disabled={create.isPending}
             >
               <Save {...ICON} />
-              {create.isPending ? 'Saving…' : 'Create Sales Order'}
+              {create.isPending
+                ? 'Saving…'
+                : createdDocNo
+                  ? (paymentIntents().length > 0 ? 'Continue payment retry' : 'Open created order')
+                  : 'Create Sales Order'}
             </Button>
             <Button
               variant={fromScan ? 'primary' : 'secondary'}
               onClick={() => onSave(true)}
-              disabled={create.isPending}
+              disabled={create.isPending || !!createdDocNo}
             >
               <Save {...ICON} />
               {create.isPending ? 'Saving…' : 'Save as Draft'}
@@ -1625,6 +1664,12 @@ export const SalesOrderNew = () => {
       />
 
       <div className="space-y-3">
+      {createdDocNo && (
+        <div role="status" className="rounded-lg border border-warning-text/30 bg-warning-bg px-3 py-2 text-sm text-warning-text">
+          Sales order {createdDocNo} already exists. This recovery view only keeps payment rows; customer, order and line-item fields are hidden so unsaved edits cannot be lost.
+        </div>
+      )}
+      {!createdDocNo && (<>
       {/* ── SCAN BANNER (fromScan only) ───────────────────────────────
           Task #73 — the OCR review happens in THIS form now. Tell the operator
           to check every dropdown-bound field before saving. Changed fields show
@@ -2152,6 +2197,8 @@ export const SalesOrderNew = () => {
           </div>
         </div>
       </section>
+
+      </>)}
 
       {/* ── PAYMENTS (shared with Detail) ─────────────────────────────
           Task #105 — Same Houzs PaymentsTable rendered on Detail. In
