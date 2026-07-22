@@ -58,6 +58,25 @@ function yOf(draws: TextDraw[], label: string): number {
   return hit.y;
 }
 
+/* Item codes are matched whole-cell, so they MUST be short enough not to wrap
+   inside their column — autoTable hands a wrapped cell to doc.text as
+   ['SKU-ROW-', 'ONE'] and no fragment would equal the code. Keeping the codes
+   tiny is the fix; this throws with the drawn text if one ever wraps anyway,
+   so the failure names the cause instead of comparing against an empty list. */
+function rowYsFor(draws: TextDraw[], codes: string[]): number[] {
+  const ys = codes.map((code) => {
+    const hit = draws.find((d) => d.text === code);
+    if (!hit) {
+      throw new Error(
+        `Line-item code "${code}" was never drawn as a whole cell (did it wrap?). `
+        + `Drawn text: ${draws.map((d) => d.text).join(' | ')}`,
+      );
+    }
+    return hit.y;
+  });
+  return ys;
+}
+
 function readFinalY(doc: JsPdf): number | undefined {
   return (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY;
 }
@@ -125,7 +144,7 @@ describe('money PDFs place the totals block below the line items', () => {
 
     // Pure ASCII on purpose: no CJK font fetch, no logo fetch, no fabric
     // catalog lookup (no variants) — this test is about geometry only.
-    const itemCodes = ['SKU-ROW-ONE', 'SKU-ROW-TWO', 'SKU-ROW-THREE'];
+    const itemCodes = ['SKU-A', 'SKU-B', 'SKU-C'];
     await renderSalesInvoiceInto(
       doc,
       autoTable,
@@ -162,8 +181,7 @@ describe('money PDFs place the totals block below the line items', () => {
     // make the comparisons meaningless, so pin it.
     expect(doc.getNumberOfPages()).toBe(1);
 
-    const itemRowYs = draws.filter((d) => itemCodes.includes(d.text)).map((d) => d.y);
-    expect(itemRowYs).toHaveLength(itemCodes.length);
+    const itemRowYs = rowYsFor(draws, itemCodes);
     const lastItemRowY = Math.max(...itemRowYs);
 
     const finalY = readFinalY(doc);
@@ -196,7 +214,7 @@ describe('money PDFs place the totals block below the line items', () => {
     const doc = new jsPDF({ unit: 'mm', format: 'a4' });
     const draws = captureTextDraws(doc);
 
-    const itemCodes = ['SO-ROW-ONE', 'SO-ROW-TWO'];
+    const itemCodes = ['SO-A', 'SO-B'];
     await renderSalesOrderInto(
       doc,
       autoTable,
@@ -251,8 +269,7 @@ describe('money PDFs place the totals block below the line items', () => {
       }],
     );
 
-    const itemRowYs = draws.filter((d) => itemCodes.includes(d.text)).map((d) => d.y);
-    expect(itemRowYs).toHaveLength(itemCodes.length);
+    const itemRowYs = rowYsFor(draws, itemCodes);
     const lastItemRowY = Math.max(...itemRowYs);
 
     // First finalY read: the PAYMENTS RECEIVED heading sits below the items.
