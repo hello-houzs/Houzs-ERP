@@ -40,6 +40,7 @@ import { activeCompanyId, scopeToCompany,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { resolveCallerStaffId, resolveSalesScopeIds } from '../lib/salesScope';
 import { canViewAllSales } from '../lib/houzs-perms';
+import { normalizePhone } from '../shared/phone';
 
 export const quotes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -117,7 +118,10 @@ quotes.post('/', async (c) => {
   }
 
   const customerName = String(body?.customerName ?? '').trim();
-  const customerPhone = body?.customerPhone ? String(body.customerPhone).trim() : null;
+  // E.164 like every other customer phone the SCM routes write, so a quote
+  // that later becomes an SO does not carry a differently-formatted number
+  // into the order it seeds.
+  const customerPhone = normalizePhone(body?.customerPhone as string | null | undefined);
   const customerEmail = body?.customerEmail ? String(body.customerEmail).trim() : null;
   const cart = body?.cart ?? body?.lines;
   const subtotal = Number(body?.subtotal);

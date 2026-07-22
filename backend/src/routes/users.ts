@@ -10,6 +10,7 @@ import {
 import { isSalesDirectorUser } from "../services/pmsAccess";
 import { hasPermission } from "../services/permissions";
 import { checkRateLimit } from "../middleware/rateLimit";
+import { normalizePhone } from "../scm/shared/phone";
 import type { Context } from "hono";
 import {
   sendEmail,
@@ -1051,7 +1052,12 @@ app.post("/invite", requirePermissionOrSalesDirector("users.manage"), async (c) 
         department_id: departmentId,
         position_id: positionId,
         manager_id: managerId,
-        phone: body.phone?.trim() || null,
+        // Stored E.164 so a staff number is comparable and dialable no matter
+        // how it was typed. normalizePhone keeps an explicit +xx country code
+        // and assumes Malaysia only for a bare local number; it returns null
+        // for input too short to be a phone, and that null is the same "no
+        // phone" the trim path produced.
+        phone: normalizePhone(body.phone),
         status: activate ? "active" : "invited",
         invited_by: me.id || null,
         ...(activate
@@ -1076,7 +1082,7 @@ app.post("/invite", requirePermissionOrSalesDirector("users.manage"), async (c) 
         department_id: departmentId,
         position_id: positionId,
         manager_id: managerId,
-        ...(body.phone !== undefined ? { phone: body.phone?.trim() || null } : {}),
+        ...(body.phone !== undefined ? { phone: normalizePhone(body.phone) } : {}),
         status: activate ? "active" : "invited",
         invited_by: me.id || null,
         ...(activate
@@ -1565,7 +1571,7 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
     set.name = body.name?.trim() || null;
   }
   if (body.phone !== undefined) {
-    set.phone = body.phone?.trim() || null;
+    set.phone = normalizePhone(body.phone);
   }
   // The member's outward Mail Center alias. Normalised lowercase; empty → null.
   if (body.email_alias !== undefined) {

@@ -44,6 +44,7 @@ import { notifyServiceCaseResponsible } from "../services/assrNotify";
 import { isSalesUser, isDirectorUser } from "../services/pmsAccess";
 import type { AuthUser } from "../services/auth";
 import type { Context, MiddlewareHandler } from "hono";
+import { normalizePhone } from "../scm/shared/phone";
 
 /* The context the extracted handlers below receive. They are exported so the
    route tests can drive them directly; the shape is exactly what app.get/post
@@ -926,7 +927,11 @@ app.post("/creditors/create", requirePermission("service_cases.write"), async (c
     `INSERT INTO creditors (creditor_code, company_name, phone1, email, type, type_description, updated_at)
      VALUES (?, ?, ?, ?, 'MANUAL', 'Added manually from Service Cases', datetime('now'))`
   )
-    .bind(code, name, (body.phone || "").trim() || null, (body.email || "").trim() || null)
+    // phone1 is stored E.164 like every other creditor phone written through
+    // the SCM supplier routes; this "add supplier from a Service Case" path was
+    // the one creditor writer that only trimmed, so it seeded rows the supplier
+    // screens then displayed in a different format from their neighbours.
+    .bind(code, name, normalizePhone(body.phone), (body.email || "").trim() || null)
     .run();
 
   return c.json({ creditor_code: code, company_name: name }, 201);
