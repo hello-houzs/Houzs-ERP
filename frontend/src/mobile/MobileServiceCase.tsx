@@ -1947,12 +1947,25 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
       onClose();
       if (id) onOpen(id);
     },
+    onError: async (e: any) => {
+      // Duplicate-open-case guard (owner 2026-07-22) — the server returns 409
+      // with { error: 'duplicate_open_case', message, existing:[...] } when
+      // any picked item is already attached to an open case on this SO.
+      const errCode = e?.response?.body?.error ?? e?.body?.error;
+      const errMsg  = e?.response?.body?.message ?? e?.body?.message;
+      if (errCode === 'duplicate_open_case' && typeof errMsg === 'string') {
+        await notify({ title: "Duplicate case", body: errMsg, tone: "error" });
+      }
+    },
   });
 
   // Issue category is REQUIRED (owner ruling 2026-07-19): the field already
   // carries a "*" marker, so the submit gate must actually block on it — same
   // greyed-out disabled Create button the other required fields use.
-  const valid = docNo.trim() && selItems.length > 0 && complaint.trim() && complainedDate.trim() && category.trim();
+  //
+  // Items MAY be empty (owner 2026-07-22) — driver-damaged floor, lorry
+  // problem etc. don't tie to a specific product. Dropped from the gate.
+  const valid = docNo.trim() && complaint.trim() && complainedDate.trim() && category.trim();
 
   // FIXED + z-index 40 (the .sheet-bd pattern) — NOT absolute/z20. When
   // Service is the active TAB this sheet renders inside the tab-content

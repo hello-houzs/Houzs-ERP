@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { todayMyt } from "../scm/lib/my-time";
+import { isServiceLine } from "../scm/shared/service-sku";
 import { AutoCountClient, cleanPhone } from "./autocount";
 import { resolveCreditorForCase } from "./stockItems";
 import { getActiveStaffToken } from "./caseTracking";
@@ -1386,6 +1387,12 @@ export async function lookupSOItems(
       if (r.cancelled === true || r.cancelled === 1 || r.cancelled === "t" || r.cancelled === "true") continue;
       const code = (r.item_code ?? "").trim();
       if (!code) continue;
+      // Owner audit 2026-07-22 — Service Case is about a defective product /
+      // delivery/service problem, NOT the delivery-fee line itself. Filter out
+      // every SVC-* line (SVC-DELIVERY, SVC-DISPOSE, SVC-LIFT, …) so the New
+      // Case dialog never lets a salesperson tick a fee as the "item that has
+      // an issue" (owner sighting: SVC-DELIVERY appeared in the picker).
+      if (isServiceLine({ itemCode: code })) continue;
       const qty = Number(r.qty ?? 0) || 0;
       const existing = scmSeen.get(code);
       if (existing) {
@@ -1410,6 +1417,9 @@ export async function lookupSOItems(
     for (const d of details ?? []) {
       const code = (d.ItemCode ?? "").trim();
       if (!code) continue;
+      // Same service-line filter as the SCM branch above — SVC-* codes are
+      // fees, not the item that has the issue.
+      if (isServiceLine({ itemCode: code })) continue;
       const desc = d.Description ?? d.ItemDescription ?? null;
       const qty = Number(d.Qty ?? 0) || 0;
       const existing = seen.get(code);
@@ -1434,7 +1444,10 @@ export async function lookupSOItems(
   )
     .bind(docNo)
     .all<{ item_code: string; item_description: string | null }>();
-  return (rows.results ?? []).map((r) => ({ ...r, qty: 1 }));
+  // Same SVC-* filter for the purchase_orders fallback so no path leaks a fee.
+  return (rows.results ?? [])
+    .filter((r) => !isServiceLine({ itemCode: r.item_code }))
+    .map((r) => ({ ...r, qty: 1 }));
 }
 
 // ── Listing ───────────────────────────────────────────────────
