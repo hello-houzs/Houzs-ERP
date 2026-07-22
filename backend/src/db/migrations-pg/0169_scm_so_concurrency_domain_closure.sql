@@ -21,6 +21,15 @@ CREATE INDEX IF NOT EXISTS idx_so_amendments_apply_lease_expiry
 -- omitted keys retain their stored values while explicit JSON null remains an
 -- intentional clear. Only service_role can call this function; browser roles
 -- can never use the JSON patch to bypass the route's field allow-list.
+-- Drop the 12-argument shape first. `CREATE OR REPLACE` cannot change a
+-- function's argument list — it creates an OVERLOAD — and a 12-argument
+-- positional call against both shapes raises "function is not unique". Any
+-- environment where an earlier revision of this file was previewed would break
+-- on the next call, so remove it explicitly. No-op where it never existed.
+DROP FUNCTION IF EXISTS scm.apply_so_header_cas(
+  text, integer, text, jsonb, boolean, text, text, text, boolean, uuid, boolean, date
+);
+
 CREATE OR REPLACE FUNCTION scm.apply_so_header_cas(
   p_doc_no text,
   p_expected_version integer,
@@ -33,7 +42,13 @@ CREATE OR REPLACE FUNCTION scm.apply_so_header_cas(
   p_apply_warehouse boolean DEFAULT false,
   p_warehouse_id uuid DEFAULT NULL,
   p_apply_delivery_date boolean DEFAULT false,
-  p_delivery_date date DEFAULT NULL
+  p_delivery_date date DEFAULT NULL,
+  -- Multi-company: the customer upsert below MUST be told which company it is
+  -- resolving in. Migration 0164 added p_company_id to
+  -- upsert_customer_by_name_phone precisely because the unscoped call pooled
+  -- Houzs and 2990 customers; calling the 3-arg form here would silently
+  -- default every re-customer to the HOUZS row and re-open that hole.
+  p_company_id bigint DEFAULT NULL
 ) RETURNS TABLE(
   applied boolean,
   current_version integer,
@@ -113,7 +128,7 @@ BEGIN
      AND NULLIF(btrim(p_customer_name), '') IS NOT NULL
      AND NULLIF(btrim(p_customer_phone), '') IS NOT NULL THEN
     v_customer_id := upsert_customer_by_name_phone(
-      p_customer_name, p_customer_phone, p_customer_email
+      p_customer_name, p_customer_phone, p_customer_email, p_company_id
     );
     UPDATE mfg_sales_orders
     SET customer_id = v_customer_id
@@ -140,10 +155,10 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION scm.apply_so_header_cas(
-  text, integer, text, jsonb, boolean, text, text, text, boolean, uuid, boolean, date
+  text, integer, text, jsonb, boolean, text, text, text, boolean, uuid, boolean, date, bigint
 ) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION scm.apply_so_header_cas(
-  text, integer, text, jsonb, boolean, text, text, text, boolean, uuid, boolean, date
+  text, integer, text, jsonb, boolean, text, text, text, boolean, uuid, boolean, date, bigint
 ) TO service_role;
 
 NOTIFY pgrst, 'reload schema';

@@ -6486,6 +6486,9 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
     p_warehouse_id: reboundWarehouseId,
     p_apply_delivery_date: body['customerDeliveryDate'] !== undefined,
     p_delivery_date: (body['customerDeliveryDate'] as string | null | undefined) ?? null,
+    // mig 0164 — the customer upsert inside the RPC is company-scoped. Omitting
+    // this resolves every re-customer against HOUZS.
+    p_company_id: activeCompanyId(c) ?? null,
   });
   if (casError) return c.json({ error: 'update_failed', reason: casError.message }, 500);
   const cas = (Array.isArray(casRows) ? casRows[0] : casRows) as

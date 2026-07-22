@@ -17,6 +17,20 @@ describe('SO concurrency domain migration', () => {
     expect(migration0169).toContain('REVOKE ALL ON FUNCTION scm.apply_so_header_cas');
   });
 
+  test('the CAS RPC resolves its customer upsert inside the caller company', () => {
+    // Migration 0164 made upsert_customer_by_name_phone company-scoped with a
+    // DEFAULT NULL 4th argument, so a 3-argument call still compiles and
+    // silently resolves every re-customer against HOUZS. Pin the 4-arg call.
+    expect(migration0169).toContain('p_company_id bigint DEFAULT NULL');
+    expect(migration0169).toContain('p_customer_name, p_customer_phone, p_customer_email, p_company_id');
+    // CREATE OR REPLACE cannot change an argument list, so the old 12-arg shape
+    // must be dropped or a positional call becomes ambiguous.
+    expect(migration0169).toContain('DROP FUNCTION IF EXISTS scm.apply_so_header_cas');
+    expect(migration0169).toContain(
+      'text, integer, text, jsonb, boolean, text, text, text, boolean, uuid, boolean, date, bigint',
+    );
+  });
+
   test('allocation retries use a collision-proof generation fence and durable cross-request mutex', () => {
     expect(migration0170).toContain('request_token uuid NOT NULL DEFAULT gen_random_uuid()');
     expect(migration0170).toContain('CREATE TABLE IF NOT EXISTS scm.stock_allocation_recompute_lock');
