@@ -103,8 +103,21 @@ async function resetFixture(sql: Sql): Promise<void> {
       status text NOT NULL DEFAULT 'REQUESTED'
     );
 
-    CREATE OR REPLACE FUNCTION scm.upsert_customer_by_name_phone(text, text, text)
-    RETURNS uuid LANGUAGE sql AS $$ SELECT gen_random_uuid() $$;
+    CREATE TABLE scm.customer_upsert_calls (
+      id bigserial PRIMARY KEY,
+      company_id bigint
+    );
+    -- Mirrors production AFTER migration 0164: p_company_id is the 4th
+    -- argument with a DEFAULT, so a stale 3-argument caller still compiles and
+    -- silently resolves against HOUZS. The stub records what it was given.
+    CREATE OR REPLACE FUNCTION scm.upsert_customer_by_name_phone(
+      p_name text, p_phone text, p_email text, p_company_id bigint DEFAULT NULL
+    ) RETURNS uuid LANGUAGE plpgsql AS $fn$
+    DECLARE v uuid := gen_random_uuid();
+    BEGIN
+      INSERT INTO scm.customer_upsert_calls (company_id) VALUES (p_company_id);
+      RETURN v;
+    END $fn$;
   `);
   await sql.unsafe(await migration('0168_scm_so_edit_lease_and_followers.sql'));
   await sql.unsafe(await migration('0169_scm_so_concurrency_domain_closure.sql'));
@@ -383,6 +396,35 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
     expect(revision?.snapshot.lines[0].photo_urls).toEqual(['so/a"quote.jpg', 'so/back\\slash.jpg']);
   });
 
+  test('the CAS customer upsert is resolved inside the caller company, not HOUZS', async () => {
+    /* Migration 0164 made upsert_customer_by_name_phone company-scoped by
+       adding a DEFAULTED 4th argument, so a 3-argument call still runs and
+       silently pools every re-customer into HOUZS. PL/pgSQL resolves the call
+       at RUNTIME, so only actually taking the p_recustomer branch proves the
+       right overload is reached. */
+    await admin.unsafe('DELETE FROM scm.customer_upsert_calls');
+    const before = await admin.unsafe<Array<{ version: number }>>(
+      "SELECT version FROM scm.mfg_sales_orders WHERE doc_no = 'SO-PG-1'",
+    );
+    const expected = Number(before[0].version);
+    const rows = await admin.begin(async (tx) => {
+      await tx.unsafe('SET LOCAL ROLE service_role');
+      return tx.unsafe<Array<{ applied: boolean; resolved_customer_id: string | null }>>(
+        `SELECT * FROM scm.apply_so_header_cas(
+          $1, $2, NULL, $3::jsonb, true, 'Ah Meng', '0123456789', NULL,
+          false, NULL, false, NULL, $4::bigint
+        )`,
+        ['SO-PG-1', expected, { version: expected + 1 }, 77],
+      );
+    });
+    expect(rows[0].applied).toBe(true);
+    expect(rows[0].resolved_customer_id).toBeTruthy();
+    const calls = await admin.unsafe<Array<{ company_id: string | number | null }>>(
+      'SELECT company_id FROM scm.customer_upsert_calls',
+    );
+    expect(calls).toHaveLength(1);
+    expect(Number(calls[0].company_id)).toBe(77);
+  });
   test('service role can transactionally enqueue the durable allocation invalidation', async () => {
     await admin`TRUNCATE scm.stock_allocation_recompute_queue`;
     await admin.begin(async (tx) => {
