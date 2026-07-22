@@ -248,9 +248,17 @@ accounting.post('/post/si/:invoiceNumber', async (c) => {
      has not committed any revenue; the manual re-post endpoint must refuse it, or an
      operator could post a draft's revenue out-of-band (the SI route's confirm
      transition is the ONLY path that should post a draft). postSiRevenue itself does
-     not check status, so the guard lives here at the caller. */
+     not check status, so the guard lives here at the caller.
+
+     Company scope (owner audit 2026-07-22): the SELECT was pinned only by
+     invoice_number, safe TODAY because doc-number prefixes ('2990-SI-…') are
+     globally unique. Tightening now so a future prefix rule change or a
+     collision cannot post revenue against the wrong company's books. */
   {
-    const { data: si } = await sb.from('sales_invoices').select('status').eq('invoice_number', invoiceNumber).maybeSingle();
+    const { data: si } = await scopeToCompany(
+      sb.from('sales_invoices').select('status').eq('invoice_number', invoiceNumber),
+      c,
+    ).maybeSingle();
     if (!si) return c.json({ error: 'invoice_not_found' }, 404);
     if ((si as { status?: string }).status === 'DRAFT') {
       return c.json({ error: 'not_postable', message: 'SI is a draft — confirm it (DRAFT → Issued) before posting revenue.' }, 409);
@@ -412,9 +420,17 @@ accounting.post('/post/pi/:invoiceNumber', async (c) => {
      operator could post a draft's payables out-of-band (the PI route's confirm
      transition is the ONLY path that should post a draft). postPiAccounting does not
      check status, so the guard lives here at the caller — mirrors the /post/si DRAFT
-     guard. */
+     guard.
+
+     Company scope (owner audit 2026-07-22): same treatment as /post/si — pin
+     the invoice_number lookup to the active company so a future prefix
+     collision or a HOUZS_OWNS_2990 flip can't post AP against the wrong
+     company's books. */
   {
-    const { data: pi } = await sb.from('purchase_invoices').select('status').eq('invoice_number', invoiceNumber).maybeSingle();
+    const { data: pi } = await scopeToCompany(
+      sb.from('purchase_invoices').select('status').eq('invoice_number', invoiceNumber),
+      c,
+    ).maybeSingle();
     if (!pi) return c.json({ error: 'invoice_not_found' }, 404);
     if ((pi as { status?: string }).status === 'DRAFT') {
       return c.json({ error: 'not_postable', message: 'PI is a draft — confirm it (DRAFT → Posted) before posting payables.' }, 409);

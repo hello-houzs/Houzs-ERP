@@ -3,7 +3,13 @@ import { z } from 'zod';
 import { targetRefinementSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { canWriteScmConfig } from '../lib/houzs-perms';
-import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import {
+  activeCompanyId,
+  scopeToCompany,
+  requireActiveCompanyId,
+  scopeToCompanyId,
+  NOT_THIS_COMPANY,
+} from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
@@ -177,13 +183,16 @@ deliveryFees.put('/special', async (c) => {
   };
 
   if (parsed.data.id) {
-    const { data, error } = await gate.supabase
-      .from('special_delivery_fee_rules')
-      .update(fields)
-      .eq('id', parsed.data.id)
-      .select('id');
+    // Company scope (owner audit 2026-07-22): id-only UPDATE let a caller in
+    // company A re-price company B's special rule by knowing the UUID.
+    const co = requireActiveCompanyId(c);
+    if (!co.ok) return c.json(co.refusal, 409);
+    const { data, error } = await scopeToCompanyId(
+      gate.supabase.from('special_delivery_fee_rules').update(fields).eq('id', parsed.data.id),
+      co.companyId,
+    ).select('id');
     if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
-    if (!data || data.length === 0) return c.json({ error: 'update_failed', reason: 'not_found_or_rls' }, 404);
+    if (!data || data.length === 0) return c.json(NOT_THIS_COMPANY, 404);
     return c.json({ ok: true, id: parsed.data.id });
   }
 
@@ -197,15 +206,18 @@ deliveryFees.put('/special', async (c) => {
 });
 
 // DELETE — drop a special rule (delivery reverts to the normal base/cross fee).
+// Company scope (owner audit 2026-07-22): id-only DELETE let a caller in A
+// wipe B's special rule by knowing the UUID.
 deliveryFees.delete('/special/:id', async (c) => {
   const gate = await requireFeeEditor(c);
   if ('error' in gate) return gate.error;
-  const { data, error } = await gate.supabase
-    .from('special_delivery_fee_rules')
-    .delete()
-    .eq('id', c.req.param('id'))
-    .select('id');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data, error } = await scopeToCompanyId(
+    gate.supabase.from('special_delivery_fee_rules').delete().eq('id', c.req.param('id')),
+    co.companyId,
+  ).select('id');
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
-  if (!data || data.length === 0) return c.json({ error: 'delete_failed', reason: 'not_found_or_rls' }, 404);
+  if (!data || data.length === 0) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true });
 });

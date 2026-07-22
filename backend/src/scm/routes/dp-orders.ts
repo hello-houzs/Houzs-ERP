@@ -16,7 +16,13 @@ import { z } from 'zod';
 import type { Env, Variables } from '../env';
 
 type Ctx = Context<{ Bindings: Env; Variables: Variables }>;
-import { activeCompanyId } from '../lib/companyScope';
+import {
+  activeCompanyId,
+  requireActiveCompanyId,
+  scopeToCompanyId,
+  scopeToAllowedCompanies,
+  NOT_THIS_COMPANY,
+} from '../lib/companyScope';
 import {
   partyTypeFor, emptySnapshot, snapshotFromSo, snapshotFromSupplier,
   snapshotFromProject, snapshotFromAssr, type DpJobType, type DpPartySnapshot,
@@ -230,14 +236,21 @@ dpOrders.post('/', async (c) => {
   return c.json({ dpOrder: data }, 201);
 });
 
-/* ── GET /api/scm/dp-orders — list ────────────────────────────────────────── */
+/* ── GET /api/scm/dp-orders — list ──────────────────────────────────────────
+   Cross-company VIEW module (see the module header): widen to the caller's
+   allowed set via scopeToAllowedCompanies rather than a manual per-active-
+   company filter. Owner audit 2026-07-22: the previous
+   `if (companyId != null) …` was FAIL-OPEN on cold-start (unresolved company)
+   which would leak every company's dp_orders to any caller during a brief
+   pre-migration / master-blip window. scopeToAllowedCompanies handles the
+   three-state gate correctly (unresolved → degrade to no predicate for
+   single-company installs; restricted-to-nothing → empty). */
 dpOrders.get('/', async (c) => {
   const sb = c.get('supabase');
   const status = c.req.query('status');
   let q = sb.from('dp_orders').select('*').order('created_at', { ascending: false }).limit(500);
   if (status) q = q.eq('status', status);
-  const companyId = activeCompanyId(c);
-  if (companyId != null) q = q.eq('company_id', companyId);
+  q = scopeToAllowedCompanies(q, c);
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
@@ -293,12 +306,17 @@ dpOrders.patch('/:id', async (c) => {
   if (Object.keys(updates).length === 1) return c.json({ error: 'no_changes' }, 400);
 
   const sb = c.get('supabase');
+  // Company scope (owner audit 2026-07-22): denyIfNotOwnDpJob only guards
+  // field-crew; ops/dispatch/manager callers bypass, so id-only WHERE would
+  // let a caller in A edit B's dp_order details by knowing the UUID.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const denied = await denyIfNotOwnDpJob(c, sb, id);
   if (denied) return denied;
-  const { data, error } = await sb.from('dp_orders')
-    .update(updates)
-    .eq('id', id).eq('status', 'PENDING_SCHEDULE')
-    .select('*').maybeSingle();
+  const { data, error } = await scopeToCompanyId(
+    sb.from('dp_orders').update(updates).eq('id', id).eq('status', 'PENDING_SCHEDULE'),
+    co.companyId,
+  ).select('*').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   if (!data) {
     return c.json({ error: 'not_editable', message: 'Only a job that is still pending schedule can be edited. Cancel it and raise a new one.' }, 409);
@@ -313,13 +331,18 @@ dpOrders.patch('/:id', async (c) => {
 dpOrders.post('/:id/cancel', async (c) => {
   const id = c.req.param('id');
   const sb = c.get('supabase');
+  // Company scope (owner audit 2026-07-22): same class as PATCH above.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const denied = await denyIfNotOwnDpJob(c, sb, id);
   if (denied) return denied;
 
-  const { data, error } = await sb.from('dp_orders')
-    .update({ status: 'CANCELLED', updated_at: new Date().toISOString() })
-    .eq('id', id).neq('status', 'CANCELLED')
-    .select('*').maybeSingle();
+  const { data, error } = await scopeToCompanyId(
+    sb.from('dp_orders')
+      .update({ status: 'CANCELLED', updated_at: new Date().toISOString() })
+      .eq('id', id).neq('status', 'CANCELLED'),
+    co.companyId,
+  ).select('*').maybeSingle();
   if (error) return c.json({ error: 'cancel_failed', reason: error.message }, 500);
   if (!data) return c.json({ error: 'not_found_or_already_cancelled' }, 409);
 
@@ -353,6 +376,9 @@ dpOrders.post('/:id/schedule', async (c) => {
   if (!parsed.success) return c.json({ error: 'invalid_body', reason: parsed.error.message }, 400);
   const p = parsed.data;
   const sb = c.get('supabase');
+  // Company scope (owner audit 2026-07-22): same class as PATCH + cancel.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const denied = await denyIfNotOwnDpJob(c, sb, id);
   if (denied) return denied;
 
@@ -371,10 +397,12 @@ dpOrders.post('/:id/schedule', async (c) => {
     }, 503);
   }
 
-  const { data, error } = await sb.from('dp_orders')
-    .update({ dp_no: dpNo, trip_id: p.tripId ?? null, status: 'SCHEDULED', updated_at: new Date().toISOString() })
-    .eq('id', id).eq('status', 'PENDING_SCHEDULE') // claim: only schedule an unscheduled one
-    .select('*').maybeSingle();
+  const { data, error } = await scopeToCompanyId(
+    sb.from('dp_orders')
+      .update({ dp_no: dpNo, trip_id: p.tripId ?? null, status: 'SCHEDULED', updated_at: new Date().toISOString() })
+      .eq('id', id).eq('status', 'PENDING_SCHEDULE'), // claim: only schedule an unscheduled one
+    co.companyId,
+  ).select('*').maybeSingle();
   if (error) return c.json({ error: 'schedule_failed', reason: error.message }, 500);
   if (!data) return c.json({ error: 'not_pending', reason: 'DP order is not pending schedule (already scheduled or gone)' }, 409);
 

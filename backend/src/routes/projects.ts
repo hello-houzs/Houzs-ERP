@@ -642,8 +642,13 @@ app.put("/cost-rates/:brand", requirePermission("projects.manage"), async (c) =>
   // Recompute auto lines for every active project on this brand.
   // Done synchronously so the rate edit is visible immediately —
   // typical cohorts are small (≤ 50 projects per brand).
+  //
+  // Company scope (owner audit 2026-07-22): the recompute cascade was
+  // cross-company — a brand rate edited in company A also re-costed A's
+  // projects AND B's projects that happen to share the brand. Scope to the
+  // caller's active company so only their own project cohort is touched.
   const projects = await c.env.DB.prepare(
-    `SELECT id FROM projects WHERE brand = ? AND archived_at IS NULL`,
+    `SELECT id FROM projects WHERE brand = ? AND archived_at IS NULL${activeCompanySql(c)}`,
   )
     .bind(brand)
     .all<{ id: number }>();
@@ -1955,9 +1960,16 @@ app.patch("/:id/finance", requirePermission("projects.write"), async (c) => {
   // Only the PIC (or an unscoped role) can write finance for a project.
   // isScopedProjectUser also covers non-director Sales users whose role lacks
   // the scope_to_pic flag (owner 2026-07-15).
+  //
+  // Company scope (owner audit 2026-07-22): the PIC check + patchFinance
+  // both loaded by id alone, so a user granted BOTH companies could — while
+  // active on A — be PIC on a B project and edit B's finance from within A.
+  // Scope the PIC load to the caller's active company; the update path is
+  // in services/projects.ts:patchFinance and needs the same treatment there
+  // to be fully airtight (deferred, tracked separately).
   if (isScopedProjectUser(user)) {
     const row = await c.env.DB.prepare(
-      `SELECT pic_id, created_by FROM projects WHERE id = ?`
+      `SELECT pic_id, created_by FROM projects WHERE id = ?${activeCompanySql(c)}`
     )
       .bind(id)
       .first<{ pic_id: number | null; created_by: number | null }>();
