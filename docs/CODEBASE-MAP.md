@@ -300,6 +300,31 @@ re-check the cited file rather than trusting the line.
 - **Cost/margin display** is env-gated by `COSTING_DISPLAY_ENABLED`, parsed by
   `scm/lib/costing-enabled.ts`. Set false and every sales document strips cost from
   the wire, not just from the UI.
+- **Session-revocation fallback is OFF** (`SESSION_FALLBACK_ENABLED = "false"` in
+  `backend/wrangler.toml`, parsed by `services/sessionCache.ts`). While off, an
+  authenticated request whose authoritative session read FAILS is rejected — a DB
+  blip logs everyone out until it clears, and revocation is never delayed. Set it
+  to `"true"` and, during a DB read failure only, `getUserBySession` may re-serve a
+  session the DB most recently confirmed active for up to `SESSION_FALLBACK_TTL_MS`
+  (default 60000, clamped 1000..300000) — availability across blips, in exchange
+  for a bounded revocation delay *while the DB is down*. With a reachable DB,
+  revocation is immediate either way. Operator commands:
+
+  ```sh
+  # Turn it OFF (the shipped default) or back ON: edit backend/wrangler.toml [vars]
+  #   SESSION_FALLBACK_ENABLED = "false"   # off — strict fail-closed revocation
+  #   SESSION_FALLBACK_ENABLED = "true"    # on  — bounded outage fallback
+  # then deploy from a branch rebased on origin/main:
+  cd backend && npx wrangler deploy
+
+  # Emergency, without editing the tree (overrides the var for this deploy only;
+  # the next deploy from main reverts to whatever wrangler.toml says):
+  cd backend && npx wrangler deploy --var SESSION_FALLBACK_ENABLED:false
+  ```
+
+  Off means the code path is not taken: with the var off, neither the fallback
+  lookup nor the liveness recording runs at all (pinned by
+  `backend/tests/sessionFallback.test.ts`).
 - **`HOUZS_OWNS_2990`** is the cutover flip. While false, Houzs holds a read-only
   mirror of the `2990-` document namespace and the mirror guards refuse Houzs-side
   creates/edits of those documents.

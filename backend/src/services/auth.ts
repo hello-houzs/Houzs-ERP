@@ -6,7 +6,16 @@ import {
   type AccessLevel,
   type PageAccessMeta,
 } from "./pageAccess";
-import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
+import {
+  getCachedUser,
+  setCachedUser,
+  bustCachedUser,
+  rememberSessionLiveness,
+  forgetSessionLiveness,
+  sessionLivenessFallback,
+  isSessionFallbackEnabled,
+  sessionFallbackTtlMs,
+} from "./sessionCache";
 import { isScopedProjectUser } from "./projectAcl";
 import { applySalesJdOverride } from "./salesJdAccess";
 import { resolvePositionPolicy, positionGrantsWildcard } from "./positionPolicy";
@@ -105,6 +114,12 @@ export function isoIn(seconds: number): string {
 // ── Session helpers ──────────────────────────────────────
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
+// Bump whenever code changes the meaning/resolution of an AuthUser permission
+// envelope without a corresponding DB value changing. Including this revision
+// in the per-request fingerprint makes every pre-policy cache entry stale on
+// its first request after deploy instead of waiting for KV TTL.
+export const AUTHZ_ENVELOPE_VERSION = 1;
+
 /* Session ORIGIN (mig 0120) — the DOOR a session was minted at. It is NOT a
    property of the person: the same salesperson simultaneously holds a 'pos'
    session on the showroom tablet and an origin-less one on their own phone,
@@ -193,6 +208,14 @@ export interface AuthUser {
    */
   scm_l2_configured: boolean;
   /**
+   * Stable fingerprint of every DB value that shapes this cached authorization
+   * envelope. getUserBySession recomputes it from authoritative tables on every
+   * request, so permission/page/org/brand revocations do not wait for KV TTL or
+   * best-effort invalidation. Optional for pre-deploy KV entries and hand-built
+   * AuthUser test fixtures; a missing value is treated as stale.
+   */
+  authz_fingerprint?: string;
+  /**
    * Origin of the SESSION this user was loaded from — 'pos' or null (mig
    * 0120, see SessionOrigin above). It rides AuthUser ONLY because AuthUser is
    * what the per-token KV cache serialises; the cache is keyed by token, so
@@ -242,8 +265,102 @@ export async function createSession(
 export async function deleteSession(env: Env, token: string): Promise<void> {
   await env.DB.prepare(`DELETE FROM sessions WHERE token = ?`).bind(token).run();
   // Bust the cached user immediately so logout / forced-expiry takes effect now
-  // rather than waiting out the 60s TTL.
+  // rather than waiting out the 60s TTL. Also forget the in-memory liveness
+  // fallback so a same-isolate logout cannot be re-served during a DB blip
+  // (cross-isolate entries are still bounded by the fallback TTL).
   await bustCachedUser(env, token);
+  forgetSessionLiveness(token);
+}
+
+interface SessionAuthority {
+  user_id: number;
+  email: string;
+  email_alias: string | null;
+  name: string | null;
+  status: string;
+  expires_at: string | null;
+  origin: string | null;
+  role_id: number;
+  position_id: number | null;
+  department_id: number | null;
+  manager_id: number | null;
+  role_name: string;
+  role_permissions: string;
+  scope_to_pic: number | boolean;
+  position_name: string | null;
+  position_department_id: number | null;
+  position_department_name: string | null;
+  department_name: string | null;
+}
+
+interface AuthzComponent {
+  kind: "page" | "brand";
+  owner_key: "role" | "self" | "manager";
+  item_key: string;
+  item_value: string;
+}
+
+function isExpiredSession(expiresAt: string | null): boolean {
+  if (!expiresAt) return true;
+  const expiresAtMs = Date.parse(expiresAt);
+  // A malformed expiry must fail closed. Treating it as live would turn bad
+  // data into an unbounded session.
+  return !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now();
+}
+
+function buildAuthzFingerprint(
+  authority: SessionAuthority,
+  components: AuthzComponent[],
+): string {
+  // The query orders all collection rows. JSON is intentional here: this is a
+  // deterministic equality token, not a secret or a client-controlled value,
+  // so hashing would add CPU/async overhead without improving authorization.
+  return JSON.stringify({
+    version: AUTHZ_ENVELOPE_VERSION,
+    identity: [
+      authority.user_id,
+      authority.email,
+      authority.email_alias,
+      authority.name,
+    ],
+    role: [
+      authority.role_id,
+      authority.role_name,
+      authority.role_permissions,
+      Number(authority.scope_to_pic),
+    ],
+    position: [
+      authority.position_id,
+      authority.position_name,
+      authority.position_department_id,
+      authority.position_department_name,
+    ],
+    department: [authority.department_id, authority.department_name],
+    brands_for: [authority.user_id, authority.manager_id],
+    components: components.map((row) => [
+      row.kind,
+      row.owner_key,
+      row.item_key,
+      row.item_value,
+    ]),
+  });
+}
+
+function cachedIdentityMatches(
+  cached: AuthUser,
+  authority: SessionAuthority,
+  authzFingerprint: string,
+): boolean {
+  return cached.id === authority.user_id
+    && cached.email === authority.email
+    && (cached.email_alias ?? null) === authority.email_alias
+    && cached.name === authority.name
+    && cached.status === "active"
+    && cached.role_id === authority.role_id
+    && cached.position_id === authority.position_id
+    && cached.department_id === authority.department_id
+    && cached.manager_id === authority.manager_id
+    && cached.authz_fingerprint === authzFingerprint;
 }
 
 // Builds the AuthUser shape from the row returned by the SELECT below
@@ -392,41 +509,200 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
 }
 
 export async function getUserBySession(env: Env, token: string): Promise<AuthUser | null> {
-  // Fast path: KV-cached hydrated user (60s). Falls through to the DB on any
-  // miss/error — see sessionCache.ts. No-op when SESSION_CACHE is unbound.
-  const cached = await getCachedUser(env, token);
-  if (cached) return cached;
+  // The bounded DB-outage liveness fallback is OFF unless SESSION_FALLBACK_ENABLED
+  // is "true" (see sessionCache.ts). Resolved ONCE here and used as the guard on
+  // every fallback site below, so with the switch off neither
+  // sessionLivenessFallback nor rememberSessionLiveness is called at all: a DB
+  // read failure fails closed exactly as it did before the fallback existed, and
+  // no per-isolate liveness state accumulates. forgetSessionLiveness stays
+  // UNGUARDED on purpose — it only ever removes state, so entries recorded while
+  // the switch was on are still dropped by an authoritative revocation after it
+  // is turned off.
+  const fallbackEnabled = isSessionFallbackEnabled(env);
+  const fallbackTtlMs = fallbackEnabled
+    ? sessionFallbackTtlMs(env)
+    : 0; /* unused while disabled */
 
-  const row = await env.DB.prepare(
-    `SELECT u.id, u.email, u.email_alias, u.name, u.role_id, u.status,
-            u.manager_id, u.department_id, u.position_id, u.joined_at, u.last_login_at,
-            u.points_balance, u.gifting_balance, u.current_streak,
-            u.profile_pic_r2_key,
-            r.name as role_name, r.permissions as role_permissions,
-            r.scope_to_pic,
-            p.name as position_name,
-            d.name as department_name,
-            s.expires_at, s.origin
-     FROM sessions s
-     JOIN users u ON u.id = s.user_id
-     JOIN roles r ON r.id = u.role_id
-     LEFT JOIN positions p ON p.id = u.position_id
-     LEFT JOIN departments d ON d.id = u.department_id
-     WHERE s.token = ?`
-  )
-    .bind(token)
-    .first<any>();
+  // The KV value caches expensive permission/page/brand hydration, but is not
+  // authoritative for session validity or authorization. Pair it with two
+  // indexed DB reads so identity and every authz dependency are current on the
+  // next request, even when a best-effort KV bust fails or is delayed. Run all
+  // reads in parallel so a cache hit costs max(KV, DB), not KV + DB latency.
+  //
+  // allSettled, NOT all: `Promise.all` rejects the instant the FIRST input
+  // rejects and abandons the others still in flight. On the DB-outage path that
+  // is exactly what happens — the DB reads reject while the KV read is still
+  // pending, and the function returns from the bounded fallback below with a
+  // live KV operation left dangling. In workerd that op then settles outside the
+  // request that started it (in tests, outside the isolated-storage frame, which
+  // is what "Failed to pop isolated storage stack frame" reports). Settling all
+  // three keeps the same parallelism and the same max(KV, DB) latency while
+  // guaranteeing no storage promise outlives this call.
+  const settled = Promise.allSettled([
+    getCachedUser(env, token),
+    env.DB.prepare(
+      `SELECT s.user_id, s.expires_at, s.origin,
+              u.email, u.email_alias, u.name,
+              u.status, u.role_id, u.position_id, u.department_id, u.manager_id,
+              r.name AS role_name, r.permissions AS role_permissions,
+              r.scope_to_pic,
+              p.name AS position_name,
+              p.department_id AS position_department_id,
+              pd.name AS position_department_name,
+              d.name AS department_name
+       FROM sessions s
+       JOIN users u ON u.id = s.user_id
+       JOIN roles r ON r.id = u.role_id
+       LEFT JOIN positions p ON p.id = u.position_id
+       LEFT JOIN departments pd ON pd.id = p.department_id
+       LEFT JOIN departments d ON d.id = u.department_id
+       WHERE s.token = ?`
+    )
+      .bind(token)
+      .first<SessionAuthority>(),
+    // One stable, cross-database result set captures collection-valued authz
+    // dependencies without PostgreSQL-only aggregation or a page×brand join.
+    env.DB.prepare(
+      `WITH principal AS (
+         SELECT u.id AS user_id, u.role_id, u.manager_id
+         FROM sessions s
+         JOIN users u ON u.id = s.user_id
+         WHERE s.token = ?
+       )
+       SELECT 'page' AS kind, 'role' AS owner_key,
+              rpa.page_key AS item_key, rpa.level AS item_value
+       FROM principal pr
+       JOIN role_page_access rpa ON rpa.role_id = pr.role_id
+       UNION ALL
+       SELECT 'brand' AS kind, 'self' AS owner_key,
+              ub.brand AS item_key, '' AS item_value
+       FROM principal pr
+       JOIN user_brands ub ON ub.user_id = pr.user_id
+       UNION ALL
+       SELECT 'brand' AS kind, 'manager' AS owner_key,
+              ub.brand AS item_key, '' AS item_value
+       FROM principal pr
+       JOIN user_brands ub ON ub.user_id = pr.manager_id
+       ORDER BY kind, owner_key, item_key, item_value`
+    )
+      .bind(token)
+      .all<AuthzComponent>(),
+  ]);
 
-  if (!row) return null;
-  if (row.status !== "active") return null;
-  if (row.expires_at && row.expires_at < new Date().toISOString()) {
-    // expired — clean up
+  // The two DB reads above are the AUTHORITATIVE session-validity check. If they
+  // THROW, the DB layer is unreachable (cold-start 503, Supavisor hiccup) — the
+  // session is not proven invalid. With the fallback switch ON, re-serve this
+  // token iff the DB most recently CONFIRMED it active within the TTL; with the
+  // switch OFF (the default) we never look, and fail closed. Only the two DB
+  // results gate that decision, so a cache-layer problem can never be mistaken
+  // for a DB outage.
+  const [cachedResult, authorityResult, componentResult] = await settled;
+
+  // getCachedUser swallows its own errors and resolves null, so a rejection here
+  // is not expected; treat one as a cache miss rather than a session failure.
+  const cached: AuthUser | null =
+    cachedResult.status === "fulfilled" ? cachedResult.value : null;
+
+  if (authorityResult.status === "rejected" || componentResult.status === "rejected") {
+    if (fallbackEnabled) {
+      const fallback = sessionLivenessFallback(token, Date.now(), fallbackTtlMs);
+      if (fallback) return fallback;
+    }
+    throw authorityResult.status === "rejected"
+      ? authorityResult.reason
+      : (componentResult as PromiseRejectedResult).reason;
+  }
+
+  const authority: SessionAuthority | null = authorityResult.value;
+  const componentRows: D1Result<AuthzComponent> = componentResult.value;
+
+  if (!authority) {
+    // Session row is gone — an authoritative revoke. Forget the fallback entry
+    // so a subsequent DB blip can never re-serve it.
+    forgetSessionLiveness(token);
+    await bustCachedUser(env, token);
+    return null;
+  }
+
+  if (authority.status !== "active" || isExpiredSession(authority.expires_at)) {
+    forgetSessionLiveness(token);
+    await deleteSession(env, token);
+    return null;
+  }
+
+  const authzFingerprint = buildAuthzFingerprint(
+    authority,
+    componentRows.results ?? [],
+  );
+
+  if (cached && cachedIdentityMatches(cached, authority, authzFingerprint)) {
+    // Session origin belongs to the authoritative row. Re-publish it so an
+    // old cache payload can never decide the request's origin.
+    cached.session_origin = authority.origin;
+    // The DB just CONFIRMED this session active — record it so a later DB blip
+    // can re-serve it for up to the fallback TTL. Only while the switch is on;
+    // off means no state is accumulated at all.
+    if (fallbackEnabled) rememberSessionLiveness(token, cached);
+    return cached;
+  }
+
+  if (cached) {
+    // A role/org assignment changed while invalidation was unavailable. Do not
+    // grant the stale permission envelope; rebuild it below.
+    await bustCachedUser(env, token);
+  }
+
+  // The session/user could change between the authority read and hydration.
+  // This read runs only AFTER the authoritative validity reads above succeeded,
+  // but a transient DB failure here still gets the same bounded-fallback
+  // treatment rather than logging the caller out mid-blip.
+  let row: any;
+  try {
+    row = await env.DB.prepare(
+      `SELECT u.id, u.email, u.email_alias, u.name, u.role_id, u.status,
+              u.manager_id, u.department_id, u.position_id, u.joined_at, u.last_login_at,
+              u.points_balance, u.gifting_balance, u.current_streak,
+              u.profile_pic_r2_key,
+              r.name as role_name, r.permissions as role_permissions,
+              r.scope_to_pic,
+              p.name as position_name,
+              d.name as department_name,
+              s.expires_at, s.origin
+       FROM sessions s
+       JOIN users u ON u.id = s.user_id
+       JOIN roles r ON r.id = u.role_id
+       LEFT JOIN positions p ON p.id = u.position_id
+       LEFT JOIN departments d ON d.id = u.department_id
+       WHERE s.token = ?`
+    )
+      .bind(token)
+      .first<any>();
+  } catch (err) {
+    if (fallbackEnabled) {
+      const fallback = sessionLivenessFallback(token, Date.now(), fallbackTtlMs);
+      if (fallback) return fallback;
+    }
+    throw err;
+  }
+
+  // Re-check the full row before caching it.
+  if (!row) {
+    forgetSessionLiveness(token);
+    await bustCachedUser(env, token);
+    return null;
+  }
+  if (row.status !== "active" || isExpiredSession(row.expires_at)) {
+    forgetSessionLiveness(token);
     await deleteSession(env, token);
     return null;
   }
 
   const user = await hydrateAuthUser(env, row);
+  user.authz_fingerprint = authzFingerprint;
   await setCachedUser(env, token, user);
+  // Authoritatively hydrated + confirmed active — record for the bounded blip
+  // fallback, but only when the switch is on.
+  if (fallbackEnabled) rememberSessionLiveness(token, user);
   return user;
 }
 
