@@ -65,10 +65,11 @@ async function main() {
   // for any row that references this SO. Any hit → real order, not a test.
   // Tables are read via to_regclass so a missing schema element (D1 mirror,
   // pre-migration) doesn't blow the script — the probe just returns 0.
+  // delivery_returns is transitive via delivery_orders (a DR can't exist
+  // without a DO), so probing DOs covers it. If DOs are 0, DRs are 0 by FK.
   const downstreamProbes = [
     { table: "scm.delivery_orders",    col: "so_doc_no" },
     { table: "scm.sales_invoices",     col: "so_doc_no" },
-    { table: "scm.delivery_returns",   col: "so_doc_no" },
   ];
   let downstreamTotal = 0;
   for (const p of downstreamProbes) {
