@@ -27,16 +27,30 @@ if (!DOC_NO) { console.error("need DOC_NO env (e.g. 2990-SO-2607-019)"); process
 
 const db = postgres(DST, { ssl: "require", prepare: false, max: 1 });
 
-// Every table that carries scm.mfg_sales_orders.doc_no as a reference.
-// The delete order is CHILD → PARENT to avoid FK trips even when a
-// CASCADE isn't declared (so_amendments has CASCADE — safe to leave in
-// the list, its delete just no-ops after the FK fires).
+// Every table that carries a reference to scm.mfg_sales_orders. Column
+// names vary — items/payments/activity link on `doc_no`, amendments link
+// on `so_doc_no` (mig 0080). Each entry names its own column so the
+// runner picks the right predicate. Tables that aren't present in the
+// live schema (D1 mirror, pre-migration) or whose column has been
+// renamed skip cleanly rather than blowing the transaction.
 const CHILD_TABLES = [
-  "scm.mfg_sales_order_items",
-  "scm.mfg_sales_order_payments",
-  "scm.mfg_sales_order_activity",
-  "scm.so_amendments",
+  { table: "scm.mfg_sales_order_items",    col: "doc_no" },
+  { table: "scm.mfg_sales_order_payments", col: "doc_no" },
+  { table: "scm.mfg_sales_order_activity", col: "doc_no" },
+  { table: "scm.so_amendments",            col: "so_doc_no" },
 ];
+
+// Probe if a (schema, table, column) exists on live prod so we can skip
+// tables/columns that aren't in this database (D1 mirror on test, or a
+// rename we haven't caught yet). Uses information_schema — cheap.
+async function columnExists(db, qualified, col) {
+  const [schema, table] = qualified.split(".");
+  const rows = await db`
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = ${schema} AND table_name = ${table} AND column_name = ${col}
+     LIMIT 1`;
+  return rows.length > 0;
+}
 
 async function main() {
   console.log(`\n== delete-test-so :: DOC_NO=${DOC_NO} mode=${APPLY ? "APPLY" : "DRY-RUN"} ==\n`);
@@ -85,11 +99,18 @@ async function main() {
 
   // (3) Discover every row that references it. Print BEFORE deleting so the
   // dry-run is a complete picture, not a summary that hides something.
+  // Skip any (table, col) that isn't in the live schema — the runner just
+  // logs "skip" rather than crashing on a missing column.
   const childCounts = {};
   for (const t of CHILD_TABLES) {
-    const rows = await db.unsafe(`SELECT count(*)::int AS n FROM ${t} WHERE doc_no = $1`, [DOC_NO]);
-    childCounts[t] = rows[0].n;
-    console.log(`Child   : ${t.padEnd(40)} rows=${rows[0].n}`);
+    if (!(await columnExists(db, t.table, t.col))) {
+      console.log(`Child   : ${t.table.padEnd(40)} ${t.col.padEnd(12)} (column missing — skip)`);
+      childCounts[t.table] = 0;
+      continue;
+    }
+    const rows = await db.unsafe(`SELECT count(*)::int AS n FROM ${t.table} WHERE ${t.col} = $1`, [DOC_NO]);
+    childCounts[t.table] = rows[0].n;
+    console.log(`Child   : ${t.table.padEnd(40)} ${t.col.padEnd(12)} rows=${rows[0].n}`);
   }
 
   // Payments guard — a test SO usually has one drafted payment (the tap on
@@ -107,11 +128,13 @@ async function main() {
 
   // (4) Delete in one transaction. FK CASCADEs will do their work; the manual
   // deletes here cover the tables that don't declare CASCADE, and are safe
-  // no-ops on the ones that do.
+  // no-ops on the ones that do. Skip any (table, col) missing from the
+  // live schema — same probe as (3).
   await db.begin(async (sql) => {
     for (const t of CHILD_TABLES) {
-      const r = await sql.unsafe(`DELETE FROM ${t} WHERE doc_no = $1`, [DOC_NO]);
-      console.log(`Deleted : ${t.padEnd(40)} rows=${r.count}`);
+      if (!(await columnExists(sql, t.table, t.col))) continue;
+      const r = await sql.unsafe(`DELETE FROM ${t.table} WHERE ${t.col} = $1`, [DOC_NO]);
+      console.log(`Deleted : ${t.table.padEnd(40)} rows=${r.count}`);
     }
     const r = await sql`DELETE FROM scm.mfg_sales_orders WHERE doc_no = ${DOC_NO}`;
     console.log(`Deleted : ${"scm.mfg_sales_orders".padEnd(40)} rows=${r.count}`);
