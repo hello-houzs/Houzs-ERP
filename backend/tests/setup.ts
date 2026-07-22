@@ -32,8 +32,36 @@ beforeAll(async () => {
   await env.DB.exec(
     env.TEST_BASELINE_SQL.replace(/--.*$/gm, "").replace(/\s+/g, " ").trim(),
   );
+  // Production's D1 runner creates this tracker before applying files. Phase 2
+  // deliberately requires Phase 1 to have soaked for 24 hours, so the clean
+  // test database models that precondition instead of bypassing the SQL gate.
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS _migrations (
+      name TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+  ).run();
+  // Resolved by suffix, never by number: migration numbers here are assigned at
+  // merge time against whatever main looks like that minute, so a literal goes
+  // stale without anything failing.
+  const phase1Name = env.TEST_MIGRATIONS.map((m) => m.name).find((name) =>
+    name.endsWith("_idempotency_principal_company_hash.sql"),
+  );
+  if (!phase1Name) throw new Error("D1 idempotency Phase-1 migration is missing");
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO _migrations (name, applied_at)
+     VALUES (?, datetime('now', '-26 hours'))`,
+  )
+    .bind(phase1Name)
+    .run();
   // Per-query loop so we can tolerate baseline overlaps mid-file.
   for (const mig of env.TEST_MIGRATIONS) {
+    if (mig.name.endsWith("_idempotency_phase2_constraints.sql")) {
+      await env.DB.prepare(
+        `INSERT OR REPLACE INTO app_settings (key, value, updated_at)
+         VALUES ('rollout.idempotency_phase1_worker_live', '{"deployed":true}', datetime('now', '-25 hours'))`,
+      ).run();
+    }
     for (const q of mig.queries) {
       const sql = q.trim();
       if (!sql) continue;
