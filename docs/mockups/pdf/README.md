@@ -1,8 +1,34 @@
 # PDF / Document Unification — Audit + Mockups
 
-**MOCKUP — pending owner approval.** Nothing here changes the live PDFs. These are
-static HTML design mocks plus an audit of the real generators. No generator code
-was touched. Approve the look first; only then do we restyle the real generators.
+**APPROVED by the owner, 2026-07-22.** Nothing here has changed the live PDFs yet —
+these are still static HTML mocks plus an audit of the real generators, and no
+generator code has been touched. The approval unblocks that work; it is not
+itself that work.
+
+### Two things the implementer must not "fix"
+
+**1. `SPECIAL` moves onto its own line, and changes colour.** In the live
+generators `buildVariantSummary` returns ONE string with every segment joined by
+` / ` — fabric, SEAT, LEG and `SPECIAL:` alike (`backend/src/scm/shared/variant-summary.ts`,
+"All present segments joined with ` / `"). The mocks render it as a separate
+`<span class="special">` in a distinct colour. That is a **deliberate change to
+what customers see on every document**, questioned by the owner on 2026-07-22
+("為什麼是這樣？那個special？") and then approved. It is not a mockup error; do
+not collapse it back into the single string.
+
+**2. The `Fabric:` prefix belongs only to supplier-facing documents.** PO / GRN /
+PI pass `labelled: true`; SO / SI / DO do not, and print the bare fabric code.
+The mocks are correct on this — `grn.html` and `purchase-order.html` carry the
+prefix, `sales-order.html` does not. Keep that split.
+
+### Still not drawn
+
+Purchase Invoice, Delivery Return, Purchase Return, the Sofa Layout diagram, and
+the 6 Consignment variants. §3 explains why (each is the same skeleton with a
+different title, party label and column set). Of those, **Delivery Return and
+Purchase Return are the two that leave the building** — a customer signs the DR
+on collection, a supplier issues a credit note against the PR — so if any of the
+remainder is worth drawing before implementation, it is those two.
 
 ---
 
