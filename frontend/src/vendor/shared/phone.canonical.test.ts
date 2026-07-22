@@ -92,3 +92,43 @@ describe('the two copies of this module are the same file', () => {
     expect(norm(there)).toBe(norm(here));
   });
 });
+
+// formatPhone used to return any non-+60 value untouched, so a Singapore
+// customer's number printed on an invoice as the unbroken run "+6561234567"
+// beside a Malaysian one reading "+60 12-345 6789". These pin the grouping —
+// and, first, that the Malaysian rules were not disturbed while adding it.
+describe('formatPhone — Malaysia is unchanged', () => {
+  test('mobile and landline keep their exact existing shape', () => {
+    expect(formatPhone('+60123456789')).toBe('+60 12-345 6789');
+    expect(formatPhone('+60312345678')).toBe('+60 3-1234 5678');
+    expect(formatPhone('+60161556133')).toBe('+60 16-155 6133');
+  });
+});
+
+describe('formatPhone — a foreign number is legible instead of a digit run', () => {
+  test('the countries the owner actually trades with', () => {
+    expect(formatPhone('+6561234567')).toBe('+65 6123 4567');
+    expect(formatPhone('+6281234567890')).toBe('+62 812 3456 7890');
+    expect(formatPhone('+8613800138000')).toBe('+86 138 0013 8000');
+    expect(formatPhone('+14155550123')).toBe('+1 415 555 0123');
+  });
+
+  test('a 3-digit dial code wins over its 1-digit prefix (673 before 6)', () => {
+    expect(formatPhone('+6738123456')).toBe('+673 812 3456');
+  });
+
+  test('readable, NOT locale-canonical — Thailand groups 2-3-4 in real life', () => {
+    // Recorded rather than hidden: without libphonenumber this is grouping for
+    // legibility, not a numbering-plan implementation.
+    expect(formatPhone('+66812345678')).toBe('+66 812 345 678');
+  });
+});
+
+describe('formatPhone — anything it cannot read is returned untouched', () => {
+  test('unknown dial code, local form, and junk are never mangled', () => {
+    expect(formatPhone('+9999')).toBe('+9999');
+    expect(formatPhone('0123456789')).toBe('0123456789');
+    expect(formatPhone('abc')).toBe('abc');
+    expect(formatPhone('')).toBe('');
+  });
+});
