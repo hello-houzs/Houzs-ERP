@@ -1589,15 +1589,73 @@ app.post(
     );
   }
 
-  // Support both old format (item_code string) and new (items array)
+  // Support both old format (item_code string) and new (items array).
+  //
+  // Owner audit 2026-07-22 — items[] MAY be empty. A Service Case is not
+  // necessarily about a defective product: a driver damaged the customer's
+  // floor, a lorry problem left the delivery incomplete, etc. Those cases
+  // legitimately have no item_code, and the previous 400 "At least one item
+  // is required" forced staff to invent a fake code just to submit.
   const items = body.items?.length
     ? body.items
     : body.item_code
     ? [{ item_code: body.item_code }]
     : [];
 
-  if (!items.length) {
-    return c.json({ error: "At least one item is required" }, 400);
+  // Duplicate-open-case guard (owner audit 2026-07-22). If ANY of the items
+  // being submitted is already attached to a still-OPEN case on the same SO
+  // (any stage that isn't 'completed' or archived), refuse with a payload the
+  // caller can turn into a friendly "Case #XXX is already open on this item"
+  // dialog. Office and sales often opened parallel cases on the same fault
+  // because neither saw the other's; this makes the DB the arbiter, not luck.
+  //
+  // No-item cases (see block above) can't collide by item_code, so they skip
+  // this check — a floor-damage / lorry-issue case has no product signature
+  // to conflict on. Coordinators can still dedupe those manually.
+  if (items.length) {
+    const codes = Array.from(new Set(
+      items.map((it) => (it.item_code ?? "").trim()).filter((s) => s.length > 0),
+    ));
+    if (codes.length) {
+      const placeholders = codes.map(() => "?").join(",");
+      const dup = await c.env.DB.prepare(
+        `SELECT c.id, c.doc_no, c.stage, c.customer_name, c.created_at, i.item_code
+           FROM assr_cases c
+           JOIN assr_items i ON i.assr_id = c.id
+          WHERE c.archived_at IS NULL
+            AND (c.stage IS NULL OR c.stage <> 'completed')
+            AND c.doc_no = ?
+            AND i.item_code IN (${placeholders})${assrCompanySql(c, "c.company_id")}`,
+      )
+        .bind(body.doc_no, ...codes)
+        .all<{ id: number; doc_no: string; stage: string | null; customer_name: string | null; created_at: string | null; item_code: string }>();
+      const rows = dup.results ?? [];
+      if (rows.length) {
+        // Group by case id so a single case that spans several ticked items
+        // shows once with its items[] rather than N repeated rows.
+        const byCase = new Map<number, {
+          id: number; docNo: string; stage: string | null;
+          customerName: string | null; createdAt: string | null; items: string[];
+        }>();
+        for (const r of rows) {
+          const cur = byCase.get(r.id);
+          if (cur) { if (!cur.items.includes(r.item_code)) cur.items.push(r.item_code); }
+          else byCase.set(r.id, {
+            id: r.id, docNo: r.doc_no, stage: r.stage,
+            customerName: r.customer_name, createdAt: r.created_at,
+            items: [r.item_code],
+          });
+        }
+        const existing = [...byCase.values()];
+        return c.json({
+          error: "duplicate_open_case",
+          message: existing.length === 1
+            ? `Case #${existing[0]!.id} is already open on this SO for ${existing[0]!.items.join(", ")}. Please add to that case instead of opening a new one.`
+            : `${existing.length} cases are already open on this SO for the item(s) you selected. Please add to one of them instead of opening a new one.`,
+          existing,
+        }, 409);
+      }
+    }
   }
 
   // Normalise the intake extras: trim strings to null, coerce the

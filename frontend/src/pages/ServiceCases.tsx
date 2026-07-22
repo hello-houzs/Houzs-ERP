@@ -2453,10 +2453,9 @@ function CreatePanel({
         qty: chosen && chosen > 0 ? chosen : found?.qty && found.qty > 0 ? found.qty : 1,
       };
     });
-    if (!items.length) {
-      toast.error("Select at least one item");
-      return;
-    }
+    // Owner 2026-07-22 — items MAY be empty. A Service Case is not always
+    // about a defective product (driver damaged customer's floor, lorry
+    // problem etc.); the backend accepts items=[] for exactly this reason.
     // Resolve the chosen issue category. "Other" requires the user to
     // have typed a custom label; otherwise we send null.
     let resolvedCategory: string | null = null;
@@ -2511,7 +2510,18 @@ function CreatePanel({
 
       onCreated(res.id);
     } catch (e: any) {
-      toast.error(`Failed: ${e?.message || e}`);
+      // Duplicate-open-case guard (owner 2026-07-22) — the server returns 409
+      // with { error: 'duplicate_open_case', message, existing:[{id, items,
+      // ...}] } when any picked item is already attached to an open case on
+      // this SO. Surface the friendly message rather than the raw "Failed:"
+      // so staff know to add to the existing case instead.
+      const errCode = e?.response?.body?.error ?? e?.body?.error;
+      const errMsg  = e?.response?.body?.message ?? e?.body?.message;
+      if (errCode === 'duplicate_open_case' && typeof errMsg === 'string') {
+        toast.error(errMsg);
+      } else {
+        toast.error(`Failed: ${e?.message || e}`);
+      }
     } finally {
       setSubmitting(false);
       setUploadProgress(null);
@@ -2885,7 +2895,6 @@ function CreatePanel({
             submitting ||
             !docNo.trim() ||
             !issue.trim() ||
-            selectedItems.size === 0 ||
             !issueCategory ||
             (issueCategory === OTHER_SENTINEL && !customCategory.trim())
           }
