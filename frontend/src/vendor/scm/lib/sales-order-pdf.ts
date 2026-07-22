@@ -563,8 +563,13 @@ export async function renderSalesOrderInto(
     },
     margin: { left: margin, right: margin },
   });
-  // jspdf-autotable mutates doc by writing __lastAutoTable_finalY into internals.
-  // Read it off the typed (any) shim so we know where to continue drawing.
+  // jspdf-autotable mutates doc by assigning the finished Table to
+  // `doc.lastAutoTable`, whose `finalY` is the y the table ended on. jsPDF's
+  // own types do not declare it, so read it off the shim. Verified against
+  // jspdf-autotable 5.0.8 (tableDrawer.ts sets `table.finalY = cursor.y;
+  // jsPDFDoc.lastAutoTable = table` on every autoTable() call, so the SECOND
+  // read below picks up the payments table, not this one).
+  // Covered by pdf-money-layout.test.ts.
   let ty = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y) + 6;
 
   // ── PAYMENTS RECEIVED ledger ──────────────────────────────────────
