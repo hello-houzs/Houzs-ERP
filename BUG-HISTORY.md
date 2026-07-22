@@ -1,3 +1,12 @@
+## 2026-07-23
+
+### [MEDIUM] Warehouse master had diverged between the two companies and had only one classification bit
+- **Symptom.** The 2026-07-22 compare workflow (`scripts/compare-2990-houzs-masters.mjs`) reported the two companies were maintaining OVERLAPPING but INCONSISTENT warehouse lists — HOUZS 15 rows, 2990 7 rows, only TWO codes shared (`PG WAREHOUSE`, `SBH WAREHOUSE`). The same physical Balakong site was named `KL WAREHOUSE` on HOUZS and `SLGR WAREHOUSE` on 2990 (with a typo, `BELAKONG`); Sarawak was `SRW` vs `SRK`. `CHINA WAREHOUSE` existed only on 2990; the two SERVICE centres existed only on HOUZS. The `is_showroom` flag also could not represent Display / Service / Others sites — anything that was not "showroom" fell through as "warehouse".
+- **Root cause (traced).** Mig 0086 stamped the warehouse table per-company but no follow-up ever unified the code vocabulary; the two companies were maintained by different people and diverged. Mig 0148 added a single boolean (`is_showroom`) rather than a type enum, so the classifier could not represent DISPLAY (partner display-stock, not sellable) or SERVICE (repair centre) — both existed in the codes but not the schema.
+- **Fix.** Mig 0171: adds `scm.warehouse_type` enum + `type` column (backfilled from code keyword + explicit HQ/C&C K.J → 'others'); renames 2990's `SLGR WAREHOUSE → KL WAREHOUSE` (fixing BELAKONG → BALAKONG) and `SRK WAREHOUSE → SRW WAREHOUSE`; copies `CHINA WAREHOUSE` HOUZS-wards and `KL SERVICE` / `PG SERVICE` 2990-wards. `is_showroom` is kept in read (venue-binding resolver still uses it) but the write path (POST/PATCH `/inventory/warehouses`) now enforces `is_showroom = (type = 'showroom')`. Warehouses.tsx picks up a Type column, WarehouseFormDrawer swaps the "Mark as Showroom" checkbox for a Type dropdown. Showroom / Display / Others stay company-specific per owner — only WAREHOUSE + SERVICE are broadcast to both companies.
+- **The class, for next time.** Single-boolean flags on master tables invariably grow into 3–5 buckets; the boolean is the first signal you missed a domain concept. Two companies sharing a schema but not a vocabulary is the same failure shape as the 2990/HOUZS state-name split (`PENANG` vs `Pulau Pinang`) — the audit that catches one should look for the other.
+- **Ref:** PR pending (`feat/warehouse-type-unify`).
+
 ## 2026-07-22
 
 ### [CRITICAL] The POS corrupted a customer's phone number the moment anyone edited it — in the upstream repo the whole SCM layer is vendored from

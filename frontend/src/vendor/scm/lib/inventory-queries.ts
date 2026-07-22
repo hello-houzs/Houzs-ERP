@@ -22,6 +22,20 @@ import { authedFetch } from './authed-fetch';
 // the host's QueryClient for the same reason.
 import { retryUnlessClientError } from '../../../lib/queryClient';
 
+/* TYPE (mig 0171) — 5-bucket classification. `warehouse` = pure stock; `showroom`
+   = a sales point that also feeds the venue list (mig 0148); `display` = display
+   stock held at a partner site (not sellable in the same net); `service` = a
+   repair / customer-service centre; `others` = HQ, C&C K.J, anything that does
+   not fit. `is_showroom` (mig 0148) is now derived: `is_showroom = (type =
+   'showroom')`. The old boolean stays in reads so the venue resolver and the
+   Members page keep working without a rewrite. */
+export type WarehouseType =
+  | 'warehouse'
+  | 'showroom'
+  | 'display'
+  | 'service'
+  | 'others';
+
 export type Warehouse = {
   id: string;
   code: string;
@@ -38,6 +52,9 @@ export type Warehouse = {
      type so a pre-migration response still parses. */
   is_showroom?: boolean;
   venue_name?: string | null;
+  /* Optional on the type so a pre-mig-0171 response still parses (backend
+     defaults to 'warehouse' on POST when unspecified). */
+  type?: WarehouseType;
 };
 
 export type InventoryBalance = {
@@ -156,7 +173,7 @@ export function useWarehouses(opts?: { includeInactive?: boolean }) {
 export function useCreateWarehouse() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { code: string; name: string; location?: string; isDefault?: boolean; isShowroom?: boolean; venueName?: string | null }) =>
+    mutationFn: (body: { code: string; name: string; location?: string; isDefault?: boolean; isShowroom?: boolean; venueName?: string | null; type?: WarehouseType }) =>
       authedFetch<{ warehouse: Warehouse }>(`/inventory/warehouses`, { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouses'] }),
   });
@@ -165,7 +182,7 @@ export function useCreateWarehouse() {
 export function useUpdateWarehouse() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...body }: { id: string; code?: string; name?: string; location?: string; isActive?: boolean; isDefault?: boolean; isShowroom?: boolean; venueName?: string | null }) =>
+    mutationFn: ({ id, ...body }: { id: string; code?: string; name?: string; location?: string; isActive?: boolean; isDefault?: boolean; isShowroom?: boolean; venueName?: string | null; type?: WarehouseType }) =>
       authedFetch<{ warehouse: Warehouse }>(`/inventory/warehouses/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouses'] }),
   });

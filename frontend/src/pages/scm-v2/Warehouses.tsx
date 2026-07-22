@@ -13,6 +13,7 @@ import { Button } from '@2990s/design-system';
 import {
   useWarehouses,
   type Warehouse,
+  type WarehouseType,
 } from '../../vendor/scm/lib/inventory-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { WarehouseFormDrawer } from '../../vendor/scm/components/WarehouseFormDrawer';
@@ -20,6 +21,18 @@ import styles from './Suppliers.module.css';
 import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
+
+/* Human labels for the Type column (mig 0171). Falls back to the raw value if
+   a legacy / unknown enum somehow lands here. */
+const TYPE_LABELS: Record<WarehouseType, string> = {
+  warehouse: 'Warehouse',
+  showroom:  'Showroom',
+  display:   'Display',
+  service:   'Service',
+  others:    'Others',
+};
+const typeLabel = (w: Warehouse): string =>
+  w.type ? (TYPE_LABELS[w.type] ?? w.type) : (w.is_showroom ? 'Showroom' : 'Warehouse');
 
 export const Warehouses = () => {
   const [includeInactive, setIncludeInactive] = useState(false);
@@ -46,6 +59,15 @@ export const Warehouses = () => {
       width: 200,
       accessor: (w) => w.name,
       sortFn: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
+    },
+    {
+      key: 'type',
+      label: 'Type',
+      width: 130,
+      accessor: (w) => <span className={styles.codeChip}>{typeLabel(w)}</span>,
+      searchValue: (w) => typeLabel(w),
+      filterValue: (w) => typeLabel(w),
+      sortFn: (a, b) => typeLabel(a).localeCompare(typeLabel(b)),
     },
     {
       key: 'location',
