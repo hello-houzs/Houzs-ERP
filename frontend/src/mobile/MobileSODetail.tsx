@@ -249,7 +249,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
      SELECTION list must instead be the company-scoped, ACTIVE-only pickable set
      (Team-grant rule), mirroring the desktop PaymentsTable — a resigned or
      other-company staff must never be a NEW pickable collector. */
-  const pickableStaffQ = usePickableStaff();
+  const pickableStaffQ = usePickableStaff({ onlySales: true });
   const houzsAuth = useHouzsAuth();
   const h = detail.data?.salesOrder as SoHeader | undefined;
   const items = (detail.data?.items ?? []) as SoItem[];

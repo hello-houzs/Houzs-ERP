@@ -2373,7 +2373,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
      via the Team-grant rule (usePickableStaff). The self-resolution copy above
      (for the Collected-By default) stays on the FULL useStaff roster; only the
      list of people you can PICK is company-scoped. */
-  const staffQ = usePickableStaff();
+  const staffQ = usePickableStaff({ onlySales: true });
   const staffList = (staffQ.data ?? []).filter((s) => s.active);
   /* Commander 2026-05-27: Venue is locked to the picked salesperson's
      staff.venue_id; only admin / sales_director may swap the salesperson.
