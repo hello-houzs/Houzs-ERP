@@ -136,13 +136,15 @@ export function MobileStockTransferNew({
     !!fromWarehouseId && !!toWarehouseId && !sameWarehouse && !!transferDate &&
     validLines.length > 0 && !needsBucket && !create.isPending;
 
+  // A SKU whose source stock is split across variant buckets (e.g. bf-16 + bf-20)
+  // needs ONE line PER bucket — each <MobileTransferLine> owns its own bucket
+  // picker and is keyed by _key (not code), so duplicate codes never collide.
+  // The old dedup no-op'd the second add of the same code, forcing a
+  // split-bucket SKU into SEPARATE transfer documents. Append a fresh line every
+  // time (the desktop StockTransferNew has no such dedup either).
   const addSku = (sku: PickedSku) => {
     setPickerOpen(false);
-    setLines((prev) =>
-      prev.some((l) => l.productCode === sku.itemCode)
-        ? prev
-        : [...prev, { _key: newKey(), productCode: sku.itemCode, productName: sku.name, qty: 1 }],
-    );
+    setLines((prev) => [...prev, { _key: newKey(), productCode: sku.itemCode, productName: sku.name, qty: 1 }]);
   };
   const setVariant = (key: string, variantKey: string | undefined) =>
     setLines((prev) => prev.map((l) => (l._key === key ? { ...l, variantKey } : l)));

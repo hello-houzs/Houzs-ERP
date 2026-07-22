@@ -10,6 +10,8 @@ import {
   readSoDocPrefixes,
   ACTIVE_COMPANY_KEY,
   STAGING_API_URL,
+  missingCredentialsMaySkip,
+  stagingProofRequired,
 } from "./fixtures";
 
 // The product-catalog list request (vendor authed-fetch ->
@@ -25,7 +27,7 @@ function isProductListGet(r: Request): boolean {
 test.describe("company isolation", () => {
   test.beforeEach(() => {
     test.skip(
-      !credsConfigured,
+      missingCredentialsMaySkip(credsConfigured, stagingProofRequired),
       "Staging credentials not configured — set STAGING_E2E_EMAIL / STAGING_E2E_PASSWORD.",
     );
   });

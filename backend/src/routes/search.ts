@@ -58,11 +58,16 @@ interface Hit {
   link: string;              // SPA destination (with focus= when relevant)
 }
 
-function like(q: string): string {
-  // Escape SQL LIKE wildcards in user input so a stray `%` doesn't
-  // turn the query into a list-everything. We don't ESCAPE in the
-  // statement (kept simple) — just neutralise the wildcards.
-  return `%${q.replace(/[%_]/g, "")}%`;
+export function searchPattern(raw: string, postgrest = false): string | null {
+  // `%` and `_` are SQL LIKE wildcards; PostgREST also accepts `*` as an
+  // alias for `%`. Neutralise all three before either query grammar sees them.
+  const grammarSafe = postgrest ? escapeForOr(raw) : raw;
+  const term = grammarSafe.replace(/[%_*]/g, "").trim();
+  if (!term) return null;
+  // A one-character contains scan cannot use pg_trgm at ERP scale. Make the
+  // first key a real whole-database prefix search; from the second key onward
+  // the existing trigram-backed contains search takes over.
+  return [...term].length === 1 ? `${term}%` : `%${term}%`;
 }
 
 // ASSR company pin — MUST stay in sync with routes/assr.ts assrCompanySql().
@@ -80,10 +85,10 @@ function assrCompanySql(c: CompanyScopeCtx): string {
 
 app.get("/", async (c) => {
   const raw = (c.req.query("q") || "").trim();
-  if (raw.length < 2) {
+  const pat = searchPattern(raw);
+  if (!pat) {
     return c.json({ q: raw, hits: [] as Hit[] });
   }
-  const pat = like(raw);
 
   const env = c.env;
   const hits: Hit[] = [];
@@ -222,8 +227,8 @@ async function appendScmHits(
   hits: Hit[],
 ): Promise<void> {
   if (!isSupabaseConfigured(env)) return;
-  const term = escapeForOr(raw);
-  if (!term) return;
+  const wildcard = searchPattern(raw, true);
+  if (!wildcard) return;
 
   let sb: ReturnType<typeof getSupabaseService>;
   try {
@@ -241,14 +246,14 @@ async function appendScmHits(
     .from("mfg_sales_orders")
     .select("doc_no, debtor_name, phone, ref, so_date, branding")
     .or(
-      `doc_no.ilike.%${term}%,debtor_name.ilike.%${term}%,` +
-        `ref.ilike.%${term}%,phone.ilike.%${term}%,po_doc_no.ilike.%${term}%`
+      `doc_no.ilike.${wildcard},debtor_name.ilike.${wildcard},` +
+        `ref.ilike.${wildcard},phone.ilike.${wildcard},po_doc_no.ilike.${wildcard}`
     );
   const prodQuery = sb
     .from("mfg_products")
     .select("id, code, name, description, sell_price_sen")
     .eq("status", "ACTIVE")
-    .or(`code.ilike.%${term}%,name.ilike.%${term}%,description.ilike.%${term}%`);
+    .or(`code.ilike.${wildcard},name.ilike.${wildcard},description.ilike.${wildcard}`);
 
   const [soRes, prodRes] = await Promise.allSettled([
     scopeToCompany(soQuery, c)

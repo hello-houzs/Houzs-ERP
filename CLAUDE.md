@@ -7,19 +7,110 @@ non-obvious about this codebase and how the user wants to collaborate.
 
 Every bug you find and fix **must** get an entry in [`BUG-HISTORY.md`](./BUG-HISTORY.md) at the repo root — no exceptions. One short entry: **Symptom → Root cause (traced, not guessed) → Fix → Ref (PR/date)**, newest first, with a severity tag. This is how we stop re-introducing the same class of bug: **read it before touching a subsystem, and add to it in the same PR that fixes the bug.** This applies to every contributor and every agent/session.
 
+## ⚠️ Read the module guide before you work in a module — MANDATORY (owner rule)
+
+`docs/modules/<module>.md` exists so you do NOT have to read the whole system to
+change one part of it. **Read the guide for the module you are touching, before you
+touch it.** If your change alters that module's SURFACE — a new endpoint, a new
+permission, a new status, a field that starts or stops being required, a new
+lock — **update the guide in the same PR.** A guide nobody updates becomes the next
+thing that lies to us.
+
+If a module has no guide yet, that is the gap to close, not a licence to explore:
+write the guide as you learn the module, following the shape of
+`docs/modules/sales-order.md`.
+
+## ⚠️ A serious incident gets a COE — MANDATORY (owner rule)
+
+**COE = Correction of Error** (the industry term, AWS's). `BUG-HISTORY.md` is the
+per-bug ledger; a COE is for the bigger class: an outage, data at risk, a fault that
+recurred, or anything that made the system feel unreliable to staff. Write
+`docs/<subject>-coe.md`, following the two that exist
+(`docs/system-foundation-coe.md`, `docs/api-fetch-hardening-coe.md`):
+
+**Date · Trigger** (what staff actually saw, in their words) · **Root cause, traced
+with evidence, never guessed** — name the tool that proved it (`wrangler tail`, a
+live DB query) · **Fixes shipped**, one row per PR with its effect · **What the
+audit RULED OUT** — the suspicions that turned out false, and how they were refuted
+· **Deferred**, with the decision owner · **Lessons.**
+
+The ruled-out section is not padding: it is what stops the next person re-chasing a
+theory we already disproved. One real example from `system-foundation-coe.md` —
+money corruption was suspected from reading a migration file, then refuted against
+the live database. The lesson recorded there ("verify schema claims against the live
+DB, not migration files") is worth more than the fix was.
+
+**This file stays THIN on purpose.** It carries rules and traps, not an
+inventory. Facts that change with every merge — route counts, file sizes,
+module lists — belong in the map below, because a stale fact HERE is worse
+than no fact: this file is auto-loaded, so every session believes it. It
+described the database as "D1 SQLite" for over a month after the Postgres
+cutover, and pointed at a migration directory that production does not read.
+
+## Read the map before exploring
+
+- **`docs/CODEBASE-MAP.md`** — what each area is FOR, which trees are dead,
+  which folders are vendored, where desktop and mobile diverge, and which
+  files are too big to open whole. Read this INSTEAD of exploring from
+  scratch; it is the hand-written judgement layer.
+- **`docs/generated/`** — the mechanical inventory (routes, migrations,
+  largest files), regenerated from the tree so it cannot drift.
+- **`docs/modules/<module>.md`** — everything needed to work in ONE module
+  without reading the others. Read the guide for the module you are touching
+  before touching it.
+
+**Where does a new fact go?** `docs/KNOWLEDGE-SYSTEM.md` answers that, and
+explains why these layers exist. One rule decides it: *a fact belongs in the
+layer that will be forced to update it when it changes.* A number that shifts
+every merge must be GENERATED, never typed — that is exactly how this file
+came to claim the database was D1 SQLite for a month after the cutover.
+
+Do not open a 5,000+ line file whole. Several pages and route modules run
+past 8,000 lines and one past 12,000. Locate with grep, then read the line
+range. The map lists the offenders and roughly what lives where in each.
+
 ## What this repo is
 
 Internal ERP for Houzs. Cloudflare Workers + Hono backend, React/Vite SPA
-frontend, D1 SQLite, R2 storage. Single Worker, single SPA. Detailed
-architecture lives in the Obsidian wiki — see *Wiki* below.
+frontend, R2 storage. Single Worker, single SPA.
+
+**The data store is Supabase Postgres, reached through Hyperdrive.** D1 is
+test-only now — which matters most for migrations, below.
+
+## Migrations — two trees, only one is real
+
+- **`backend/src/db/migrations-pg/`** is the LIVE tree. `deploy.yml` runs
+  `node scripts/pg-migrate.mjs` on every push to main, so a merged file is
+  applied to production automatically. A file that fails there blocks every
+  later migration until it is fixed.
+- **`backend/src/db/migrations/`** is the older D1/test tree. A change put
+  there ships, passes CI, merges — and production never changes. Check which
+  tree you are in before writing a migration.
+- `pg-migrate` tracks applied files by FULL FILENAME, so number gaps and
+  out-of-order merges are safe; DUPLICATE numbers are what break it. Pick the
+  number at MERGE time by re-listing the tree, not when you branch — parallel
+  PRs otherwise pick the same one.
+
+## Desktop and mobile are one product
+
+`frontend/src/mobile` is a first-class surface, not a viewport tweak. Most
+features exist as a desktop file and a mobile file that must change TOGETHER
+— the owner's standing rule is ONE shared logic layer, with the two surfaces
+differing only in presentation. Fixing a rule on one surface and not the
+other is a recurring bug class here (see `BUG-HISTORY.md`). The map lists the
+known pairs.
 
 ## Obsidian wiki — keep it current
 
 A companion knowledge base lives in the user's Obsidian vault under
 `Houzs ERP/`. It's the human-readable counterpart to the codebase
-(architecture, decisions, module guides, glossary). The Obsidian MCP
-server is registered at user scope, so the `mcp__obsidian__*` tools are
-always available.
+(architecture, decisions, module guides, glossary). It is the human-facing
+counterpart to `docs/CODEBASE-MAP.md`, which is the agent-facing one.
+
+The Obsidian MCP is registered at USER scope, not in this repo, so
+`mcp__obsidian__*` is available only in sessions that have it connected —
+several do not. If those tools are absent, skip the wiki and say so rather
+than working around it; the repo-side map is the fallback that always works.
 
 **When to update the wiki** — after work that meaningfully changes:
 
@@ -50,7 +141,8 @@ Not generic narrative.
   SQL via `c.env.DB.prepare(...)` is still allowed in legacy code
   paths until they're converted route-by-route. Don't mix the two
   styles inside a single function — convert the whole handler. **Migrations
-  remain hand-written `.sql` files** in `src/db/migrations/`, numbered
+  remain hand-written `.sql` files** — in `src/db/migrations-pg/` for
+  anything that must reach production (see *Migrations* above) — numbered
   and immutable after deploy. Drizzle-kit is for type generation /
   schema diffing only, never as the migration runner.
 - **Demo / test seed data does NOT belong in numbered migrations.**
@@ -105,7 +197,12 @@ Not generic narrative.
 
 ## See also
 
-- `.claude/commands/sync-wiki.md` — the slash command that performs a
-  wiki refresh on demand
+- **`docs/KNOWLEDGE-SYSTEM.md`** — the layers, what belongs where, and why
+- **`docs/CODEBASE-MAP.md`** — start here for anything you would otherwise
+  go exploring for; `docs/generated/` for the mechanical inventory
+- **`BUG-HISTORY.md`** — read the entries for a subsystem before touching it
+- `/sync-wiki` — user-scope slash command for the Obsidian refresh; the
+  command file is NOT in this repo, so it exists only where the user has it
+  installed
 - The user's auto-memory MOC at `~/.claude/projects/<hash>/memory/MEMORY.md`
 - The Obsidian wiki's `Houzs ERP/00 Home.md` for the map of content

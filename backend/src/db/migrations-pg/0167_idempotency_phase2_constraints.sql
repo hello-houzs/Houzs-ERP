@@ -19,7 +19,7 @@ BEGIN
   SELECT applied_at
     INTO phase1_applied_at
     FROM public._pg_migrations
-   WHERE filename = '0158_idempotency_principal_company_hash.sql';
+   WHERE filename = '0163_idempotency_principal_company_hash.sql';
 
   IF phase1_applied_at IS NULL THEN
     RAISE EXCEPTION

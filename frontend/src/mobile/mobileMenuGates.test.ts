@@ -79,9 +79,12 @@ const UNGATED_BY_DESIGN = new Map<string, string>([
     "Owner rule 2026-07: announcements are readable by EVERY active user. The " +
       "mobile screen reads /api/announcements/banner, which needs no permission " +
       "and is audience-filtered server-side (only notices addressed to this user). " +
-      "The nav entry this row could borrow is announcements.read — the DESKTOP " +
-      "admin list/composer permission — which is deliberately NOT the gate for " +
-      "reading your own notices, so the row carries alwaysShow instead.",
+      "The row kept alwaysShow because the NAV_TABS entry it would borrow from " +
+      "used to be gated on announcements.read — the ADMIN list/composer verb, " +
+      "deliberately NOT the gate for reading your own notices. As of 2026-07-21 " +
+      "that desktop entry is ungated too (owner approved, after #957 opened the " +
+      "page itself), so the two surfaces now agree and alwaysShow is belt-and- " +
+      "braces rather than the only thing holding the row open.",
   ],
 ]);
 

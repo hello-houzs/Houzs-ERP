@@ -7,6 +7,7 @@ import { uploadAssrAttachment } from "../lib/assrAttachmentUpload";
 import { loadThumbFirst } from "../lib/imagePipeline";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesStaff } from "../auth/salesAccess";
+import { capability } from "../auth/capabilities";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -333,11 +334,27 @@ function CaseList({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
-  // Same capability the desktop Service-Cases nav uses: service_cases.read OR
-  // any Sales staff (showForSales). Gate the /api/assr read so it never fires a
-  // 403 for a user without access (OFF, not hide) — defence-in-depth on top of
-  // the shell's tab gating. Applied to the infinite query's `enabled` below.
-  const canViewCases = can("service_cases.read") || isSalesStaff(user);
+  /* The THREE terms `requireServiceCaseAccess` admits on, read from the server's
+     answer set rather than re-derived here. Backend gate
+     (`routes/assr.ts:66-74`): the flat permission OR `isSalesUser` OR
+     `isDirectorUser`. This site carried only the first two, so a DIRECTOR with no
+     `service_cases.read` grant and no Sales department — a Finance Manager, a
+     Super Admin — got `enabled: false` and an empty mobile list over an API that
+     would have returned every case (`assrUnrestricted`, `routes/assr.ts:139-146`).
+     Desktop never had the hole: the board's nav entry carries `showForDirector`
+     (`Sidebar.tsx:263-268`) and the route's `<PageGuard allowSales>` reads
+     `org.sales.staff` off the same capability set (`PageGuard.tsx:70`).
+
+     `org.sales.staff` / `org.director` ARE the backend gates (capabilities.ts
+     names `pmsAccess.isSalesUser` / `isDirectorUser`), so no director check is
+     hand-written on this side and the two cannot drift. Both fail CLOSED when
+     /auth/me carried no capability set. Gate the /api/assr read so it never fires
+     a 403 for a user without access (OFF, not hide) — defence-in-depth on top of
+     the shell's tab gating. Applied to the infinite query's `enabled` below. */
+  const canViewCases =
+    can("service_cases.read") ||
+    capability(user, "org.sales.staff") ||
+    capability(user, "org.director");
 
   const isMine = (r: Any) => {
     const uid = user?.id;
@@ -1244,7 +1261,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                           <div className="money" style={{ fontSize: 10, fontWeight: 700, color: BROWN }}>{String(get(it, "itemCode", "item_code") ?? "—")}</div>
                           <div style={{ fontSize: 12, fontWeight: 600, color: INK, marginTop: 2 }}>{String(get(it, "itemDescription", "item_description") ?? "—")}</div>
                         </div>
-                        <span style={{ fontSize: 11, color: MUTED }}>×{String(get(it, "qty") ?? 1)}</span>
+                        <MobileItemQty c={c} it={it} busy={busy} onChanged={refetch} notify={notify} />
                         <button
                           onClick={() => removeItem(it)}
                           disabled={busy}
@@ -2694,12 +2711,26 @@ function PhotoGrid({
     }
   };
 
+  // Toggle customer-portal visibility (mirror desktop ServiceCases:3406-3414).
+  // A photo uploaded from the phone defaults to visible_to_customer=1, so
+  // without this the case's evidence photos leak to the customer portal.
+  const toggleVisibility = async (att: Any, visible: boolean) => {
+    const attId = Number(get(att, "id"));
+    if (!attId) return;
+    try {
+      await api.patch(`/api/assr/attachments/${attId}/visibility`, { visible_to_customer: visible });
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't update visibility", body: e?.message || "Please try again.", tone: "error" });
+    }
+  };
+
   return (
     <>
       <div className="fld-l" style={{ marginTop: 8 }}>{label} ({attachments.length})</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginTop: 6 }}>
         {attachments.map((att, i) => (
-          <AttachThumb key={get(att, "id") ?? i} att={att} onArchive={() => archive(att)} />
+          <AttachThumb key={get(att, "id") ?? i} att={att} onArchive={() => archive(att)} onVisibility={(v) => toggleVisibility(att, v)} />
         ))}
         <label style={{ border: `1px dashed ${accent}`, borderRadius: 11, aspectRatio: "1", background: FIELD_BG, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, cursor: uploading ? "default" : "pointer", opacity: uploading ? 0.6 : 1 }}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2725,6 +2756,37 @@ function PhotoGrid({
 
 // Per-item remark — prints in the ITEMS table's REMARK column on both
 // print copies (Nick 2026-07-15). Saves on blur; empty clears it.
+// Per-item quantity stepper (Nick 2026-07-20) — − N + inline in the
+// Product info card; saves immediately, feeds the print QTY column.
+function MobileItemQty({ c, it, busy, onChanged, notify }: { c: Any; it: Any; busy: boolean; onChanged: () => void; notify: ReturnType<typeof useNotify> }) {
+  const caseId = Number(get(c, "id"));
+  const itemId = Number(get(it, "id"));
+  const qty = Math.max(1, Number(get(it, "qty") ?? 1));
+  const [saving, setSaving] = useState(false);
+  const dis = busy || saving;
+  const set = async (next: number) => {
+    const clamped = Math.max(1, Math.round(next));
+    if (clamped === qty || dis) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/assr/${caseId}/items/${itemId}`, { qty: clamped });
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't update quantity", body: e?.message || "Please try again.", tone: "error" });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const btn: React.CSSProperties = { flex: "none", width: 24, height: 26, border: "none", background: "transparent", color: INK, fontSize: 15, fontWeight: 700, lineHeight: 1, cursor: dis ? "default" : "pointer" };
+  return (
+    <div style={{ flex: "none", display: "flex", alignItems: "center", border: `1px solid ${DIM}`, borderRadius: 8, background: FIELD_BG }}>
+      <button onClick={() => set(qty - 1)} disabled={dis || qty <= 1} aria-label="Decrease quantity" style={{ ...btn, opacity: dis || qty <= 1 ? 0.4 : 1 }}>−</button>
+      <span className="money" style={{ minWidth: 20, textAlign: "center", fontSize: 12, fontWeight: 700, color: INK }}>{qty}</span>
+      <button onClick={() => set(qty + 1)} disabled={dis} aria-label="Increase quantity" style={{ ...btn, opacity: dis ? 0.4 : 1 }}>+</button>
+    </div>
+  );
+}
+
 function MobileItemRemark({ c, it, busy, onChanged, notify }: { c: Any; it: Any; busy: boolean; onChanged: () => void; notify: ReturnType<typeof useNotify> }) {
   const caseId = Number(get(c, "id"));
   const itemId = Number(get(it, "id"));
@@ -2889,12 +2951,17 @@ function MobileSupplierPick({ c, onChanged, notify, disabled }: { c: Any; onChan
 // Auth-fetched attachment thumbnail (blob URL) with a remove affordance.
 // Tapping an image or video opens the fullscreen viewer; videos defer
 // the blob fetch until then so lists don't pull whole files.
-function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
+function AttachThumb({ att, onArchive, onVisibility }: { att: Any; onArchive: () => void; onVisibility?: (visible: boolean) => void }) {
   const key = get(att, "r2Key", "r2_key");
   const contentType = String(get(att, "contentType", "content_type") ?? "");
   const isVideo = contentType.startsWith("video");
   const isPdf = contentType.includes("pdf");
   const [viewing, setViewing] = useState(false);
+  // Customer-portal visibility (mirror desktop ServiceCases AttachmentThumb):
+  // visible_to_customer defaults to 1, so a photo shot from the phone is
+  // customer-visible unless explicitly hidden. Without this toggle the mobile
+  // could only archive, never hide — a customer-facing data leak.
+  const visible = Number(get(att, "visibleToCustomer", "visible_to_customer") ?? 1) === 1;
 
   /* WO-7 — the GRID tile loads the light `.thumb` sibling; attachments
      uploaded before thumbnails shipped have none (404) and fall back to
@@ -2918,7 +2985,7 @@ function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
   return (
     <div
       onClick={() => { if (!isPdf) setViewing(true); }}
-      style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid ${DIM}`, cursor: isPdf ? "default" : "pointer" }}
+      style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid ${DIM}`, cursor: isPdf ? "default" : "pointer", opacity: visible ? 1 : 0.55 }}
     >
       {isVideo || isPdf ? (
         <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 3 }}>
@@ -2933,6 +3000,16 @@ function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
         <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
           <span style={{ fontSize: 9, color: GREY }}>…</span>
         </div>
+      )}
+      {onVisibility && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onVisibility(!visible); }}
+          aria-label={visible ? "Hide from customer" : "Show to customer"}
+          title={visible ? "Hide from customer" : "Show to customer"}
+          style={{ position: "absolute", top: 3, left: 3, height: 20, padding: "0 7px", borderRadius: 10, border: "none", background: visible ? "rgba(17,20,15,.55)" : TEAL, color: "#fff", fontSize: 9, fontWeight: 800, lineHeight: "20px", cursor: "pointer" }}
+        >
+          {visible ? "Hide" : "Show"}
+        </button>
       )}
       <button
         onClick={(e) => { e.stopPropagation(); onArchive(); }}

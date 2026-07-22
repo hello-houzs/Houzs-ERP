@@ -58,16 +58,33 @@ const EXPECTED_WHITELIST: Record<string, Record<string, AccessLevel>> = {
   Driver: {
     "scm.transportation": "view",
     "scm.transportation.drivers": "view", // inherits the L1 parent
+    // Projects / PMS view (owner 2026-07-21): drivers open all events; edits
+    // stay permission-gated to their own role-badged checklist tasks.
+    // finances / maintenance carry explicit none rows (asserted by the
+    // all-else-none sweep).
+    projects: "view",
+    "projects.list": "view", // inherits the L1 parent
+    "projects.calendar": "view", // inherits the L1 parent
   },
   Helper: {
     "scm.transportation": "view",
     "scm.transportation.drivers": "view",
+    projects: "view",
+    "projects.list": "view",
+    "projects.calendar": "view",
   },
   Storekeeper: {
     "scm.transportation": "view",
     "scm.transportation.drivers": "view",
     "scm.warehouse": "view",
     "scm.warehouse.inventory": "view",
+    // Projects / PMS view (owner 2026-07-21, e20c4118): storekeepers work
+    // events alongside the crew — same three rows as Driver/Helper; routes
+    // row-scope them to crewed events (isCrewScopedUser). finances /
+    // maintenance carry explicit none rows (asserted by the all-else-none sweep).
+    projects: "view",
+    "projects.list": "view", // inherits the L1 parent
+    "projects.calendar": "view", // inherits the L1 parent
     // transfers / stock_take / adjustments explicitly none — asserted by the
     // "all else none" sweep below.
   },
@@ -77,6 +94,11 @@ const EXPECTED_WHITELIST: Record<string, Record<string, AccessLevel>> = {
     "scm.warehouse": "view",
     "scm.warehouse.inventory": "view",
     "scm.procurement.grn": "edit",
+    // Projects / PMS view (owner 2026-07-21, e20c4118): same crew rows as
+    // Storekeeper / Driver / Helper.
+    projects: "view",
+    "projects.list": "view", // inherits the L1 parent
+    "projects.calendar": "view", // inherits the L1 parent
   },
 };
 

@@ -15,6 +15,15 @@ import { companyHeader } from "../lib/activeCompany";
 // The token's storage key + the read that knows about BOTH backing stores.
 // Shared with the vendored SCM fetch layer — see lib/authToken.
 import { AUTH_TOKEN_KEY as TOKEN_KEY, readAuthToken } from "../lib/authToken";
+import {
+  consumeCorrelated,
+  correlateError,
+  correlatedFetch,
+  requestIdFromError,
+  requestIdFromResponse,
+} from "../lib/requestCorrelation";
+
+export { requestIdFromError } from "../lib/requestCorrelation";
 
 // Production default is SAME-ORIGIN: /api/* is proxied to the Worker by the
 // Pages Function (functions/api/[[path]].ts). Calling the Worker's
@@ -207,7 +216,11 @@ export function humanHttpMessage(status: number, body: string): string {
 class HttpError extends Error {
   readonly isHttp = true;
   readonly rawBody: string;
-  constructor(public readonly status: number, body: string) {
+  constructor(
+    public readonly status: number,
+    body: string,
+    public readonly requestId?: string,
+  ) {
     super(humanHttpMessage(status, body));
     this.rawBody = body;
   }
@@ -232,15 +245,26 @@ function binarySignal(ms: number): AbortSignal | undefined {
   }
 }
 
-async function binaryFetch(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function binaryFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
   const caller = init.signal;
   try {
-    return await fetch(url, { ...init, signal: caller ?? binarySignal(timeoutMs) });
+    return await correlatedFetch(url, {
+      ...init,
+      signal: caller ?? binarySignal(timeoutMs),
+    });
   } catch (e) {
+    const requestId = requestIdFromError(e);
     if (!caller && e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
-      throw new Error("The server took too long to respond. Please check your connection and try again.");
+      throw correlateError(
+        new Error("The server took too long to respond. Please check your connection and try again."),
+        requestId,
+      );
     }
-    throw e;
+    throw correlateError(e, requestId);
   }
 }
 
@@ -284,7 +308,11 @@ const isColdPool503 = (e: HttpError) =>
   e.status === 503 &&
   /briefly unavailable|warming up|try again in a moment/i.test(String(e.message || ""));
 
-async function handleResponse<T>(res: Response, path: string, method = "GET"): Promise<T> {
+async function handleResponse<T>(
+  res: Response,
+  path: string,
+  method = "GET",
+): Promise<T> {
   if (res.status === 401) {
     // Don't fire on the auth probe endpoints themselves — they're allowed
     // to return 401 without booting the user.
@@ -317,10 +345,14 @@ async function handleResponse<T>(res: Response, path: string, method = "GET"): P
         console.warn(`[403 suppressed] GET ${path} — gate this query's enabled: ${msg}`);
       }
     }
-    throw new HttpError(res.status, body || res.statusText);
+    throw new HttpError(
+      res.status,
+      body || res.statusText,
+      requestIdFromResponse(res),
+    );
   }
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  return consumeCorrelated(res, () => res.json() as Promise<T>);
 }
 
 // RUM-lite: warn in the console on any request slower than this, so a
@@ -335,9 +367,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const isGet = method === "GET";
   // Whether THIS request carried an idempotency key decides what we may honestly
   // tell the operator when it times out — see the two messages below.
-  const hasIdemKey = Boolean(
-    (opts?.headers as Record<string, string> | undefined)?.["Idempotency-Key"],
-  );
+  const hasIdemKey = new Headers(opts?.headers).has("Idempotency-Key");
 
   for (let attempt = 0; ; attempt++) {
     const ctrl = new AbortController();
@@ -347,7 +377,13 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
     );
     const startedAt = performance.now();
     try {
-      const res = await fetch(`${baseUrl}${path}`, {
+      const headers = new Headers({
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "Content-Type": "application/json",
+        ...companyHeader(),
+      });
+      new Headers(opts?.headers).forEach((value, key) => headers.set(key, value));
+      const res = await correlatedFetch(`${baseUrl}${path}`, {
         ...opts,
         // Honour a caller-supplied signal alongside our own GET timeout: the
         // request aborts if EITHER fires. Without this the caller's signal was
@@ -355,17 +391,16 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
         signal: opts?.signal
           ? AbortSignal.any([ctrl.signal, opts.signal])
           : ctrl.signal,
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          "Content-Type": "application/json",
-          ...companyHeader(),
-          ...(opts?.headers || {}),
-        },
+        headers,
       });
       const ms = Math.round(performance.now() - startedAt);
-      if (ms >= SLOW_FETCH_MS) console.warn(`[perf] slow ${method} ${path} — ${ms}ms`);
+      const responseId = requestIdFromResponse(res);
+      if (ms >= SLOW_FETCH_MS) {
+        console.warn(`[perf] slow ${method} ${path} - ${ms}ms id=${responseId}`);
+      }
       return await handleResponse<T>(res, path, method);
     } catch (e) {
+      const requestId = requestIdFromError(e);
       // Caller-initiated abort (e.g. a debounced typeahead superseding its own
       // in-flight request) — propagate immediately. It is a cancellation, not a
       // transient failure, so it must never be retried or reworded as a network
@@ -408,14 +443,18 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
            we tell them to CHECK first. Telling the truth about our uncertainty
            beats a confident instruction that mints a duplicate. */
       if (!isGet) {
-        throw new Error(
-          hasIdemKey
-            ? "That took too long, so we couldn't confirm whether it saved. Please retry this same action once; its safety key will check the original request instead of creating a duplicate."
-            : "That took too long and we couldn't confirm whether it saved. Please refresh and check before trying again — saving twice may create a duplicate.",
+        throw correlateError(
+          new Error(
+            hasIdemKey
+              ? "That took too long, so we couldn't confirm whether it saved. Please retry this same action once; its safety key will check the original request instead of creating a duplicate."
+              : "That took too long and we couldn't confirm whether it saved. Please refresh and check before trying again — saving twice may create a duplicate.",
+          ),
+          requestId,
         );
       }
-      throw new Error(
-        "Network error — the server took too long to respond. Please try again."
+      throw correlateError(
+        new Error("Network error — the server took too long to respond. Please try again."),
+        requestId,
       );
     } finally {
       clearTimeout(timer);
@@ -506,9 +545,9 @@ export const api = {
       try {
         txt = await res.text();
       } catch {}
-      throw new HttpError(res.status, txt || res.statusText);
+      throw new HttpError(res.status, txt || res.statusText, requestIdFromResponse(res));
     }
-    return (await res.json()) as T;
+    return consumeCorrelated(res, () => res.json() as Promise<T>);
   },
 
   /**
@@ -531,9 +570,9 @@ export const api = {
       try {
         txt = await res.text();
       } catch {}
-      throw new HttpError(res.status, txt || res.statusText);
+      throw new HttpError(res.status, txt || res.statusText, requestIdFromResponse(res));
     }
-    return (await res.json()) as T;
+    return consumeCorrelated(res, () => res.json() as Promise<T>);
   },
 
   /**
@@ -558,10 +597,10 @@ export const api = {
       try {
         txt = await res.text();
       } catch {}
-      throw new HttpError(res.status, txt || res.statusText);
+      throw new HttpError(res.status, txt || res.statusText, requestIdFromResponse(res));
     }
     if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
+    return consumeCorrelated(res, () => res.json() as Promise<T>);
   },
 
   /** Single-file multipart upload (one `fieldName` part). Thin wrapper over
@@ -579,9 +618,8 @@ export const api = {
     const res = await binaryFetch(`${baseUrl}${path}`, {
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
-    if (!res.ok) throw new HttpError(res.status, res.statusText);
-    const blob = await res.blob();
-    return URL.createObjectURL(blob);
+    if (!res.ok) throw new HttpError(res.status, res.statusText, requestIdFromResponse(res));
+    return consumeCorrelated(res, async () => URL.createObjectURL(await res.blob()));
   },
 
   /**
@@ -599,19 +637,21 @@ export const api = {
     const res = await binaryFetch(`${baseUrl}${path}`, {
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
-    if (!res.ok) throw new HttpError(res.status, res.statusText);
-    const cd = res.headers.get("Content-Disposition") || "";
-    const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
-    const name = m ? decodeURIComponent(m[1]) : fallbackName;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    if (!res.ok) throw new HttpError(res.status, res.statusText, requestIdFromResponse(res));
+    await consumeCorrelated(res, async () => {
+      const cd = res.headers.get("Content-Disposition") || "";
+      const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+      const name = m ? decodeURIComponent(m[1]) : fallbackName;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    });
   },
 
   async openHtml(path: string): Promise<void> {
@@ -619,13 +659,15 @@ export const api = {
     const res = await binaryFetch(`${baseUrl}${path}`, {
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
-    if (!res.ok) throw new HttpError(res.status, res.statusText);
-    const html = await res.text();
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank");
-    // Revoke after the new tab has had time to parse; instant revoke breaks some browsers.
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    if (!res.ok) throw new HttpError(res.status, res.statusText, requestIdFromResponse(res));
+    await consumeCorrelated(res, async () => {
+      const html = await res.text();
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      // Revoke after the new tab has had time to parse; instant revoke breaks some browsers.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    });
   },
 };
 

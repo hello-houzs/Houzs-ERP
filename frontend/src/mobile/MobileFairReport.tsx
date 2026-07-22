@@ -12,6 +12,9 @@ import {
   type FairDoRow,
   type FairInvoiceRow,
   type FairPnlRow,
+  type FairSoSummary,
+  type FairDoSummary,
+  type FairInvoiceSummary,
   type FairPnlSummary,
   type FairCostByCategory,
 } from "../vendor/scm/lib/fair-report-queries";
@@ -211,9 +214,24 @@ export function MobileFairReport({ onBack }: { onBack: () => void }) {
 
         {!q.isLoading && !q.isError && data && (
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-            {data.stage === "so" && data.rows.map((r) => <SoCard key={r.so_no} r={r} onOpen={() => setOpenSo(r.so_no)} />)}
-            {data.stage === "do" && data.rows.map((r) => <DoCard key={r.do_no} r={r} onOpen={() => r.so_no && setOpenSo(r.so_no)} />)}
-            {data.stage === "invoice" && data.rows.map((r) => <InvoiceCard key={r.inv_no} r={r} onOpen={() => r.so_no && setOpenSo(r.so_no)} />)}
+            {data.stage === "so" && rowCount > 0 && (
+              <>
+                <SoSummary s={data.summary} rows={data.rows} />
+                {data.rows.map((r) => <SoCard key={r.so_no} r={r} onOpen={() => setOpenSo(r.so_no)} />)}
+              </>
+            )}
+            {data.stage === "do" && rowCount > 0 && (
+              <>
+                <DoSummary s={data.summary} />
+                {data.rows.map((r) => <DoCard key={r.do_no} r={r} onOpen={() => r.so_no && setOpenSo(r.so_no)} />)}
+              </>
+            )}
+            {data.stage === "invoice" && rowCount > 0 && (
+              <>
+                <InvoiceSummary s={data.summary} />
+                {data.rows.map((r) => <InvoiceCard key={r.inv_no} r={r} onOpen={() => r.so_no && setOpenSo(r.so_no)} />)}
+              </>
+            )}
             {data.stage === "pnl" && (data.meta.needs_project ? (
               <div className="empty">
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#c2c6bd" strokeWidth="1.6"><path d="M4 4h16v4H4zM4 10h16v10H4z" /></svg>
@@ -340,6 +358,70 @@ function InvoiceCard({ r, onOpen }: { r: FairInvoiceRow; onOpen: () => void }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 11, fontSize: 11.5 }}>
         <span style={{ color: "var(--ink2)" }}>SO → DO → SI</span>
         <span style={{ marginLeft: "auto", color: "var(--brand)", fontWeight: 600 }}>Tap ›</span>
+      </div>
+    </div>
+  );
+}
+
+// ── per-stage summary cards ─────────────────────────────────────────────────
+// SO / DO / Invoice each get a header summary (the desktop KpiRow —
+// pages/scm-v2/FairReport.tsx:412-465 — plus the SO filtered-totals foot,
+// 531-553). Before this only the P&L tab carried a summary card, so a manager
+// scanning the SO / Delivery / Invoice tabs saw just "<n> records" with no
+// Revenue / Outstanding / Paid / cost / margin header. Money math stays on the
+// server; these cards only format `data.summary`. Rendered only when the stage
+// has rows (an all-zero card above a "No records" empty state reads worse than
+// the empty state alone).
+function SoSummary({ s, rows }: { s: FairSoSummary; rows: FairSoRow[] }) {
+  // Deposits collected — summed from the loaded rows, exactly as the desktop
+  // KpiRow's "Paid" tile does (the summary echoes every matching row).
+  const paid = rows.reduce((a, r) => a + Number(r.paid_total_centi ?? 0), 0);
+  return (
+    <div className={cardCls} style={{ padding: "13px 14px", background: "var(--bg)" }}>
+      <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: ".03em", textTransform: "uppercase", color: "var(--mut)" }}>Sales Orders · {s.orders} {s.orders === 1 ? "order" : "orders"}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginTop: 9 }}>
+        <CardStat k={`Revenue · ${pct(s.margin_pct)}`} v={rm(s.total_amount_centi)} />
+        <CardStat k="SO Cost" v={rm(s.total_so_cost_centi)} />
+        <CardStat k="Outstanding" v={rm(s.total_balance_centi)} tone={s.total_balance_centi > 0 ? "err" : undefined} />
+        <CardStat k="Paid" v={rm(paid)} />
+      </div>
+      {s.below_deposit_count > 0 && (
+        <div style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 9, lineHeight: 1.5 }}>
+          {s.below_deposit_count} {s.below_deposit_count === 1 ? "order" : "orders"} below deposit.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DoSummary({ s }: { s: FairDoSummary }) {
+  const grew = s.cost_delta_centi > 0;
+  return (
+    <div className={cardCls} style={{ padding: "13px 14px", background: "var(--bg)" }}>
+      <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: ".03em", textTransform: "uppercase", color: "var(--mut)" }}>Delivery · {s.deliveries} {s.deliveries === 1 ? "delivery" : "deliveries"}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 9 }}>
+        <CardStat k="SO Cost" v={rm(s.total_so_cost_centi)} />
+        <CardStat k="DO Cost" v={rm(s.total_do_cost_centi)} />
+        <CardStat k="Cost Drift" v={signedMoney(s.cost_delta_centi)} tone={grew ? "err" : undefined} />
+      </div>
+      {s.legacy_count > 0 && (
+        <div style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 9, lineHeight: 1.5 }}>
+          {s.legacy_count} legacy (pre-FIFO) {s.legacy_count === 1 ? "delivery" : "deliveries"}.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InvoiceSummary({ s }: { s: FairInvoiceSummary }) {
+  const good = (s.margin_pct ?? 0) >= 0;
+  return (
+    <div className={cardCls} style={{ padding: "13px 14px", background: "var(--bg)" }}>
+      <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: ".03em", textTransform: "uppercase", color: "var(--mut)" }}>Invoices · {s.invoices}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 9 }}>
+        <CardStat k="Invoiced" v={rm(s.total_invoiced_centi)} />
+        <CardStat k="Landed" v={rm(s.total_si_cost_centi)} />
+        <CardStat k="Margin" v={pct(s.margin_pct)} tone={good ? undefined : "err"} />
       </div>
     </div>
   );

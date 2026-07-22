@@ -100,6 +100,13 @@ import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery, humanHttpMessage, tokenStore } from "../api/client";
 import { companyHeader } from "../lib/activeCompany";
+import {
+  consumeCorrelated,
+  correlateError,
+  correlatedFetch,
+  requestIdFromError,
+  requestIdFromResponse,
+} from "../lib/requestCorrelation";
 import { MediaLightbox } from "../components/MediaLightbox";
 import { ResetFiltersButton } from "../components/ResetFiltersButton";
 import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime, todayInAppTz } from "../lib/utils";
@@ -924,6 +931,12 @@ const PROJECTS_LIST_FILTER_KEYS = [
   // Kept in the URL keys list so any old bookmark with ?stage=… still
   // parses without throwing.
   "stage",
+  // `phase=setup|dismantle` — field/sales cohort's date-derived Setup/Dismantle
+  // filter (the `stage` enum is unmaintained). See ProjectsListView.
+  "phase",
+  // `mine=all` — field/sales cohort's "My events" toggle OFF state (absent =
+  // ON, so the slim bar defaults to their own events). See ProjectsListView.
+  "mine",
   "section",
   "search",
   "brand",
@@ -934,7 +947,7 @@ const PROJECTS_LIST_FILTER_KEYS = [
 ] as const;
 
 function ProjectsListView() {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const { unreadByProject } = useNotifications();
@@ -948,6 +961,9 @@ function ProjectsListView() {
   const month = params.get("month") || "";
   const section = params.get("section") || "";
   const status = params.get("status") || "";
+  // Cohort "Setup"/"Dismantle" pick a date-derived event PHASE (not the stale
+  // `stage` enum) — see the field/sales slim bar below + backend f.phase.
+  const phase = params.get("phase") || "";
   const page = Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
   function patchParams(patch: Record<string, string>) {
     const next = new URLSearchParams(params);
@@ -963,6 +979,7 @@ function ProjectsListView() {
   const setMonth = (v: string) => patchParams({ month: v, page: "1" });
   const setSection = (v: string) => patchParams({ section: v, page: "1" });
   const setStatus = (v: string) => patchParams({ status: v, page: "1" });
+  const setPhase = (v: string) => patchParams({ phase: v, page: "1" });
   const setPage = (n: number) => patchParams({ page: String(n) });
 
   const [perPage, setPerPage] = useLocalStorage<number>("pp:projects", 50);
@@ -991,6 +1008,39 @@ function ProjectsListView() {
   // chip label / document title server-side). Export is unaffected.
   const [myPending, setMyPending] = useLocalStorage<boolean>("projects:myPending", false);
 
+  // Owner 2026-07-21: field/sales roles (Sales Exec/Mgr except Sales Director,
+  // plus Driver/Helper/Storekeeper) get the SAME slimmed filter bar as mobile —
+  // only "My events", "Setup", "Dismantle" (no section pills / brand-year-month
+  // -status dropdowns / My-pending / Hide-completed). Mirrors the cohort logic
+  // in MobilePMS ProjectListView so pc + phone stay in lockstep.
+  const _pos = (user?.position_name ?? "").trim();
+  const _dept = (user?.department_name ?? "").trim();
+  const _isDirector =
+    !!user?.permissions?.includes("*") ||
+    /\b(super admin|sales director|finance manager)\b/i.test(_pos);
+  const _isDriver = /\bdriver\b/i.test(_pos);
+  // Helpers/storekeepers are FORCE-scoped to their assigned events server-side
+  // (isCrewScopedUser in backend); drivers are not (they opt in).
+  const _isForceScopedCrew = /\bhelper\b/i.test(_pos) || /storekeeper/i.test(_pos);
+  const _isCrew = _isDriver || _isForceScopedCrew;
+  const _isSalesExec = (/sales/i.test(_dept) || /^sales/i.test(_pos)) && !_isDirector;
+  const restrictedCohort = _isCrew || _isSalesExec;
+  const cohortTickOnly = can("projects.checklist.tick") && !can("projects.write");
+  // "My events" is a REAL toggle only for drivers (server doesn't force their
+  // scope and their assigned_to_me arm actually filters). Helpers/storekeepers
+  // are force-scoped and sales are row-scoped server-side, so for them the
+  // button is cosmetic (always on) — sending assigned_to_me for a sales user
+  // would filter to crew arms and wrongly return zero rows. OFF state is
+  // encoded as ?mine=all (absent = default on).
+  const canToggleMyEvents = _isDriver && cohortTickOnly;
+  const crewSeeAll = params.get("mine") === "all";
+  const myEventsActive = restrictedCohort && (canToggleMyEvents ? !crewSeeAll : true);
+  const sendAssignedToMe = canToggleMyEvents && !crewSeeAll;
+  // Pill styling copied from <FilterPills/> so the cohort bar reads identically.
+  const cohortPillCls = (active: boolean) =>
+    "whitespace-nowrap rounded px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-all duration-150 " +
+    (active ? "bg-primary text-white shadow-sm" : "text-ink-secondary hover:bg-primary-soft hover:text-primary");
+
   // ?focus=ID — Overview inbox deep-links straight to the detail page.
   useFocusFromUrl((id) => navigate(`/projects/${id}`, { replace: true }));
 
@@ -1005,24 +1055,29 @@ function ProjectsListView() {
     () =>
       api.get(
         `/api/projects${buildQuery({
-          brand: brand || undefined,
-          year: year || undefined,
-          month: month || undefined,
-          section: section || undefined,
-          exclude_done: excludeDoneParam,
-          my_pending: myPending ? 1 : undefined,
+          // Cohort uses ONLY stage + assigned_to_me + search; the section /
+          // brand / year / month / status / my_pending filters are hidden from
+          // them, so force those undefined to keep their list unfiltered.
+          brand: restrictedCohort ? undefined : brand || undefined,
+          year: restrictedCohort ? undefined : year || undefined,
+          month: restrictedCohort ? undefined : month || undefined,
+          section: restrictedCohort ? undefined : section || undefined,
+          phase: restrictedCohort && phase ? phase : undefined,
+          assigned_to_me: sendAssignedToMe ? 1 : undefined,
+          exclude_done: restrictedCohort ? undefined : excludeDoneParam,
+          my_pending: restrictedCohort ? undefined : myPending ? 1 : undefined,
           search,
           // Status is filtered SERVER-side (the list endpoint's `status`
           // param), so the list stays paginated (per_page=perPage) even while
           // a status pill is active — no more fetch-all page-1 workaround.
-          status: status || undefined,
+          status: restrictedCohort ? undefined : status || undefined,
           page,
           per_page: perPage,
           include_archived: showArchived ? 1 : undefined,
           ...sortParams,
         })}`
       ),
-    [brand, year, month, section, status, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir],
+    [brand, year, month, section, status, phase, restrictedCohort, sendAssignedToMe, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir],
     // Paginated + filter-switched list: keep the current rows on screen while
     // the next page/filter loads instead of flashing an empty table.
     { keepPreviousData: true }
@@ -1050,14 +1105,18 @@ function ProjectsListView() {
       for (let pg = 1; pg <= 500; pg++) {
         const res = await api.get<Paginated<ProjectRow>>(
           `/api/projects${buildQuery({
-            brand: brand || undefined,
-            year: year || undefined,
-            month: month || undefined,
-            section: section || undefined,
-            exclude_done: excludeDoneParam,
+            // Mirror the on-screen filter set, incl. the cohort's slim bar
+            // (stage + assigned_to_me), so the export matches what they see.
+            brand: restrictedCohort ? undefined : brand || undefined,
+            year: restrictedCohort ? undefined : year || undefined,
+            month: restrictedCohort ? undefined : month || undefined,
+            section: restrictedCohort ? undefined : section || undefined,
+            phase: restrictedCohort && phase ? phase : undefined,
+            assigned_to_me: sendAssignedToMe ? 1 : undefined,
+            exclude_done: restrictedCohort ? undefined : excludeDoneParam,
             // my_pending intentionally OMITTED — export is the full filtered list.
             search,
-            status: status || undefined,
+            status: restrictedCohort ? undefined : status || undefined,
             page: pg,
             per_page: per,
             include_archived: showArchived ? 1 : undefined,
@@ -1329,6 +1388,40 @@ function ProjectsListView() {
       </DashboardGrid>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
+        {restrictedCohort ? (
+          /* Owner 2026-07-21: field/sales cohort gets the mobile-style slim bar
+             — only My events / Setup / Dismantle. Styled to match FilterPills. */
+          <div className="inline-block max-w-full overflow-hidden rounded-md border border-border bg-surface shadow-stone align-middle">
+            <div className="no-scrollbar flex items-center gap-0.5 overflow-x-auto p-1 [&>*]:shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  if (canToggleMyEvents) patchParams({ mine: crewSeeAll ? "" : "all", page: "1" });
+                }}
+                title={canToggleMyEvents ? "Show only events you're assigned to" : "You see your own events"}
+                className={cohortPillCls(myEventsActive)}
+                style={canToggleMyEvents ? undefined : { cursor: "default" }}
+              >
+                My events
+              </button>
+              <button
+                type="button"
+                onClick={() => setPhase(phase === "setup" ? "" : "setup")}
+                className={cohortPillCls(phase === "setup")}
+              >
+                Setup
+              </button>
+              <button
+                type="button"
+                onClick={() => setPhase(phase === "dismantle" ? "" : "dismantle")}
+                className={cohortPillCls(phase === "dismantle")}
+              >
+                Dismantle
+              </button>
+            </div>
+          </div>
+        ) : (
+        <>
         {/* Tasklist-section filter pills — replaces the old draft /
             setup / dismantle / completed stage filter. Sections are
             pulled live so any custom workflow shows up here too. */}
@@ -1442,6 +1535,8 @@ function ProjectsListView() {
           />
           Show archived
         </label>
+        </>
+        )}
       </div>
 
       {/* View toggle — cards (P2 design) vs the full data table. */}
@@ -1529,6 +1624,20 @@ function ProjectsListView() {
                       {r.name}
                     </div>
                     {meta && <div className="mt-0.5 truncate text-[11.5px] text-ink-muted">{meta}</div>}
+                    {/* Crew cards: the caller's own due pending tasks — attached
+                        server-side (my_pending_titles) for crew callers only. */}
+                    {!!(r as any).my_pending_titles && (
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {String((r as any).my_pending_titles).split("|").map((t: string) => (
+                          <span
+                            key={t}
+                            className="inline-flex items-center rounded-full border border-warning-text/30 bg-warning-bg px-2 py-0.5 text-[10px] font-semibold text-warning-text"
+                          >
+                            ⏳ {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     <div className="mt-2">
                       <ProgressBar pct={r.progress_pct ?? 0} />
                     </div>
@@ -4332,7 +4441,9 @@ function CreateProjectPanel({
   // backend POST / gate. Sales Director matched by EXACT normalised name
   // (isSalesDirectorUser), never a \b substring. When false we hide the PIC
   // picker entirely so the project is created unassigned (admin PICs it later).
-  const canAssignPeople = can("projects.write") && !isSalesDirectorUser(user);
+  // Owner 2026-07-21: the 2026-07-18 Sales-Director assignment block is fully
+  // reversed (backend already open) — anyone with projects.write may assign.
+  const canAssignPeople = can("projects.write");
   const [eventTypeId, setEventTypeId] = useState<string>("");
   const [brand, setBrand] = useState<string>("");
   const [startDate, setStartDate] = useState("");
@@ -4708,8 +4819,8 @@ function ProjectDetailContent({
   // name (isSalesDirectorUser), never a \b substring, so a free-text rename
   // can't drift the block. Backend re-enforces the same rule on PATCH pic_id +
   // POST/DELETE sales-attendees — this is UX/defence-in-depth only.
-  const canAssignPeople =
-    fullAccess && can("projects.write") && !isSalesDirectorUser(user);
+  // Owner 2026-07-21: Sales-Director block reversed — projects.write is enough.
+  const canAssignPeople = fullAccess && can("projects.write");
   const canEditAttending = canAssignPeople;
 
   async function patch(body: Record<string, any>) {
@@ -12167,7 +12278,7 @@ function ImportCsvPanel({
     setSubmitting(true);
     try {
       // Raw text body (POST text/csv) — api helpers all assume JSON, so
-      // we call fetch directly. Auth token is the same one api uses — read it
+      // we call the correlated raw-body transport. Auth token is the same one api uses — read it
       // THROUGH tokenStore, not from localStorage: a session-only login (Remember
       // me unchecked, or the owner's view-as) keeps the token in sessionStorage,
       // and the old inline read sent `Bearer ` and 401'd.
@@ -12178,7 +12289,7 @@ function ImportCsvPanel({
       try { signal = AbortSignal.timeout(120_000); } catch { signal = undefined; }
       let resp: Response;
       try {
-        resp = await fetch(`${api.baseUrl}/api/projects/import/csv`, {
+        resp = await correlatedFetch(`${api.baseUrl}/api/projects/import/csv`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${token}`,
@@ -12193,12 +12304,21 @@ function ImportCsvPanel({
         });
       } catch (err) {
         if (err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError")) {
-          throw new Error("The server took too long to respond. Please check your connection and try again.");
+          throw correlateError(
+            new Error("The server took too long to respond. Please check your connection and try again."),
+            requestIdFromError(err),
+          );
         }
         throw err;
       }
-      if (!resp.ok) throw new Error(humanHttpMessage(resp.status, await resp.text().catch(() => "")));
-      const data = (await resp.json()) as { imported: number; errors: string[]; total_rows: number };
+      if (!resp.ok) throw correlateError(
+        new Error(humanHttpMessage(resp.status, await resp.text().catch(() => ""))),
+        requestIdFromResponse(resp),
+      );
+      const data = await consumeCorrelated(
+        resp,
+        () => resp.json() as Promise<{ imported: number; errors: string[]; total_rows: number }>,
+      );
       setResult(data);
       if (data.imported > 0) toast.success(`Imported ${data.imported} of ${data.total_rows} row(s)`);
       onDone();

@@ -48,6 +48,10 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
+      # main is excluded from ci.yml because this deploy job is its required
+      # backend gate. Keep the executable route inventory here so a direct main
+      # push cannot deploy an undeclared/stale authorization surface.
+      - run: npm run audit:routes
       - run: npm run typecheck
       - run: npm test
       # Apply any pending Postgres migrations BEFORE deploying the new Worker so

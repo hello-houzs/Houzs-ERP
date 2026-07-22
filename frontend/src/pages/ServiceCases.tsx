@@ -81,7 +81,6 @@ import { ServiceMetrics } from "./ServiceMetrics";
 import { ServiceSettingsView } from "./ServiceSettings";
 import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
 import { Forbidden } from "./Forbidden";
-import { ServiceProgressTracker } from "../components/ServiceProgressTracker";
 import { resolutionRoute, isStageActive, assrSubStatus, assrSubStatusAddsInfo, assrSubStatusLabel, ASSR_SUB_STATUSES } from "../vendor/scm/lib/assr/stages";
 import type {
   Paginated,
@@ -608,7 +607,16 @@ function CasesView({
       key: "assr_no",
       filterable: true,
       label: "ASSR No",
-      render: (r) => <span className="font-mono text-xs font-medium">{r.assr_no}</span>,
+      render: (r) => (
+        <span className="font-mono text-xs font-medium">
+          {r.assr_no}
+          {r.company_code && r.company_code !== "HOUZS" && (
+            <span className="ml-1.5 rounded bg-bg px-1 py-0.5 font-sans text-[10px] font-semibold text-ink-muted">
+              {r.company_code}
+            </span>
+          )}
+        </span>
+      ),
       getValue: (r) => r.assr_no,
     },
     {
@@ -2201,7 +2209,7 @@ function CreatePanel({
   // suggestion — used to suppress the dropdown once a selection is
   // committed (re-typing reopens it).
   const [soSuggestions, setSoSuggestions] = useState<
-    { doc_no: string; ref: string | null; debtor_name: string | null; phone: string | null; doc_date: string | null; sales_agent: string | null }[]
+    { doc_no: string; ref: string | null; debtor_name: string | null; phone: string | null; doc_date: string | null; sales_agent: string | null; company_code?: string | null }[]
   >([]);
   const [pickedDocNo, setPickedDocNo] = useState<string | null>(null);
   const [searchingSO, setSearchingSO] = useState(false);
@@ -2556,6 +2564,9 @@ function CreatePanel({
               >
                 <div className="flex items-center gap-2">
                   <span className="font-mono font-semibold text-ink">{s.doc_no}</span>
+                  {s.company_code && s.company_code !== "HOUZS" && (
+                    <span className="rounded bg-bg px-1.5 py-0.5 text-[10px] font-semibold text-ink-muted">{s.company_code}</span>
+                  )}
                   {s.ref && <span className="rounded bg-bg px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">ref: {s.ref}</span>}
                   {s.doc_date && <span className="ml-auto text-[10px] text-ink-muted">{s.doc_date}</span>}
                 </div>
@@ -3458,7 +3469,13 @@ function DetailContent({
                       >
                         {item.item_description || ""}
                       </span>
-                      <span className="text-[11px] text-ink-muted">&times;{item.qty}</span>
+                      <ItemQtyStepper
+                        caseId={id}
+                        item={item}
+                        disabled={c.stage === "completed" || !!c.archived_at}
+                        onSaved={() => detail.reload()}
+                        toast={toast}
+                      />
                       {c.stage !== "completed" && (
                         <button
                           onClick={() => removeItem(item.id)}
@@ -4530,6 +4547,9 @@ function DetailContent({
                 );
               }
               return (
+                // Bounded, self-scrolling timeline — a long history scrolls
+                // inside this box instead of stretching the whole page.
+                <div className="max-h-[65vh] overflow-y-auto overflow-x-hidden pr-1">
                 <ol className="relative space-y-3 pl-5">
                   <span className="pointer-events-none absolute left-[7px] top-1.5 bottom-1.5 w-px bg-border" />
                   {rows.map((a: any) => {
@@ -4649,6 +4669,17 @@ function DetailContent({
                         title = "Photo uploaded";
                         if (a.note) body = a.note;
                         break;
+                      default:
+                        // Backend-logged audit actions we don't special-case
+                        // (field_change, item_remark, item_added/removed,
+                        // attachment_*, logistics_*, …). Their note is a full
+                        // human sentence — show it so the timeline is a
+                        // complete, reviewable history of everything done.
+                        if (a.note) {
+                          title = null;
+                          body = a.note;
+                        }
+                        break;
                     }
                     const actorRole = roleOf(a);
                     return (
@@ -4732,6 +4763,7 @@ function DetailContent({
                     );
                   })}
                 </ol>
+                </div>
               );
             })()}
           </section>
@@ -5725,11 +5757,11 @@ function VerificationCard({
           <InlineEdit
             label="Inspection Visit Date"
             type="date"
-            value={c.customer_pickup_at}
-            onSave={(v) => patch({ customer_pickup_at: v || null })}
+            value={c.inspection_visit_at}
+            onSave={(v) => patch({ inspection_visit_at: v || null })}
           />
           <div className="flex flex-wrap items-center gap-2 rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
-            {c.customer_pickup_at ? (
+            {c.inspection_visit_at ? (
               <>
                 <span>
                   On the <b>Delivery Planning</b> board as an unscheduled
@@ -7572,6 +7604,68 @@ function SupplierField({ c, id, detail, toast, onUpdated }: {
 // Prints in the ITEMS table's REMARK column on both the customer and
 // supplier copies (Nick 2026-07-15). Saves on blur / Enter; empty
 // clears the remark.
+// Per-item quantity stepper (Nick 2026-07-20) — − N + inline in the
+// Product Info card; saves immediately, feeds the print QTY column.
+function ItemQtyStepper({ caseId, item, disabled, onSaved, toast }: {
+  caseId: number;
+  item: any;
+  disabled?: boolean;
+  onSaved: () => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const qty = Math.max(1, Number(item.qty ?? 1));
+  const [saving, setSaving] = useState(false);
+
+  async function set(next: number) {
+    const clamped = Math.max(1, Math.round(next));
+    if (clamped === qty || saving) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/assr/${caseId}/items/${item.id}`, { qty: clamped });
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update quantity");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (disabled) {
+    return <span className="text-[11px] text-ink-muted">&times;{qty}</span>;
+  }
+  return (
+    <div className="flex items-center gap-0.5 rounded border border-border bg-bg/50">
+      <button
+        type="button"
+        onClick={() => set(qty - 1)}
+        disabled={saving || qty <= 1}
+        className="px-1.5 py-0.5 text-[12px] font-bold text-ink-muted hover:text-ink disabled:opacity-40"
+        title="Decrease quantity"
+      >
+        −
+      </button>
+      <input
+        type="number"
+        min={1}
+        value={qty}
+        onChange={(e) => set(parseInt(e.target.value, 10) || 1)}
+        disabled={saving}
+        className="w-8 border-x border-border bg-transparent py-0.5 text-center text-[11px] font-semibold text-ink outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        title="Quantity"
+      />
+      <button
+        type="button"
+        onClick={() => set(qty + 1)}
+        disabled={saving}
+        className="px-1.5 py-0.5 text-[12px] font-bold text-ink-muted hover:text-ink disabled:opacity-40"
+        title="Increase quantity"
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
 function ItemRemarkInput({ caseId, item, disabled, onSaved, toast }: {
   caseId: number;
   item: any;

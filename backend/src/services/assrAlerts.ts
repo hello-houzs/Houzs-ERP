@@ -171,13 +171,18 @@ export async function runAssrAlerts(
           refId: r.assr_id,
         });
       }
-      // Audit row — keeps the timeline truthful.
-      await env.DB.prepare(
-        `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, user_id, category)
-         VALUES (?, 'alert', ?, ?, ?, NULL, 'system')`
-      )
-        .bind(r.assr_id, r.stage, ev, `${EVENT_LABEL[ev]} — ${elapsedDays.toFixed(1)}/${r.target_days}d`)
-        .run();
+      // Audit row — record only the actual SLA breach. The half-time and
+      // approaching-breach reminders still email the owner/managers, but
+      // they are timer noise on the timeline, so they are NOT recorded
+      // (owner 2026-07-21).
+      if (ev === "breach") {
+        await env.DB.prepare(
+          `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, user_id, category)
+           VALUES (?, 'alert', ?, ?, ?, NULL, 'system')`
+        )
+          .bind(r.assr_id, r.stage, ev, `${EVENT_LABEL[ev]} — ${elapsedDays.toFixed(1)}/${r.target_days}d`)
+          .run();
+      }
 
       firedMask |= EVENT_FLAG[ev];
       counts[(ev === "half_time" ? "half" : ev === "approaching_breach" ? "approaching" : "breach") as keyof typeof counts]++;

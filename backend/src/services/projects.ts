@@ -110,12 +110,20 @@ async function describeUser(env: Env, userId: number | null): Promise<string | n
 export async function getUserPhasesOnProject(
   env: Env,
   projectId: number,
-  userId: number
+  userId: number,
+  /** Owner 2026-07-21: the per-lorry crew editor stores people as
+   *  {"name":"X","phone":…} JSON (setup_crew / dismantle_crew) with NO user
+   *  ids, so id-only matching missed everyone crewed that way. Names come
+   *  from the users master (fleet/staff picker), so a lowercase '"<name>"'
+   *  containment match is an exact-name match — same rule listProjects'
+   *  assigned_user_name arm uses. */
+  userName?: string | null
 ): Promise<Array<"setup" | "dismantle">> {
   if (!userId) return [];
   const row = await env.DB.prepare(
     `SELECT setup_driver_user_id, setup_helper_1_id, setup_helper_2_id,
-            dismantle_driver_user_id, dismantle_helper_1_id, dismantle_helper_2_id
+            dismantle_driver_user_id, dismantle_helper_1_id, dismantle_helper_2_id,
+            setup_crew, dismantle_crew
        FROM projects WHERE id = ?`
   )
     .bind(projectId)
@@ -126,20 +134,27 @@ export async function getUserPhasesOnProject(
       dismantle_driver_user_id: number | null;
       dismantle_helper_1_id: number | null;
       dismantle_helper_2_id: number | null;
+      setup_crew: string | null;
+      dismantle_crew: string | null;
     }>();
   if (!row) return [];
+  const nm = (userName ?? "").trim().toLowerCase();
+  const inCrewJson = (json: string | null): boolean =>
+    !!nm && (json ?? "").toLowerCase().includes(`"${nm}"`);
   const phases: Array<"setup" | "dismantle"> = [];
   if (
     row.setup_driver_user_id === userId ||
     row.setup_helper_1_id === userId ||
-    row.setup_helper_2_id === userId
+    row.setup_helper_2_id === userId ||
+    inCrewJson(row.setup_crew)
   ) {
     phases.push("setup");
   }
   if (
     row.dismantle_driver_user_id === userId ||
     row.dismantle_helper_1_id === userId ||
-    row.dismantle_helper_2_id === userId
+    row.dismantle_helper_2_id === userId ||
+    inCrewJson(row.dismantle_crew)
   ) {
     phases.push("dismantle");
   }
@@ -1187,6 +1202,13 @@ export function stripSetupDismantle<
 
 export interface ListProjectsFilters {
   stage?: string;
+  /** Date-derived event phase for the field/sales slim filter bar (owner
+   *  2026-07-21). The `stage` enum is unmaintained (never reaches
+   *  'dismantle'), so Setup/Dismantle filter on the event dates instead:
+   *  "setup" = event not finished yet (build-up ahead / running);
+   *  "dismantle" = event has ended but isn't closed (teardown pending).
+   *  Cancelled events are excluded from both. */
+  phase?: "setup" | "dismantle";
   brand?: string;
   event_type_id?: number;
   search?: string;
@@ -1245,10 +1267,32 @@ export interface ListProjectsFilters {
    *  required_perm is one of these (e.g. Stock Approver → stock_transfer.approve).
    *  Used for directors/admins who only chase what they must approve. */
   pending_approve?: string[];
+  /** Sales Director staging (owner 2026-07-21). Their pending = whichever of
+   *  these apply, OR-combined: stock-out awaiting approval (Sim submitted it),
+   *  agreement/quotation still pending (agreement approvers only), and the
+   *  project's Sales Attending not yet assigned. */
+  pending_director?: { stock?: boolean; agreement?: boolean; sales_attending?: boolean };
+  /** Sales-attending "pending" = the project has no sales attendees assigned
+   *  yet (Sales PIC + directors). Standalone predicate (not a checklist item). */
+  pending_sales_attending?: boolean;
+  /** Agreement/Quotation on its own timeline (Super Admin / weisiang). */
+  pending_agreement?: boolean;
   /** Multi-company (mig-pg 0093): the ACTIVE company (activeCompanyId(c)).
    *  When set the list is isolated to that company; undefined (company
    *  context unresolved — pre-migration / D1 test mirror) = no predicate. */
   company_id?: number;
+  /** "Assigned to me" (drivers/helpers, owner 2026-07-16): only projects
+   *  where this user is on the setup/dismantle crew — matched via the FK
+   *  driver/helper columns OR the crew-editor JSON (setup_crew /
+   *  dismantle_crew store {name} entries; crew names come from the users
+   *  master, so an exact quoted-name match is reliable). Pass BOTH fields. */
+  assigned_user_id?: number;
+  assigned_user_name?: string;
+  /** Owner 2026-07-21: attach each row's OPEN role-badged tasks (due-gated,
+   *  '|'-joined titles) as `my_pending_titles`, so the crew "My events" cards
+   *  can show what's pending on their side. Set by the route for crew callers
+   *  (label 'DRIVER'); whitelist-validated before interpolation. */
+  pending_titles_label?: string;
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -1293,6 +1337,22 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
       binds.push(...stages);
     }
   }
+  // Date-derived Setup / Dismantle (owner 2026-07-21) — replaces the stale
+  // `stage` enum for the field/sales slim bar. Same date idiom the pending
+  // lanes use (substr(...,1,10) vs a YYYY-MM-DD MYT string).
+  if (f.phase === "setup") {
+    // Event not finished yet → build-up is ahead or it's currently running.
+    where.push(
+      "substr(COALESCE(p.end_date, p.start_date), 1, 10) >= ? AND COALESCE(p.status,'') <> 'cancelled'"
+    );
+    binds.push(todayMyt());
+  } else if (f.phase === "dismantle") {
+    // Event has ended but isn't closed (not marked completed) → teardown pending.
+    where.push(
+      "substr(COALESCE(p.end_date, p.start_date), 1, 10) < ? AND COALESCE(p.stage,'') <> 'completed' AND COALESCE(p.status,'') <> 'cancelled'"
+    );
+    binds.push(todayMyt());
+  }
   if (f.brand) {
     where.push("p.brand = ?");
     binds.push(f.brand);
@@ -1317,6 +1377,29 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     where.push("p.state = ?");
     binds.push(f.state);
   }
+  // "Assigned to me" (drivers/helpers): the FK driver/helper columns OR the
+  // crew-editor JSON. The JSON stores people as {"name":"X","phone":…} (some
+  // legacy imports as {"name" : "X"}), and names come from the users master,
+  // so a lowercase '"<name>"' containment match is an exact-name match.
+  if (f.assigned_user_id != null) {
+    const arms = [
+      "p.setup_driver_user_id = ?",
+      "p.dismantle_driver_user_id = ?",
+      "p.setup_helper_1_id = ?",
+      "p.setup_helper_2_id = ?",
+      "p.dismantle_helper_1_id = ?",
+      "p.dismantle_helper_2_id = ?",
+    ];
+    for (const _ of arms) binds.push(f.assigned_user_id);
+    const nm = (f.assigned_user_name || "").trim().toLowerCase();
+    if (nm) {
+      arms.push("lower(COALESCE(p.setup_crew,'')) LIKE ?");
+      arms.push("lower(COALESCE(p.dismantle_crew,'')) LIKE ?");
+      const pat = `%"${nm}"%`;
+      binds.push(pat, pat);
+    }
+    where.push(`(${arms.join(" OR ")})`);
+  }
   // "My pending tasks" — project has >=1 pending checklist item that
   // belongs to the caller's role (matched by chip label or, for
   // document-specific roles, by item title).
@@ -1333,10 +1416,30 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   // lane's own binds.
   const dueToday = todayMyt();
   const DUE_GATE = `substr(COALESCE(pc.due_date, p.start_date), 1, 10) <= ?`;
+  // A caller's "My Pending" can have SEVERAL sources; a project qualifies if
+  // ANY match, so the lanes below OR together (each caller sets only a few).
+  const pendingOr: string[] = [];
+  const pendingBinds: any[] = [];
+  // Sales Attending is a "pending" reminder only for events that HAVEN'T ended
+  // yet (upcoming or currently running) and have no reps assigned — otherwise it
+  // floods with the whole historical backlog. Timeline-gated per "pending follows
+  // the timeline". Binds one `?` (dueToday) each time it's used.
+  const SALES_ATTENDING_EMPTY = `(substr(COALESCE(p.end_date, p.start_date), 1, 10) >= ?
+        AND NOT EXISTS (SELECT 1 FROM project_sales_attendees sa WHERE sa.project_id = p.id))`;
+  // Stock-out record submitted by the purchaser, now awaiting director approval.
+  const STOCK_OUT_AWAITING_APPROVAL = `EXISTS (SELECT 1 FROM project_checklist pc
+                WHERE pc.project_id = p.id AND pc.title = 'Stock Out Transfer Record'
+                  AND pc.review_status IN ('pending_review', 'amended') AND ${DUE_GATE})`;
+  const AGREEMENT_PENDING = `EXISTS (SELECT 1 FROM project_checklist pc
+                WHERE pc.project_id = p.id AND pc.title = 'Agreement / Quotation'
+                  AND pc.status = 'pending' AND ${DUE_GATE})`;
   if (f.pending_label === "PURCHASER") {
-    // Purchaser: the Stock Out Transfer Record only unlocks once the Display
-    // Floor Plan is done; their other tasks surface on their own due date.
-    where.push(
+    // Purchaser staging (owner 2026-07-21):
+    //   - Stock Out Transfer Record unlocks once the Display Floor Plan is done.
+    //   - Exchange List + Stock In Transfer Record unlock once the Defect List
+    //     is done (Sales PIC's post-event check).
+    //   - Every other PURCHASER task surfaces on its own due date.
+    pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
                 WHERE pc.project_id = p.id
                   AND pc.status = 'pending'
@@ -1346,41 +1449,40 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                        OR EXISTS (SELECT 1 FROM project_checklist fp
                                    WHERE fp.project_id = p.id
                                      AND fp.title = 'Display Floor Plan'
-                                     AND (fp.status = 'done' OR fp.review_status = 'approved'))))`
+                                     AND (fp.status = 'done' OR fp.review_status = 'approved')))
+                  AND (pc.title NOT IN ('Exchange List', 'Stock In Transfer Record')
+                       OR EXISTS (SELECT 1 FROM project_checklist dl
+                                   WHERE dl.project_id = p.id
+                                     AND dl.title = 'Defect List'
+                                     AND (dl.status = 'done' OR dl.review_status = 'approved'))))`
     );
-    binds.push(dueToday);
+    pendingBinds.push(dueToday);
   } else if (f.pending_label) {
-    where.push(
+    pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
-                WHERE pc.project_id = p.id
-                  AND pc.status = 'pending'
-                  AND pc.role_label = ?
-                  AND ${DUE_GATE})`
+                WHERE pc.project_id = p.id AND pc.status = 'pending'
+                  AND pc.role_label = ? AND ${DUE_GATE})`
     );
-    binds.push(f.pending_label, dueToday);
+    pendingBinds.push(f.pending_label, dueToday);
   }
   if (f.pending_title) {
-    where.push(
+    pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
-                WHERE pc.project_id = p.id
-                  AND pc.status = 'pending'
-                  AND pc.title = ?
-                  AND ${DUE_GATE})`
+                WHERE pc.project_id = p.id AND pc.status = 'pending'
+                  AND pc.title = ? AND ${DUE_GATE})`
     );
-    binds.push(f.pending_title, dueToday);
+    pendingBinds.push(f.pending_title, dueToday);
   }
   if (f.pending_approve && f.pending_approve.length) {
     // Approver lane: projects with a DUE, still-pending item whose required_perm
     // is one the caller holds — i.e. things they must approve, once due.
     const ph = f.pending_approve.map(() => "?").join(",");
-    where.push(
+    pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
-                WHERE pc.project_id = p.id
-                  AND pc.status = 'pending'
-                  AND pc.required_perm IN (${ph})
-                  AND ${DUE_GATE})`
+                WHERE pc.project_id = p.id AND pc.status = 'pending'
+                  AND pc.required_perm IN (${ph}) AND ${DUE_GATE})`
     );
-    binds.push(...f.pending_approve, dueToday);
+    pendingBinds.push(...f.pending_approve, dueToday);
   }
   if (f.pending_logistic) {
     // Logistic work is staged:
@@ -1388,7 +1490,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     //     (done/approved) but the setup time+crew aren't filled yet.
     //   - DISMANTLE is due once setup is arranged but the dismantle
     //     time+crew aren't filled yet.
-    where.push(`(
+    pendingOr.push(`(
       (
         EXISTS (SELECT 1 FROM project_checklist pc
                  WHERE pc.project_id = p.id
@@ -1404,6 +1506,21 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
         AND COALESCE(p.dismantle_crew, '') IN ('', '{}')
       )
     )`);
+  }
+  // Sales Director staging (owner 2026-07-21): approve the stock-out record once
+  // the purchaser submitted it, and assign the Sales Attending reps.
+  if (f.pending_director) {
+    if (f.pending_director.stock) { pendingOr.push(STOCK_OUT_AWAITING_APPROVAL); pendingBinds.push(dueToday); }
+    if (f.pending_director.agreement) { pendingOr.push(AGREEMENT_PENDING); pendingBinds.push(dueToday); }
+    if (f.pending_director.sales_attending) { pendingOr.push(SALES_ATTENDING_EMPTY); pendingBinds.push(dueToday); }
+  }
+  // Sales Attending not yet assigned (Sales PIC).
+  if (f.pending_sales_attending) { pendingOr.push(SALES_ATTENDING_EMPTY); pendingBinds.push(dueToday); }
+  // Agreement / Quotation on its own timeline (Super Admin / weisiang).
+  if (f.pending_agreement) { pendingOr.push(AGREEMENT_PENDING); pendingBinds.push(dueToday); }
+  if (pendingOr.length) {
+    where.push(`(${pendingOr.join("\n      OR ")})`);
+    binds.push(...pendingBinds);
   }
   // "Completed project" predicate — reused by both the positive
   // (section=__done) filter and the negative (exclude_done) toggle.
@@ -1527,6 +1644,23 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
          CASE WHEN p.start_date IS NULL THEN 1 ELSE 0 END,
          p.start_date DESC, p.id DESC`;
 
+  // Crew "My events" cards: the caller's own open role tasks, due-gated with
+  // the same MYT rule as the my_pending lanes. Interpolated (no bind juggling
+  // in the SELECT list) — label is whitelist-validated, dueToday is our own
+  // YYYY-MM-DD string.
+  const ptl =
+    f.pending_titles_label && /^[A-Z ]{2,20}$/.test(f.pending_titles_label)
+      ? f.pending_titles_label
+      : null;
+  const pendingTitlesCol = ptl
+    ? `,
+            (SELECT group_concat(c3.title, '|') FROM project_checklist c3
+              WHERE c3.project_id = p.id
+                AND c3.status NOT IN ('done', 'na')
+                AND c3.role_label = '${ptl}'
+                AND substr(COALESCE(c3.due_date, p.start_date), 1, 10) <= '${dueToday}') as my_pending_titles`
+    : "";
+
   const rows = await env.DB.prepare(
     `SELECT p.id, p.code, p.name, p.stage, p.status, p.brand,
             p.start_date, p.end_date,
@@ -1568,7 +1702,22 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                    WHERE c.project_id = p.id
                      AND c.section_id = s.id
                      AND c.status NOT IN ('done', 'na')
-                )) as sections_complete
+                )) as sections_complete,
+            -- Sales-only progress (owner 2026-07-21). Counts over SALES PIC
+            -- badged tasks; done = status done/na or a live attachment exists
+            -- (uploads are the sales completion signal). NOTE keep these SQL
+            -- comments free of apostrophes / quoted words: the D1-to-PG shim
+            -- mis-scans quotes inside comments and 500s the whole list query.
+            (SELECT COUNT(*) FROM project_checklist c
+              WHERE c.project_id = p.id
+                AND c.role_label = 'SALES PIC') as sales_tasks_total,
+            (SELECT COUNT(*) FROM project_checklist c
+              WHERE c.project_id = p.id
+                AND c.role_label = 'SALES PIC'
+                AND (c.status IN ('done', 'na')
+                     OR EXISTS (SELECT 1 FROM project_checklist_attachments a
+                                 WHERE a.item_id = c.id
+                                   AND a.archived_at IS NULL))) as sales_tasks_done${pendingTitlesCol}
        FROM projects p
        LEFT JOIN project_event_types et ON et.id = p.event_type_id
        LEFT JOIN project_finance pf ON pf.project_id = p.id

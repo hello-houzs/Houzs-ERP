@@ -40,13 +40,15 @@ export interface SearchHit {
 }
 
 /** Typed navigation intent emitted when a hit is tapped. The shell decides
- *  which screen each maps to (see MobileApp). */
+ *  which screen each maps to (see MobileApp). The service-case / product /
+ *  people intents carry the hit's `id` so the shell can deep-link to the
+ *  specific record instead of dropping the tapper on a bare list. */
 export type SearchNav =
   | { kind: "sales_order"; docNo: string }
   | { kind: "project"; projectId: number; date: string | null }
-  | { kind: "assr_case" }
-  | { kind: "product" }
-  | { kind: "user" };
+  | { kind: "assr_case"; id: string }
+  | { kind: "product"; id: string }
+  | { kind: "user"; id: string };
 
 /* Numeric DD/MM/YYYY — the owner-locked mobile date format (never month names),
    matching MobileSalesOrders / MobileCalendar. Delegates to the shared TZ-aware
@@ -86,12 +88,14 @@ function navFor(hit: SearchHit): SearchNav {
       return { kind: "sales_order", docNo: String(hit.id) };
     case "project":
       return { kind: "project", projectId: Number(hit.id), date: hit.date ?? null };
+    // Carry the backend id through so the shell can deep-link the tapped record
+    // rather than discard it and open a bare list.
     case "assr_case":
-      return { kind: "assr_case" };
+      return { kind: "assr_case", id: String(hit.id) };
     case "product":
-      return { kind: "product" };
+      return { kind: "product", id: String(hit.id) };
     case "user":
-      return { kind: "user" };
+      return { kind: "user", id: String(hit.id) };
   }
 }
 

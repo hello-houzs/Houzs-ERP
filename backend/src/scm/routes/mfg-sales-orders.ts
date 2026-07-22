@@ -71,7 +71,7 @@ import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { warehouseLabel } from '../lib/warehouse-label';
 import {
   scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
-  isMirroredDocNo, mintsIntoMirroredNamespace,
+  isMirroredDocNo, mintsIntoMirroredNamespace, houzsOwns2990,
   MIRRORED_SO_READONLY, MIRRORED_SO_CREATE_BLOCKED,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY,
 } from '../lib/companyScope';
@@ -209,7 +209,9 @@ mfgSalesOrders.use('*', async (c, next) => {
     try { s = decodeURIComponent(seg); } catch { /* not encoded — test the raw segment */ }
     return isMirroredDocNo(s);
   });
-  if (touchesMirrored) return c.json(MIRRORED_SO_READONLY, 409);
+  // Flip-gated (task #15): pre-flip a 2990- doc is a read-only mirror; once
+  // HOUZS_OWNS_2990 the POS writes them natively, so the readonly wall lifts.
+  if (touchesMirrored && !houzsOwns2990(c.env)) return c.json(MIRRORED_SO_READONLY, 409);
   return next();
 });
 
@@ -2171,7 +2173,7 @@ mfgSalesOrders.get('/customer-search', async (c) => {
   const { data, error } = await scopeToCompany(
     sb
       .from('mfg_sales_orders')
-      .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, created_at')
+      .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, customer_id, customer_race, customer_birthday, customer_gender, created_at')
       .ilike('debtor_name', `%${esc}%`)
       .not('status', 'in', '("CANCELLED","DRAFT")'),
     c,
@@ -2187,6 +2189,8 @@ mfgSalesOrders.get('/customer-search', async (c) => {
     building_type: string | null;
     emergency_contact_name: string | null; emergency_contact_phone: string | null;
     emergency_contact_relationship: string | null;
+    customer_id: string | null;
+    customer_race: string | null; customer_birthday: string | null; customer_gender: string | null;
     created_at: string;
   };
   /* Per-identity COALESCE (Loo 2026-06-06 follow-up: "link them with address
@@ -2201,6 +2205,10 @@ mfgSalesOrders.get('/customer-search', async (c) => {
     ['address1', 'address1'], ['address2', 'address2'], ['city', 'city'],
     ['postcode', 'postcode'], ['customerState', 'customer_state'],
     ['buildingType', 'building_type'],
+    // Cutover #14 read-side: coalesce the SO-captured marketing demographics so
+    // picking a returning customer prefills race/birthday/gender (all required
+    // for a new customer) from their newest order that carries each.
+    ['race', 'customer_race'], ['birthday', 'customer_birthday'], ['gender', 'customer_gender'],
   ] as const;
   /* Emergency contact coalesces as a GROUP, not per field (Loo 2026-06-12:
      copy it over like the address) — name/phone/relationship describe ONE
@@ -2239,6 +2247,10 @@ mfgSalesOrders.get('/customer-search', async (c) => {
       postcode:      r.postcode,
       customerState: r.customer_state,
       buildingType:  r.building_type,
+      customerId:    r.customer_id,
+      race:          r.customer_race,
+      birthday:      r.customer_birthday,
+      gender:        r.customer_gender,
       ...emergencyOf(r),
       lastDocNo:     r.doc_no,
       lastOrderAt:   r.created_at,
@@ -2930,7 +2942,11 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      overwrites this order's header and delete-then-reinserts its lines as 2990's
      — a real order, silently gone. Refuse the create instead: the collision has
      to be impossible, not merely detected. */
-  if (mintsIntoMirroredNamespace(c as unknown as Context<any>)) {
+  // Flip-gated (task #15): pre-flip Houzs must not mint into 2990's namespace;
+  // post-flip (HOUZS_OWNS_2990) Houzs IS the minter, so the create-block lifts.
+  // The 2990 SO outbox must be fully drained + its minter stopped BEFORE the
+  // flip so the two systems can never both hand out the same number.
+  if (mintsIntoMirroredNamespace(c as unknown as Context<any>) && !houzsOwns2990(c.env)) {
     return c.json(MIRRORED_SO_CREATE_BLOCKED, 409);
   }
   /* PR #46 — accept customerName as alias for debtorName (rename in flight).
@@ -3347,6 +3363,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
       p_name:  customerName,
       p_phone: normPhone,
       p_email: typeof body.email === 'string' && body.email.trim() ? body.email.trim() : null,
+      p_company_id: activeCompanyId(c) ?? null,  // mig 0164 — scope resolve to the active company
     });
     if (customerErr) {
       console.error('[mfg-so] customer resolve failed:', customerErr.message ?? customerErr);
@@ -4660,6 +4677,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     customer_state: (body.customerState as string) ?? null,
     /* Task #121 — country snapshot auto-derived above. */
     customer_country: customerCountrySnapshot,
+    /* Cutover #14 (mig 0158) — POS marketing demographics captured ON the SO,
+       hidden (never surfaced on SO/PDF/UI). 2990 kept these on the customers
+       table; owner ruled they slot onto the SO here. Capture-only at create. */
+    customer_race: (body.customerRace as string) ?? null,
+    customer_birthday: (body.customerBirthday as string) ?? null,
+    customer_gender: (body.customerGender as string) ?? null,
     customer_delivery_date: (body.customerDeliveryDate as string) ?? null,
     /* PR #144 — Commander: "当我已经 create 好了这个 sales order 的时候，
        为什么我点进去 edit processing 的 delivery date 时，怎么没看到呢".
@@ -6090,8 +6113,45 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
        an SO whose State was filled in / corrected AFTER creation kept its lines'
        warehouse_id NULL → "—" in MRP. Backfill the warehouse onto lines that
        don't have one yet (NULL only — explicit per-line overrides untouched).
-       Wei Siang 2026-06-16. */
-    reboundWarehouseId = await deriveWarehouseIdFromState(sb, body['customerState'] as string | null, c);
+       Wei Siang 2026-06-16.
+
+       CONFLICT BLOCK (owner 2026-07-22 — 'supplier 就会发错货给我'): if any
+       non-cancelled line has ALREADY been bound to a warehouse (typically
+       because a PO / DO was cut against it), a State change that would move
+       it to a different warehouse creates a real risk: the SO header says
+       new State + new warehouse, but the downstream PO still targets the OLD
+       warehouse, so the supplier ships to the wrong place. Detect the
+       mismatch BEFORE we mutate anything, 409 with the offending line codes
+       + old + new warehouse. Operator must resolve manually (cancel the PO,
+       or move the SO line's warehouse deliberately). NULL lines are still
+       auto-rebound below — this only guards non-NULL overrides. */
+    const reboundWh = await deriveWarehouseIdFromState(sb, body['customerState'] as string | null, c);
+    if (reboundWh) {
+      const { data: mismatchRows } = await sb
+        .from('mfg_sales_order_items')
+        .select('item_code, warehouse_id')
+        .eq('doc_no', docNo)
+        .eq('cancelled', false)
+        .not('warehouse_id', 'is', null)
+        .neq('warehouse_id', reboundWh);
+      const conflicts = (mismatchRows ?? []) as Array<{ item_code: string; warehouse_id: string }>;
+      if (conflicts.length > 0) {
+        return c.json({
+          error: 'state_change_conflicts_line_warehouse',
+          reason:
+            'One or more lines are already bound to a different warehouse (usually because a PO / DO was cut). ' +
+            'Changing the State would leave the downstream doc targeting the old warehouse — supplier could ship to the wrong place. ' +
+            'Cancel the affected downstream doc, or move each line to the new warehouse explicitly, then retry.',
+          newWarehouseId: reboundWh,
+          offenders: conflicts.map((r) => ({ itemCode: r.item_code, currentWarehouseId: r.warehouse_id })),
+        }, 409);
+      }
+      /* The actual NULL-line rebind is NOT done here any more: it moved inside
+         apply_so_header_cas (p_apply_warehouse / p_warehouse_id) so it commits
+         in the SAME transaction as the header CAS. A stale editor whose CAS
+         loses must not have already rewritten line warehouses. */
+      reboundWarehouseId = reboundWh;
+    }
   }
 
   /* Aggregate EVERY Processing-Date save gate into ONE response (owner
@@ -6321,7 +6381,9 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
       reNewPhone = ph;
       /* Do not call the write-producing customer RPC here. The header CAS must
          win first; otherwise a stale editor could create/update a customer and
-         still receive 409. Resolution is safely split after the CAS below. */
+         still receive 409. Resolution is safely split after the CAS below —
+         apply_so_header_cas calls upsert_customer_by_name_phone itself, with
+         the active company id (mig 0164) so the scoped overload is used. */
     }
   }
 

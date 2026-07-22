@@ -1,0 +1,325 @@
+# Module: Delivery Order (SCM)
+
+Per-module technical doc — the data flow from the screen down to the database,
+plus the performance characteristics. Sibling of `sales-order.md`; the DO is a
+faithful clone of the SO API (editable SO-style header, line CRUD, payments
+ledger, `recomputeTotals`) with one thing the SO does not have: **it moves stock**.
+
+> Convention: money is in **sen** (integer cents) end-to-end. Dates are stored
+> UTC, displayed DD/MM/YYYY. All reads/writes go through `/api/scm/*`.
+>
+> Line references are against `main` @ `8f8427ed`.
+
+Doc-flow position: **SO → DO → SI**, with **DO → DR** (Delivery Return) as the
+reversal branch. The DO is the OUT half of the inventory ledger.
+
+---
+
+## 1. Frontend
+
+### Screens
+| Surface | File | Notes |
+|---------|------|-------|
+| Desktop list | `frontend/src/pages/scm-v2/MfgDeliveryOrdersListV2.tsx` | Server-paginated, `pageSize = 50` (`:834`), page in `?page=`. Sends the **bucket name** as `status` (`:854`). Revenue card is page-only; In-transit / Delivered cards read full-set `statusCounts` (`:878-880`). |
+| Desktop detail | `frontend/src/pages/scm-v2/DeliveryOrderDetailV2.tsx` | Header + lines + payments + crew. |
+| Desktop new | `frontend/src/pages/scm-v2/DeliveryOrderNewV2.tsx` | |
+| Desktop from-SO | `frontend/src/pages/scm-v2/DeliveryOrderFromSo.tsx` | Line-level picker over `/deliverable-so-lines`. |
+| Desktop report | `frontend/src/pages/scm-v2/DeliveryOrderDetailListing.tsx` | Detail-listing report. |
+| Mobile list | `frontend/src/mobile/MobileModuleList.tsx` | `MODULE_CONFIGS["delivery-orders-mfg"]` (`:1064-1106`). |
+| Mobile detail | `frontend/src/mobile/MobileModuleDetail.tsx` | Config `:241`; status actions `:480-494`. |
+| Mobile POD | `frontend/src/mobile/MobilePOD.tsx` | The driver screen — signature + photo + `PATCH /:id/status` (`:167`). |
+| Mobile convert (SO→DO) | `frontend/src/mobile/MobileConvertWizard.tsx` | `target = "do"` (`:72`). |
+| Mobile planning board | `frontend/src/mobile/MobileDeliveryPlanning.tsx` | |
+
+Desktop routes: `frontend/src/App.tsx:654-657`, behind
+`<ScmGuard area="scm.sales.delivery" allowSales>` for list + detail (read), and
+without `allowSales` for new / from-so.
+
+### Data hooks
+`frontend/src/vendor/scm/lib/delivery-order-queries.ts`
+
+- `useMfgDeliveryOrdersPaged({page,pageSize,status,q,sort})` (`:215`) — the desktop
+  list. `queryKey: ['mfg-delivery-orders-paged', ...]`, `placeholderData: prev`,
+  `staleTime: 30_000`.
+- `useMfgDeliveryOrders(status?)` (`:198`) — legacy unpaginated,
+  `['mfg-delivery-orders', status ?? 'all']`.
+- `useMfgDeliveryOrderDetail(id)` (`:233`) — `['mfg-delivery-order-detail', id]`.
+- `useMfgDeliveryOrderPayments(id)` (`:370`) — `['mfg-delivery-orders', id, 'payments']`,
+  `staleTime: 2 * 60_000` (longer than the rest).
+- `useDeliverableSoLines*` (`:54`, `:116`) and `useSoConvertHeader` (`:101`) feed
+  the SO→DO pickers.
+- `useCreateMfgDeliveryOrder` (`:249`) takes an **optional `idempotencyKey`**,
+  destructured out of the body so it is not posted as a DO field. The comment at
+  `:239-248` says why it matters: a duplicate DO is not a duplicate row, it
+  decrements stock again and carries into SI.
+
+**`releaseSoSideQueries`** (`:190-196`) is the DO module's most important cache
+rule: any mutation that moves an SO line's live remaining-to-deliver (create,
+line qty change, line delete, cancel) must invalidate the SO lists, the SO
+detail, and force-refetch `['mfg-delivery-orders','deliverable-so-lines']` —
+otherwise a released qty looks stuck and the Issue-DO menu stays hidden until a
+hard refresh.
+
+`useUpdateMfgDeliveryOrderStatus` (`:264`) additionally invalidates
+`['inventory']` (`:276`), because a shipped transition deducts stock.
+
+### Caching / loading behaviour
+Three layers as in `docs/modules/sales-order.md` §1. DO specifics:
+
+- The **legacy** key `mfg-delivery-orders` is whitelisted for the localStorage
+  snapshot (`frontend/src/lib/query-persist.ts:95`); the **paged** key is not
+  (different first segment).
+- The payments sub-key `['mfg-delivery-orders', <id>, 'payments']` is explicitly
+  excluded from persistence (`query-persist.ts:100-133`). The comment there is a
+  bug post-mortem worth reading before touching that file: a persisted payment
+  ledger was rehydrated as fresh data and MobilePOD turned it into the balance a
+  driver collects.
+
+---
+
+## 2. API surface
+
+`backend/src/scm/routes/delivery-orders-mfg.ts`, mounted at
+`/api/scm/delivery-orders-mfg` (`backend/src/scm/index.ts:257`) behind
+`scmAreaGuard('scm.sales.delivery', { readInheritsFrom: 'scm.sales.orders' })`
+(`:256`) — a salesperson may READ the DOs generated from their own SOs; writes
+still need `edit` on `scm.sales.delivery`.
+
+| Method | Path | Line | Purpose |
+|--------|------|------|---------|
+| GET | `/` | `:2188` | List. `?page=` opts into pagination + `statusCounts`. |
+| GET | `/deliverable-so-lines` | `:2347` | SO lines with `remaining > 0` (qty − delivered + returned). |
+| GET | `/so-source/:docNo` | `:2425` | SO header fields for the convert form. |
+| GET | `/:id` | `:2451` | Header + items + `has_children` + `lifecycle_state` + crew. |
+| POST | `/` | `:2591` | Create. `asDraft: true` → DRAFT (no stock); else born DISPATCHED. |
+| POST | `/from-sos` | `:2976` | Line-level batch convert from SO picks. |
+| PUT | `/:id/crew` | `:3314` | Driver / helper / lorry assignment + snapshot. |
+| PATCH | `/:id` | `:3450` | Header edit (+ SO amend-field mirror). |
+| POST/PATCH/DELETE | `/:id/items[/:itemId]` | `:3636` / `:3784` / `:4005` | Line CRUD. |
+| GET/POST/DELETE | `/:id/payments[/:paymentId]` | `:4075` / `:4118` / `:4155` | Payments ledger. |
+| PATCH | `/:id/status` | `:4359` (handler `:4166`) | **The stock chokepoint.** |
+
+---
+
+## 3. Backend
+
+### The list handler — `deliveryOrdersMfg.get('/')` (`:2188-2336`)
+
+1. **Row scope first** (`:2194-2201`). `canViewAllSales(c)` (permission
+   `scm.so.view_all` or a director position) else `resolveSalesScopeIds` gives the
+   caller's own + downline scm.staff uuids, applied as `.in('salesperson_id', ...)`.
+   Pass the **Houzs** user id (`c.get('houzsUser')?.id`), not `user.id` — the
+   comment at `:2191` records that this was the non-admin 500. No Houzs identity
+   and no view-all ⇒ an explicit 403 with a readable message (`:2199`), never a
+   silent empty list.
+2. **Two paths, chosen by `page`** (`:2210-2211`).
+   - Legacy (`:2220-2228`): `order do_date desc`, `.limit(500)`, `scopeToCompany`,
+     raw `status` equality.
+   - Paginated (`:2229-2296`): sort whitelist
+     `do_date | do_number | debtor_name | status | customer_delivery_date` (`:2235`)
+     + `do_number` tiebreaker; bucket resolution via `DO_STATUS_BUCKETS` (`:2180-2185`);
+     `q` ilikes over `do_number, so_doc_no, debtor_name, debtor_code, ref,
+     branding, sales_location, driver_name` plus normalized phone parts (`:2259-2264`);
+     `from`/`to` on `do_date`.
+   - `statusCounts` = five `head:true count:'exact'` in one `Promise.all` (`:2283-2289`),
+     company- and scope-filtered so tab counts cannot leak the other company's totals.
+3. **Enrichment — one parallel wave of THREE reads** (`:2309-2313`):
+   non-cancelled `delivery_returns` by `delivery_order_id`, non-cancelled
+   `sales_invoices` by `delivery_order_id`, and `computeDoLifecycle` (`:1999`).
+   The first two collapse into `has_children`; the third gives
+   `lifecycle_state` (`'shipped' | 'invoiced' | 'returned'`, `:1998`).
+4. **Finance gate** (`:2322-2333`) — `canViewScmFinance(c)`; when false every
+   `DO_FINANCE_KEYS` column (`:317-321`) is deleted from every row. Note
+   `local_total_centi` is deliberately NOT in that list: the DO total is visible
+   to everyone, cost and margin are not.
+
+### Main mutation paths
+
+- **Create** (`:2591`). Guards in order: item-code catalog check (`:2600-2604`), then
+  the source-SO gate — every SO referenced by `soDocNo` or by any line's
+  `soItemId` must be past `SO_UNDELIVERABLE_STATUSES` (`firstUndeliverableSo`,
+  `:2146`). `asDraft === true` → `status: 'DRAFT'`, otherwise the DO is born
+  **DISPATCHED** (`:2785`) and stock is deducted immediately (`:2842-2855`). The
+  create path also fires `syncSoDeliveredFromDo` and the customer DO email.
+- **`/from-sos`** (`:2976`). Same shape, `asDraft` respected at `:3185` / `:3283`.
+- **Header PATCH** (`:3450`). Locked once a DR/SI exists (`:3544`). Strips the
+  three amend fields out of the DO update and mirrors them onto the parent SO
+  instead, writing a separate audit row on the **SO's** timeline
+  (`prepareSoAmendMirrorAudit`, `:221-260`). `delivery_substatus` is whitelisted
+  against `HC_SUBSTATUS_VALUES` (`:209-212`).
+- **Line add** (`:3636`). Item-code guard, then `doHasDownstream`. If the DO is
+  already shipped, the new line ships immediately via resync, so a stock
+  availability check runs first unless the caller passes `confirmShortStock`
+  (`:3658-3670`).
+- **Line delete** (`:4005`). Deliberately **not** gated by the doc-level lock — it
+  uses the per-line `doLineConsumedQty` (`:1468`) instead, so deleting a
+  non-consumed line on a shipped DO is allowed and re-syncs inventory.
+- **Status PATCH** (`patchDeliveryOrderStatusHandler`, `:4166`) — see §5 and §6.
+
+---
+
+## 4. Database
+
+Schema `scm`. Baseline DDL `backend/scripts/scm-schema/2990s-full-schema.sql:176`
+(`delivery_orders`) and `:148` (`delivery_order_items`); the authoritative in-code
+column lists are `HEADER` (`delivery-orders-mfg.ts:292-310`), `ITEM` (`:333-337`),
+`PAYMENT_COLS` (`:339-342`) and `crewSnapshotCols` (`:347-351`).
+
+| Table | Role |
+|-------|------|
+| `scm.delivery_orders` | DO header. `do_number`, `so_doc_no`, `debtor_code/name`, `do_date`, `expected_delivery_at`, `customer_delivery_date`, `dispatched_at` / `signed_at` / `delivered_at`, `driver_id/name`, `vehicle`, `m3_total_milli`, address block, `salesperson_id`, `branding`, `venue_id`, per-category revenue + cost subtotals, `local_total_centi`, `total_cost_centi`, `total_margin_centi`, `line_count`, `warehouse_id`, `is_dropship`, `arrives_em_warehouse_date`, `pod_r2_key`, `signature_data`, `status`, `company_id`. |
+| `scm.delivery_order_items` | DO lines. `so_item_id` (the SO link that drives warehouse resolution + remaining-qty caps), `item_code`, `item_group`, `qty`, `m3_milli`, `unit_price_centi`, `discount_centi`, `line_total_centi`, `unit_cost_centi`, `line_cost_centi`, `line_margin_centi`, **`ship_cost_centi`**, `variants`, `line_delivery_date`, `line_delivery_date_overridden`, `rack_id`. |
+| `scm.delivery_order_payments` | Payments taken at delivery. `method`, `merchant_provider`, `installment_months`, `online_type`, `approval_code`, `amount_centi`, `account_sheet`, `collected_by`. |
+| `scm.delivery_order_crew` | One row per DO (UNIQUE `do_id`): driver/helper/lorry FKs plus the assign-time name/IC/contact/plate snapshot. |
+| `scm.inventory_movements` | Where the OUT lands. Keyed `(source_doc_type='DO', source_doc_id, product_code, variant_key)` by the partial unique index the reversal has to route around (`:4322-4328`). |
+| `scm.mfg_sales_order_items` | Upstream: `warehouse_id` is the **authoritative** ship-from warehouse per line. |
+
+Status vocabulary (`:366-376`):
+`DO_STATUSES` = DRAFT, LOADED, DISPATCHED, IN_TRANSIT, SIGNED, DELIVERED,
+INVOICED, COMPLETED, CANCELLED. `DO_PRESHIP_STATUSES` = DRAFT, LOADED.
+`SHIPPED_STATES` (`:357`) = DISPATCHED, IN_TRANSIT, SIGNED, DELIVERED, INVOICED.
+`DO_STOCK_OUT_STATUSES` = `SHIPPED_STATES` ∪ {COMPLETED}.
+Filter buckets (`:2180-2185`): `open` = DRAFT+LOADED, `in_transit` =
+DISPATCHED+IN_TRANSIT, `delivered` = SIGNED+DELIVERED+INVOICED+COMPLETED,
+`cancelled` = CANCELLED.
+
+---
+
+## 5. Stock direction
+
+**A Delivery Order moves inventory OUT.**
+
+**When:** the FIRST transition into ANY status in `SHIPPED_STATES`
+(`:357`). This is deliberately a set, not a single status, so a DO that jumps
+straight to SIGNED or DELIVERED still deducts exactly once. There are two entry
+points to that same deduction:
+
+- **Non-draft create** (`:2842-2843`) — the DO is born DISPATCHED, so
+  `deductInventoryForDo` runs right after the item insert.
+- **Status PATCH** (`:4284-4285`) — `if (SHIPPED_STATES.includes(body.status))`.
+  A DRAFT confirm is exactly DRAFT→DISPATCHED, so the deduction skipped at
+  draft-create fires here (`:4277-4283`).
+
+`deductInventoryForDo` (`:831`) is idempotent by two mechanisms: a pre-insert
+existence check on `(source_doc_type='DO', source_doc_id, movement_type='OUT')`
+(`:832-839`), and a partial UNIQUE index as the hard backstop against a race. It
+collapses identical `(warehouse_id, product_code, variant_key, batch_no)` lines
+into one OUT row (`:881-905`).
+
+**Which warehouse:** `resolveDoLineWarehouses` (`:645`), in order —
+(1) the linked SO line's `warehouse_id`, (2) the DO header's `warehouse_id`,
+(3) the global default. A line that resolves to none is **skipped**, never
+guessed. Stock never crosses warehouses.
+
+**Reversal:** cancelling a DO writes a FIFO-neutral positive **ADJUSTMENT**, not
+an IN — `reverseInventoryForDo` (`:1328`, called at `:4330`). The comment at
+`:4322-4328` explains why `reverseMovements` cannot be used: its balancing IN
+reuses the DO source key that the partial unique index rejects, so the insert
+would silently fail and the shipped stock would stay permanently deducted.
+Rack stock is returned separately by `returnDoRacksOnCancel` (`:1073`, called
+`:4336`).
+
+**Drop-ship:** a DO flagged `is_dropship` ships against the expected PO batch
+BEFORE any receipt, so its OUT consumes no lot. The GRN's
+`reconcileDropshipBatches` settles that later (`grns.ts:460`). This is why
+cancelling the PO is blocked while such an OUT is outstanding
+(`mfg-purchase-orders.ts:252-283`).
+
+The IN counterpart of a DO is the **Delivery Return** (`/delivery-returns`),
+a separate module.
+
+---
+
+## 6. What locks and when
+
+| Trigger | What stops | Enforced at |
+|---------|-----------|-------------|
+| Any non-cancelled **DR or SI** on the DO | header PATCH, line add, line edit, and the CANCELLED transition | `doHasDownstream` (`:269-284`) called at `:3544`, `:3648`, `:3796`, `:4232` |
+| Line already invoiced or returned | that line's DELETE | `doLineConsumedQty` (`:1468`), checked `:4014-4022` — per-line, deliberately finer than the doc-level lock |
+| Status already CANCELLED | every further transition — **CANCELLED is FINAL** | `:4203-4209`. Un-cancelling would leave the cancel's add-back ADJUSTMENT standing while `deductInventoryForDo` no-ops, inflating stock by the whole DO. Re-deliver via a NEW DO. |
+| DO has shipped (`DO_STOCK_OUT_STATUSES`) | moving back to DRAFT / LOADED | `:4219-4225`. A plain status write does not reverse the OUT, so the DO would read un-shipped while its stock stayed deducted. |
+| Unknown status string | the whole request | `:4171-4176` — the handler historically wrote `body.status` verbatim. |
+| Shipped statuses (frontend) | the line editor renders read-only | `DeliveryOrderDetailV2.tsx:1362` — `["dispatched","in_transit","signed","delivered","invoiced"]` |
+
+**Amendment path — no, not on the DO itself.** There is no `do_revisions` table
+and no revision counter (verified: no such table is referenced anywhere in
+`backend/src/`). What exists instead is the **SO amend mirror**: the DO create and
+PATCH handlers accept `amendDateFromCustomer` / `amendedDeliveryDate` /
+`amendReason`, strip them from the DO update, and write them onto the parent
+`mfg_sales_orders` row, logging the change on the SO's timeline
+(`prepareSoAmendMirrorAudit`, `:221-260`; create-side mirror at `:2869-2874`).
+`customer_delivery_date` is never overwritten by that mirror.
+
+Corrections to a shipped DO go through cancel (which reverses stock) + a new DO,
+or through a Delivery Return.
+
+---
+
+## 7. The cost / money columns — frozen vs live
+
+Everything is integer sen.
+
+| Column | Where | Frozen or live |
+|--------|-------|----------------|
+| `unit_price_centi`, `discount_centi`, `line_total_centi` | line | Live until the DO locks. |
+| `unit_cost_centi`, `line_cost_centi`, `line_margin_centi` | line | **Live — overwritten in place.** `restampDoActualCost` (`:527`) re-derives them from the actual booked movement cost per `(warehouse, product, variant, batch)` bucket (bucket math `:563-598`), and it re-runs at ship, on line-set change, and again via `recost.ts` when a supplier PI lands. |
+| **`ship_cost_centi`** | line | **FROZEN at ship.** `freezeShipCost(current, unitCost)` (`backend/src/scm/lib/fulfillment-costing.ts:44`) returns `undefined` — meaning "do not write the column" — whenever the value is already non-null. Called at `:615-616`. So the FIRST post-ship costing captures the true ship-time FIFO unit cost and no later recost can touch it. Column added by `backend/src/db/migrations-pg/0143_scm_do_ship_cost_snapshot.sql`. |
+| `local_total_centi` | header | Derived by `recomputeTotals` (`:399`) from the lines. Visible to everyone. |
+| per-category `*_centi` / `*_cost_centi`, `total_cost_centi`, `total_margin_centi`, `margin_pct_basis` | header | Derived; **finance-gated** (`DO_FINANCE_KEYS`, `:317-321`) on both list and detail. |
+| `amount_centi` | `delivery_order_payments` | The ledger. Not rolled into the DO header. |
+
+Why the freeze exists: the three-way cost comparison
+① SO order-time cost → ② DO ship-time FIFO → ③ SI landed cost only survives if ②
+is snapshotted, because the in-place restamp collapses ② into ③ after a PI
+(`fulfillment-costing.ts:33-43`). `ship_cost_centi` is NULL on legacy DOs.
+
+`recomputeTotals` (`:399`) **fails closed and never throws** (`:408-420`): a
+failed read aborts the roll-up with a log rather than writing a zeroed header,
+and it aborts by logging rather than throwing because it only ever runs after its
+triggering line write committed — a throw would become a 500 the client retries
+into a duplicate line.
+
+---
+
+## 8. Desktop and mobile files that must change together
+
+| Concern | Desktop | Mobile |
+|---------|---------|--------|
+| List columns / filters / buckets | `pages/scm-v2/MfgDeliveryOrdersListV2.tsx` | `mobile/MobileModuleList.tsx` config `:1064` |
+| Server pagination opt-in | `useMfgDeliveryOrdersPaged` | `mobile/MobileModuleList.tsx` `SERVER_PAGINATED` (`:325`) |
+| Detail fields | `pages/scm-v2/DeliveryOrderDetailV2.tsx` | `mobile/MobileModuleDetail.tsx` config `:241` |
+| Status ladder / who may advance it | `DeliveryOrderDetailV2.tsx` action bar | `mobile/MobileModuleDetail.tsx:480-494`, gated by `useMayOperateDoc` (`:454`) → `canOperateDeliveryOrders` (`frontend/src/auth/salesAccess.ts:200`) — the SAME helper the desktop uses |
+| SO→DO conversion | `pages/scm-v2/DeliveryOrderFromSo.tsx` | `mobile/MobileConvertWizard.tsx` (`target: "do"`) |
+| Proof of delivery / collect payment | `DeliveryOrderDetailV2.tsx` payments panel | `mobile/MobilePOD.tsx` |
+| Cache invalidation after a write | the hooks in `vendor/scm/lib/delivery-order-queries.ts` | `mobile/sharedInvalidate.ts:69` (`DO_ROOTS` + `STOCK_ROOTS`) |
+
+`canOperateDeliveryOrders` is worth singling out: Sales staff get view + Print but
+no operate, on **both** surfaces, resolved through one helper. Controls must be
+made ABSENT rather than disabled (`salesAccess.ts:183-186`).
+
+---
+
+## 9. Performance summary
+
+Optimized:
+- List enrichment is already **one parallel wave of three reads** (`:2309-2313`) —
+  DR count, SI count, lifecycle — not a serial chain.
+- Detail folds the DR/SI counts into a `Promise.all` (`:2473-2482`).
+- Desktop list is server-paginated (50/page) with server-side search, sort and
+  status counts.
+- Phone search goes through `phoneSearchOrParts` + `normalizePhone` (`:2263`) so a
+  formatted number still matches.
+
+Watch as data grows:
+- The legacy unpaginated path still `.limit(500)` (`:2222`); the mobile convert
+  wizard fetches `/delivery-orders-mfg?limit=200` (`MobileConvertWizard.tsx:239`).
+- `statusCounts` costs five `count:'exact'` queries per paginated request
+  (`:2283-2289`), each of which also carries the sales-scope `.in(...)`.
+- `resolveSalesScopeIds` runs on **every** list and detail request; a deep
+  reporting-line downline makes the `.in('salesperson_id', ...)` array large.
+- `deductInventoryForDo` and `restampDoActualCost` both read
+  `inventory_movements` filtered by `source_doc_id` — fine per document, but they
+  run inside the status transition's request.
+
+Cross-module context: `docs/perf-optimization-plan.md`. Route/permission
+inventory: `docs/generated/`.

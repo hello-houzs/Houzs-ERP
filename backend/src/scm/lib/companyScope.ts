@@ -396,6 +396,28 @@ export function isMirroredDocNo(docNo: unknown): boolean {
 }
 
 /**
+ * THE CUTOVER FLIP SWITCH. Default (unset / not "true") = pre-flip: 2990 is the
+ * WRITER of its own `2990-` namespace and Houzs holds a READ-ONLY mirror, so the
+ * mirror guards below refuse Houzs-side creates/edits of `2990-` documents. When
+ * Houzs TAKES OVER as the writer (2990's apps/api retired), set
+ * `HOUZS_OWNS_2990="true"` in wrangler.toml [vars] — the guards stop blocking and
+ * the repointed POS writes `2990-` SOs natively.
+ *
+ * ⚠️ MUST be flipped to "true" IN THE SAME DEPLOY as the POS
+ * `VITE_BACKEND_TARGET=houzs` flip (cutover runbook, task #15). IsMirrored/create
+ * guards are hardcoded on the `2990-`/company-2 identity; if this stays false
+ * while the POS repoints, the tablet gets a 409 (so_owned_by_2990 /
+ * so_create_blocked_2990) on its FIRST order — a day-one order-path outage, not a
+ * staleness window. Before flipping, DRAIN the 2990 SO outbox fully (doc-number
+ * continuity) and stop 2990's minter/crons so the two systems can't both mint.
+ * Gates the block conditions only — isMirroredDocNo itself stays a pure prefix
+ * test (display / dispatch code still needs to know a doc's origin).
+ */
+export function houzsOwns2990(env: { HOUZS_OWNS_2990?: string } | undefined | null): boolean {
+  return env?.HOUZS_OWNS_2990 === "true";
+}
+
+/**
  * True when THIS request's minters would mint into the mirrored system's
  * doc-number namespace. Derived from companyDocPrefix so the guard and the
  * minters read one rule and cannot drift apart.

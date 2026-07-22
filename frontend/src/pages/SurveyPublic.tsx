@@ -17,6 +17,12 @@ function surveyCompanyName(): string {
 import { Star, CheckCircle2 } from "lucide-react";
 import { cn, formatDate } from "../lib/utils";
 import { humanHttpMessage } from "../api/client";
+import {
+  consumeCorrelated,
+  correlateError,
+  correlatedFetch,
+  requestIdFromResponse,
+} from "../lib/requestCorrelation";
 
 // Public (unauthenticated) customer satisfaction survey. Loaded via
 // /survey/:token — dispatcher shares this URL with the customer by
@@ -49,11 +55,14 @@ export function SurveyPublic() {
         const base =
           (import.meta.env.VITE_API_URL as string) ||
           (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
-        const res = await fetch(`${base}/api/survey/${encodeURIComponent(token)}`);
+        const res = await correlatedFetch(`${base}/api/survey/${encodeURIComponent(token)}`);
         if (!res.ok) {
-          throw new Error(humanHttpMessage(res.status, await res.text().catch(() => "")));
+          throw correlateError(
+            new Error(humanHttpMessage(res.status, await res.text().catch(() => ""))),
+            requestIdFromResponse(res),
+          );
         }
-        const json = (await res.json()) as SurveyPayload;
+        const json = await consumeCorrelated(res, () => res.json() as Promise<SurveyPayload>);
         setData(json);
         if (json.already_submitted) {
           setRating(json.existing_rating ?? 0);
@@ -73,13 +82,16 @@ export function SurveyPublic() {
     setError(null);
     try {
       const base = (import.meta.env.VITE_API_URL as string) || "";
-      const res = await fetch(`${base}/api/survey/${encodeURIComponent(token)}`, {
+      const res = await correlatedFetch(`${base}/api/survey/${encodeURIComponent(token)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rating, notes: notes.trim() || undefined }),
       });
       if (!res.ok) {
-        throw new Error(humanHttpMessage(res.status, await res.text().catch(() => "")));
+        throw correlateError(
+          new Error(humanHttpMessage(res.status, await res.text().catch(() => ""))),
+          requestIdFromResponse(res),
+        );
       }
       setSubmitted(true);
     } catch (e: any) {

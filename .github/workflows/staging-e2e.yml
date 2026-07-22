@@ -40,6 +40,13 @@ jobs:
         working-directory: frontend/e2e
     steps:
       - uses: actions/checkout@v7
+        with:
+          # workflow_run executes from the default branch by default. Pin the
+          # suite to the exact commit that Deploy (Staging) just shipped, or a
+          # later main commit could make the smoke result describe different
+          # source than the deployed frontend/Worker. Manual/nightly runs use
+          # the event's own SHA.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -51,11 +58,14 @@ jobs:
         env:
           CI: "true"
           # Optional overrides. Absent -> the suite uses the in-repo public
-          # staging-seed account (hello@houzscentury.com); the auth-dependent
-          # specs skip gracefully if these AND the fallback resolve empty. Set
-          # these repo secrets to point the suite at a different staging account.
+          # staging-seed account (hello@houzscentury.com). The required-proof
+          # policy below fails when neither path authenticates.
           STAGING_E2E_EMAIL: ${{ secrets.STAGING_E2E_EMAIL }}
           STAGING_E2E_PASSWORD: ${{ secrets.STAGING_E2E_PASSWORD }}
+          # A green automated smoke run must mean the authenticated proofs ran.
+          # An unavailable DB/API or an unseeded fallback fixture fails red
+          # instead of silently producing a green run with three skips.
+          STAGING_E2E_REQUIRE_PROOF: "true"
           # Targets. The config bakes in the same defaults; these repo VARIABLES
           # let an operator re-point the suite (e.g. at a preview) without a code
           # change.

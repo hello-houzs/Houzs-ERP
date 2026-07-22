@@ -28,6 +28,13 @@ import { humanApiError } from './authed-fetch';
 // See authed-fetch.ts's import note: the token may be in sessionStorage, so the
 // read must come from the shared accessor, never an inlined localStorage hit.
 import { readAuthToken } from '../../../lib/authToken';
+import {
+  consumeCorrelated,
+  correlateError,
+  correlatedFetch,
+  requestIdFromError,
+  requestIdFromResponse,
+} from '../../../lib/requestCorrelation';
 // WO-7 image pipeline — same app-lib import boundary as authToken above.
 // NOTE: this is the UPLOAD pipeline (q0.8/2000px), NOT vendor/shared/
 // image-compress.ts — that one is OCR-tuned and feeds Claude vision.
@@ -63,7 +70,8 @@ const companyHeader = (): Record<string, string> => {
   }
 };
 
-/* These slip fetches go straight to fetch(), bypassing authedFetch's deadline,
+/* These slip fetches bypass authedFetch's JSON handling but still use the
+   shared correlated transport. Without their own deadline,
    so a stalled cold-start / slow upload hangs the upload UI forever. Cap each
    one — generous for the image OCR + binary uploads, tighter for the slip
    GETs / confirm — and turn a timeout into a plain-language retryable error. */
@@ -74,10 +82,13 @@ async function slipFetch(input: string, init: RequestInit, timeoutMs: number): P
   let signal: AbortSignal | undefined;
   try { signal = AbortSignal.timeout(timeoutMs); } catch { signal = undefined; } // pre-2022 browsers
   try {
-    return await fetch(input, { ...init, signal });
+    return await correlatedFetch(input, { ...init, signal });
   } catch (e) {
     if (e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
-      throw new Error('The request took too long — please check your connection and try again.');
+      throw correlateError(
+        new Error('The request took too long — please check your connection and try again.'),
+        requestIdFromError(e),
+      );
     }
     throw e;
   }
@@ -112,11 +123,13 @@ async function fetchSlipAsObjectUrl(path: string): Promise<SlipUrlResponse> {
   }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
-    throw new Error(humanApiError(res.status, text));
+    throw correlateError(new Error(humanApiError(res.status, text)), requestIdFromResponse(res));
   }
   const contentType = res.headers.get('content-type') ?? 'image/jpeg';
-  const blob = await res.blob();
-  return { url: URL.createObjectURL(blob), contentType };
+  return consumeCorrelated(res, async () => ({
+    url: URL.createObjectURL(await res.blob()),
+    contentType,
+  }));
 }
 
 /** A manufacturing Sales Order's payment slip, as a blob object URL. */
@@ -144,10 +157,9 @@ export async function fetchScanSlipImageBlobUrl(key: string): Promise<string> {
   }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
-    throw new Error(humanApiError(res.status, text));
+    throw correlateError(new Error(humanApiError(res.status, text)), requestIdFromResponse(res));
   }
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
+  return consumeCorrelated(res, async () => URL.createObjectURL(await res.blob()));
 }
 
 /* ── Card-terminal / EPP receipt OCR (POST /scan-payment/extract) ─────────────
@@ -181,14 +193,20 @@ export async function scanPaymentReceipt(file: File): Promise<ScanPaymentReceipt
   }, SLIP_UPLOAD_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
-    throw new Error(humanApiError(res.status, text));
+    throw correlateError(new Error(humanApiError(res.status, text)), requestIdFromResponse(res));
   }
-  const json = (await res.json()) as { data?: { extracted?: ScanPaymentReceipt } };
+  const json = await consumeCorrelated(
+    res,
+    () => res.json() as Promise<{ data?: { extracted?: ScanPaymentReceipt } }>,
+  );
   const extracted = json.data?.extracted;
   /* PaymentsTable currently swallows this and shows its own notice, but any
      future caller will print `err.message` — so the message must already be a
      sentence, not the marker `scan_payment_no_data`. */
-  if (!extracted) throw new Error("We couldn't read any details from that receipt photo. Please fill the payment in manually.");
+  if (!extracted) throw correlateError(
+    new Error("We couldn't read any details from that receipt photo. Please fill the payment in manually."),
+    requestIdFromResponse(res),
+  );
   return extracted;
 }
 
@@ -218,9 +236,9 @@ async function initSlipUpload(file: File): Promise<SlipInitResponse> {
   }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
-    throw new Error(humanApiError(res.status, text));
+    throw correlateError(new Error(humanApiError(res.status, text)), requestIdFromResponse(res));
   }
-  return res.json() as Promise<SlipInitResponse>;
+  return consumeCorrelated(res, () => res.json() as Promise<SlipInitResponse>);
 }
 
 /* Proxy-upload deviation (replaces 2990's putToR2 presigned PUT): raw binary
@@ -238,7 +256,7 @@ async function uploadSlipBytes(sessionId: string, file: File): Promise<void> {
   }, SLIP_UPLOAD_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
-    throw new Error(humanApiError(res.status, text));
+    throw correlateError(new Error(humanApiError(res.status, text)), requestIdFromResponse(res));
   }
 }
 
@@ -249,9 +267,9 @@ async function confirmUpload(sessionId: string): Promise<SlipConfirmResponse> {
   }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
-    throw new Error(humanApiError(res.status, text));
+    throw correlateError(new Error(humanApiError(res.status, text)), requestIdFromResponse(res));
   }
-  return res.json() as Promise<SlipConfirmResponse>;
+  return consumeCorrelated(res, () => res.json() as Promise<SlipConfirmResponse>);
 }
 
 /* 'put' kept in the phase vocabulary (SlipUploadField's busy states key off

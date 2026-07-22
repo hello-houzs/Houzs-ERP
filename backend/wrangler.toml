@@ -32,6 +32,15 @@ AUTOCOUNT_SYNC_DISABLED = "false"
 # path), by design. Flip to "false" + redeploy to hide; parsed by
 # scm/lib/costing-enabled.isCostingDisplayEnabled.
 COSTING_DISPLAY_ENABLED = "true"
+# ── CUTOVER FLIP SWITCH (task #15) ──────────────────────────────────────────
+# "false" (pre-flip): 2990's apps/api is the WRITER of the `2990-` doc namespace
+# and Houzs holds a READ-ONLY mirror, so the mirror guards (companyScope.ts
+# houzsOwns2990) refuse Houzs-side create/edit of `2990-` SOs/amendments/POs.
+# "true" (post-flip): Houzs IS the writer — the guards stop blocking so the
+# repointed POS writes `2990-` orders natively. Flip to "true" + redeploy IN THE
+# SAME DEPLOY as the POS VITE_BACKEND_TARGET=houzs flip, AFTER draining the 2990
+# SO outbox + stopping 2990's minter/crons. Rehearse "true" on staging first.
+HOUZS_OWNS_2990 = "true"
 # Public origin used to build email links (survey, portal, supplier invite,
 # member invitations, password resets). The canonical user-facing domain —
 # pages.dev still serves, but every link we hand out reads this.
@@ -167,8 +176,23 @@ dataset = "houzs_erp_metrics"
 #                          deploys never break on missing keys.
 
 [triggers]
-# Cron schedule (kept under the Workers free-plan trigger cap). After the
-# strip-to-core cutover the AutoCount pulls + gamify jobs are gone; what runs:
+# Cron schedule. This line USED to read "kept under the Workers free-plan trigger
+# cap" — written 2026-04-30 (7b98025b, which folded the monthly gifting reset into
+# the daily batch to shed a trigger) and true THEN. It is not the constraint now:
+# the `houzs-scan-ocr` Queues producer/consumer bound above is a Workers PAID
+# product and cannot exist on the free plan, and production runs on it since
+# 2026-07-04 (PR #260). Repo evidence therefore proves PAID, not free; the exact
+# plan + change date live in a billing console this repo cannot see, so nothing
+# here asserts them (docs/cloudflare-plan-cap-coe.md §3, §5).
+#
+# Consolidating to three triggers is still the right shape — fewer cold starts,
+# one place to reason about the daily batch — so the schedule is UNCHANGED. Do
+# not read the old cap into it, and do not treat "we are on Paid" as licence to
+# un-batch the SCM subrequest diet, which is a latency and cost discipline in its
+# own right (same COE, §4).
+#
+# After the strip-to-core cutover the AutoCount pulls + gamify jobs are gone;
+# what runs:
 #   */5    → Hyperdrive keep-warm ping + durable email-outbox drain
 #   */30   → ASSR per-stage alert scan + scheduled lead-time activations
 #   0 2    → Daily batch: SLA escalation, ASSR daily digest, project
@@ -209,6 +233,9 @@ AUTOCOUNT_SYNC_DISABLED = "true"
 # [vars] block for what "false" does. Set "false" here to rehearse the hidden
 # state before flipping prod.
 COSTING_DISPLAY_ENABLED = "true"
+# Cutover flip switch (see prod block). Set "true" on staging to rehearse the
+# post-flip write path (POS creates 2990- SOs natively) before flipping prod.
+HOUZS_OWNS_2990 = "true"
 PUBLIC_APP_URL = "https://houzs-erp-staging.pages.dev"
 EMAIL_FROM = "Houzs ERP Staging <no-reply@houzscentury.com>"
 EMAIL_REPLY_TO = "Houzs Century <hello@houzscentury.com>"

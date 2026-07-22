@@ -25,7 +25,7 @@ import { applySoAmendment, reviseBoundPo, ReceivedFloorError } from '../lib/so-r
 import { hasHouzsPerm, canViewAllSales, canWriteScmConfig } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit } from '../lib/so-audit';
-import { scopeToCompany, isMirroredDocNo, MIRRORED_SO_READONLY, activeCompanyId, requireActiveCompanyId } from '../lib/companyScope';
+import { scopeToCompany, isMirroredDocNo, houzsOwns2990, MIRRORED_SO_READONLY, activeCompanyId, requireActiveCompanyId } from '../lib/companyScope';
 import {
   enqueueAmendmentCommand,
   commandsEnabled,
@@ -108,7 +108,11 @@ async function loadAmendmentForWrite(
   ).maybeSingle();
   if (!data) return { ok: false, reason: 'not_found' };
   const amendment = data as AmendmentForWrite;
-  return { ok: true, mirrored: isMirroredDocNo(amendment.so_doc_no), amendment };
+  // Flip-gated (task #15): post-flip (HOUZS_OWNS_2990) a 2990- SO is native to
+  // Houzs, so it is no longer "mirrored" — every downstream `loaded.mirrored`
+  // gate lets the amendment apply LOCALLY instead of refusing / dispatching to
+  // the (retired) 2990.
+  return { ok: true, mirrored: isMirroredDocNo(amendment.so_doc_no) && !houzsOwns2990(c.env), amendment };
 }
 
 /* ── dispatchMirroredCommand — turn an approve/reject INTENT on a 2990

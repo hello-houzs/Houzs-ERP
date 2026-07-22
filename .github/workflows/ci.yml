@@ -14,7 +14,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  backend:
+  # Static backend checks, split out of the test job so a type error is
+  # reported in ~1 minute instead of after the whole suite. Measured on the
+  # old single `backend` job (run 29839727146): npm ci 26s, audit:routes 1s,
+  # typecheck 26s, `npm test` 334s. Typecheck was queued BEHIND those 334s
+  # for no reason — it does not depend on them.
+  backend-typecheck:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -27,8 +32,132 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
+      - run: npm run audit:routes
       - run: npm run typecheck
-      - run: npm test
+
+  # The backend suite is 112 files and it runs them SERIALLY inside a single
+  # workerd worker (`singleWorker: true` in backend/vitest.config.ts). That is
+  # deliberate and load-bearing: at full concurrency this pool collapses with
+  # 50-65 of 66 files "failing", ZERO AssertionErrors, and 100+ `[vitest-worker]:
+  # Timeout calling "onTaskUpdate"` — the worker cannot reach the main thread.
+  # See the long comment in vitest.config.ts. Do NOT speed this up by raising
+  # in-process parallelism; that is the exact thing that breaks it.
+  #
+  # So we shard across SEPARATE RUNNERS instead. `--shard=i/n` slices the
+  # collected spec list before it is handed to the pool (vitest 3.0.9,
+  # sequencer.shard()), so each runner still runs its subset serially in one
+  # worker at the same concurrency it uses today. Nothing about the pool config
+  # changes; there are just fewer files per pool.
+  #
+  # Why 4: per-shard cost is ~28s fixed (checkout + setup-node + cached npm ci)
+  # plus 334s/N of tests. N=2 -> 3m17s, N=3 -> 2m21s, N=4 -> 1m54s,
+  # N=6 -> 1m26s. Going 3->4 buys 27s for one more runner; 4->6 buys only 28s
+  # more for two more runners, by which point fixed overhead is a third of the
+  # job. 4 is the knee, and 112/4 = 28 files per shard exactly.
+  #
+  # Sharding is by file-path hash, not by measured duration, so the slowest
+  # shard runs somewhat above the 84s mean. Budget ~2-2.5min wall.
+  backend-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      # Let every shard finish. If the pool-collapse signature above ever
+      # returns it shows up as ALL FOUR shards red with no AssertionError,
+      # which is instantly distinguishable from one shard with a real failing
+      # test. fail-fast would hide that. It does NOT weaken the gate — the
+      # `backend` roll-up below still fails if any shard fails.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      # job-total is the matrix size, so the shard count follows the matrix
+      # automatically and index/count can never drift apart.
+      - run: npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+
+  # Roll-up so the backend gate keeps ONE stable check name. Before this PR the
+  # required-looking check was `backend`; after the split the real work lives in
+  # `backend-typecheck` and `backend-tests (1..4)`. This job keeps `backend`
+  # green/red exactly as before so nothing that watches that name — a reviewer's
+  # eye today, branch protection if it is ever turned on — has to be rewired.
+  #
+  # `if: always()` is required: without it a failed dependency SKIPS this job,
+  # and a skipped check is not a failed check. The explicit result assertions
+  # below are what make the gate real. For a matrix dependency, `.result` is
+  # 'success' only when every leg succeeded.
+  backend:
+    needs: [backend-typecheck, backend-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert all backend jobs succeeded
+        run: |
+          echo "backend-typecheck: ${{ needs.backend-typecheck.result }}"
+          echo "backend-tests:     ${{ needs.backend-tests.result }}"
+          [ "${{ needs.backend-typecheck.result }}" = "success" ] || exit 1
+          [ "${{ needs.backend-tests.result }}" = "success" ] || exit 1
+
+  scale-postgres-contract:
+    # The full 100k evidence run is deliberately PR-only. GitHub emits both a
+    # push and pull_request event for an open branch; running this job twice
+    # would spend twice the time without adding an independent environment.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: houzs_scale_test
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d houzs_scale_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      PERF_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/houzs_scale_test
+      PERF_LOCAL_ACK: I_UNDERSTAND_THIS_IS_A_DISPOSABLE_LOCAL_DATABASE
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Mark the ephemeral database as disposable
+        run: >-
+          node --input-type=module -e
+          "import postgres from 'postgres';
+          const sql = postgres(process.env.PERF_DATABASE_URL, { max: 1 });
+          try { await sql.unsafe(\"COMMENT ON DATABASE houzs_scale_test IS 'HOUZS_DISPOSABLE_LOCAL_SCALE_V1'\"); }
+          finally { await sql.end(); }"
+      - name: Execute the full real-schema PostgreSQL scale fixture
+        run: |
+          mkdir -p artifacts
+          npm run perf:scale -- --engine=pg --orders=100000 --lines=100000 --skus=10000 --users=10000 --runs=20 --json=artifacts/scale-pg-100k.json
+      - name: Upload immutable scale evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-pg-100k-${{ github.sha }}
+          path: backend/artifacts/scale-pg-100k.json
+          if-no-files-found: error
+          retention-days: 30
 
   backend-postgres:
     runs-on: ubuntu-latest

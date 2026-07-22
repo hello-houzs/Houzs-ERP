@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { Hono } from "hono";
 import { describe, expect, test, beforeEach } from "vitest";
-import searchApp from "../src/routes/search";
+import searchApp, { searchPattern } from "../src/routes/search";
 
 // The global search (GET /api/search, the Cmd+K / mobile palette) must scope
 // every source the same way its owning module does — the standing incident is
@@ -82,7 +82,7 @@ beforeEach(async () => {
   }
   await ensureColumn(`ALTER TABLE users ADD COLUMN user_type TEXT`);
 
-  await env.DB.exec(`DELETE FROM projects WHERE id IN (9001, 9002)`);
+  await env.DB.exec(`DELETE FROM projects WHERE id IN (9001, 9002, 9003)`);
   await env.DB.exec(`DELETE FROM assr_cases WHERE id IN (9001, 9002)`);
   await env.DB.exec(`DELETE FROM users WHERE id IN (9001, 9002)`);
   await env.DB.prepare(
@@ -99,6 +99,11 @@ beforeEach(async () => {
     `INSERT INTO projects (id, code, name, stage, start_date, company_id) VALUES (?,?,?,?,?,?)`,
   )
     .bind(9002, "ACME-29", "Acme Expo 2990", "live", "2026-07-02", CO2990)
+    .run();
+  await env.DB.prepare(
+    `INSERT INTO projects (id, code, name, stage, start_date, company_id) VALUES (?,?,?,?,?,?)`,
+  )
+    .bind(9003, "ZZ-A1-ZZ", "Middle match only", "live", "2026-07-03", HOUZS)
     .run();
 
   // One service case per company, both matching "acme".
@@ -127,6 +132,51 @@ beforeEach(async () => {
 });
 
 describe("global search — company scoping (both directions)", () => {
+  test("wildcard-only input cannot turn SQL or PostgREST search into list-everything", async () => {
+    const ctx = {
+      companyId: HOUZS,
+      allowedCompanyIds: [HOUZS, CO2990],
+      user: DIRECTOR,
+    };
+    expect(await search("%", ctx)).toEqual([]);
+    expect(await search("_", ctx)).toEqual([]);
+    expect(await search("*", ctx)).toEqual([]);
+    expect(searchPattern("*", true)).toBeNull();
+    expect(searchPattern("%", true)).toBeNull();
+    expect(searchPattern("_", true)).toBeNull();
+    expect(searchPattern("a", true)).toBe("a%");
+    expect(searchPattern("a1", true)).toBe("%a1%");
+  });
+
+  test("the first character runs a real cross-page search without weakening company scope", async () => {
+    const hz = await search("a", {
+      companyId: HOUZS,
+      allowedCompanyIds: [HOUZS, CO2990],
+      user: DIRECTOR,
+    });
+    expect(idsOfType(hz, "project")).toEqual([9001]);
+    expect(idsOfType(hz, "assr_case")).toEqual([9001, 9002]);
+    expect(idsOfType(hz, "user")).toEqual([9001, 9002]);
+
+    const c2 = await search("a", {
+      companyId: CO2990,
+      allowedCompanyIds: [CO2990],
+      user: DIRECTOR,
+    });
+    expect(idsOfType(c2, "project")).toEqual([9002]);
+    expect(idsOfType(c2, "assr_case")).toEqual([9002]);
+  });
+
+  test("one character is prefix-only while two characters keep contains matching", async () => {
+    const ctx = {
+      companyId: HOUZS,
+      allowedCompanyIds: [HOUZS],
+      user: DIRECTOR,
+    };
+    expect(idsOfType(await search("a", ctx), "project")).toEqual([9001]);
+    expect(idsOfType(await search("a1", ctx), "project")).toEqual([9003]);
+  });
+
   test("projects: active HOUZS sees only HOUZS; active 2990 sees only 2990", async () => {
     const hz = await search("acme", {
       companyId: HOUZS,

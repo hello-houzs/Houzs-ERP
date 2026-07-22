@@ -1,4 +1,4 @@
--- 0160_scm_so_edit_lease_and_followers.sql (Postgres)
+-- 0168_scm_so_edit_lease_and_followers.sql (Postgres)
 -- Rollout dependency: apply idempotency Phase 1 (0158), allow its soak period,
 -- then apply Phase 2 (0159), and only then apply this migration before the
 -- Sales Order lease-aware application code is deployed.

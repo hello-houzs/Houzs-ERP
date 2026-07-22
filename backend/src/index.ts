@@ -7,6 +7,7 @@ import { TRANSIENT_CONN_RE } from "./db/d1-compat";
 // Ported 2990's SCM modules (furniture supply chain). Talk to the `scm` Postgres
 // schema via supabase-js; namespaced under /api/scm/*, owner-only during the port.
 import scmApp from "./scm";
+import { publicScmImages } from "./scm/routes/public-images";
 import { idempotency } from "./middleware/idempotency";
 import { requestLog } from "./middleware/requestLog";
 import assr from "./routes/assr";
@@ -98,6 +99,7 @@ import { runProjectDueReminders } from "./services/projectReminders";
 import { distillAllSalespersonRules, warmCatalogCacheForCron, processScanQueueMessage } from "./scm/routes/scan-so";
 import { runAgentHeartbeat } from "./services/agent-scheduler";
 import { getSupabaseService } from "./db/supabase";
+import { reapOnce } from "./scm/lib/reaper";
 import { getBranding } from "./services/branding";
 // AutoCount inbound SO pull — restored 2026-07-14. Reads SO from the AutoCount
 // middleware and upserts the local `sales_orders` mirror (read-only against
@@ -124,7 +126,7 @@ const inboxBustAfterWrite: MiddlewareHandler<{ Bindings: Env }> = async (c, next
 // Outermost: one structured access-log line + X-Request-Id per request.
 app.use("*", requestLog);
 
-app.use("*", cors());
+app.use("*", cors({ origin: "*", exposeHeaders: ["X-Request-Id"] }));
 
 // D1 -> Supabase cutover: swap env.DB for the Postgres-backed shim on every
 // request, before auth + routes. Remove once all paths use Drizzle/postgres.js.
@@ -194,6 +196,13 @@ app.route("/api/assr-form-intake", assrFormIntake);
 
 // Auth gate for everything else under /api/*. Mounted AFTER the
 // public API routes above so they stay unauthenticated.
+// PUBLIC image proxies for the cross-origin POS — MUST be mounted BEFORE the
+// global `auth` + `requireScmAccess` gates so a plain <img src> (no Bearer, no
+// same-origin cookie) reaches them. Only these two GET routes are exposed; every
+// other /api/scm/* path is untouched and still hits the gates below. Mirrors how
+// 2990's api serves Model photos auth-free. See scm/routes/public-images.ts.
+app.route("/api/scm", publicScmImages);
+
 app.use("/api/*", auth);
 
 // Multi-company (Phase 0b): resolve the ACTIVE company + allowed companies per
@@ -259,9 +268,11 @@ app.route("/api/inbox", inbox);
 // the handlers (owner passes via "*"). The pre-auth /api/mail-center/inbound
 // route is mounted above, before the auth gate, and is not shadowed by this.
 app.route("/api/mail-center", mailCenter);
-// Announcements — the banner GET + ack POST are open to every authed user
-// (the route handles it internally); list/CRUD/remind/acks-readout are
-// announcements.read / announcements.write gated.
+// Announcements — the banner GET, the LIST GET and the ack POST are open to
+// every authed user (the route handles it internally: the list is audience- and
+// company-filtered server-side, same as the banner). announcements.read is the
+// ADMIN verb and no longer gates reading; CRUD/remind/acks-readout stay on
+// announcements.write.
 app.route("/api/announcements", announcements);
 // Agent Console — owner-only (requirePermission("*") inside the router).
 // Deliberately in the public /api tree, NOT /api/scm (the scm subtree swaps
@@ -319,6 +330,7 @@ app.onError((err, c) => {
   // every error is readable by the SPA. (Matches cors() default origin "*".)
   const res = new Response(base.body, base);
   res.headers.set("Access-Control-Allow-Origin", "*");
+  res.headers.set("Access-Control-Expose-Headers", "X-Request-Id");
   return res;
 });
 
@@ -436,6 +448,22 @@ export default {
           );
         }
       }
+      // Slip reaper (mirrors 2990's */10 orphan-slip sweep, which retires with
+      // 2990's apps/api). Leases up to 100 orphan pending_slip_uploads rows
+      // (5-min lease, SKIP LOCKED via lease_orphan_slips), deletes each R2 blob,
+      // marks the row failed — reclaims leaked payment-slip objects from
+      // abandoned/failed uploads. Idempotent; best-effort (a failure can never
+      // break the other crons).
+      ctx.waitUntil(
+        reapOnce(getSupabaseService(env), env, `cron-${event.scheduledTime}`)
+          .then((r) => {
+            if (r.claimed > 0 || r.errors > 0)
+              console.log(
+                `[cron slip-reaper] claimed=${r.claimed} deleted=${r.deleted} errors=${r.errors} remaining=${r.remaining}`
+              );
+          })
+          .catch((e) => console.error("[cron slip-reaper]", e))
+      );
     } else if (event.cron === "0 2 * * *") {
       // Daily 02:00 UTC slot: SLA escalation + ASSR digest + project reminders.
       ctx.waitUntil(

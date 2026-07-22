@@ -68,9 +68,12 @@ function mapVenue(r: Record<string, unknown>): VenueRow {
 // Returns the array under both `venues` (2990 SCM route convention) and `data`
 // (Houzs /api/projects/venues convention) so either consumer contract resolves.
 venues.get("/", async (c) => {
+  // POS sends ?active=false to include inactive (2990 contract); the Houzs admin
+  // sends ?includeInactive=1|true. Accept both so the POS can list/reactivate.
   const includeInactiveParam = c.req.query("includeInactive");
   const includeInactive =
-    includeInactiveParam === "1" || includeInactiveParam === "true";
+    includeInactiveParam === "1" || includeInactiveParam === "true" ||
+    c.req.query("active") === "false";
   // company_2 scope: ` AND company_id = <active>`, or "" (no-op) pre-activation.
   const companyPred = activeCompanySql(c);
   const where = includeInactive

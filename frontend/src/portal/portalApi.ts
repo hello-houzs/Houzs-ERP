@@ -8,6 +8,13 @@
 // (see frontend/.env.production). On dev it's empty so the Vite
 // proxy handles forwarding.
 import { humanHttpMessage } from "../api/client";
+import {
+  consumeCorrelated,
+  correlateError,
+  correlatedFetch,
+  requestIdFromError,
+  requestIdFromResponse,
+} from "../lib/requestCorrelation";
 
 // PROD default is same-origin — /api/* is proxied to the Worker by the Pages
 // Function (functions/api/[[path]].ts); portal links open on customers'
@@ -45,14 +52,15 @@ function portalSignal(ms: number): AbortSignal | undefined {
 
 async function portalFetch(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   try {
-    return await fetch(input, { ...init, signal: portalSignal(timeoutMs) });
+    return await correlatedFetch(input, { ...init, signal: portalSignal(timeoutMs) });
   } catch (e) {
+    const requestId = requestIdFromError(e);
     if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
-      throw new PortalApiError(0, "The server took too long to respond. Please check your connection and try again.");
+      throw correlateError(new PortalApiError(0, "The server took too long to respond. Please check your connection and try again."), requestId);
     }
     // Any other fetch rejection is a network drop; its raw message ("Failed to
     // fetch" / "Load failed") is machine vocabulary the customer must never see.
-    throw new PortalApiError(0, "We couldn't reach the server. Please check your connection and try again.");
+    throw correlateError(new PortalApiError(0, "We couldn't reach the server. Please check your connection and try again."), requestId);
   }
 }
 
@@ -76,10 +84,10 @@ async function req<T>(
     // Plain-language message for the customer — never a raw status code, JSON
     // blob, or HTML error page (humanHttpMessage prefers the server's own
     // {error|message|detail} sentence, else maps the status to plain words).
-    throw new PortalApiError(res.status, humanHttpMessage(res.status, text));
+    throw correlateError(new PortalApiError(res.status, humanHttpMessage(res.status, text)), requestIdFromResponse(res));
   }
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  return consumeCorrelated(res, () => res.json() as Promise<T>);
 }
 
 export const portalApi = {
@@ -96,14 +104,19 @@ export const portalApi = {
       },
       body,
     }, PORTAL_UPLOAD_TIMEOUT_MS);
-    if (!res.ok) throw new PortalApiError(res.status, humanHttpMessage(res.status, await res.text().catch(() => "")));
-    return (await res.json()) as T;
+    if (!res.ok) throw correlateError(
+      new PortalApiError(res.status, humanHttpMessage(res.status, await res.text().catch(() => ""))),
+      requestIdFromResponse(res),
+    );
+    return consumeCorrelated(res, () => res.json() as Promise<T>);
   },
 
   async fetchBlobUrl(path: string, token: string): Promise<string> {
     const res = await portalFetch(url(path), { headers: { Authorization: `Bearer ${token}` } }, PORTAL_TIMEOUT_MS);
-    if (!res.ok) throw new PortalApiError(res.status, humanHttpMessage(res.status, ""));
-    const blob = await res.blob();
-    return URL.createObjectURL(blob);
+    if (!res.ok) throw correlateError(
+      new PortalApiError(res.status, humanHttpMessage(res.status, "")),
+      requestIdFromResponse(res),
+    );
+    return consumeCorrelated(res, async () => URL.createObjectURL(await res.blob()));
   },
 };

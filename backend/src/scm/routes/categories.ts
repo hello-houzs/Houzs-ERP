@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { canWriteScmConfig } from '../lib/houzs-perms';
 import { scopeToCompany, activeCompanyId,
@@ -131,7 +131,11 @@ export const publicCategoriesApi = new Hono<{ Bindings: Env; Variables: Variable
 // tags can't add the Bearer header it expects). The handler instead builds
 // its own service-role client below. Parent requireScmAccess still applies —
 // see the naming caveat above.
-publicCategoriesApi.get('/:id/hero-blob', async (c) => {
+// Exported so it can ALSO be mounted OUTSIDE /api/scm (routes/public-images.ts)
+// — same reason as the Model photo proxy: the cross-origin, Bearer-auth POS
+// can't pass the global /api/scm gate with a plain <img src>. Mounted pre-auth
+// there; the in-scmApp registration below stays for the same-origin SPA.
+export const categoryHeroBlobHandler = async (c: Context<{ Bindings: Env; Variables: Variables }>) => {
   if (!c.env.PUBLIC_ASSETS) {
     return c.json({ error: 'public_assets_not_configured' }, 500);
   }
@@ -170,7 +174,8 @@ publicCategoriesApi.get('/:id/hero-blob', async (c) => {
       'cache-control': 'public, max-age=3600',
     },
   });
-});
+};
+publicCategoriesApi.get('/:id/hero-blob', categoryHeroBlobHandler);
 
 // Everything below requires auth.
 publicCategoriesApi.use('*', supabaseAuth);
@@ -182,7 +187,7 @@ publicCategoriesApi.get('/', async (c) => {
   const supabase = c.get('supabase');
   let listQ = supabase
     .from('categories')
-    .select('id, label, icon, sort_order, hero_image_key, hero_focal_x, hero_focal_y, hero_alt')
+    .select('id, label, icon, tbc, sort_order, hero_image_key, hero_focal_x, hero_focal_y, hero_alt')
     .order('sort_order', { ascending: true })
     .order('label', { ascending: true });
   listQ = scopeToCompany(listQ, c); // multi-company: isolate to the active company
@@ -194,6 +199,7 @@ publicCategoriesApi.get('/', async (c) => {
       id: string;
       label: string;
       icon: string;
+      tbc: boolean | null;
       sort_order: number;
       hero_image_key: string | null;
       hero_focal_x: number | null;
@@ -204,6 +210,14 @@ publicCategoriesApi.get('/', async (c) => {
       id: row.id,
       name: row.label,           // align with the frontend's CategoryRow.name
       slug: row.icon,            // icon doubles as the slug-ish identifier
+      // POS repoint (cutover): the 2990 POS reads label/icon/tbc/sortOrder off
+      // this list (useCategoriesAll → the left category rail + "to be confirmed"
+      // section). Emitted ALONGSIDE name/slug so the existing Houzs Categories
+      // grid (reads name/slug/hero_url) is unaffected.
+      label: row.label,
+      icon: row.icon,
+      tbc: row.tbc ?? false,
+      sortOrder: row.sort_order,
       hero_image_key: row.hero_image_key,
       // /api/scm prefix is added by the worker's mount; this relative path
       // round-trips through authedFetch + <img src> (the latter via public

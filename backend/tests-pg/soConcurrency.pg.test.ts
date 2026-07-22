@@ -106,9 +106,9 @@ async function resetFixture(sql: Sql): Promise<void> {
     CREATE OR REPLACE FUNCTION scm.upsert_customer_by_name_phone(text, text, text)
     RETURNS uuid LANGUAGE sql AS $$ SELECT gen_random_uuid() $$;
   `);
-  await sql.unsafe(await migration('0160_scm_so_edit_lease_and_followers.sql'));
-  await sql.unsafe(await migration('0161_scm_so_concurrency_domain_closure.sql'));
-  await sql.unsafe(await migration('0162_scm_stock_allocation_recompute_queue.sql'));
+  await sql.unsafe(await migration('0168_scm_so_edit_lease_and_followers.sql'));
+  await sql.unsafe(await migration('0169_scm_so_concurrency_domain_closure.sql'));
+  await sql.unsafe(await migration('0170_scm_stock_allocation_recompute_queue.sql'));
 }
 
 async function callHeaderCas(

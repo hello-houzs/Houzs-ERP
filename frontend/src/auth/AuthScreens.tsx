@@ -18,6 +18,7 @@ import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
 import { useIsMobile } from "../mobile/useIsMobile";
 import { AmbientSnow } from "../components/AmbientSnow";
+import { consumeCorrelated, correlatedFetch } from "../lib/requestCorrelation";
 
 // Code-split the mobile app: desktop users never download it, and it stays out
 // of the initial JS bundle (keeps the bundle-budget CI gate green).
@@ -576,14 +577,14 @@ export function AcceptInviteScreen() {
     }
     if (!t) return;
     setToken(t);
-    fetch(`${baseUrl}/api/auth/invite/${encodeURIComponent(t)}`)
+    correlatedFetch(`${baseUrl}/api/auth/invite/${encodeURIComponent(t)}`)
       .then(async (r) => {
         if (!r.ok) return;
-        const d = (await r.json()) as {
+        const d = await consumeCorrelated(r, () => r.json() as Promise<{
           email: string;
           name: string | null;
           role_name: string;
-        };
+        }>);
         setMeta({ email: d.email, role_name: d.role_name });
         if (d.name) setName(d.name);
       })

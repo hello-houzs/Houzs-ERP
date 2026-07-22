@@ -20,6 +20,7 @@ import {
   nextServicePONumber,
   setCaseCreditorManual,
   setItemRemark,
+  setItemQty,
 } from "../services/assr";
 import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken, issueSalesToken, revokeCaseTokens } from "../services/caseTracking";
@@ -31,10 +32,9 @@ import { requirePermission } from "../middleware/auth";
 import { baseKeyOf, isThumbKey, THUMB_MAX_BYTES, thumbKeyFor } from "../services/photoThumbs";
 import {
   houzsCompanyId,
-  houzsCompanyIds,
-  houzsCompanySql,
   allowedCompanyIds,
   allowedCompaniesSql,
+  activeCompanyId,
 } from "../scm/lib/companyScope";
 import { hasPermission } from "../services/permissions";
 import { subtreeUserIds, subtreeAgentNames } from "../services/orgScope";
@@ -88,39 +88,41 @@ function requireServiceCaseAccess(
   };
 }
 
-// ── Multi-company (HOUZS-ONLY module) ─────────────────────────
-// Service Cases (ASSR) are a HOUZS-EXCLUSIVE concept — 2990 has zero
-// service-case overlap (owner: "Service pricing CANNOT merge, 0% overlap").
-// So EVERY ASSR read is PINNED to the base company HOUZS (`company_id = <houzs>`)
-// via houzsCompanySql / houzsCompanyIds — NOT widened to the caller's allowed
-// set. A both-company user (the owner, who belongs to HOUZS and 2990) must see
-// only Houzs cases/orders/customers here, never 2990 rows. The pin resolves
-// HOUZS by `companies.code === 'HOUZS'` from the companies master and returns
-// "" / [] when that master is unresolved (pre-migration / D1 test mirror /
-// cold-start), so legacy single-company SQL runs unchanged.
+// ── Multi-company (cross-company module) ──────────────────────
+// Decision trail: 2026-07-16 ASSR shipped HOUZS-only ("Service pricing CANNOT
+// merge") → 2026-07-19 owner: "Assr 是兩個公司的" (reads widened for office /
+// directors) → 2026-07-20 owner: 2990 raises Service Cases on the merged
+// platform too, and Service Cases now follow the caller's GRANTED companies
+// like the rest of the SCM portal — no ASSR-specific role pin. A rank-and-file
+// rep sees ONLY their own company (a HOUZS rep's grant is {HOUZS}; a future
+// 2990 rep's is {2990}); managers / office / directors granted both see the
+// combined HOUZS+2990 queue. Every reader scopes to allowedCompanyIds, every
+// creator stamps the switcher's active company, and an SO-attached case takes
+// the SO's OWN company (createAssrCase override). Verified safe on the flip
+// from the old HOUZS pin (2026-07-20): all 77 active staff carry explicit
+// user_companies grants and every both-company grantee is already office /
+// director, so no rank-and-file rep's scope changes today. The helpers return
+// "" / [] / undefined when the companies master is unresolved (pre-migration /
+// D1 test mirror / cold-start), so legacy single-company SQL runs unchanged.
 //
-// EXCEPTION (owner 2026-07-16): only rank-and-file SALES are company-split
-// (Houzs-only). Office / backend / house-operations / directors run one
-// cross-company portal, so their READS widen to the caller's allowed set.
-// `assrPinsToHouzs` is the same predicate as `isScopedProjectUser`
-// (isSalesUser && !isDirectorUser). The INSERT stamp is NOT affected — a new
-// service case ALWAYS stamps HOUZS (houzsCompanyId), ASSR being Houzs-only.
-function assrPinsToHouzs(c: Context<any>): boolean {
-  const user = c.get("user") as AuthUser | undefined;
-  return isSalesUser(user) && !isDirectorUser(user);
-}
-// Exported for backend/tests/assrCompanyScope.test.ts, which pins the role-aware
-// rule (directors both companies, rank-and-file Sales HOUZS-only). Otherwise
-// unchanged from origin/main.
+// Exported for backend/tests/assrCompanyScope.test.ts.
 export function assrCompanySql(c: Context<any>, col = "company_id"): string {
-  return assrPinsToHouzs(c) ? houzsCompanySql(c, col) : allowedCompaniesSql(c, col);
+  return allowedCompaniesSql(c, col);
 }
 // `number[] | undefined` — `undefined` = company context unresolved (degrade to
 // no predicate), `[]` = caller granted no active company (match nothing). See
-// the sentinel doc on allowedCompanyIds. The HOUZS-pinned branch never yields
-// `[]`: it is either `[houzsId]` or `undefined` when HOUZS is unresolved.
+// the sentinel doc on allowedCompanyIds.
 function assrCompanyIds(c: Context<any>): number[] | undefined {
-  return assrPinsToHouzs(c) ? houzsCompanyIds(c) : allowedCompanyIds(c);
+  return allowedCompanyIds(c);
+}
+// CREATE stamp resolver (owner 2026-07-20 — 2990 runs Service Cases here).
+// Every creator raises a case for the company their top-bar switcher sits on,
+// falling back to HOUZS when no active company resolves (single-company legacy
+// / cold-start). When the case's doc_no resolves to a local scm SO,
+// createAssrCase overrides this with the SO's own company. Exported for
+// backend/tests/assrCompanyScope.test.ts.
+export function assrCreateCompanyId(c: Context<any>): number | undefined {
+  return activeCompanyId(c) ?? houzsCompanyId(c);
 }
 
 // ── Row-level visibility (owner spec 2026-07) ─────────────────
@@ -1163,15 +1165,16 @@ app.get("/lookup-items/:docNo", requireServiceCaseAccess(), async (c) => {
 // Returns up to 20 SO candidates matched by partial DocNo,
 // reference number, or customer name (case-insensitive).
 //
-// Service (ASSR) is a HOUZS-ONLY module, so this SO lookup must surface ONLY
-// Houzs orders — a 2990 order must NEVER be attachable to a service case (owner:
-// a case "只会查到 Houzs 的 order"). Two sources, merged:
+// Company reach mirrors the ASSR read rule (assrCompanySql): every caller
+// searches across their GRANTED companies — a rank-and-file rep sees only their
+// own company's SOs, while managers / office / directors granted both see the
+// combined HOUZS + 2990 set (2990 orders became attachable with the owner's
+// 2026-07-20 "2990 加 service case"). Two sources, merged:
 //   (1) public.sales_orders — the Houzs AutoCount mirror (no company_id; Houzs
 //       only). Unchanged legacy behaviour.
 //   (2) scm.mfg_sales_orders — the SCM-native SO table carrying both companies'
-//       orders, PINNED to HOUZS (`company_id = <houzs>`) so only Houzs-native
-//       SCM SOs surface here (2990 rows are excluded even for a both-company
-//       user). This adds Houzs SCM SOs that never reached the AutoCount mirror.
+//       orders, filtered by assrCompanySql. This adds the 2990 orders (for the
+//       cross-company portal) and Houzs SCM SOs that never reached the mirror.
 // Deduped by doc_no (prefer the SCM row — it carries a company tag), newest
 // first, capped at 20.
 app.get("/search-so", requireServiceCaseAccess(), async (c) => {
@@ -1591,13 +1594,13 @@ app.post(
     service_category: trimOrNull(body.service_category),
     assigned_to: assignedTo,
     created_by: userId,
-    // ASSR is Houzs-only: ALWAYS stamp the new case with HOUZS, never the
-    // request's active company. A both-company user creating a case while the
-    // top-bar switcher sits on 2990 must still raise a HOUZS case (else it
-    // vanishes from the Houzs-pinned list). Undefined pre-migration / cold-start
-    // -> createAssrCase falls back to the Houzs default, else omits the column
+    // Owner 2026-07-20: 2990 raises Service Cases on the merged platform too.
+    // The case's company = the SO's own company when the doc resolves to a
+    // local scm SO (createAssrCase override); else the switcher's active
+    // company (assrCreateCompanyId). Undefined pre-migration / cold-start ->
+    // createAssrCase falls back to the Houzs default, else omits the column
     // (single-company safe).
-    company_id: houzsCompanyId(c),
+    company_id: assrCreateCompanyId(c),
   });
 
   // Notify the responsible person(s) + their recursive upline that a new case
@@ -1964,6 +1967,13 @@ app.post("/attachments/:attId/archive", requirePermission("service_cases.write")
   const attId = parseInt(c.req.param("attId"), 10);
   if (isNaN(attId)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
+  // Resolve the owning case + file so the removal is recorded on the right
+  // timeline (append-only — the record survives the file being archived).
+  const att = await c.env.DB.prepare(
+    `SELECT assr_id, category, file_name FROM assr_attachments WHERE id = ?`
+  )
+    .bind(attId)
+    .first<{ assr_id: number | null; category: string | null; file_name: string | null }>();
   const ok = await setArchived(
     c.env,
     "assr_attachments",
@@ -1973,6 +1983,18 @@ app.post("/attachments/:attId/archive", requirePermission("service_cases.write")
     true
   );
   if (!ok) return c.json({ error: "Not found" }, 404);
+  if (att?.assr_id != null) {
+    await logActivity(
+      c.env,
+      att.assr_id,
+      "attachment_removed",
+      att.file_name ?? null,
+      null,
+      `Removed ${att.category ?? "attachment"}${att.file_name ? ` (${att.file_name})` : ""}`,
+      userId || null,
+      { category: "service", source_channel: "app" }
+    );
+  }
   return c.json({ ok: true });
 });
 
@@ -2798,10 +2820,56 @@ app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async 
   const id = parseInt(c.req.param("id"), 10);
   const itemId = parseInt(c.req.param("itemId"), 10);
   if (isNaN(id) || isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
-  const body = await c.req.json<{ remark?: string | null }>();
-  const remark = body.remark == null ? null : String(body.remark).trim() || null;
-  const ok = await setItemRemark(c.env, id, itemId, remark);
-  if (!ok) return c.json({ error: "Not found" }, 404);
+  const body = await c.req.json<{ remark?: string | null; qty?: number }>();
+  const userId = (c as any).get?.("userId") ?? null;
+  const prevItem = await c.env.DB.prepare(
+    `SELECT item_code, remark, qty FROM assr_items WHERE id = ? AND assr_id = ?`
+  )
+    .bind(itemId, id)
+    .first<{ item_code: string | null; remark: string | null; qty: number | null }>();
+  if (!prevItem) return c.json({ error: "Not found" }, 404);
+  const code = prevItem.item_code ?? `#${itemId}`;
+
+  // Quantity — clamp to a positive integer; log the change.
+  if (body.qty !== undefined) {
+    const qty = Math.max(1, Math.round(Number(body.qty) || 0));
+    const ok = await setItemQty(c.env, id, itemId, qty);
+    if (!ok) return c.json({ error: "Not found" }, 404);
+    if ((prevItem.qty ?? 1) !== qty) {
+      await logActivity(
+        c.env,
+        id,
+        "item_qty",
+        String(prevItem.qty ?? 1),
+        String(qty),
+        `Quantity on ${code}: ${prevItem.qty ?? 1} → ${qty}`,
+        userId,
+        { category: "service", source_channel: "app" }
+      );
+    }
+  }
+
+  // Remark — capture the prior value so the change is recorded
+  // append-only on the timeline (removing logs a "cleared" event).
+  if (body.remark !== undefined) {
+    const remark = body.remark == null ? null : String(body.remark).trim() || null;
+    const ok = await setItemRemark(c.env, id, itemId, remark);
+    if (!ok) return c.json({ error: "Not found" }, 404);
+    if ((prevItem.remark ?? null) !== remark) {
+      await logActivity(
+        c.env,
+        id,
+        "item_remark",
+        prevItem.remark ?? null,
+        remark,
+        remark
+          ? `Product remark on ${code}: ${prevItem.remark ? `"${prevItem.remark}" → ` : ""}"${remark}"`
+          : `Product remark on ${code} cleared${prevItem.remark ? ` (was "${prevItem.remark}")` : ""}`,
+        userId,
+        { category: "service", source_channel: "app" }
+      );
+    }
+  }
   return c.json({ ok: true });
 });
 
@@ -2838,6 +2906,17 @@ app.put("/:id/attachments", requirePermission("service_cases.write"), async (c) 
   const key = assrAttachmentKey(id, category, ext);
   await c.env.POD_BUCKET.put(key, body, { httpMetadata: { contentType } });
   const attachId = await saveAttachment(c.env, id, key, fileName, contentType, category, userId);
+
+  await logActivity(
+    c.env,
+    id,
+    "attachment_added",
+    null,
+    fileName ?? key,
+    `Added ${category} attachment${fileName ? ` (${fileName})` : ""}`,
+    userId || null,
+    { category: "service", source_channel: "app" }
+  );
 
   return c.json({ id: attachId, key }, 201);
 });

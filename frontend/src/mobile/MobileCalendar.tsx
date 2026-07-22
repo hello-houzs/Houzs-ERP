@@ -297,23 +297,45 @@ export function MobileCalendar({
   // Normalize projects (+ optionally tasks) into grid events, then filter.
   const events = useMemo<CalEvent[]>(() => {
     const out: CalEvent[] = [];
+    // A project occupies EVERY day from start_date through end_date, not just
+    // its start day — the desktop Projects calendar spans the same range
+    // (Projects.tsx: s = start_date, e = end_date || start_date; its day modal
+    // matches projects where s <= day && e >= day). The mobile grid draws one
+    // bar per day (no spanning bars), so we emit an event for each in-range day;
+    // this is what makes tapping day 11/12/13 of a 10–13 fair surface it instead
+    // of reading "no projects that day". Clamp to the visible month so a fair
+    // straddling a month boundary paints only its in-month days (and a day
+    // number can't collide with the adjacent month), and key by day so the
+    // per-day bars carry unique React keys. end_date is inclusive and falls back
+    // to start_date for a single-day event.
+    const monthFirst = iso(year, month, 1);
+    const lastDom = new Date(year, month + 1, 0).getDate();
+    const monthLast = iso(year, month, lastDom);
     for (const p of projects) {
-      out.push({
-        key: `p-${p.id}`,
-        kind: "project",
-        projectId: p.id,
-        date: p.start_date.slice(0, 10),
-        label: p.code ? `[${p.brand ?? "—"}] ${p.name}` : p.name,
-        barLabel: projectBarLabel(p),
-        color: statusColor(p.status),
-        brand: p.brand,
-        section: p.active_section_name,
-        organizer: p.organizer,
-        status: p.status,
-        sub: p.venue || p.state || null,
-        state: p.state,
-        venue: p.venue,
-      });
+      const start = p.start_date.slice(0, 10);
+      const end = (p.end_date || p.start_date).slice(0, 10);
+      if (start > monthLast || end < monthFirst) continue; // no overlap this month
+      const fromDom = start > monthFirst ? dayOf(start) : 1;
+      const toDom = end < monthLast ? dayOf(end) : lastDom;
+      for (let dom = fromDom; dom <= toDom; dom++) {
+        const date = iso(year, month, dom);
+        out.push({
+          key: `p-${p.id}-${date}`,
+          kind: "project",
+          projectId: p.id,
+          date,
+          label: p.code ? `[${p.brand ?? "—"}] ${p.name}` : p.name,
+          barLabel: projectBarLabel(p),
+          color: statusColor(p.status),
+          brand: p.brand,
+          section: p.active_section_name,
+          organizer: p.organizer,
+          status: p.status,
+          sub: p.venue || p.state || null,
+          state: p.state,
+          venue: p.venue,
+        });
+      }
     }
     if (showTasks) {
       for (const t of tasks) {
@@ -569,21 +591,31 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
 
       {!empty && weeks.map((w, wi) => {
         const last = wi === weeks.length - 1;
-        // Flatten this week's PROJECT/TASK events with their weekday index for
-        // the left-offset. Holidays are rendered as a day-cell tint + name
-        // (below), not a bar, so they never consume a lane or hide under
-        // "+N more" — mirroring the desktop calendar's holiday treatment.
+        // This week's PROJECT/TASK bars: ONE per fair (like the desktop calendar),
+        // full-width, STATE->venue ordered. Holidays are a day-cell tint, not a bar.
+        // Owner 2026-07-21: byDay holds a multi-day fair on EVERY day it spans (that
+        // feeds the day sheet), so the week bar-list must de-duplicate by project —
+        // else a 4-day fair drew 4 identical bars and a whole-company view was a wall
+        // of duplicates. Keep the first in-week day only for the React key.
         const cells: { e: CalEvent; idx: number }[] = [];
+        const seenInWeek = new Set<string>();
         w.forEach((d, idx) => {
-          if (d && byDay[d]) byDay[d].forEach((e) => { if (e.kind !== "holiday") cells.push({ e, idx }); });
+          if (!d || !byDay[d]) return;
+          byDay[d].forEach((e) => {
+            if (e.kind === "holiday") return;
+            const id = e.kind === "project" ? `p${e.projectId}` : e.key;
+            if (seenInWeek.has(id)) return;
+            seenInWeek.add(id);
+            cells.push({ e, idx });
+          });
         });
+        // Order the de-duplicated bars by the shared STATE->venue rule so same
+        // state / same fair stack together — matching the desktop calendar.
+        cells.sort((a, b) => compareCalendarEvents(a.e, b.e));
         // v7 shows up to 4 event bars per week (all when Expand-all is on); the
         // overflow "+N more" expands every bar inline.
         const cap = expand ? cells.length : 4;
         const overflow = cells.length - cap;
-        // The weekday column that owns the first hidden event — the "+N more"
-        // link sits under that column (v7 offsets it, not full-width).
-        const overflowIdx = overflow > 0 ? cells[cap].idx : 0;
         return (
           <div key={wi} className="wk" style={last ? { borderBottom: "1px solid var(--line-card)", borderRadius: "0 0 8px 8px" } : undefined}>
             <div className="nums">
@@ -612,7 +644,7 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
                 );
               })}
             </div>
-            {cells.slice(0, cap).map(({ e, idx }, i) => {
+            {cells.slice(0, cap).map(({ e }, i) => {
               const focused = focusProjectId != null && e.kind === "project" && e.projectId === focusProjectId;
               const isTask = e.kind === "task";
               const overdue = isTask && !!e.overdue;
@@ -623,7 +655,7 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
                   className={cls}
                   title={e.sub || undefined}
                   onClick={() => onOpen?.(e.projectId)}
-                  style={{ ["--bar" as string]: overdue ? OVERDUE_COLOR : e.color, marginLeft: `${(idx * 14.2857).toFixed(3)}%` }}
+                  style={{ ["--bar" as string]: overdue ? OVERDUE_COLOR : e.color }}
                 >
                   {isTask && e.dot && <span className="cal-bar-dot" style={{ background: e.dot }} aria-hidden />}
                   <span className="cal-bar-lbl">{e.barLabel}</span>
@@ -631,7 +663,7 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
               );
             })}
             {overflow > 0 && (
-              <div className="cal-more" style={{ marginLeft: `${(overflowIdx * 14.2857).toFixed(3)}%` }} onClick={onExpandAll}>+{overflow} more</div>
+              <div className="cal-more" onClick={onExpandAll}>+{overflow} more</div>
             )}
           </div>
         );

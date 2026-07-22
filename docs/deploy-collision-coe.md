@@ -1,0 +1,87 @@
+# Houzs ERP — Deploy Collision COE (Correction of Error)
+
+**Date:** 2026-07-17 (twice, in one evening: ~20:27 and ~21:32 MYT)
+**Trigger:** Nothing broke visibly, which is the whole problem. The owner's **view-as** flow was reported broken, fixed, merged — and stayed broken in production. Staff continued to hit bugs that had already been fixed on main. Every deploy in the window reported **green**.
+**Status:** Both episodes recovered. The mechanism is documented in code. **The real fix is NOT shipped** — see §5. The interim rule is a manual check after every burst merge.
+
+---
+
+## 1. Incident — what happened and why
+
+Production's frontend silently stopped tracking main. On 2026-07-17 it happened twice: **4 files stale**, recovered at 20:27 (`e90e1017`, sw v187); then **8 files stale**, recovered at 21:32 (`1d35ae28`, sw v188). Between the two, the second batch included the entire authentication-token seam — so the fix for the owner's own reported bug was merged, marked done, and never reached a browser.
+
+### Root cause — three correct mechanisms composing into a wrong one
+
+`.github/workflows/deploy.yml` at the time (and still, at `9db13349`):
+
+1. **It is push-only.** `on: push: branches: [main]` (`:3-5`). There is no `workflow_dispatch`, so there is no way to deploy without a new commit.
+2. **Queued runs collapse.** `concurrency: group: deploy-${{ github.ref }}` with `cancel-in-progress: false` (`:7-9`). GitHub keeps *one* running and *one* pending run per group; when a third arrives the pending one is **cancelled**. So in a burst, the running deploy finishes and every queued run except the newest is cancelled — cancelled **before its `frontend` job ever exists**.
+3. **The survivor computes the wrong diff.** `dorny/paths-filter@v3` (`:24-33`) on a push event compares `github.event.before..github.sha` — that is *this push's* range, not "everything since the last successful deploy". The one surviving run sees only the **last** merge's diff. If that last merge happened to be backend-only, `frontend` evaluates to `false` and the frontend job is **skipped**.
+
+Every frontend change carried by a cancelled run therefore never deploys, and the run that *did* execute goes green. **There is no error anywhere.** The workflow is not failing; it is correctly reporting that the last push touched no frontend files.
+
+Each of those three decisions is defensible in isolation. `cancel-in-progress: false` exists so a deploy is never killed mid-`wrangler deploy`. The paths filter was added deliberately on 2026-07-11 (`7717cf78`) because *"the July 5 Supabase outage retry-storm + high push frequency burned ~4,900 Actions minutes in a week (limit 3,000/mo)"* — a real cost problem, correctly solved. The failure is in the composition: **the filter's diff window assumes every push gets its own run, and the concurrency group guarantees that some pushes do not.**
+
+### Evidence
+
+- **The burst is in the PR timestamps.** Episode two: **#714 merged 13:25:27Z, #718 at 13:25:37Z, #719 at 13:26:14Z** — three merges inside 47 seconds. `e90e1017` records episode one as *"seven PRs merged back-to-back."*
+- **The staleness was measured against a named SHA, not estimated.** Episode one: prod's frontend had not moved since `b8bce7e7` (merge of #673, 2026-07-17 19:21 MYT), with `query-persist.ts`, `MobilePOD.tsx`, `Positions.tsx`, `types.ts` landed and unshipped. Episode two: stale since `abb908dc` (#717, 21:15 MYT), with 8 files including `lib/authToken.ts` — *"the view-as fix itself"* — plus `main.tsx`, `api/client.ts`, `pages/Projects.tsx` and four `vendor/scm/lib/*` modules. `1d35ae28`'s message states the consequence plainly: *"So #718 fixed the owner's view-as, merged, and did not ship. Every view-as session still breaks the whole /scm surface."*
+- **The mechanism is recorded in the source tree**, at `frontend/public/sw.js:316-329`, next to the constant that was bumped to recover.
+
+---
+
+## 2. Fixes shipped (2026-07-17)
+
+| Ref | What | Effect |
+|----|------|--------|
+| `e90e1017` | `sw.js` VERSION v186 → **v187**. One line. | **Recovery, not a feature bump.** The bump is itself a change under `frontend/**`, so `paths-filter` fires on the next push and the 4 stranded files ship with it. |
+| `1d35ae28` | `sw.js` VERSION v187 → **v188**, plus 16 lines of reasoning written next to the constant. | Recovers the 8 stranded files including the whole `authToken` seam — the owner's view-as flow reaches production for the first time. The comment (`sw.js:316-329`) states the full mechanism, names the real fix, and records the interim rule so the next session does not have to re-derive it. |
+
+**The recovery works precisely because it is the crudest possible change.** A no-op edit to a file under `frontend/**` is the only lever available when the pipeline is push-only and the filter has already decided your changes do not exist.
+
+---
+
+## 3. What this COE rules OUT
+
+- **Not the service worker.** The v187/v188 bumps look like the PWA cache-churn class (`api-fetch-hardening-coe.md`'s first lesson, and `sw.js:29` v4), but they are the opposite: there the SW cache held *stale chunks of a build that had shipped*; here the build **never shipped at all**. No amount of cache work would have helped, and the SW is the fix vehicle rather than the fault.
+- **Not `cancel-in-progress` misconfigured.** `cancel-in-progress: false` is correct — flipping it to `true` would kill deploys mid-`wrangler deploy`, and would not help anyway: the middle runs are cancelled by the queue's depth-1 limit, not by that flag.
+- **Not the paths filter being wrong to exist.** It was added for a measured reason (4,900 of 3,000 monthly Actions minutes burned in a week) and it halves deploy cost on the common single-side push. The bug is its **diff window**, not its existence.
+- **Not the same incident as the two collision modes already on record.** `BUG-HISTORY.md:3425` describes *"Version 跑回 old"* — a **manual `wrangler` deploy racing the CI deploy**, whose remedy was "let CI own deploys". `api-fetch-hardening-coe.md`'s second lesson describes a **deploy patch built from an unscoped `git diff origin/main`** against a lagging local tree, which reverted ~80 files of same-day work and rolled sw v69 back to v66. Both are human-driven races against CI. **This one needs no human and no second deploy path**: CI alone, doing exactly what it was configured to do, silently dropped changes. Same family, different mechanism, and the earlier remedies do not cover it.
+
+---
+
+## 4. What the record does NOT show
+
+- **How long each window actually lasted in production.** Both recoveries are timestamped, but the point at which the frontend *became* stale is only bounded by the last-shipped SHA (`b8bce7e7` 19:21, `abb908dc` 21:15). No deploy log or run listing is preserved in the repo.
+- **Whether this happened before 2026-07-17 and went unnoticed.** The mechanism has existed since `7717cf78` (2026-07-11) — six days — and it produces **no signal at all**. `1d35ae28` says *"Same cause as v187, same session"*, but nothing establishes 2026-07-17 as the first occurrence. It is only the first occurrence somebody noticed, and they noticed because a bug that had been fixed was still biting the owner.
+- **Who caught it, or how.** Neither commit records the detection path.
+
+---
+
+## 5. Deferred — the real fix is not shipped
+
+| Item | Owner | Status |
+|------|-------|--------|
+| **`workflow_dispatch` + a `force` input on `deploy.yml`.** Named as the real fix in both `e90e1017` and `sw.js:326-327`. It needs *both*: `paths-filter` has no `github.event.before` on a dispatch, so a dispatch without a force input would compute an empty diff and skip both jobs — the same bug by another route. | Owner / whoever next touches `deploy.yml` | **NOT DONE.** Verified at `9db13349`: `deploy.yml` has no `workflow_dispatch` trigger. There is still no way to redeploy without pushing a commit. |
+| **A filter diff window that spans everything since the last successful deploy**, rather than one push's range. | Owner | Not attempted. This is the actual defect; `workflow_dispatch` is an escape hatch for it, not a cure. |
+| **Interim rule, in force now:** *after any burst merge, check that the last deploy's `frontend` job says **success**, not **skipped**.* Recorded at `sw.js:328-329`. | Everyone merging to main | Manual. It is a human check standing in for a pipeline guarantee, and it will be forgotten. |
+
+---
+
+## 6. Lessons
+
+1. **A green deploy is not evidence that your change is live.** This pipeline can report success for a run that deployed nothing you merged. Until the diff window is fixed, "CI is green" answers a different question than "is my code in production" — check the `frontend` job's own status, and check it says *success*, not *skipped*.
+2. **A skipped job is a silent failure with a success badge.** Conditional jobs (`if: needs.changes.outputs.frontend == 'true'`) convert "we decided not to do this" into a state that is visually indistinguishable from "there was nothing to do". Any conditional deploy step needs a way to assert afterwards that the deployed artifact matches the merged tree.
+3. **A diff window that assumes one run per push is broken by any concurrency group.** `github.event.before..github.sha` is only correct when every push gets its own run. `concurrency` with a depth-1 queue guarantees that some pushes never do. **If you add a paths filter to a workflow that has a concurrency group, the filter must diff against the last deployed SHA, not against the push.**
+4. **Merge bursts are a deploy hazard in their own right, independent of caching.** This repo already knew "do not burst-deploy the PWA" for service-worker reasons (`api-fetch-hardening-coe.md`). 2026-07-17 adds a second, unrelated reason with a worse failure mode: burst merges do not churn the cache, they **discard the build**. Three merges in 47 seconds is enough.
+5. **The bug that hides is the one that hits the person who reported it.** #718 fixed the owner's view-as, merged green, and left every view-as session breaking the whole `/scm` surface. The fix existed on main for over an hour while the person who asked for it kept experiencing the bug — the worst possible signal to send about whether reports get acted on.
+6. **Record the mechanism where the next person will trip over it.** `1d35ae28` spent 16 lines writing the cause into `sw.js` beside the constant being bumped, including the fix that was *not* taken and why. That comment is why this COE could be reconstructed at all, and it is the pattern to copy: **when you ship a workaround, document the real fix next to the workaround, not in a commit message nobody will `git log`.**
+
+---
+
+## See also
+
+- `.github/workflows/deploy.yml:7-9` (concurrency), `:24-33` (paths filter) — the two mechanisms that compose into the fault.
+- `frontend/public/sw.js:316-329` — the in-tree record of the incident and the unshipped fix.
+- `docs/api-fetch-hardening-coe.md` — burst-deploy SW cache churn, and the unscoped-`git diff` deploy-patch reversion; both adjacent, neither the same.
+- `BUG-HISTORY.md:3425` — the manual-`wrangler`-vs-CI collision, the earlier member of this family.

@@ -1,4 +1,4 @@
--- D1 / SQLite parity for PG migration 0158 (phase 1 additive rollout).
+-- D1 / SQLite parity for PG migration 0163 (phase 1 additive rollout).
 -- Keep the legacy (key, scope) primary key until the hardened middleware has
 -- deployed everywhere; see the PostgreSQL migration for the rollout contract.
 

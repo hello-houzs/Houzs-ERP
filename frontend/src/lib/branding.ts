@@ -15,6 +15,13 @@
 // fails / the app is offline) — only centralised, nothing changes visually.
 // ----------------------------------------------------------------------------
 
+import {
+  consumeCorrelated,
+  correlateError,
+  correlatedFetch,
+  requestIdFromResponse,
+} from "./requestCorrelation";
+
 export interface Branding {
   companyName: string;
   registrationNo: string;
@@ -252,19 +259,22 @@ export async function ensureBrandingLogoLoaded(): Promise<void> {
       // X-Company-Id rides along (like every api/client call) so the backend
       // serves the ACTIVE company's logo — without it a 2990 session on the
       // Houzs hostname would cache Houzs's logo under 2990's key.
-      const res = await fetch(`${api.baseUrl}/api/branding/logo`, {
+      const res = await correlatedFetch(`${api.baseUrl}/api/branding/logo`, {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           ...companyHeader(),
         },
       });
-      if (!res.ok) throw new Error(`logo fetch ${res.status}`);
-      const blob = await res.blob();
-      const dataUrl = await blobToDataUrl(blob);
-      const { width, height } = await dataUrlDimensions(dataUrl);
-      if (!width || !height) throw new Error("logo has no dimensions");
+      if (!res.ok) throw correlateError(new Error(`logo fetch ${res.status}`), requestIdFromResponse(res));
+      const { dataUrl, width, height, contentType } = await consumeCorrelated(res, async () => {
+        const blob = await res.blob();
+        const dataUrl = await blobToDataUrl(blob);
+        const { width, height } = await dataUrlDimensions(dataUrl);
+        if (!width || !height) throw new Error("logo has no dimensions");
+        return { dataUrl, width, height, contentType: blob.type };
+      });
       const format: BrandingLogo["format"] =
-        blob.type === "image/png" || dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
+        contentType === "image/png" || dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
       logoCache = { key, dataUrl, format, width, height };
       logoFailedKey = null;
     } catch {
@@ -324,17 +334,20 @@ export async function ensureBrandLogoLoaded(key: string | null | undefined): Pro
       // consumers that only need the text branding (same as the company memo).
       const { api, tokenStore } = await import("../api/client");
       const token = tokenStore.get();
-      const res = await fetch(
+      const res = await correlatedFetch(
         `${api.baseUrl}/api/projects/brands/logo?key=${encodeURIComponent(key)}`,
         { headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );
-      if (!res.ok) throw new Error(`brand logo fetch ${res.status}`);
-      const blob = await res.blob();
-      const dataUrl = await blobToDataUrl(blob);
-      const { width, height } = await dataUrlDimensions(dataUrl);
-      if (!width || !height) throw new Error("logo has no dimensions");
+      if (!res.ok) throw correlateError(new Error(`brand logo fetch ${res.status}`), requestIdFromResponse(res));
+      const { dataUrl, width, height, contentType } = await consumeCorrelated(res, async () => {
+        const blob = await res.blob();
+        const dataUrl = await blobToDataUrl(blob);
+        const { width, height } = await dataUrlDimensions(dataUrl);
+        if (!width || !height) throw new Error("logo has no dimensions");
+        return { dataUrl, width, height, contentType: blob.type };
+      });
       const format: BrandingLogo["format"] =
-        blob.type === "image/png" || dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
+        contentType === "image/png" || dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
       brandLogoCache.set(key, { key, dataUrl, format, width, height });
     } catch {
       brandLogoFailed.add(key); // fail-soft: company letterhead this session

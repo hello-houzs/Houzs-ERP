@@ -19,7 +19,8 @@
 //   utilisation    = total_trips ÷ available_days  (CAN exceed 100% — multiple
 //                    trips/day; Houzs's own definition. available_days=0 → null).
 //   deliveries     = trip_stops DELIVERY on the lorry's in-range trips;
-//                    pickups=PICKUP; services=SERVICE; setup_dismantle=SETUP+DISMANTLE.
+//                    pickups=PICKUP; services=SERVICE+INSPECTION;
+//                    setup_dismantle=SETUP+DISMANTLE.
 //   orders_per_trip   = deliveries ÷ total_trips.
 //   delivery_revenue  = Σ trip_stops.revenue_centi where stop_type=DELIVERY (cents).
 //   revenue_per_order = delivery_revenue ÷ deliveries.
@@ -271,7 +272,12 @@ lorryCapacity.get('/', async (c) => {
           if (meta.date) acc.deliveryTripDates.add(meta.date);
         } else if (kind === 'PICKUP') {
           acc.pickups += 1;
-        } else if (kind === 'SERVICE') {
+        } else if (kind === 'SERVICE' || kind === 'INSPECTION') {
+          /* INSPECTION (mig 0165) is an ASSR on-site inspection visit scheduled
+             from the Delivery Planning board. It is service-case work and counts
+             with SERVICE — without this arm it matched no bucket at all and the
+             visit consumed a lorry's day while showing up in none of its stop
+             counts. */
           acc.services += 1;
         } else if (kind === 'SETUP' || kind === 'DISMANTLE') {
           acc.setupDismantle += 1;

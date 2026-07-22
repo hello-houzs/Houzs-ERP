@@ -4,6 +4,8 @@ import {
   seedAuth,
   credsConfigured,
   isSkippableStagingError,
+  missingCredentialsMaySkip,
+  stagingProofRequired,
 } from "./fixtures";
 
 // The Sales Orders list request (vendor authed-fetch -> `${API_URL}/mfg-sales-orders`,
@@ -14,7 +16,7 @@ const SO_LIST_URL = /\/mfg-sales-orders(\?|$)/;
 test.describe("SO list", () => {
   test.beforeEach(() => {
     test.skip(
-      !credsConfigured,
+      missingCredentialsMaySkip(credsConfigured, stagingProofRequired),
       "Staging credentials not configured — set STAGING_E2E_EMAIL / STAGING_E2E_PASSWORD.",
     );
   });
