@@ -821,6 +821,7 @@ app.get("/", requireServiceCaseAccess(), async (c) => {
     page: parseInt(c.req.query("page") || "1", 10),
     per_page: parseInt(c.req.query("per_page") || "50", 10),
     include_archived: c.req.query("include_archived") === "1",
+    archived_only: c.req.query("archived_only") === "1",
     exclude_stage: c.req.query("exclude_stage") || undefined,
     // Calendar month-window bound (perf/servicecase-board-calendar-bound).
     // Additive: absent from/to leaves the query unbounded (List view et al).
@@ -1112,6 +1113,7 @@ app.get("/export.csv", requireServiceCaseAccess(), async (c) => {
     status: c.req.query("status"),
     search: c.req.query("search"),
     include_archived: c.req.query("include_archived") === "1",
+    archived_only: c.req.query("archived_only") === "1",
     exclude_stage: c.req.query("exclude_stage") || undefined,
   });
   const headers = [
