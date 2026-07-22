@@ -245,12 +245,41 @@ Consequences worth knowing before you touch this:
   refresh. **DP** rows still show "not applicable" for Driver / Lorry
   (`DeliveryPlanning.tsx:307`, `:342`); project rows are read-only mirrors
   (`:309`, `:344`).
-- **One leg = one stop.** A leg re-scheduled to another lorry or day resolves to
-  a different trip, so the wiring deletes that leg's stops on every other trip
-  (`assr_case_id` + `stop_type`, `trip_id` ≠ the new one). Without it the visit
-  would be counted against both lorries by `/lorry-capacity`. The SO/DO path
-  does **not** do this and can still leave a stop behind on a re-point — a known
-  gap, recorded in `BUG-HISTORY.md` (2026-07-21).
+- **One job = one stop — on BOTH paths.** A job re-scheduled to another lorry or
+  day resolves to a different trip, so the wiring deletes that job's stops on
+  every other trip. Without it `/lorry-capacity` counts the job against both
+  lorries (two stops, and its revenue added twice), and it stays on the route of
+  the driver it was moved off. The two paths key the delete on **different
+  columns, deliberately** — they are not mirrors:
+  - ASSR legs (`scheduleAssrOntoTrip`, #947): `assr_case_id` + `stop_type`, with
+    `trip_id` ≠ the new one. A service case has no scm uuid, so the stop links
+    back through `scm.trip_stops.assr_case_id` (mig 0166).
+  - SO/DO deliveries (`scheduleOntoTrip`): `do_id` (or `so_id`) + `stop_type`
+    `DELIVERY`, with `trip_id` ≠ the new one. The key is chosen by the pure
+    `staleStopSweepFor`, which **refuses** to sweep when neither uuid is present
+    rather than widening the filter.
+
+  Cross-contamination is impossible in either direction: an ASSR stop carries
+  `do_id` / `so_id` NULL, an SO/DO stop carries `assr_case_id` NULL, a manual DP
+  job (`dp-orders.ts`) carries all three NULL, and a NULL never matches a
+  concrete uuid. A failed delete is returned as `tripWiring.failed` with a reason
+  saying the job may be counted twice — best-effort, but never silent.
+
+  **Consequence, accepted:** a stop for the same document added by hand to a
+  second trip (`POST /trips/:id/stops`) is also cleared by the next board
+  schedule. Splitting one document across two lorries is the exact shape that
+  double-counts, and the board is the single dispatcher of record.
+
+  **Still open on the SO/DO path:** a `type: 'so'` schedule (an SO with no DO)
+  writes **no stop at all** — `scm.mfg_sales_orders` has a TEXT PK (`doc_no`) and
+  no `id`, so there is no uuid for `trip_stops.so_id` and the insert's
+  `(doId || soId)` guard skips it. It does still find-or-create a **trip**, so
+  re-pointing such an SO leaves the previous lorry's trip behind carrying no stop
+  for it — and with no stop, nothing links that trip to the SO, so nothing can
+  clean it up. `/lorry-capacity` counts every trip in `total_trips` and in
+  utilisation regardless of its stops. Recorded in `BUG-HISTORY.md`
+  (2026-07-22); the stop sweep does not fix it, because there is no stop to
+  sweep.
 - A crew-only edit (a lorry with no `scheduleDate`) skips the case's date write,
   so the ASSR branch checks the case **exists and is open** up front; a closed,
   archived or unknown case is a 404 and never mints a trip or a DP number.
