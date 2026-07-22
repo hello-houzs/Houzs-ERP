@@ -943,7 +943,7 @@ function DataGridInner<T>({
       for (const c of cols) o[header(c)] = cellText(c, row);
       return o;
     });
-    const XLSX = await import('xlsx');
+    const XLSX = await import('../../../lib/xlsx-runtime');
     const ws = XLSX.utils.json_to_sheet(data, { header: cols.map((c) => header(c)) });
     // Auto-size each column to its widest cell (header included) so the sheet is
     // legible instead of squished into one default width (Wei Siang 2026-06-20
@@ -971,7 +971,7 @@ function DataGridInner<T>({
         .trim()
       || `export-${sortedRows.length}`;
     const stamp = new Date().toISOString().slice(0, 10);
-    XLSX.writeFile(wb, `${stem} ${stamp}.xlsx`);
+    XLSX.writeFileXLSX(wb, `${stem} ${stamp}.xlsx`);
   }, [sortedRows, visibleColumns, storageKey, exportName]);
 
   // ── Sort handlers ─────────────────────────────────────────────────
