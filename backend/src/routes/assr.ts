@@ -881,10 +881,15 @@ app.post("/:id/resolve-creditor", requirePermission("service_cases.manage"), asy
 app.get("/creditors/search", requireServiceCaseAccess(), async (c) => {
   const q = (c.req.query("q") || "").trim().toLowerCase();
   const like = `%${q}%`;
+  // Company scope (owner audit 2026-07-22): creditors gained company_id in mig
+  // 0083 (all HOUZS today, but nothing on the DB side enforces that). Without a
+  // predicate here, the moment a 2990 creditor lands, a 2990-only ASSR caller
+  // sees it under Houzs — same class as the /search-so leak fixed in PR #990.
+  // ASSR is Houzs-exclusive by owner rule, so pin to the caller's ASSR reach.
   const rows = await c.env.DB.prepare(
     `SELECT creditor_code, company_name, phone1
        FROM creditors
-      WHERE LOWER(creditor_code) LIKE ? OR LOWER(COALESCE(company_name, '')) LIKE ?
+      WHERE (LOWER(creditor_code) LIKE ? OR LOWER(COALESCE(company_name, '')) LIKE ?)${assrCompanySql(c)}
       ORDER BY company_name
       LIMIT 20`
   )
@@ -1303,9 +1308,14 @@ app.post("/resync-so/:docNo", requirePermission("service_cases.write"), async (c
   }
 
   await upsertSalesOrder(c.env, so, region);
+  // Read-back scope (owner audit 2026-07-22): dormant today because AutoCount
+  // mirror rows are backfilled to HOUZS, but the moment a 2990-side AutoCount
+  // mirror is added this becomes a cross-company read-back. Mirrors the
+  // /search-so fix in PR #990.
   const row = await c.env.DB.prepare(
     `SELECT doc_no, ref, debtor_name, phone, doc_date, sales_agent, region
-       FROM sales_orders WHERE LOWER(doc_no) = LOWER(?)`
+       FROM sales_orders
+      WHERE LOWER(doc_no) = LOWER(?)${assrCompanySql(c)}`
   )
     .bind(so.DocNo)
     .first();
