@@ -50,6 +50,38 @@ const TARGETS = [
   { table: "sales_entries", column: "customer_phone" },
 ];
 
+/* WHICH STORED VALUES MAY BE ASSUMED MALAYSIAN.
+ *
+ * canonicalizeSinglePhone is the API's rule, and for LIVE INPUT it is right: a
+ * person typing into a form with a country picker set to Malaysia means
+ * Malaysia. For a BACKFILL over rows nobody is looking at, the same rule is
+ * dangerous, because normalizePhone treats any bare 8+ digit string as
+ * Malaysian:
+ *
+ *     "61234567"  ->  "+6061234567"
+ *
+ * If that row was a Singapore landline (6123 4567) the migration has just
+ * turned an obviously-broken number into a CONFIDENTLY WRONG one. Before, a
+ * human looking at it would ask the customer. After, it looks like a normal
+ * +60 number and nobody ever questions it — and the customer is unreachable.
+ * That is strictly worse than leaving it alone.
+ *
+ * So the backfill converts only what is UNAMBIGUOUSLY Malaysian local:
+ *   - leading trunk 0  ("0123456789")      — the ordinary local form
+ *   - leading 60       ("60123456789")     — already says Malaysia
+ *   - bare 9-10 digits starting with 1     — a mobile written without the 0,
+ *                                            the shape the OCR rule produces
+ * Everything else is REPORTED, not guessed at. A number a human must look at
+ * is not a number a script should decide.
+ */
+function malaysianLocalShape(raw) {
+  const digits = String(raw ?? '').replace(/\D+/g, '');
+  if (digits.startsWith('0')) return true;
+  if (digits.startsWith('60')) return true;
+  if (digits.startsWith('1') && (digits.length === 9 || digits.length === 10)) return true;
+  return false;
+}
+
 const APPLY = process.argv.includes("--apply");
 const REVERT = process.argv.find((a) => a.startsWith("--revert="))?.slice(9);
 
@@ -125,31 +157,44 @@ async function processColumn({ table, column }) {
       AND left(btrim(${pg(column)}), 1) <> '+'`;
 
   const changes = [];
-  let refused = 0;
+  const refusedRows = [];
+  const ambiguous = [];
   for (const r of rows) {
+    if (!malaysianLocalShape(r.value)) {
+      // Not unambiguously Malaysian — could be a foreign number stored without
+      // its country code. Reported, never guessed at. See malaysianLocalShape.
+      ambiguous.push(r);
+      continue;
+    }
     const next = canonicalizeSinglePhone(r.value);
     if (next === r.value || next === "" || !next.startsWith("+")) {
-      // Either nothing to do, or the guard refused it (a list, an extension, a
-      // length that is not one phone). Refusing is the safe answer.
-      refused += 1;
+      refusedRows.push(r);
       continue;
     }
     changes.push({ id: r.id, old: r.value, next });
   }
+  const refused = refusedRows.length;
 
   notice(
     `${table}.${column}: ${rows.length} without a country code — ` +
-      `${changes.length} convertible, ${refused} left alone`,
+      `${changes.length} convertible, ${refused} unparseable, ` +
+      `${ambiguous.length} AMBIGUOUS (left alone, need a human)`,
   );
 
-  if (changes.length > 0 && refused > 0) {
-    // Name a few so a human can eyeball WHY they were refused rather than
-    // trusting the count.
-    const samples = rows
-      .filter((r) => !changes.some((c) => c.id === r.id))
-      .slice(0, 3)
-      .map((r) => JSON.stringify(r.value));
-    if (samples.length) notice(`  left alone, e.g. ${samples.join(", ")}`);
+  // A count does not prove correctness. Show what would actually change, so a
+  // human can see that no number is being mangled before any of it is written.
+  for (const c of changes.slice(0, 8)) {
+    notice(`    ${JSON.stringify(c.old)}  ->  ${c.next}`);
+  }
+  if (changes.length > 8) notice(`    … and ${changes.length - 8} more of the same shapes`);
+
+  for (const a of ambiguous.slice(0, 8)) {
+    notice(`    AMBIGUOUS, untouched: ${JSON.stringify(a.value)} — could be a foreign number without its country code`);
+  }
+  if (ambiguous.length > 8) notice(`    … and ${ambiguous.length - 8} more ambiguous`);
+
+  for (const r of refusedRows.slice(0, 3)) {
+    notice(`    unparseable, untouched: ${JSON.stringify(r.value)}`);
   }
 
   if (!APPLY || changes.length === 0) return { table, column, would: changes.length, refused };
