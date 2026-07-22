@@ -77,9 +77,9 @@ Phase 2 converts the additive Phase 1 columns into enforced database
 constraints. It is intentionally a separate release:
 
 - Postgres: `0163_idempotency_principal_company_hash.sql` must deploy first;
-  `0167_idempotency_phase2_constraints.sql` is the later hardening release.
+  `0171_idempotency_phase2_constraints.sql` is the later hardening release.
 - D1: `128_idempotency_principal_company_hash.sql` must deploy first;
-  `129_idempotency_phase2_constraints.sql` is the later parity release.
+  `130_idempotency_phase2_constraints.sql` is the later parity release.
 - Never place both phases in one PR, merge, migration run, or Worker rollout.
   The Phase 2 SQL requires a durable Phase 1 Worker marker to soak for 24 hours.
 
@@ -270,7 +270,7 @@ the production invocation as one file is therefore part of the gate.
 ```sql
 SELECT filename, applied_at
 FROM public._pg_migrations
-WHERE filename = '0167_idempotency_phase2_constraints.sql';
+WHERE filename = '0171_idempotency_phase2_constraints.sql';
 
 SELECT column_name, is_nullable
 FROM information_schema.columns
@@ -301,7 +301,7 @@ PRAGMA table_info(idempotency_keys);
 PRAGMA index_list(idempotency_keys);
 SELECT name, applied_at
 FROM _migrations
-WHERE name = '129_idempotency_phase2_constraints.sql';
+WHERE name = '130_idempotency_phase2_constraints.sql';
 ```
 
 Expected primary-key order: `user_id=1`, `tenant_scope=2`, `key=3`, `scope=4`.

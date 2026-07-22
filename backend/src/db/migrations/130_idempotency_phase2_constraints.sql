@@ -1,5 +1,5 @@
 -- Phase 2: D1 / SQLite parity for PG migration
--- 0167_idempotency_phase2_constraints.sql.
+-- 0171_idempotency_phase2_constraints.sql.
 --
 -- HARD DEPLOYMENT GATE: 128_idempotency_principal_company_hash.sql (Phase 1 on
 -- D1) must be tracked, the durable Phase-1
