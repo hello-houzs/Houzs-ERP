@@ -3283,7 +3283,13 @@ function DetailContent({
             )}
             {/* Stage picker moved into the Workflow Progress card below
                 (rendered as "Change to"), matching the case-detail layout. */}
-            {c.stage === "pending_delivery_service" && !c.archived_at && (
+            {/* Close Case on every open case (Nick 2026-07-21) — not just
+                Delivery/Service. The ClosePrompt (satisfaction rating)
+                is stage-agnostic and the stage dropdown already allows
+                jumping straight to Completed, so early closes (customer
+                withdrew, resolved without delivery) go through the same
+                rated flow instead of a silent stage jump. */}
+            {c.stage !== "completed" && !c.archived_at && (
               <HeaderButton
                 variant="primary"
                 onClick={handleCloseClick}
