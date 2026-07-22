@@ -751,14 +751,6 @@ export const DeliveryPlanning = () => {
     ];
   }, [data?.regions]);
 
-  /* code → display label, from the master (drives the Region grid column). */
-  const regionLabel = useMemo<Record<string, string>>(() => {
-    const m: Record<string, string> = {};
-    for (const r of data?.regions ?? []) m[r.key] = r.label;
-    return m;
-  }, [data?.regions]);
-  const regionLabelOf = (code: string): string => regionLabel[code] ?? code;
-
   const activeRegionLabel = regionTabs.find((r) => r.key === activeRegion)?.label ?? 'All';
 
   const setState = (s: string) => {
@@ -842,12 +834,6 @@ export const DeliveryPlanning = () => {
       searchValue: (o) => o.postcode ?? '',
     },
     {
-      key: 'customer_state', label: 'State', width: 120, groupable: true, defaultHidden: true,
-      accessor: (o) => o.customer_state ?? '—',
-      searchValue: (o) => o.customer_state ?? '',
-      groupValue: (o) => o.customer_state ?? '(none)',
-    },
-    {
       key: 'building_type', label: 'Property', width: 120, groupable: true, defaultHidden: true,
       accessor: (o) => o.building_type ?? '—',
       searchValue: (o) => o.building_type ?? '',
@@ -880,12 +866,17 @@ export const DeliveryPlanning = () => {
       groupValue: (o) => o.referral ?? '(none)',
     },
     {
-      key: 'region', label: 'Region', width: 110, sortable: true, groupable: true,
-      accessor: (o) => regionLabelOf(o.region),
-      searchValue: (o) => regionLabelOf(o.region),
-      groupValue: (o) => regionLabelOf(o.region),
-      exportValue: (o) => regionLabelOf(o.region),
-      sortFn: (a, b) => regionLabelOf(a.region).localeCompare(regionLabelOf(b.region)),
+      /* The order's ACTUAL customer state (Kuala Lumpur / Selangor / Johor …).
+         Key stays 'region' so existing saved column layouts keep this column
+         visible in place — but it now shows the granular state, not the region
+         BUCKET. The bucket is the tab row above; which states roll up into which
+         bucket is owner-maintained in Delivery Regions. */
+      key: 'region', label: 'State', width: 140, sortable: true, groupable: true,
+      accessor: (o) => o.customer_state?.trim() || '—',
+      searchValue: (o) => o.customer_state ?? '',
+      groupValue: (o) => o.customer_state?.trim() || '(none)',
+      exportValue: (o) => o.customer_state ?? '',
+      sortFn: (a, b) => (a.customer_state ?? '').localeCompare(b.customer_state ?? ''),
     },
     {
       key: 'warehouse', label: 'Warehouse', width: 150, sortable: true, groupable: true, defaultHidden: true,
@@ -1121,11 +1112,10 @@ export const DeliveryPlanning = () => {
       filterType: 'date', dateValue: (o) => o.do_date,
     },
   // The EM/SG cross-border default-show (isEmSg) depends on activeRegion →
-  // recompute the columns on region change. regionLabel feeds the Region column's
-  // display labels (from the config master). The editable Status/Date/Driver/Lorry
+  // recompute the columns on region change. The editable Status/Date/Driver/Lorry
   // accessors close over `sched` + the driver/lorry option lists, so they join the
   // deps (a new driver/lorry list must re-render the pickers).
-  ], [activeRegion, regionLabel, sched, drivers, lorries]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [activeRegion, sched, drivers, lorries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-4">
