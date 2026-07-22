@@ -208,6 +208,45 @@
   accent-color: var(--c-burnt);
   cursor: pointer;
 }
+.columnsMenuHeaderBtns {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Right-side columns DRAWER (owner 2026-07-22: right-side panel like the
+   DataTable one, but narrow). Fixed to the viewport edge so it never fights
+   the grid card's overflow; flex column so the list scrolls under the header. */
+.columnsDrawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  width: min(340px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--c-paper);
+  border-left: 1px solid var(--line);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.16);
+}
+.columnsDrawerBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+/* Drag-to-reorder rows in the Columns popover (unified column UX). */
+.columnsMenuGrip {
+  display: inline-flex;
+  align-items: center;
+  color: var(--c-muted, #767b6e);
+  cursor: grab;
+}
+.columnsMenuGrip:active { cursor: grabbing; }
+.columnsMenuItemDragging { opacity: 0.45; }
+.columnsMenuItemDrop {
+  background: var(--c-cream);
+  box-shadow: inset 0 2px 0 var(--c-burnt, #b0592f);
+}
 
 .tbarBtn {
   display: inline-flex;
