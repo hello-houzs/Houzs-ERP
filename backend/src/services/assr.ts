@@ -1213,6 +1213,23 @@ export async function setItemRemark(
   return (r.meta.changes ?? 0) > 0;
 }
 
+// Supplier-copy remark (Nick 2026-07-21: remark 分别给客户和 Supplier).
+// `remark` stays the customer-copy text; this one prints on the
+// Supplier Service Order only.
+export async function setItemSupplierRemark(
+  env: Env,
+  assrId: number,
+  itemId: number,
+  remark: string | null
+): Promise<boolean> {
+  const r = await env.DB.prepare(
+    `UPDATE assr_items SET supplier_remark = ? WHERE id = ? AND assr_id = ?`
+  )
+    .bind(remark, itemId, assrId)
+    .run();
+  return (r.meta.changes ?? 0) > 0;
+}
+
 // Per-item quantity (Nick 2026-07-20) — editable in the Product Info
 // card; feeds the ITEMS table's QTY column on both print copies.
 export async function setItemQty(
