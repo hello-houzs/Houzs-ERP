@@ -43,6 +43,7 @@ const ALIAS_MAP: ReadonlyMap<string, string> = new Map([
   ['MALACCA', 'Melaka'],
   ['NEGERI SEMBILAN', 'Negeri Sembilan'],
   ['NS', 'Negeri Sembilan'],
+  ['N S', 'Negeri Sembilan'],
   ['N SEMBILAN', 'Negeri Sembilan'],
   ['PAHANG', 'Pahang'],
   ['PENANG', 'Pulau Pinang'],

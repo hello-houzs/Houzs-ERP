@@ -88,6 +88,7 @@ BEGIN
     WHEN 'MALACCA'          THEN 'Melaka'
     WHEN 'NEGERI SEMBILAN'  THEN 'Negeri Sembilan'
     WHEN 'NS'               THEN 'Negeri Sembilan'
+    WHEN 'N S'              THEN 'Negeri Sembilan'
     WHEN 'N SEMBILAN'       THEN 'Negeri Sembilan'
     WHEN 'PAHANG'           THEN 'Pahang'
     WHEN 'PENANG'           THEN 'Pulau Pinang'
