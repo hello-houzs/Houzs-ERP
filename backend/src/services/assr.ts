@@ -1,5 +1,6 @@
 import type { Env } from "../types";
 import { todayMyt } from "../scm/lib/my-time";
+import { isServiceLine } from "../scm/shared/service-sku";
 import { AutoCountClient, cleanPhone } from "./autocount";
 import { resolveCreditorForCase } from "./stockItems";
 import { getActiveStaffToken } from "./caseTracking";
@@ -1213,6 +1214,23 @@ export async function setItemRemark(
   return (r.meta.changes ?? 0) > 0;
 }
 
+// Supplier-copy remark (Nick 2026-07-21: remark 分别给客户和 Supplier).
+// `remark` stays the customer-copy text; this one prints on the
+// Supplier Service Order only.
+export async function setItemSupplierRemark(
+  env: Env,
+  assrId: number,
+  itemId: number,
+  remark: string | null
+): Promise<boolean> {
+  const r = await env.DB.prepare(
+    `UPDATE assr_items SET supplier_remark = ? WHERE id = ? AND assr_id = ?`
+  )
+    .bind(remark, itemId, assrId)
+    .run();
+  return (r.meta.changes ?? 0) > 0;
+}
+
 // Per-item quantity (Nick 2026-07-20) — editable in the Product Info
 // card; feeds the ITEMS table's QTY column on both print copies.
 export async function setItemQty(
@@ -1225,6 +1243,23 @@ export async function setItemQty(
     `UPDATE assr_items SET qty = ? WHERE id = ? AND assr_id = ?`
   )
     .bind(qty, itemId, assrId)
+    .run();
+  return (r.meta.changes ?? 0) > 0;
+}
+
+// Per-item carton quantity (owner 2026-07-21) — a second, user-selected
+// quantity beside the per-set qty; feeds the ITEMS table's CTN column on
+// both print copies.
+export async function setItemCartonQty(
+  env: Env,
+  assrId: number,
+  itemId: number,
+  qtyCarton: number
+): Promise<boolean> {
+  const r = await env.DB.prepare(
+    `UPDATE assr_items SET qty_carton = ? WHERE id = ? AND assr_id = ?`
+  )
+    .bind(qtyCarton, itemId, assrId)
     .run();
   return (r.meta.changes ?? 0) > 0;
 }
@@ -1352,6 +1387,12 @@ export async function lookupSOItems(
       if (r.cancelled === true || r.cancelled === 1 || r.cancelled === "t" || r.cancelled === "true") continue;
       const code = (r.item_code ?? "").trim();
       if (!code) continue;
+      // Owner audit 2026-07-22 — Service Case is about a defective product /
+      // delivery/service problem, NOT the delivery-fee line itself. Filter out
+      // every SVC-* line (SVC-DELIVERY, SVC-DISPOSE, SVC-LIFT, …) so the New
+      // Case dialog never lets a salesperson tick a fee as the "item that has
+      // an issue" (owner sighting: SVC-DELIVERY appeared in the picker).
+      if (isServiceLine({ itemCode: code })) continue;
       const qty = Number(r.qty ?? 0) || 0;
       const existing = scmSeen.get(code);
       if (existing) {
@@ -1376,6 +1417,9 @@ export async function lookupSOItems(
     for (const d of details ?? []) {
       const code = (d.ItemCode ?? "").trim();
       if (!code) continue;
+      // Same service-line filter as the SCM branch above — SVC-* codes are
+      // fees, not the item that has the issue.
+      if (isServiceLine({ itemCode: code })) continue;
       const desc = d.Description ?? d.ItemDescription ?? null;
       const qty = Number(d.Qty ?? 0) || 0;
       const existing = seen.get(code);
@@ -1400,7 +1444,10 @@ export async function lookupSOItems(
   )
     .bind(docNo)
     .all<{ item_code: string; item_description: string | null }>();
-  return (rows.results ?? []).map((r) => ({ ...r, qty: 1 }));
+  // Same SVC-* filter for the purchase_orders fallback so no path leaks a fee.
+  return (rows.results ?? [])
+    .filter((r) => !isServiceLine({ itemCode: r.item_code }))
+    .map((r) => ({ ...r, qty: 1 }));
 }
 
 // ── Listing ───────────────────────────────────────────────────
@@ -1414,6 +1461,9 @@ export interface ListAssrFilters {
   page?: number;
   per_page?: number;
   include_archived?: boolean;
+  /** Show ONLY archived rows (Nick 2026-07-21: the Show-archived
+   *  toggle is a separate archived list, not a merged view). */
+  archived_only?: boolean;
   /** Comma-separated stage slugs to exclude. Used by the "Hide
    *  completed" toggle to drop finished cases from the working list
    *  without dropping them from the dataset. */
@@ -1554,10 +1604,11 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
   const where: string[] = [];
   const binds: any[] = [];
 
-  // Soft-delete filter: hide archived rows unless explicitly
-  // requested. Keeps the default list clean while still letting
-  // managers review archived cases with ?include_archived=1.
-  if (!f.include_archived) where.push("c.archived_at IS NULL");
+  // Soft-delete filter: archived_only flips the list to ONLY archived
+  // rows (the UI's Archived view); otherwise archived rows are hidden
+  // unless explicitly merged in with ?include_archived=1.
+  if (f.archived_only) where.push("c.archived_at IS NOT NULL");
+  else if (!f.include_archived) where.push("c.archived_at IS NULL");
 
   if (f.stage) {
     const stages = f.stage.split(",").map((s) => s.trim()).filter(Boolean);
@@ -1737,7 +1788,8 @@ export async function exportAssrCases(
 ) {
   const where: string[] = [];
   const binds: any[] = [];
-  if (!f.include_archived) where.push("c.archived_at IS NULL");
+  if (f.archived_only) where.push("c.archived_at IS NOT NULL");
+  else if (!f.include_archived) where.push("c.archived_at IS NULL");
   if (f.stage) {
     const stages = f.stage.split(",").map((s) => s.trim()).filter(Boolean);
     if (stages.length === 1) {

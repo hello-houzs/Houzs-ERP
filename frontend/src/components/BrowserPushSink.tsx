@@ -6,29 +6,7 @@ import {
   getBrandingCompanyCode,
   shortCompanyName,
 } from "../lib/branding";
-
-const PUSH_PREF_KEY = "notifications:browserPush";
-
-export function isBrowserPushEnabled(): boolean {
-  try {
-    return (
-      typeof window !== "undefined" &&
-      "Notification" in window &&
-      Notification.permission === "granted" &&
-      localStorage.getItem(PUSH_PREF_KEY) === "1"
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function setBrowserPushEnabled(enabled: boolean) {
-  try {
-    localStorage.setItem(PUSH_PREF_KEY, enabled ? "1" : "0");
-  } catch {
-    // non-fatal
-  }
-}
+import { isBrowserPushEnabled } from "../lib/browserNotificationPreference";
 
 /**
  * Invisible component mounted near the root. Watches the shared

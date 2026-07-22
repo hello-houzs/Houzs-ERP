@@ -322,11 +322,10 @@
 // and skips the frontend. Every frontend change in a cancelled run never ships,
 // and the deploy that ran goes GREEN. v188 recovers 8 files including the whole
 // authToken seam — i.e. the owner's view-as flow was fixed, merged, and not live.
-// The bump is the documented recovery precisely because it is a real frontend
-// change, so the filter fires. The real fix is a workflow_dispatch + force input
-// on deploy.yml (paths-filter has no `before` on a dispatch, so it needs both);
-// until that exists, ANY burst merge must be followed by checking that the last
-// deploy's `frontend` job says success, not skipped.
+// The release gate now fixes the class instead of relying on another bump:
+// deploy.yml always rebuilds the latest main frontend after a completed run and
+// exposes workflow_dispatch as a one-click recovery. A burst can collapse
+// intermediate runs, but the surviving run can no longer skip the latest UI.
 // v189 (2026-07-19) — canonical-redirect fix. The pages.dev -> houzscentury.com
 // 302 shipped in #855 never reached returning PWA users: THIS worker intercepts
 // the navigation, and because navigationNetworkFirst fetches it with redirect

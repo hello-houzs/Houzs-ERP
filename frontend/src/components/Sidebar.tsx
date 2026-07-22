@@ -51,7 +51,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
-import { useLocalStorage } from "../hooks/useLocalStorage";
+import { booleanRecordPreference, useIdentityPreference } from "../hooks/useIdentityPreference";
 import { useAuth } from "../auth/AuthContext";
 import { makeNavFilter } from "./navFilter";
 import { CompanyMark } from "./CompanyMark";
@@ -340,18 +340,10 @@ export const NAV_TABS: NavTab[] = [
     ],
   },
 
-  // ── Fair Report — exhibition sales performance (SO / DO / Invoice stages).
-  // Flat top-level entry (NOT nested under Supply Chain — the owner questioned
-  // deep SCM nesting) sitting next to Projects, since a "fair" IS a Project.
-  // requireFairReport = management + the Sales Director only (the exact backend
-  // fairReportAccess cohort); ordinary sales / office never see it.
-  {
-    section: "operations",
-    to: "/reports/fair-report",
-    label: "Sales Report",
-    icon: BarChart3,
-    requireFairReport: true,
-  },
+  // ── Sales Report was here as a flat top-level entry; owner 2026-07-22
+  //    moved it INTO the Finance submenu below (it is fundamentally a
+  //    finance/reporting page, and the top-level slot was overloading the
+  //    left rail). The entry now lives inside the Finance group's children.
 
   // ── Supply Chain — ported 2990's furniture SCM (/api/scm) ────
   // Header links to the /scm Hub; chevron expands the inline subtree.
@@ -590,6 +582,13 @@ export const NAV_TABS: NavTab[] = [
       // table for GRN / PI / PV foreign-currency posting. Gated on the flat
       // scm.currency.manage permission (Owner / IT Admin via *).
       { to: "/scm/currencies", label: "Currencies", icon: DollarSign, anyPerm: ["*", "scm.currency.manage"] },
+      // Sales Report — moved from the top-level slot (owner 2026-07-22).
+      // Gate: requireFairReport (management + Sales Director cohort). The
+      // parent Finance group's anyPerm/anyAccess would AND onto this child
+      // and hide it from the Sales Director (who has fairReport but often
+      // not the SCM finance areas), so the child ALSO carries its own
+      // anyPerm/anyAccess that admits the fair-report cohort explicitly.
+      { to: "/reports/fair-report", label: "Sales Report", icon: BarChart3, requireFairReport: true, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance", "scm.finance.accounting", "scm.finance.outstanding", "projects.finances"] },
     ],
   },
 
@@ -767,9 +766,10 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
 
   // Per-group expanded memory (accordion). undefined = auto (open iff the group
   // holds the current route); true/false = explicit after a click.
-  const [groupExpanded, setGroupExpanded] = useLocalStorage<Record<string, boolean>>(
+  const [groupExpanded, setGroupExpanded] = useIdentityPreference(
     "sidebar:groups:v2-accordion",
-    {}
+    {},
+    booleanRecordPreference,
   );
   function isGroupOpen(id: string, active: boolean): boolean {
     const v = groupExpanded[id];

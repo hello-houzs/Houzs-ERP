@@ -26,6 +26,7 @@ import {
   usePostPurchaseConsignmentReturn,
 } from '../../vendor/scm/lib/purchase-consignment-return-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, removeScmHandoff } from '../../lib/scmHandoffStorage';
 import { usePurchaseConsignmentReceiveDetail } from '../../vendor/scm/lib/purchase-consignment-receive-queries';
 import { usePurchaseConsignmentOrderDetail } from '../../vendor/scm/lib/purchase-consignment-order-queries';
 import { useSuppliers } from '../../vendor/scm/lib/suppliers-queries';
@@ -158,9 +159,7 @@ export const PurchaseConsignmentReturnNew = () => {
       itemGroup: string | null; description: string | null; uom: string | null;
       qty: number; unitPriceCenti: number; variants: unknown;
     };
-    let stash: Stash[] | null = null;
-    try { stash = JSON.parse(sessionStorage.getItem('pcrnFromReceivePicks') ?? 'null'); }
-    catch { stash = null; }
+    const stash = readScmHandoff<Stash[]>('pcrnFromReceivePicks');
     if (!stash || stash.length === 0) return;
     setSupplierId(stash[0]?.supplierId ?? '');
     setLines(stash.map((s) => ({
@@ -176,7 +175,7 @@ export const PurchaseConsignmentReturnNew = () => {
       reason:         '',
       notes:          '',
     })));
-    sessionStorage.removeItem('pcrnFromReceivePicks');
+    removeScmHandoff('pcrnFromReceivePicks');
     setPicksLoaded(true);
   }, [fromPicks, picksLoaded]);
 

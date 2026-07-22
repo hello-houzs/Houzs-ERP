@@ -10,7 +10,7 @@
 // DIFFERENT debtor grey out — a return is for ONE debtor.
 //
 // Continue stashes the picked lines (carrying each line's noteItemId + condition)
-// to sessionStorage['crFromNotePicks'] and opens the normal New Consignment
+// to the scoped SCM handoff store and opens the normal New Consignment
 // Return form prefilled for review (?fromPicks=1). No stock moves until Create.
 //
 // Routing: /scm/consignment-returns/from-note.
@@ -18,6 +18,7 @@
 
 import { useMemo, useState, type CSSProperties } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
@@ -271,7 +272,10 @@ export const ConsignmentReturnFromNote = () => {
       return;
     }
 
-    sessionStorage.setItem('crFromNotePicks', JSON.stringify(stash));
+    if (!writeScmHandoff('crFromNotePicks', stash)) {
+      setDialog({ title: 'Unable to continue', body: 'This browser could not safely store your picked lines. Your selection is still here; free some browser storage and try again.' });
+      return;
+    }
     navigate(`/scm/consignment-returns/new?fromPicks=1`);
   };
 

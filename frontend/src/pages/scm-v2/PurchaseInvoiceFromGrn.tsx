@@ -23,6 +23,7 @@
 
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { ArrowLeft, ArrowRight, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { fmtDateOrDash } from '@2990s/shared';
@@ -100,7 +101,10 @@ export const PurchaseInvoiceFromGrn = () => {
   const onContinue = () => {
     if (pickedCount === 0 || !activeGrnId) { notify({ title: 'Tick at least one line from one note first.', tone: 'error' }); return; }
     const stash = picked.map(([grnItemId, v]) => ({ grnItemId, qty: v.qty }));
-    sessionStorage.setItem('piFromGrnPicks', JSON.stringify(stash));
+    if (!writeScmHandoff('piFromGrnPicks', stash)) {
+      notify({ title: 'Unable to continue', body: 'This browser could not safely store your picked lines. Your selection is still here; free some browser storage and try again.', tone: 'error' });
+      return;
+    }
     navigate(`/scm/purchase-invoices/new?grnId=${encodeURIComponent(activeGrnId)}&fromPicks=1`);
   };
 

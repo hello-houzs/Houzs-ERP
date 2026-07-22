@@ -7,9 +7,12 @@ import type { Env } from "../types";
 // (d1-compat) already shipped. Cheap; mount outermost so it times the whole
 // chain and sees the final status + (for authed routes) the resolved user.
 //
-// Sentry/error-aggregation is intentionally NOT wired here to avoid adding a
-// Worker dependency + bundle weight; the onError humanizer already returns
-// clean errors. Add a SENTRY_DSN-gated hook later if error aggregation is wanted.
+// Error AGGREGATION is deliberately not done here — it belongs in `onError`,
+// which is the only place that sees the thrown error itself rather than just
+// the status this middleware records. That SENTRY_DSN-gated hook now exists:
+// index.ts calls services/errorTracking.ts from onError, and it is inert until
+// the secret is set. This middleware stays what it always was — one access-log
+// line and the request id that the error report quotes back.
 
 const SAFE_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,63}$/;
 

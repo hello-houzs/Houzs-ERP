@@ -17,6 +17,7 @@ import {
   toClientResponse,
 } from "../services/configCache";
 import { audit } from "../services/audit";
+import { canonicalizeSinglePhone } from "../scm/shared/phone";
 
 // ── Branding (company identity) ───────────────────────────────
 //
@@ -106,7 +107,13 @@ app.put("/", requirePermission("settings.manage"), async (c) => {
     registrationNo: str(body.registrationNo, current.registrationNo),
     address: str(body.address, current.address),
     postcode: str(body.postcode, current.postcode),
-    phone: str(body.phone, current.phone),
+    // Canonicalised so the phone printed on every document carries a country
+    // code, like every other contact number in the system. canonicalizeSingle-
+    // Phone REFUSES anything that is not unambiguously one number — this field
+    // is free text and has held "03-1234 5678 / 019-876 5432"; normalizePhone
+    // would concatenate those into one nonsense string and print THAT on every
+    // invoice. Refusing keeps the human's formatting, which is the safe failure.
+    phone: canonicalizeSinglePhone(str(body.phone, current.phone)),
     email: str(body.email, current.email),
     website: str(body.website, current.website),
     logoR2Key: str(body.logoR2Key, current.logoR2Key),

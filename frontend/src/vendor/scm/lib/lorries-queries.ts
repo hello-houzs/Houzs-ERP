@@ -11,6 +11,7 @@ import { authedFetch, API_URL, humanApiError } from './authed-fetch';
 // See authed-fetch.ts's import note: the token may be in sessionStorage, so the
 // read must come from the shared accessor, never an inlined localStorage hit.
 import { readAuthToken } from '../../../lib/authToken';
+import { companyHeader } from '../../../lib/activeCompany';
 import { prepareImageForUpload } from '../../../lib/imagePipeline';
 import {
   consumeCorrelated,
@@ -234,17 +235,12 @@ export async function fetchServiceInvoiceUrl(recordId: string): Promise<{ url: s
   /* Surfaces through the caller's `err.message` — a sentence, not the marker
      `not_authenticated` (same fix as authed-fetch / slip). */
   if (!token) throw new Error('Your session has expired — please sign in again.');
-  const companyId = (() => {
-    try {
-      const raw = localStorage.getItem('houzs.activeCompanyId');
-      const n = raw ? Number(raw) : NaN;
-      return Number.isFinite(n) && n > 0 ? String(n) : null;
-    } catch { return null; }
-  })();
+  // Correlated transport (main); the inline localStorage re-read of
+  // 'houzs.activeCompanyId' is gone — companyHeader() below is the one accessor.
   const res = await correlatedFetch(`${API_URL}/lorry-service-records/${encodeURIComponent(recordId)}/invoice`, {
     headers: {
       authorization: `Bearer ${token}`,
-      ...(companyId ? { 'X-Company-Id': companyId } : {}),
+      ...companyHeader(),
     },
   });
   if (!res.ok) throw correlateError(

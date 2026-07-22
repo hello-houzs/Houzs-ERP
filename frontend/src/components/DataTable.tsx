@@ -32,6 +32,8 @@ import { UdfCell } from "./UdfCell";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useUdf, type UseUdfResult } from "../hooks/useUdf";
 import { downloadCSV, toCSV, type CSVColumn } from "../lib/csv";
+import { SearchScopeHint } from "./SearchScopeHint";
+import { MobileVirtualList } from "../mobile/MobileVirtualList";
 
 export interface Column<T> {
   key: string;
@@ -74,6 +76,14 @@ interface Props<T> {
   /** Stable identifier used for persisting column visibility, order, sort,
    *  and density per page (localStorage). */
   tableId?: string;
+  /**
+   * Optional stable layout family shared by many instances of the same table
+   * schema. Detail pages must use this instead of embedding a document id in
+   * every persisted key, otherwise browsing documents grows localStorage
+   * forever. This affects layout preferences only; row identity still comes
+   * from `getRowKey` and `tableId` remains available to the caller.
+   */
+  layoutFamily?: string;
   columns: Column<T>[];
   rows: T[] | null;
   loading?: boolean;
@@ -108,6 +118,23 @@ interface Props<T> {
     value: string;
     onChange: (next: string) => void;
     placeholder?: string;
+    /**
+     * True while the visible term has not yet produced the rows below. This
+     * keeps A results from being presented as if they belonged to A1.
+     */
+    searching?: boolean;
+    searchingLabel?: string;
+    /** True while totalRecords belongs to a placeholder/failed filter key. */
+    countPending?: boolean;
+    /**
+     * Declares the data boundary of this search box. Defaults to `loaded`, so
+     * a partial-page filter can never silently present itself as global.
+     */
+    scope?: "server" | "loaded";
+    /** Settled result count. Hidden while a replacement search is pending. */
+    totalRecords?: number;
+    /** Known backend cap when scope is loaded rather than server-wide. */
+    loadedLimit?: number;
     /**
      * Milliseconds to wait after the last keystroke before calling `onChange`.
      * Default 250. Pass 0 to propagate on every keystroke (only correct when
@@ -248,6 +275,61 @@ const DEFAULT_COL_WIDTH = 160;
 const VIRTUAL_ROW_THRESHOLD = 30;
 const VIRTUAL_OVERSCAN = 12;
 const ROW_HEIGHT_ESTIMATE = 33; // px; corrected at runtime by measuring a real row
+const SMALL_VIEWPORT_QUERY = "(max-width: 639px)";
+
+function readSmallViewport(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia?.(SMALL_VIEWPORT_QUERY).matches ?? window.innerWidth < 640;
+}
+
+function sanitizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && item.length > 0))]
+    .slice(0, 500);
+}
+
+function sanitizeSortState(value: unknown): SortState | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.key !== "string" || !record.key) return null;
+  if (record.dir !== "asc" && record.dir !== "desc") return null;
+  return { key: record.key, dir: record.dir };
+}
+
+function sanitizeMobileView(value: unknown): "cards" | "table" {
+  return value === "table" ? "table" : "cards";
+}
+
+function sanitizeColumnWidths(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const widths: Record<string, number> = {};
+  for (const [key, width] of Object.entries(value as Record<string, unknown>)) {
+    if (!key || typeof width !== "number" || !Number.isFinite(width)) continue;
+    widths[key] = Math.min(10_000, Math.max(40, width));
+    if (Object.keys(widths).length >= 500) break;
+  }
+  return widths;
+}
+
+function useSmallViewport(): boolean {
+  const [small, setSmall] = useState(readSmallViewport);
+
+  useEffect(() => {
+    const media = window.matchMedia?.(SMALL_VIEWPORT_QUERY);
+    const update = () => setSmall(media?.matches ?? window.innerWidth < 640);
+    update();
+
+    if (media?.addEventListener) {
+      media.addEventListener("change", update);
+      return () => media.removeEventListener("change", update);
+    }
+
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  return small;
+}
 
 /**
  * The toolbar search box. Types instantly, tells the page 250ms later.
@@ -274,18 +356,24 @@ function DebouncedSearchInput({
   placeholder,
   delayMs,
   className,
+  onPendingChange,
 }: {
   value: string;
   onChange: (next: string) => void;
   placeholder: string;
   delayMs: number;
   className: string;
+  onPendingChange?: (pending: boolean) => void;
 }) {
   const [draft, setDraft] = useState(value);
   const lastSentRef = useRef(value);
   const timerRef = useRef<number | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+
+  useEffect(() => {
+    onPendingChange?.(draft !== value);
+  }, [draft, value, onPendingChange]);
 
   // DOWN-sync: adopt an externally-driven change, ignore our own echo.
   useEffect(() => {
@@ -333,7 +421,11 @@ function DebouncedSearchInput({
   return (
     <input
       value={draft}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        const next = e.target.value;
+        setDraft(next);
+        onPendingChange?.(next !== value);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") flush();
       }}
@@ -346,6 +438,7 @@ function DebouncedSearchInput({
 
 export function DataTable<T>({
   tableId,
+  layoutFamily,
   columns,
   rows,
   loading,
@@ -370,14 +463,43 @@ export function DataTable<T>({
   groupBy,
   selection,
 }: Props<T>) {
-  const idKey = tableId || "_";
-  const [hiddenList, setHiddenList] = useLocalStorage<string[]>(`dt:hidden:${idKey}`, []);
+  const isSmallViewport = useSmallViewport();
+  const [searchDraftPending, setSearchDraftPending] = useState(false);
+  const searchBusy = Boolean(
+    search?.searching || (search?.searching !== undefined && searchDraftPending),
+  );
+  const effectiveLoading = Boolean(loading || searchBusy);
+  const rowActionsDisabled = effectiveLoading || Boolean(error);
+  const idKey = layoutFamily || tableId || "_";
+  const legacyIdKey = layoutFamily && tableId && layoutFamily !== tableId ? tableId : undefined;
+  const legacyStorageKey = (part: string) => legacyIdKey ? `dt:${part}:${legacyIdKey}` : undefined;
+  const [hiddenList, setHiddenList] = useLocalStorage<string[]>(
+    `dt:hidden:${idKey}`,
+    [],
+    legacyStorageKey("hidden"),
+    sanitizeStringList,
+  );
   // `shownList` lets the user opt-IN to a column that's defaultHidden=true.
   // We need a separate set (rather than relying on hiddenList alone) so a
   // defaultHidden column stays hidden until the user explicitly enables it.
-  const [shownList, setShownList] = useLocalStorage<string[]>(`dt:shown:${idKey}`, []);
-  const [order, setOrder] = useLocalStorage<string[]>(`dt:order:${idKey}`, []);
-  const [sort, setSort] = useLocalStorage<SortState | null>(`dt:sort:${idKey}`, null);
+  const [shownList, setShownList] = useLocalStorage<string[]>(
+    `dt:shown:${idKey}`,
+    [],
+    legacyStorageKey("shown"),
+    sanitizeStringList,
+  );
+  const [order, setOrder] = useLocalStorage<string[]>(
+    `dt:order:${idKey}`,
+    [],
+    legacyStorageKey("order"),
+    sanitizeStringList,
+  );
+  const [sort, setSort] = useLocalStorage<SortState | null>(
+    `dt:sort:${idKey}`,
+    null,
+    legacyStorageKey("sort"),
+    sanitizeSortState,
+  );
   // Mobile-only view preference. "cards" renders the stacked cards
   // (default for `<sm`); "table" forces the desktop table with a
   // horizontal scroll. Persisted per-table so each list page
@@ -385,17 +507,55 @@ export function DataTable<T>({
   const [mobileView, setMobileView] = useLocalStorage<"cards" | "table">(
     `dt:mview:${idKey}`,
     "cards",
+    legacyStorageKey("mview"),
+    sanitizeMobileView,
   );
+  const showTable = !isSmallViewport || mobileView === "table";
+  const showMobileCards = isSmallViewport && mobileView === "cards";
   // Per-column user widths (px). Overrides the column's `width` default.
   // Keyed by column key; absent = use the column default. Desktop-only —
   // the mobile card branch ignores widths entirely.
-  const [widths, setWidths] = useLocalStorage<Record<string, number>>(
-    `dt:widths:${idKey}`,
+  const widthStorageKey = `dt:widths:${idKey}`;
+  const [storedWidths, setStoredWidths] = useLocalStorage<Record<string, number>>(
+    widthStorageKey,
     {},
+    legacyStorageKey("widths"),
+    sanitizeColumnWidths,
+  );
+  // Column resizing needs live state for immediate visual feedback, but
+  // localStorage is synchronous. Keep the drag width in memory and commit the
+  // final layout only when the gesture ends (matching DataGrid's behaviour).
+  const [widths, setWidths] = useState<Record<string, number>>(storedWidths);
+  const widthsRef = useRef(widths);
+  useEffect(() => {
+    widthsRef.current = storedWidths;
+    setWidths(storedWidths);
+  }, [storedWidths]);
+  const updateWidths = useCallback(
+    (
+      nextOrUpdater:
+        | Record<string, number>
+        | ((prev: Record<string, number>) => Record<string, number>),
+      persist: boolean,
+    ) => {
+      const next =
+        typeof nextOrUpdater === "function"
+          ? nextOrUpdater(widthsRef.current)
+          : nextOrUpdater;
+      widthsRef.current = next;
+      setWidths(next);
+      if (persist) setStoredWidths(next);
+    },
+    [setStoredWidths],
   );
   // Pinned (frozen-left) column keys. Pinned columns render at the front
   // (after any alwaysVisible columns) and stick during horizontal scroll.
-  const [pinned, setPinned] = useLocalStorage<string[]>(`dt:pinned:${idKey}`, []);
+  const [pinned, setPinned] = useLocalStorage<string[]>(
+    `dt:pinned:${idKey}`,
+    [],
+    legacyStorageKey("pinned"),
+    sanitizeStringList,
+  );
   const [chooserOpen, setChooserOpen] = useState(false);
   const userHidden = useMemo(() => new Set(hiddenList), [hiddenList]);
   const userShown = useMemo(() => new Set(shownList), [shownList]);
@@ -467,7 +627,9 @@ export function DataTable<T>({
   // user's collapse choices survive reloads, mirroring the other dt:* prefs.
   const [collapsedGroups, setCollapsedGroups] = useLocalStorage<string[]>(
     `dt:groups:${idKey}`,
-    []
+    [],
+    legacyStorageKey("groups"),
+    sanitizeStringList,
   );
   const collapsedGroupSet = useMemo(
     () => new Set(collapsedGroups),
@@ -557,6 +719,30 @@ export function DataTable<T>({
     () => allColumns.filter((c) => c.alwaysVisible || !effectiveHidden.has(c.key)),
     [allColumns, effectiveHidden]
   );
+
+  const mobileColumns = useMemo(() => {
+    const byKey = new Map(visibleColumns.map((column) => [column.key, column]));
+    let primary = visibleColumns[0];
+    if (mobileCard?.primary) primary = byKey.get(mobileCard.primary) ?? primary;
+
+    const cells = mobileCard?.cells
+      ? mobileCard.cells
+          .map((key) => byKey.get(key))
+          .filter((column): column is Column<T> => !!column)
+      : visibleColumns.filter((column) => column.key !== primary?.key);
+
+    const layout = mobileCard?.layout ?? "stack";
+    return {
+      primary,
+      cells,
+      layout,
+      hideLabels: mobileCard?.hideLabels ?? layout === "grid-2",
+      estimateHeight:
+        layout === "grid-2"
+          ? Math.max(88, 58 + Math.ceil(cells.length / 2) * 24)
+          : Math.max(88, 58 + cells.length * 24),
+    };
+  }, [mobileCard, visibleColumns]);
 
   // Render order with pinned columns hoisted to the front. alwaysVisible
   // columns keep their existing front position; pinned-but-not-always
@@ -653,7 +839,7 @@ export function DataTable<T>({
     // clean default layout (no orphaned per-column sizes or frozen columns
     // left pointing at a now-rearranged set).
     setOrder([]);
-    setWidths({});
+    updateWidths({}, true);
     setPinned([]);
   }
 
@@ -666,40 +852,71 @@ export function DataTable<T>({
   const resizeRef = useRef<{ key: string; startX: number; startW: number } | null>(
     null
   );
+  const endResizeRef = useRef<((persistDirectly?: boolean) => void) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      // A route change can unmount the table before mouseup. React state
+      // updates made from an unmount cleanup do not reach useLocalStorage's
+      // persistence effect, so write the last in-memory width directly.
+      endResizeRef.current?.(true);
+    };
+  }, [widthStorageKey]);
 
   function onResizeStart(e: React.MouseEvent, col: Column<T>) {
     e.preventDefault();
     e.stopPropagation();
-    resizeRef.current = {
+    // End an interrupted gesture before replacing its listener closures.
+    endResizeRef.current?.();
+    const gesture = {
       key: col.key,
       startX: e.clientX,
       startW: resolveWidth(col),
     };
+    resizeRef.current = gesture;
     const onMove = (ev: MouseEvent) => {
       const r = resizeRef.current;
-      if (!r) return;
+      if (r !== gesture) return;
       const next = Math.max(MIN_COL_WIDTH, r.startW + (ev.clientX - r.startX));
-      setWidths((prev) => ({ ...prev, [r.key]: next }));
+      updateWidths((prev) => ({ ...prev, [r.key]: next }), false);
     };
-    const onUp = () => {
+    const onUp = () => finish();
+    const onBlur = () => finish();
+    const finish = (persistDirectly = false) => {
+      if (resizeRef.current !== gesture) return;
+      // Persist once, after the last visual update. Never write synchronous
+      // storage from mousemove: that path runs at pointer-frame frequency.
       resizeRef.current = null;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onBlur);
+      if (endResizeRef.current === finish) endResizeRef.current = null;
+      if (persistDirectly) {
+        try {
+          localStorage.setItem(widthStorageKey, JSON.stringify(widthsRef.current));
+        } catch {
+          // quota / privacy mode — match useLocalStorage's best-effort policy
+        }
+      } else {
+        setStoredWidths(widthsRef.current);
+      }
     };
+    endResizeRef.current = finish;
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onBlur);
   }
 
   // Auto-fit = clear the stored width so the column falls back to its
   // natural / default size. (We don't measure the DOM; clearing is the
   // predictable, persistence-friendly behaviour.)
   function autoFitColumn(key: string) {
-    setWidths((prev) => {
+    updateWidths((prev) => {
       if (!(key in prev)) return prev;
       const next = { ...prev };
       delete next[key];
       return next;
-    });
+    }, true);
   }
 
   // ── Pin / freeze (left) ────────────────────────────────────
@@ -710,6 +927,7 @@ export function DataTable<T>({
   }
 
   function handleExport() {
+    if (rowActionsDisabled) return;
     // Optional override: the caller exports a broader/full dataset (e.g. all
     // pages, ignoring a screen-only filter) instead of the on-screen rows.
     if (onExport) { onExport(); return; }
@@ -980,7 +1198,7 @@ export function DataTable<T>({
   // and sticky header behave exactly as before. Row height is measured from a
   // real row so the spacers can't drift (avoids the HOOKKA getTotalSize lag).
   const canVirtualize =
-    !loading && !error && !groupBy && !expandable &&
+    showTable && !effectiveLoading && !error && !groupBy && !expandable &&
     renderList.length > VIRTUAL_ROW_THRESHOLD;
   const tbodyRef = useRef<HTMLTableSectionElement>(null);
   const rowHeightRef = useRef(ROW_HEIGHT_ESTIMATE);
@@ -1024,17 +1242,41 @@ export function DataTable<T>({
       <div className="mb-2.5 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
         <div className="flex flex-1 flex-wrap items-center gap-2 sm:gap-3">
           {search && (
-            <div className="relative w-full sm:w-72 sm:max-w-full">
-              <Search
-                size={13}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
-              />
-              <DebouncedSearchInput
-                value={search.value}
-                onChange={search.onChange}
-                placeholder={search.placeholder || "Search…"}
-                delayMs={search.debounceMs ?? 250}
-                className="h-9 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20 sm:h-8 sm:text-[12px]"
+            <div className="w-full sm:w-72 sm:max-w-full">
+              <div className="relative">
+                <Search
+                  size={13}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
+                />
+                <DebouncedSearchInput
+                  value={search.value}
+                  onChange={search.onChange}
+                  placeholder={search.placeholder || "Search…"}
+                  delayMs={search.debounceMs ?? 250}
+                  onPendingChange={search.searching !== undefined ? setSearchDraftPending : undefined}
+                  className={cn(
+                    "h-9 w-full rounded-md border border-border bg-surface pl-8 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20 sm:h-8 sm:text-[12px]",
+                    searchBusy ? "pr-24" : "pr-3",
+                  )}
+                />
+                {searchBusy && (
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-primary"
+                  >
+                    {search.searchingLabel ?? "Searching…"}
+                  </span>
+                )}
+              </div>
+              <SearchScopeHint
+                scope={search.scope ?? "loaded"}
+                searching={searchBusy}
+                countPending={search.countPending}
+                resultCount={search.totalRecords}
+                loadedLimit={search.loadedLimit}
+                term={search.value}
+                className="mt-1 px-1"
               />
             </div>
           )}
@@ -1054,7 +1296,9 @@ export function DataTable<T>({
                 <span className="text-ink-muted">·</span>
               </>
             )}
-            {rows ? (
+            {rowActionsDisabled ? (
+              <span className="text-ink-muted">{error ? "Unavailable" : "Loading…"}</span>
+            ) : rows ? (
               <span>
                 <span className="font-mono text-ink">{rowCount.toLocaleString()}</span>
                 <span className="ml-1 text-ink-muted">{rowCount === 1 ? "row" : "rows"}</span>
@@ -1085,7 +1329,7 @@ export function DataTable<T>({
           )}
           <button
             onClick={handleExport}
-            disabled={!sortedRows || sortedRows.length === 0}
+            disabled={rowActionsDisabled || !sortedRows || sortedRows.length === 0}
             className={toolbarBtn}
           >
             <Download size={13} />
@@ -1145,13 +1389,9 @@ export function DataTable<T>({
             outer wrapper drops `overflow-hidden` when forced on mobile
             so the rounded corners don't clip the horizontal scroll
             shadow at the right edge. */}
-      <div
-        className={cn(
-          "rounded-lg border border-border bg-surface shadow-stone sm:block sm:overflow-hidden",
-          mobileView === "table" ? "block" : "hidden",
-        )}
-      >
-        <div className="thin-scroll overflow-x-auto">
+      {showTable && (
+        <div className="rounded-lg border border-border bg-surface shadow-stone sm:block sm:overflow-hidden">
+          <div className="thin-scroll overflow-x-auto">
           <table className="w-full border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-10">
               <tr>
@@ -1171,8 +1411,9 @@ export function DataTable<T>({
                         if (el) el.indeterminate = someRowsSelected;
                       }}
                       onChange={() =>
-                        selection.onToggleAll(selectableKeys, allRowsSelected)
+                        !rowActionsDisabled && selection.onToggleAll(selectableKeys, allRowsSelected)
                       }
+                      disabled={rowActionsDisabled}
                       onClick={(e) => e.stopPropagation()}
                       className="cursor-pointer accent-primary"
                     />
@@ -1329,8 +1570,8 @@ export function DataTable<T>({
               </tr>
             </thead>
             <tbody ref={tbodyRef}>
-              {loading && <TableSkeleton rows={8} cols={totalColSpan} />}
-              {!loading && error && (
+              {effectiveLoading && <TableSkeleton rows={8} cols={totalColSpan} />}
+              {!effectiveLoading && error && (
                 <tr>
                   <td
                     colSpan={totalColSpan}
@@ -1341,7 +1582,7 @@ export function DataTable<T>({
                   </td>
                 </tr>
               )}
-              {!loading && !error && sortedRows && sortedRows.length === 0 && (
+              {!effectiveLoading && !error && sortedRows && sortedRows.length === 0 && (
                 <tr>
                   <td
                     colSpan={totalColSpan}
@@ -1356,7 +1597,7 @@ export function DataTable<T>({
                   <td colSpan={totalColSpan} style={{ height: vStart * rowHeightRef.current, padding: 0, border: 0 }} />
                 </tr>
               )}
-              {!loading &&
+              {!effectiveLoading &&
                 !error &&
                 sortedRows &&
                 renderList.slice(vStart, vEnd).map((item) => {
@@ -1567,21 +1808,18 @@ export function DataTable<T>({
               )}
             </tbody>
           </table>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── Mobile card list (<sm) ─────────────────────────────
           Same data, stacked-card layout. The first visible column
           becomes the card title; subsequent columns render as
           label/value rows. Skips the row entirely if the user
           intentionally hid the first column. */}
-      <div
-        className={cn(
-          "space-y-2 sm:hidden",
-          mobileView === "table" && "hidden",
-        )}
-      >
-        {loading && (
+      {showMobileCards && (
+        <div className="space-y-2 sm:hidden">
+        {effectiveLoading && (
           <>
             {[0, 1, 2, 3, 4].map((i) => (
               <div
@@ -1597,69 +1835,60 @@ export function DataTable<T>({
             ))}
           </>
         )}
-        {!loading && error && (
+        {!effectiveLoading && error && (
           <div className="rounded-lg border border-err/40 bg-err/5 p-4 text-center text-sm text-err">
             <div className="font-semibold">Failed to load</div>
             <div className="mt-1 text-xs text-ink-muted">{error}</div>
           </div>
         )}
-        {!loading && !error && sortedRows && sortedRows.length === 0 && (
+        {!effectiveLoading && !error && sortedRows && sortedRows.length === 0 && (
           <div className="rounded-lg border border-dashed border-border bg-surface px-4 py-12 text-center text-sm text-ink-muted">
             {emptyLabel}
           </div>
         )}
-        {!loading &&
-          !error &&
-          sortedRows &&
-          sortedRows.map((row) => {
-            const customClass = getRowClassName?.(row);
-            // Resolve title + cells. When `mobileCard` is unset, fall
-            // back to the legacy shape (first visible column = title,
-            // remainder as labelled rows). When set, honour the
-            // explicit `primary` / `cells` keys.
-            const colByKey = new Map(visibleColumns.map((c) => [c.key, c]));
-            let primaryCol = visibleColumns[0];
-            let cellCols = visibleColumns.slice(1);
-            if (mobileCard) {
-              if (mobileCard.primary) {
-                primaryCol =
-                  colByKey.get(mobileCard.primary) ?? primaryCol;
-              }
-              if (mobileCard.cells) {
-                cellCols = mobileCard.cells
-                  .map((k) => colByKey.get(k))
-                  .filter((c): c is Column<T> => !!c);
-              } else {
-                cellCols = visibleColumns.filter(
-                  (c) => c.key !== primaryCol?.key,
-                );
-              }
-            }
-            const layout = mobileCard?.layout ?? "stack";
-            const hideLabels = mobileCard?.hideLabels ?? layout === "grid-2";
-            return (
-              <div
-                key={getRowKey(row)}
-                onClick={onRowClick ? () => onRowClick(row) : undefined}
-                role={onRowClick ? "button" : undefined}
-                tabIndex={onRowClick ? 0 : undefined}
-                onKeyDown={
-                  onRowClick
-                    ? (e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          onRowClick(row);
+        {!effectiveLoading && !error && sortedRows && sortedRows.length > 0 && (
+          <MobileVirtualList
+            items={sortedRows}
+            getKey={getRowKey}
+            estimateHeight={mobileColumns.estimateHeight}
+            gap={8}
+            ariaLabel={`${sortedRows.length} loaded records. Only visible records are mounted; scroll to browse this loaded set.`}
+            renderItem={(row) => {
+              const customClass = getRowClassName?.(row);
+              const {
+                primary: primaryCol,
+                cells: cellCols,
+                layout,
+                hideLabels,
+              } = mobileColumns;
+              return (
+                <div
+                  key={getRowKey(row)}
+                  data-mobile-card=""
+                  style={{
+                    contentVisibility: "auto",
+                    containIntrinsicSize: `auto ${mobileColumns.estimateHeight}px`,
+                  }}
+                  onClick={onRowClick ? () => onRowClick(row) : undefined}
+                  role={onRowClick ? "button" : undefined}
+                  tabIndex={onRowClick ? 0 : undefined}
+                  onKeyDown={
+                    onRowClick
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onRowClick(row);
+                          }
                         }
-                      }
-                    : undefined
-                }
-                className={cn(
-                  "relative overflow-hidden rounded-lg border border-border bg-surface shadow-stone transition-colors",
-                  onRowClick &&
-                    "cursor-pointer active:bg-primary/15 hover:border-primary/40",
-                  customClass,
-                )}
-              >
+                      : undefined
+                  }
+                  className={cn(
+                    "relative overflow-hidden rounded-lg border border-border bg-surface shadow-stone transition-colors",
+                    onRowClick &&
+                      "cursor-pointer active:bg-primary/15 hover:border-primary/40",
+                    customClass,
+                  )}
+                >
                 {/* Petrol accent rail — subtle anchor on the left edge of a
                     clickable row card, matches the IdeaList card pattern. */}
                 <span className="pointer-events-none absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-primary/0 via-primary/55 to-primary/0" />
@@ -1734,10 +1963,13 @@ export function DataTable<T>({
                     </dl>
                   )}
                 </div>
-              </div>
-            );
-          })}
-      </div>
+                </div>
+              );
+            }}
+          />
+        )}
+        </div>
+      )}
 
       {/* ── Header right-click context menu ──────────────────────
           Portalled to <body> so it escapes the table's overflow clip

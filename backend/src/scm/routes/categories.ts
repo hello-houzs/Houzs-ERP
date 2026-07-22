@@ -297,11 +297,16 @@ publicCategoriesApi.post('/', async (c) => {
   const supabase = c.get('supabase');
   // Pre-flight: bounce duplicate id with a clear error (cheaper than a
   // catch-the-constraint round-trip).
-  const { data: existing } = await supabase
-    .from('categories')
-    .select('id')
-    .eq('id', id)
-    .maybeSingle();
+  //
+  // Company scope (owner audit 2026-07-22): the unscoped SELECT would 409
+  // when the same id existed in ANOTHER company, leaking existence of that
+  // company's category id (a small enumeration probe). Scope to the active
+  // company so the caller only learns about their own duplicates; the DB
+  // unique constraint is (company_id, id) so a legitimate insert still works.
+  const { data: existing } = await scopeToCompany(
+    supabase.from('categories').select('id').eq('id', id),
+    c,
+  ).maybeSingle();
   if (existing) return c.json({ error: 'id_taken', id }, 409);
 
   // sort_order defaults to (max + 1) so a new category lands at the bottom.

@@ -241,14 +241,15 @@ export type PoLineReceipt = { grnNumber: string; qty: number; status: string };
 /* ── Suppliers ──────────────────────────────────────────────────────── */
 
 export function useSuppliers(opts?: { status?: SupplierStatus; search?: string }) {
-  return useQuery({
+  return useQuery<SupplierRow[]>({
     queryKey: ['suppliers', opts?.status ?? 'all', opts?.search ?? ''],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (opts?.status) params.set('status', opts.status);
       if (opts?.search) params.set('search', opts.search);
       const res = await authedFetch<{ suppliers: SupplierRow[] }>(
         `/suppliers${params.toString() ? `?${params.toString()}` : ''}`,
+        { signal },
       );
       return res.suppliers;
     },
@@ -288,9 +289,9 @@ export function useSuppliersPaged(params: {
   if (category) usp.set('category', category);
   if (pool && pool.length) usp.set('pool', pool.join('||'));
   if (sort) usp.set('sort', sort);
-  return useQuery({
+  return useQuery<{ suppliers: SupplierRow[]; total: number; page: number; pageSize: number }>({
     queryKey: ['suppliers-paged', page, pageSize, status ?? '', q ?? '', category ?? '', (pool ?? []).join('||'), sort ?? ''],
-    queryFn: () => authedFetch<{ suppliers: SupplierRow[]; total: number; page: number; pageSize: number }>(`/suppliers?${usp.toString()}`),
+    queryFn: ({ signal }) => authedFetch<{ suppliers: SupplierRow[]; total: number; page: number; pageSize: number }>(`/suppliers?${usp.toString()}`, { signal }),
     placeholderData: (prev: unknown) => prev as { suppliers: SupplierRow[]; total: number; page: number; pageSize: number } | undefined,
     staleTime: 30_000,
     retry: retryUnlessClientError,
@@ -531,7 +532,7 @@ export function usePurchaseOrdersPaged(params: { page: number; pageSize: number;
   if (sort) usp.set('sort', sort);
   return useQuery({
     queryKey: ['mfg-purchase-orders-paged', page, pageSize, status ?? '', supplierId ?? '', q ?? '', sort ?? ''],
-    queryFn: () => authedFetch<{ purchaseOrders: PoHeaderRow[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; open: number; partial: number; received: number; cancelled: number } }>(`/mfg-purchase-orders?${usp.toString()}`),
+    queryFn: ({ signal }) => authedFetch<{ purchaseOrders: PoHeaderRow[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; open: number; partial: number; received: number; cancelled: number } }>(`/mfg-purchase-orders?${usp.toString()}`, { signal }),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
     retry: retryUnlessClientError,

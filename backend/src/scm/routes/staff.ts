@@ -17,9 +17,10 @@
 
 import { Hono } from "hono";
 import { supabaseAuth } from "../middleware/auth";
-import { requireHouzsPerm } from "../lib/houzs-perms";
+import { requireHouzsPerm, hasHouzsPerm } from "../lib/houzs-perms";
 import { activeCompanyId, houzsCompanyId, mirrorCompanyId } from "../lib/companyScope";
 import { filterStaffToCompany } from "../lib/staffCompanyScope";
+import { isSalesUser } from "../../services/pmsAccess";
 import type { Env, Variables } from "../env";
 
 export const staff = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -108,19 +109,66 @@ async function loadGrantsByUserId(
   return map;
 }
 
-// GET / — list ALL staff rows ordered by staff_code (mirrors 2990's useStaff
-// .order('staff_code')). Degrades to [] when the relation is missing.
+// The shared scoping pass: filter a raw staff-row set to the caller's ACTIVE
+// company via Team grants. Extracted so GET / and GET /pickable can't drift on
+// the scope rule — see filterStaffToCompany + the THREE-STATE contract on
+// /pickable below for the full spec.
+async function scopeStaffRowsToActiveCompany(
+  c: any,
+  rows: Array<Record<string, unknown>>,
+): Promise<{ scoped: Array<Record<string, unknown>>; degrade: boolean }> {
+  const companies = c.get("companies") ?? [];
+  // Pre-migration / cold-start: no companies master → single-company Houzs.
+  // Degrade to the full roster (the pre-fix behaviour) — the caller then
+  // renders the full list unchanged.
+  if (companies.length === 0) return { scoped: rows, degrade: true };
+  const active = activeCompanyId(c);
+  // Multi-company context but no resolvable active company → fail closed.
+  if (active == null) return { scoped: [], degrade: false };
+  const linkedIds = Array.from(
+    new Set(rows.map(rowUserId).filter((n): n is number => n != null)),
+  );
+  const grantsByUserId = await loadGrantsByUserId(c.env, linkedIds);
+  const ids = { active, houzs: houzsCompanyId(c), mirror: mirrorCompanyId(c) };
+  const filtered = filterStaffToCompany(
+    rows.map((r) => ({ raw: r, id: String(r.id), user_id: rowUserId(r) })),
+    grantsByUserId,
+    ids,
+    SCM_SYSTEM_STAFF_ID,
+  ).map((s) => s.raw);
+  return { scoped: filtered, degrade: false };
+}
+
+// GET / — list staff rows ordered by staff_code (mirrors 2990's useStaff
+// .order('staff_code')). Includes active + inactive so historical-name
+// DISPLAY still resolves the ids on old orders. Degrades to [] when the
+// relation is missing.
 //
-// UNSCOPED ON PURPOSE: this is the id -> name DISPLAY source (useStaffLookup +
-// the SO/DO/SI/consignment list "Salesperson" columns). It must return the WHOLE
-// roster — inactive/departed people whose names still appear on historical
-// orders, and the other company's people whose names appear on mirrored docs in
-// the shared Delivery-Planning queue — or those names render as raw UUIDs /
-// "Unknown user". The company scoping lives on GET /pickable below, which the
-// salesperson SELECTION dropdowns read; DISPLAY and SELECTION are different
-// surfaces with different needs.
+// COMPANY SCOPE (owner audit 2026-07-22 — "从 backend 断绝掉"):
+//   · Default: SCOPED to the caller's active company via Team grants (the same
+//     rule as /pickable). Includes inactive rows so a departed salesperson who
+//     was granted to THIS company still resolves for display. A caller who is
+//     scoped out of a name — because the referenced staff is granted only to
+//     the OTHER company — should look them up via GET /by-ids below, which is
+//     bounded to specific known IDs.
+//   · ?scope=all: opt-in cross-company full roster, gated on the same
+//     `users.manage` permission as the Members page (the one page that
+//     legitimately needs to see everyone regardless of company). Anyone else
+//     asking for ?scope=all is refused 403 rather than fed the full list —
+//     this is what stops a future picker misuse from re-opening the leak the
+//     POS handover picker had (POS PR #744, hz-baseline BUG-HISTORY 2026-07-22).
 staff.get("/", async (c) => {
   const supabase = c.get("supabase");
+  const wantAll = c.req.query("scope") === "all";
+  if (wantAll && !hasHouzsPerm(c, "users.manage")) {
+    return c.json(
+      {
+        error: "forbidden",
+        reason: "?scope=all is only for callers with users.manage permission — use /staff/by-ids for known-id name lookup.",
+      },
+      403,
+    );
+  }
   const { data, error } = await supabase
     .from("staff")
     .select(STAFF_COLUMNS)
@@ -129,7 +177,42 @@ staff.get("/", async (c) => {
     if (/relation .* does not exist/i.test(error.message)) return c.json({ staff: [] });
     return c.json({ error: "load_failed", reason: error.message }, 500);
   }
-  return c.json({ staff: (data ?? []).map(toStaffRow) });
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+  if (wantAll) return c.json({ staff: rows.map(toStaffRow) });
+  const { scoped } = await scopeStaffRowsToActiveCompany(c, rows);
+  return c.json({ staff: scoped.map(toStaffRow) });
+});
+
+// GET /by-ids?ids=<uuid>,<uuid>,... — bulk name lookup for KNOWN IDs.
+//
+// The narrow companion to the scope tightening above. Any list/detail page
+// that renders "Salesperson: <name>" from an id it already holds passes those
+// ids here to resolve names; the server returns rows only for the specified
+// ids. No scope filter: the caller already knows the ids, so the payload is
+// exactly what they asked for — no enumeration of the roster, and no way to
+// widen from one id to another. Capped at 200 ids per call to keep the URL
+// bounded and prevent it from turning into an unbounded list endpoint.
+staff.get("/by-ids", async (c) => {
+  const raw = (c.req.query("ids") ?? "").trim();
+  if (!raw) return c.json({ staff: [] });
+  const ids = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  if (ids.length === 0) return c.json({ staff: [] });
+  if (ids.length > 200) {
+    return c.json(
+      { error: "too_many_ids", reason: "Cap is 200 ids per call — split the request." },
+      400,
+    );
+  }
+  const supabase = c.get("supabase");
+  const { data, error } = await supabase
+    .from("staff")
+    .select(STAFF_COLUMNS)
+    .in("id", ids);
+  if (error) {
+    if (/relation .* does not exist/i.test(error.message)) return c.json({ staff: [] });
+    return c.json({ error: "load_failed", reason: error.message }, 500);
+  }
+  return c.json({ staff: ((data ?? []) as Array<Record<string, unknown>>).map(toStaffRow) });
 });
 
 // GET /pickable — the salesperson SELECTION list, scoped to the ACTIVE company.
@@ -155,6 +238,7 @@ staff.get("/", async (c) => {
 //     unknown active company must NEVER dump every company's salespeople.
 staff.get("/pickable", async (c) => {
   const supabase = c.get("supabase");
+  const onlySales = c.req.query("onlySales") === "1";
   const { data, error } = await supabase
     .from("staff")
     .select(STAFF_COLUMNS)
@@ -165,30 +249,64 @@ staff.get("/pickable", async (c) => {
     return c.json({ error: "load_failed", reason: error.message }, 500);
   }
   const rows = (data ?? []) as Array<Record<string, unknown>>;
+  const { scoped } = await scopeStaffRowsToActiveCompany(c, rows);
 
-  const companies = c.get("companies") ?? [];
-  // Pre-migration / cold-start: no companies master → single-company Houzs.
-  // Degrade to the full active roster (the pre-fix behaviour).
-  if (companies.length === 0) return c.json({ staff: rows.map(toStaffRow) });
-
-  const active = activeCompanyId(c);
-  // Multi-company context but no resolvable active company → fail closed.
-  if (active == null) return c.json({ staff: [] });
+  /* Owner 2026-07-22: the SO / SI / DR / consignment SALESPERSON dropdowns
+     were showing every ACTIVE staff row granted to the active company,
+     including office / admin / owner / test accounts. Narrow to SALES only
+     when the caller asks (onlySales=1) — mirrors pmsAccess.isSalesUser
+     (position "Sales …" OR department containing "sales"). Left OFF by
+     default so the PaymentsTable "Collected By" picker + any other
+     legitimate all-staff caller still gets the full active roster. */
+  if (!onlySales) {
+    return c.json({ staff: scoped.map(toStaffRow) });
+  }
 
   const linkedIds = Array.from(
-    new Set(rows.map(rowUserId).filter((n): n is number => n != null)),
+    new Set(scoped.map(rowUserId).filter((n): n is number => n != null)),
   );
-  const grantsByUserId = await loadGrantsByUserId(c.env, linkedIds);
-  const ids = { active, houzs: houzsCompanyId(c), mirror: mirrorCompanyId(c) };
+  if (linkedIds.length === 0) return c.json({ staff: [] });
+  let positionByUserId = new Map<number, { position_name: string | null; department_name: string | null }>();
+  try {
+    const placeholders = linkedIds.map(() => "?").join(",");
+    const res = await c.env.DB.prepare(
+      `SELECT u.id AS user_id,
+              COALESCE(p.name, '')  AS position_name,
+              COALESCE(d.name, pd.name, '') AS department_name
+         FROM users u
+         LEFT JOIN positions p    ON p.id = u.position_id
+         LEFT JOIN departments pd ON pd.id = p.department_id
+         LEFT JOIN departments d  ON d.id = u.department_id
+        WHERE u.id IN (${placeholders})`,
+    )
+      .bind(...linkedIds)
+      .all<{ user_id: number | string; position_name: string | null; department_name: string | null }>();
+    for (const row of res.results ?? []) {
+      const uid = Number(row.user_id);
+      if (!Number.isInteger(uid)) continue;
+      positionByUserId.set(uid, {
+        position_name: row.position_name ?? null,
+        department_name: row.department_name ?? null,
+      });
+    }
+  } catch {
+    // users / positions / departments absent (pre-migration / D1 test
+    // mirror) — degrade to no-filter rather than blanking the picker.
+    return c.json({ staff: scoped.map(toStaffRow) });
+  }
 
-  const scoped = filterStaffToCompany(
-    rows.map((r) => ({ raw: r, id: String(r.id), user_id: rowUserId(r) })),
-    grantsByUserId,
-    ids,
-    SCM_SYSTEM_STAFF_ID,
-  ).map((s) => toStaffRow(s.raw));
-
-  return c.json({ staff: scoped });
+  const salesOnly = scoped.filter((r) => {
+    const uid = rowUserId(r);
+    if (uid == null) return false; // UNLINKED rows can't be resolved as sales
+    const meta = positionByUserId.get(uid);
+    if (!meta) return false;
+    return isSalesUser({
+      position_name: meta.position_name,
+      department_name: meta.department_name,
+      permissions_set: null,
+    } as any);
+  });
+  return c.json({ staff: salesOnly.map(toStaffRow) });
 });
 
 /* ── SHOWROOM PARKING (owner 2026-07-19, migration 0148) ────────────────────

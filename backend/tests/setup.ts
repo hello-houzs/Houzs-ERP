@@ -6,7 +6,7 @@ declare module "cloudflare:test" {
   // Both are injected by vitest.config.ts at pool startup.
   interface ProvidedEnv {
     TEST_BASELINE_SQL: string;
-    TEST_MIGRATIONS: import("@cloudflare/vitest-pool-workers/config").D1Migration[];
+    TEST_MIGRATIONS: import("@cloudflare/vitest-pool-workers").D1Migration[];
     DASHBOARD_API_KEY: string;
   }
 }

@@ -1433,6 +1433,13 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   const AGREEMENT_PENDING = `EXISTS (SELECT 1 FROM project_checklist pc
                 WHERE pc.project_id = p.id AND pc.title = 'Agreement / Quotation'
                   AND pc.status = 'pending' AND ${DUE_GATE})`;
+  // A submitted doc is the APPROVER's pending, not the submitter's (owner
+  // 2026-07-21, Sim/Purchaser report): while it awaits review
+  // ('pending_review', or 'amended' after a rejection round) the role/title
+  // lanes stop counting it — the director lanes above chase it instead. A
+  // rejection ('rejected') hands it back to the submitter's lane. Approval
+  // sets status='done', which already drops it everywhere. No binds.
+  const NOT_IN_REVIEW = `COALESCE(pc.review_status, '') NOT IN ('pending_review', 'amended')`;
   if (f.pending_label === "PURCHASER") {
     // Purchaser staging (owner 2026-07-21):
     //   - Stock Out Transfer Record unlocks once the Display Floor Plan is done.
@@ -1444,6 +1451,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                 WHERE pc.project_id = p.id
                   AND pc.status = 'pending'
                   AND pc.role_label = 'PURCHASER'
+                  AND ${NOT_IN_REVIEW}
                   AND ${DUE_GATE}
                   AND (pc.title <> 'Stock Out Transfer Record'
                        OR EXISTS (SELECT 1 FROM project_checklist fp
@@ -1461,7 +1469,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
                 WHERE pc.project_id = p.id AND pc.status = 'pending'
-                  AND pc.role_label = ? AND ${DUE_GATE})`
+                  AND pc.role_label = ? AND ${NOT_IN_REVIEW} AND ${DUE_GATE})`
     );
     pendingBinds.push(f.pending_label, dueToday);
   }
@@ -1469,7 +1477,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
                 WHERE pc.project_id = p.id AND pc.status = 'pending'
-                  AND pc.title = ? AND ${DUE_GATE})`
+                  AND pc.title = ? AND ${NOT_IN_REVIEW} AND ${DUE_GATE})`
     );
     pendingBinds.push(f.pending_title, dueToday);
   }
@@ -2267,11 +2275,15 @@ export async function createLedgerLine(
     throw new Error("amount must be a non-negative number");
   }
   if (!input.category.trim()) throw new Error("category required");
+  // Stamp company_id from the parent project (mig 0170). Subquery keeps this
+  // atomic — if the project doesn't exist the FK below fails before the
+  // subquery lands, so we never orphan a line under a null company.
   const r = await env.DB.prepare(
     `INSERT INTO project_finance_lines
        (project_id, kind, category, description, amount, occurred_at,
-        r2_key, file_name, mime_type, notes, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        r2_key, file_name, mime_type, notes, created_by, company_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             (SELECT company_id FROM projects WHERE id = ?))`
   )
     .bind(
       input.project_id,
@@ -2284,7 +2296,8 @@ export async function createLedgerLine(
       input.file_name ?? null,
       input.mime_type ?? null,
       input.notes ?? null,
-      userId || null
+      userId || null,
+      input.project_id
     )
     .run();
   // Auto cost-line engine (mig 063) runs after non-auto writes only.

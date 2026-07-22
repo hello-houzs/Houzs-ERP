@@ -20,7 +20,9 @@ import {
   nextServicePONumber,
   setCaseCreditorManual,
   setItemRemark,
+  setItemSupplierRemark,
   setItemQty,
+  setItemCartonQty,
 } from "../services/assr";
 import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken, issueSalesToken, revokeCaseTokens } from "../services/caseTracking";
@@ -42,6 +44,7 @@ import { notifyServiceCaseResponsible } from "../services/assrNotify";
 import { isSalesUser, isDirectorUser } from "../services/pmsAccess";
 import type { AuthUser } from "../services/auth";
 import type { Context, MiddlewareHandler } from "hono";
+import { normalizePhone } from "../scm/shared/phone";
 
 /* The context the extracted handlers below receive. They are exported so the
    route tests can drive them directly; the shape is exactly what app.get/post
@@ -820,6 +823,7 @@ app.get("/", requireServiceCaseAccess(), async (c) => {
     page: parseInt(c.req.query("page") || "1", 10),
     per_page: parseInt(c.req.query("per_page") || "50", 10),
     include_archived: c.req.query("include_archived") === "1",
+    archived_only: c.req.query("archived_only") === "1",
     exclude_stage: c.req.query("exclude_stage") || undefined,
     // Calendar month-window bound (perf/servicecase-board-calendar-bound).
     // Additive: absent from/to leaves the query unbounded (List view et al).
@@ -878,10 +882,15 @@ app.post("/:id/resolve-creditor", requirePermission("service_cases.manage"), asy
 app.get("/creditors/search", requireServiceCaseAccess(), async (c) => {
   const q = (c.req.query("q") || "").trim().toLowerCase();
   const like = `%${q}%`;
+  // Company scope (owner audit 2026-07-22): creditors gained company_id in mig
+  // 0083 (all HOUZS today, but nothing on the DB side enforces that). Without a
+  // predicate here, the moment a 2990 creditor lands, a 2990-only ASSR caller
+  // sees it under Houzs — same class as the /search-so leak fixed in PR #990.
+  // ASSR is Houzs-exclusive by owner rule, so pin to the caller's ASSR reach.
   const rows = await c.env.DB.prepare(
     `SELECT creditor_code, company_name, phone1
        FROM creditors
-      WHERE LOWER(creditor_code) LIKE ? OR LOWER(COALESCE(company_name, '')) LIKE ?
+      WHERE (LOWER(creditor_code) LIKE ? OR LOWER(COALESCE(company_name, '')) LIKE ?)${assrCompanySql(c)}
       ORDER BY company_name
       LIMIT 20`
   )
@@ -924,7 +933,11 @@ app.post("/creditors/create", requirePermission("service_cases.write"), async (c
     `INSERT INTO creditors (creditor_code, company_name, phone1, email, type, type_description, updated_at)
      VALUES (?, ?, ?, ?, 'MANUAL', 'Added manually from Service Cases', datetime('now'))`
   )
-    .bind(code, name, (body.phone || "").trim() || null, (body.email || "").trim() || null)
+    // phone1 is stored E.164 like every other creditor phone written through
+    // the SCM supplier routes; this "add supplier from a Service Case" path was
+    // the one creditor writer that only trimmed, so it seeded rows the supplier
+    // screens then displayed in a different format from their neighbours.
+    .bind(code, name, normalizePhone(body.phone), (body.email || "").trim() || null)
     .run();
 
   return c.json({ creditor_code: code, company_name: name }, 201);
@@ -1111,6 +1124,7 @@ app.get("/export.csv", requireServiceCaseAccess(), async (c) => {
     status: c.req.query("status"),
     search: c.req.query("search"),
     include_archived: c.req.query("include_archived") === "1",
+    archived_only: c.req.query("archived_only") === "1",
     exclude_stage: c.req.query("exclude_stage") || undefined,
   });
   const headers = [
@@ -1296,9 +1310,14 @@ app.post("/resync-so/:docNo", requirePermission("service_cases.write"), async (c
   }
 
   await upsertSalesOrder(c.env, so, region);
+  // Read-back scope (owner audit 2026-07-22): dormant today because AutoCount
+  // mirror rows are backfilled to HOUZS, but the moment a 2990-side AutoCount
+  // mirror is added this becomes a cross-company read-back. Mirrors the
+  // /search-so fix in PR #990.
   const row = await c.env.DB.prepare(
     `SELECT doc_no, ref, debtor_name, phone, doc_date, sales_agent, region
-       FROM sales_orders WHERE LOWER(doc_no) = LOWER(?)`
+       FROM sales_orders
+      WHERE LOWER(doc_no) = LOWER(?)${assrCompanySql(c)}`
   )
     .bind(so.DocNo)
     .first();
@@ -1572,15 +1591,73 @@ app.post(
     );
   }
 
-  // Support both old format (item_code string) and new (items array)
+  // Support both old format (item_code string) and new (items array).
+  //
+  // Owner audit 2026-07-22 — items[] MAY be empty. A Service Case is not
+  // necessarily about a defective product: a driver damaged the customer's
+  // floor, a lorry problem left the delivery incomplete, etc. Those cases
+  // legitimately have no item_code, and the previous 400 "At least one item
+  // is required" forced staff to invent a fake code just to submit.
   const items = body.items?.length
     ? body.items
     : body.item_code
     ? [{ item_code: body.item_code }]
     : [];
 
-  if (!items.length) {
-    return c.json({ error: "At least one item is required" }, 400);
+  // Duplicate-open-case guard (owner audit 2026-07-22). If ANY of the items
+  // being submitted is already attached to a still-OPEN case on the same SO
+  // (any stage that isn't 'completed' or archived), refuse with a payload the
+  // caller can turn into a friendly "Case #XXX is already open on this item"
+  // dialog. Office and sales often opened parallel cases on the same fault
+  // because neither saw the other's; this makes the DB the arbiter, not luck.
+  //
+  // No-item cases (see block above) can't collide by item_code, so they skip
+  // this check — a floor-damage / lorry-issue case has no product signature
+  // to conflict on. Coordinators can still dedupe those manually.
+  if (items.length) {
+    const codes = Array.from(new Set(
+      items.map((it) => (it.item_code ?? "").trim()).filter((s) => s.length > 0),
+    ));
+    if (codes.length) {
+      const placeholders = codes.map(() => "?").join(",");
+      const dup = await c.env.DB.prepare(
+        `SELECT c.id, c.doc_no, c.stage, c.customer_name, c.created_at, i.item_code
+           FROM assr_cases c
+           JOIN assr_items i ON i.assr_id = c.id
+          WHERE c.archived_at IS NULL
+            AND (c.stage IS NULL OR c.stage <> 'completed')
+            AND c.doc_no = ?
+            AND i.item_code IN (${placeholders})${assrCompanySql(c, "c.company_id")}`,
+      )
+        .bind(body.doc_no, ...codes)
+        .all<{ id: number; doc_no: string; stage: string | null; customer_name: string | null; created_at: string | null; item_code: string }>();
+      const rows = dup.results ?? [];
+      if (rows.length) {
+        // Group by case id so a single case that spans several ticked items
+        // shows once with its items[] rather than N repeated rows.
+        const byCase = new Map<number, {
+          id: number; docNo: string; stage: string | null;
+          customerName: string | null; createdAt: string | null; items: string[];
+        }>();
+        for (const r of rows) {
+          const cur = byCase.get(r.id);
+          if (cur) { if (!cur.items.includes(r.item_code)) cur.items.push(r.item_code); }
+          else byCase.set(r.id, {
+            id: r.id, docNo: r.doc_no, stage: r.stage,
+            customerName: r.customer_name, createdAt: r.created_at,
+            items: [r.item_code],
+          });
+        }
+        const existing = [...byCase.values()];
+        return c.json({
+          error: "duplicate_open_case",
+          message: existing.length === 1
+            ? `Case #${existing[0]!.id} is already open on this SO for ${existing[0]!.items.join(", ")}. Please add to that case instead of opening a new one.`
+            : `${existing.length} cases are already open on this SO for the item(s) you selected. Please add to one of them instead of opening a new one.`,
+          existing,
+        }, 409);
+      }
+    }
   }
 
   // Normalise the intake extras: trim strings to null, coerce the
@@ -2838,13 +2915,13 @@ app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async 
   const id = parseInt(c.req.param("id"), 10);
   const itemId = parseInt(c.req.param("itemId"), 10);
   if (isNaN(id) || isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
-  const body = await c.req.json<{ remark?: string | null; qty?: number }>();
+  const body = await c.req.json<{ remark?: string | null; supplier_remark?: string | null; qty?: number; qty_carton?: number }>();
   const userId = (c as any).get?.("userId") ?? null;
   const prevItem = await c.env.DB.prepare(
-    `SELECT item_code, remark, qty FROM assr_items WHERE id = ? AND assr_id = ?`
+    `SELECT item_code, remark, supplier_remark, qty FROM assr_items WHERE id = ? AND assr_id = ?`
   )
     .bind(itemId, id)
-    .first<{ item_code: string | null; remark: string | null; qty: number | null }>();
+    .first<{ item_code: string | null; remark: string | null; supplier_remark: string | null; qty: number | null }>();
   if (!prevItem) return c.json({ error: "Not found" }, 404);
   const code = prevItem.item_code ?? `#${itemId}`;
 
@@ -2867,6 +2944,14 @@ app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async 
     }
   }
 
+  // Carton quantity — a second, user-selected quantity. Not logged to the
+  // timeline (date + remark only, owner 2026-07-21).
+  if (body.qty_carton !== undefined) {
+    const qtyCarton = Math.max(1, Math.round(Number(body.qty_carton) || 0));
+    const ok = await setItemCartonQty(c.env, id, itemId, qtyCarton);
+    if (!ok) return c.json({ error: "Not found" }, 404);
+  }
+
   // Remark — capture the prior value so the change is recorded
   // append-only on the timeline (removing logs a "cleared" event).
   if (body.remark !== undefined) {
@@ -2885,6 +2970,27 @@ app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async 
           : `Product remark on ${code} cleared${prevItem.remark ? ` (was "${prevItem.remark}")` : ""}`,
         userId,
         { category: "service", source_channel: "app" }
+      );
+    }
+  }
+  // Supplier-copy remark — same append-only audit trail, supplier
+  // timeline bucket.
+  if (body.supplier_remark !== undefined) {
+    const remark = body.supplier_remark == null ? null : String(body.supplier_remark).trim() || null;
+    const ok = await setItemSupplierRemark(c.env, id, itemId, remark);
+    if (!ok) return c.json({ error: "Not found" }, 404);
+    if ((prevItem.supplier_remark ?? null) !== remark) {
+      await logActivity(
+        c.env,
+        id,
+        "item_supplier_remark",
+        prevItem.supplier_remark ?? null,
+        remark,
+        remark
+          ? `Supplier remark on ${code}: ${prevItem.supplier_remark ? `"${prevItem.supplier_remark}" → ` : ""}"${remark}"`
+          : `Supplier remark on ${code} cleared${prevItem.supplier_remark ? ` (was "${prevItem.supplier_remark}")` : ""}`,
+        userId,
+        { category: "supplier", source_channel: "app" }
       );
     }
   }

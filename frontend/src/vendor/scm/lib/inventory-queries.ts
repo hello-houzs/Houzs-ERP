@@ -136,9 +136,9 @@ export type CogsEntry = {
 export function useWarehouses(opts?: { includeInactive?: boolean }) {
   return useQuery({
     queryKey: ['warehouses', opts?.includeInactive ?? false],
-    queryFn: () => {
+    queryFn: ({ signal }) => {
       const qs = opts?.includeInactive ? '?includeInactive=true' : '';
-      return authedFetch<{ warehouses: Warehouse[] }>(`/inventory/warehouses${qs}`).then((r) => r.warehouses);
+      return authedFetch<{ warehouses: Warehouse[] }>(`/inventory/warehouses${qs}`, { signal }).then((r) => r.warehouses);
     },
     staleTime: 5 * 60_000,
     /* HOUZS VENDOR — was a bare `retry: 1`, which re-sent a 403 that could only
@@ -180,12 +180,13 @@ export function useUpdateWarehouse() {
 export function useInventoryProductTotals(opts?: { search?: string; category?: string }) {
   return useQuery({
     queryKey: ['inventory', 'product-totals', opts ?? {}],
-    queryFn: () => {
+    queryFn: ({ signal }) => {
       const params = new URLSearchParams();
       if (opts?.search) params.set('search', opts.search);
       if (opts?.category && opts.category !== 'all') params.set('category', opts.category);
       return authedFetch<{ products: InventoryProductTotal[] }>(
         `/inventory/products${params.toString() ? `?${params.toString()}` : ''}`,
+        { signal },
       ).then((r) => r.products);
     },
     // Keep the current rows on screen while a search / category filter change

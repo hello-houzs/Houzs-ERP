@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { resolveMobileRoute, type MobileDestination } from "./mobileRoute";
+import {
+  mobileDestinationMatches,
+  resolveMobileRoute,
+  type MobileDestination,
+} from "./mobileRoute";
+import { ROUTE_ALIASES } from "../lib/routeAliases";
 
 /**
  * The regression these guard is the production incident of 2026-07-19: on a
@@ -19,6 +24,7 @@ const ALL: MobileDestination[] = [
   { to: "/scm/purchase-invoices", label: "Purchase Invoices" },
   { to: "/projects", label: "Projects" },
   { to: "/team?tab=members", label: "Members" },
+  { to: "/team?tab=departments", label: "Departments" },
 ];
 
 describe("resolveMobileRoute", () => {
@@ -55,9 +61,13 @@ describe("resolveMobileRoute", () => {
       .toEqual({ t: "desktop-only", path: "/scm/lorry-capacity" });
     expect(resolveMobileRoute("/scm/hr/settings", ALL, ALL))
       .toEqual({ t: "desktop-only", path: "/scm/hr/settings" });
-    // A path that exists nowhere must also NOT fall through to a document list.
+    // A path that exists nowhere must also NOT fall through to a document list
+    // or claim that a desktop page exists.
     expect(resolveMobileRoute("/nonsense", ALL, ALL))
-      .toEqual({ t: "desktop-only", path: "/nonsense" });
+      .toEqual({ t: "not-found", path: "/nonsense" });
+    // Dynamic desktop routes are recognised from the executable manifest.
+    expect(resolveMobileRoute("/scm/purchase-orders/PO-2607-001", ALL, ALL))
+      .toEqual({ t: "desktop-only", path: "/scm/purchase-orders/PO-2607-001" });
   });
 
   it("locks a real destination the user's position may not open", () => {
@@ -90,11 +100,54 @@ describe("resolveMobileRoute", () => {
       .toEqual({ t: "locked", label: "Sales Orders" });
   });
 
-  it("matches a destination that carries a query string", () => {
-    // The Members row is declared as "/team?tab=members"; the URL is "/team".
+  it("uses Members as the default for a bare /team URL", () => {
     expect(resolveMobileRoute("/team", ALL, ALL))
       .toEqual({ t: "menu", to: "/team?tab=members", label: "Members" });
   });
+
+  it("refreshes each Team bookmark into its exact tab", () => {
+    expect(resolveMobileRoute("/team?tab=members", ALL, ALL))
+      .toEqual({ t: "menu", to: "/team?tab=members", label: "Members" });
+    expect(resolveMobileRoute("/team?tab=departments", ALL, ALL))
+      .toEqual({ t: "menu", to: "/team?tab=departments", label: "Departments" });
+  });
+
+  it("never lets the Members path authorize another Team tab", () => {
+    const membersOnly = ALL.filter((d) => d.to !== "/team?tab=departments");
+    expect(resolveMobileRoute("/team?tab=departments", membersOnly, ALL))
+      .toEqual({ t: "locked", label: "Departments" });
+
+    // Positions is intentionally absent from every implemented mobile
+    // destination: the owner manages it through backend/tooling only.
+    expect(resolveMobileRoute("/team?tab=positions", membersOnly, ALL))
+      .toEqual({ t: "desktop-only", path: "/team" });
+  });
+
+  it("treats query-bearing Team destinations as separate identities", () => {
+    expect(mobileDestinationMatches("/team?tab=members", "/team?tab=members")).toBe(true);
+    expect(mobileDestinationMatches("/team?tab=members", "/team?tab=departments")).toBe(false);
+    expect(mobileDestinationMatches("/team?tab=departments", "/team?tab=members")).toBe(false);
+    // Query ordering does not create a second identity.
+    expect(mobileDestinationMatches("/team?view=list&tab=members", "/team?tab=members&view=list")).toBe(true);
+    // Incidental URL state does not erase the declared tab identity.
+    expect(mobileDestinationMatches("/team?tab=members&utm_source=bookmark", "/team?tab=members")).toBe(true);
+    // Ambiguous/repeated identity params remain fail-closed.
+    expect(mobileDestinationMatches("/team?tab=members&tab=departments", "/team?tab=members")).toBe(false);
+  });
+
+  it("applies desktop's canonical aliases before resolving mobile routes", () => {
+    expect(resolveMobileRoute("/sales-orders", ALL, ALL))
+      .toEqual({ t: "menu", to: "/scm/sales-orders", label: "Sales Orders" });
+    expect(resolveMobileRoute("/purchase-orders?source=bookmark", ALL, ALL))
+      .toEqual({ t: "menu", to: "/scm/purchase-orders", label: "Purchase Orders" });
+  });
+
+  it.each(ROUTE_ALIASES.map((alias) => [alias.from, alias.to]))(
+    "gives mobile alias %s the same outcome as canonical %s",
+    (from, to) => {
+      expect(resolveMobileRoute(from, ALL, ALL)).toEqual(resolveMobileRoute(to, ALL, ALL));
+    },
+  );
 
   it("treats a trailing slash, a query and a hash as the same page", () => {
     for (const p of ["/scm/purchase-orders/", "/scm/purchase-orders?x=1", "/scm/purchase-orders#top"]) {
@@ -106,5 +159,10 @@ describe("resolveMobileRoute", () => {
   it("decodes an escaped document number", () => {
     expect(resolveMobileRoute("/scm/sales-orders/SO%2F2607%2F001", ALL, ALL))
       .toEqual({ t: "so-detail", docNo: "SO/2607/001" });
+  });
+
+  it("fails a malformed escaped document number into 404 instead of throwing", () => {
+    expect(resolveMobileRoute("/scm/sales-orders/%E0%A4%A", ALL, ALL))
+      .toEqual({ t: "not-found", path: "/scm/sales-orders/%E0%A4%A" });
   });
 });

@@ -28,6 +28,7 @@ import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, removeScmHandoff } from '../../lib/scmHandoffStorage';
 import {
   useCreateConsignmentNote, useAddConsignmentNotePayment,
 } from '../../vendor/scm/lib/consignment-note-queries';
@@ -195,9 +196,7 @@ export const ConsignmentNoteNew = () => {
       uom: string | null; qty: number;
       unitPriceCenti: number; discountCenti: number; unitCostCenti: number; variants: unknown;
     };
-    let stash: Stash[] | null = null;
-    try { stash = JSON.parse(sessionStorage.getItem('cnFromOrderPicks') ?? 'null'); }
-    catch { stash = null; }
+    const stash = readScmHandoff<Stash[]>('cnFromOrderPicks');
     if (!stash || stash.length === 0) return;
     setLines(stash.map((s, idx) => ({
       ...newLine(),
@@ -213,7 +212,7 @@ export const ConsignmentNoteNew = () => {
       variants: (s.variants as Record<string, unknown>) ?? {},
       soItemId: s.orderItemId,
     })));
-    sessionStorage.removeItem('cnFromOrderPicks');
+    removeScmHandoff('cnFromOrderPicks');
     setPicksLoaded(true);
   }, [fromPicks, picksLoaded]);
 

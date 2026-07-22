@@ -66,9 +66,15 @@ import { InlineEdit } from "../components/InlineEdit";
 import { ExpandableText } from "../components/ExpandableText";
 import { StatCard } from "../components/StatCard";
 import { useQuery } from "../hooks/useQuery";
+import { useSearchResultTransition } from "../hooks/useServerSearch";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
-import { useLocalStorage } from "../hooks/useLocalStorage";
+import {
+  booleanPreference,
+  enumPreference,
+  pageSizePreference,
+  useIdentityPreference,
+} from "../hooks/useIdentityPreference";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
@@ -159,7 +165,7 @@ type CaseViewMode = "list" | "board" | "calendar";
 type CaseFilters = {
   stage?: string;
   search?: string;
-  include_archived?: number;
+  archived_only?: number;
   exclude_stage?: string;
   assigned_to?: number;
   creditor_code?: string;
@@ -285,9 +291,10 @@ export function ServiceCases() {
   // and a raw 403 toast on every write. Gate on the same permission the nav
   // uses so both agree.
   const canManageService = can("service_cases.manage");
-  const [storedView, setStoredView] = useLocalStorage<ServiceView>(
+  const [storedView, setStoredView] = useIdentityPreference<ServiceView>(
     "assr:view",
-    "cases"
+    "cases",
+    enumPreference(SERVICE_VIEWS),
   );
   const urlView = params.get("view") as ServiceView | null;
   // `assr:view` persists the last view rendered, so anyone who opened Service
@@ -388,12 +395,12 @@ function CasesView({
   const [stage, setStage] = useState<StageFilter>("ALL");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [perPage, setPerPage] = useLocalStorage<number>("pp:assr", 50);
-  const [showArchived, setShowArchived] = useLocalStorage<boolean>("assr:showArchived", false);
-  const [myCases, setMyCases] = useLocalStorage<boolean>("assr:myCases", false);
+  const [perPage, setPerPage] = useIdentityPreference("pp:assr", 50, pageSizePreference([10, 25, 50, 100, 200]));
+  const [showArchived, setShowArchived] = useIdentityPreference("assr:showArchived", false, booleanPreference);
+  const [myCases, setMyCases] = useIdentityPreference("assr:myCases", false, booleanPreference);
   // Hide completed cases from the working list — closed cases pile up
   // and ops mostly only cares about what's still open.
-  const [hideCompleted, setHideCompleted] = useLocalStorage<boolean>("assr:hideCompleted", false);
+  const [hideCompleted, setHideCompleted] = useIdentityPreference("assr:hideCompleted", false, booleanPreference);
   const [bulkSelected, setBulkSelected] = useState<Set<number>>(new Set());
   const { sort, sortParams, handleSortChange } = useServerSort(() => setPage(1));
   const [params, setParams] = useSearchParams();
@@ -428,32 +435,41 @@ function CasesView({
   const caseFilters: CaseFilters = {
     stage: stage === "ALL" ? undefined : stage,
     search: search || undefined,
-    include_archived: showArchived ? 1 : undefined,
+    archived_only: showArchived ? 1 : undefined,
     exclude_stage: excludeStageParam,
     assigned_to: myCases && user?.id ? user.id : undefined,
     creditor_code: creditorFilter || undefined,
   };
 
   const list = useQuery<Paginated<AssrCase>>("assr-list",
-    () =>
+    (signal) =>
       api.get(
         `/api/assr${buildQuery({
           stage: stage === "ALL" ? undefined : stage,
           search,
           page,
           per_page: perPage,
-          include_archived: showArchived ? 1 : undefined,
+          archived_only: showArchived ? 1 : undefined,
           exclude_stage: excludeStageParam,
           assigned_to: myCases && user?.id ? user.id : undefined,
           creditor_code: creditorFilter || undefined,
           ...sortParams,
-        })}`
+        })}`,
+        { signal },
       ),
     [stage, search, page, perPage, showArchived, excludeStageParam, myCases, user?.id, creditorFilter, sort?.key, sort?.dir],
     // Paginated + stage/filter-switched list: keep the current rows visible
     // while the next page/filter loads instead of flashing an empty table.
     { keepPreviousData: true }
   );
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: search,
+    isFetching: list.fetching,
+    isPlaceholderData: list.placeholder,
+    hasData: list.data !== null,
+    hasError: Boolean(list.error),
+  });
 
   // Drop selections that are no longer on screen — keeps the bulk
   // toolbar count honest when you change pages or filters.
@@ -846,7 +862,7 @@ function CasesView({
             onChange={(e) => { setPage(1); setShowArchived(e.target.checked); }}
             className="accent-accent"
           />
-          Show archived
+          Archived
         </label>
         <Button
           variant="ghost"
@@ -857,7 +873,7 @@ function CasesView({
                 `/api/assr/export.csv${buildQuery({
                   stage: stage === "ALL" ? undefined : stage,
                   search,
-                  include_archived: showArchived ? 1 : undefined,
+                  archived_only: showArchived ? 1 : undefined,
                   exclude_stage: excludeStageParam,
                 })}`,
                 "service-cases.csv"
@@ -880,7 +896,7 @@ function CasesView({
 
       {caseView === "list" && (
       <>
-      {bulkSelected.size > 0 && (
+      {bulkSelected.size > 0 && !searchTransition.resultsAreStale && (
         <BulkActionsBar
           count={bulkSelected.size}
           allSelected={allSelected}
@@ -951,6 +967,10 @@ function CasesView({
           value: search,
           onChange: (v) => { setPage(1); setSearch(v); },
           placeholder: "Search ASSR no, SO no, Ref no, customer, phone…",
+          searching: searchTransition.isSearching,
+          countPending: list.loading || list.placeholder || Boolean(list.error) || searchTransition.resultsAreStale,
+          scope: "server",
+          totalRecords: list.data?.total,
         }}
         resetFilters={{
           active: !!(
@@ -977,7 +997,7 @@ function CasesView({
         }}
         columns={columns}
         rows={list.data?.data ?? null}
-        loading={list.loading}
+        loading={list.loading || searchTransition.isSearching}
         error={list.error}
         emptyLabel="No service cases"
         getRowKey={(r) => r.id}
@@ -987,7 +1007,7 @@ function CasesView({
         onSortChange={handleSortChange}
       />
 
-      {list.data && (
+      {list.data && !searchTransition.resultsAreStale && (
         <Pagination
           page={page}
           perPage={perPage}
@@ -1211,7 +1231,7 @@ function CasesBoardView({
     [
       effective.stage,
       effective.search,
-      effective.include_archived,
+      effective.archived_only,
       effective.exclude_stage,
       effective.assigned_to,
       effective.creditor_code,
@@ -1455,7 +1475,7 @@ function CasesCalendarView({
     [
       effective.stage,
       effective.search,
-      effective.include_archived,
+      effective.archived_only,
       effective.exclude_stage,
       effective.assigned_to,
       effective.creditor_code,
@@ -2433,10 +2453,9 @@ function CreatePanel({
         qty: chosen && chosen > 0 ? chosen : found?.qty && found.qty > 0 ? found.qty : 1,
       };
     });
-    if (!items.length) {
-      toast.error("Select at least one item");
-      return;
-    }
+    // Owner 2026-07-22 — items MAY be empty. A Service Case is not always
+    // about a defective product (driver damaged customer's floor, lorry
+    // problem etc.); the backend accepts items=[] for exactly this reason.
     // Resolve the chosen issue category. "Other" requires the user to
     // have typed a custom label; otherwise we send null.
     let resolvedCategory: string | null = null;
@@ -2491,7 +2510,18 @@ function CreatePanel({
 
       onCreated(res.id);
     } catch (e: any) {
-      toast.error(`Failed: ${e?.message || e}`);
+      // Duplicate-open-case guard (owner 2026-07-22) — the server returns 409
+      // with { error: 'duplicate_open_case', message, existing:[{id, items,
+      // ...}] } when any picked item is already attached to an open case on
+      // this SO. Surface the friendly message rather than the raw "Failed:"
+      // so staff know to add to the existing case instead.
+      const errCode = e?.response?.body?.error ?? e?.body?.error;
+      const errMsg  = e?.response?.body?.message ?? e?.body?.message;
+      if (errCode === 'duplicate_open_case' && typeof errMsg === 'string') {
+        toast.error(errMsg);
+      } else {
+        toast.error(`Failed: ${e?.message || e}`);
+      }
     } finally {
       setSubmitting(false);
       setUploadProgress(null);
@@ -2865,7 +2895,6 @@ function CreatePanel({
             submitting ||
             !docNo.trim() ||
             !issue.trim() ||
-            selectedItems.size === 0 ||
             !issueCategory ||
             (issueCategory === OTHER_SENTINEL && !customCategory.trim())
           }
@@ -3263,7 +3292,13 @@ function DetailContent({
             )}
             {/* Stage picker moved into the Workflow Progress card below
                 (rendered as "Change to"), matching the case-detail layout. */}
-            {c.stage === "pending_delivery_service" && !c.archived_at && (
+            {/* Close Case on every open case (Nick 2026-07-21) — not just
+                Delivery/Service. The ClosePrompt (satisfaction rating)
+                is stage-agnostic and the stage dropdown already allows
+                jumping straight to Completed, so early closes (customer
+                withdrew, resolved without delivery) go through the same
+                rated flow instead of a silent stage jump. */}
+            {c.stage !== "completed" && !c.archived_at && (
               <HeaderButton
                 variant="primary"
                 onClick={handleCloseClick}
@@ -3469,13 +3504,26 @@ function DetailContent({
                       >
                         {item.item_description || ""}
                       </span>
-                      <ItemQtyStepper
-                        caseId={id}
-                        item={item}
-                        disabled={c.stage === "completed" || !!c.archived_at}
-                        onSaved={() => detail.reload()}
-                        toast={toast}
-                      />
+                      <div className="flex items-center gap-0.5">
+                        <span className="mr-0.5 text-[8.5px] font-semibold uppercase tracking-wide text-ink-muted">Set</span>
+                        <ItemQtyStepper
+                          caseId={id}
+                          item={item}
+                          disabled={c.stage === "completed" || !!c.archived_at}
+                          onSaved={() => detail.reload()}
+                          toast={toast}
+                        />
+                      </div>
+                      <div className="flex items-center gap-0.5">
+                        <span className="mr-0.5 text-[8.5px] font-semibold uppercase tracking-wide text-ink-muted">Ctn</span>
+                        <ItemCartonStepper
+                          caseId={id}
+                          item={item}
+                          disabled={c.stage === "completed" || !!c.archived_at}
+                          onSaved={() => detail.reload()}
+                          toast={toast}
+                        />
+                      </div>
                       {c.stage !== "completed" && (
                         <button
                           onClick={() => removeItem(item.id)}
@@ -3489,6 +3537,19 @@ function DetailContent({
                     <ItemRemarkInput
                       caseId={id}
                       item={item}
+                      field="remark"
+                      label="Customer"
+                      placeholder="Customer remark — prints on the customer copy"
+                      disabled={c.stage === "completed" || !!c.archived_at}
+                      onSaved={() => detail.reload()}
+                      toast={toast}
+                    />
+                    <ItemRemarkInput
+                      caseId={id}
+                      item={item}
+                      field="supplier_remark"
+                      label="Supplier"
+                      placeholder="Supplier remark — prints on the supplier copy"
                       disabled={c.stage === "completed" || !!c.archived_at}
                       onSaved={() => detail.reload()}
                       toast={toast}
@@ -7666,27 +7727,94 @@ function ItemQtyStepper({ caseId, item, disabled, onSaved, toast }: {
   );
 }
 
-function ItemRemarkInput({ caseId, item, disabled, onSaved, toast }: {
+function ItemCartonStepper({ caseId, item, disabled, onSaved, toast }: {
   caseId: number;
   item: any;
   disabled?: boolean;
   onSaved: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
-  const current = String(item.remark ?? "");
+  const qtyCarton = Math.max(1, Number(item.qty_carton ?? 1));
+  const [saving, setSaving] = useState(false);
+
+  async function set(next: number) {
+    const clamped = Math.max(1, Math.round(next));
+    if (clamped === qtyCarton || saving) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/assr/${caseId}/items/${item.id}`, { qty_carton: clamped });
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update carton quantity");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (disabled) {
+    return <span className="text-[11px] text-ink-muted">&times;{qtyCarton}</span>;
+  }
+  return (
+    <div className="flex items-center gap-0.5 rounded border border-border bg-bg/50">
+      <button
+        type="button"
+        onClick={() => set(qtyCarton - 1)}
+        disabled={saving || qtyCarton <= 1}
+        className="px-1.5 py-0.5 text-[12px] font-bold text-ink-muted hover:text-ink disabled:opacity-40"
+        title="Decrease cartons"
+      >
+        −
+      </button>
+      <input
+        type="number"
+        min={1}
+        value={qtyCarton}
+        onChange={(e) => set(parseInt(e.target.value, 10) || 1)}
+        disabled={saving}
+        className="w-8 border-x border-border bg-transparent py-0.5 text-center text-[11px] font-semibold text-ink outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        title="Cartons"
+      />
+      <button
+        type="button"
+        onClick={() => set(qtyCarton + 1)}
+        disabled={saving}
+        className="px-1.5 py-0.5 text-[12px] font-bold text-ink-muted hover:text-ink disabled:opacity-40"
+        title="Increase cartons"
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+// Audience-split since Nick 2026-07-21 (remark 分别给客户和 Supplier):
+// field='remark' prints on the customer copy, 'supplier_remark' on the
+// Supplier Service Order. A tiny fixed-width label keeps the two rows
+// tellable-apart once both carry text.
+function ItemRemarkInput({ caseId, item, field, label, placeholder, disabled, onSaved, toast }: {
+  caseId: number;
+  item: any;
+  field: "remark" | "supplier_remark";
+  label: string;
+  placeholder: string;
+  disabled?: boolean;
+  onSaved: () => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const current = String(item[field] ?? "");
   const [draft, setDraft] = useState(current);
   useEffect(() => {
-    setDraft(String(item.remark ?? ""));
+    setDraft(String(item[field] ?? ""));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item.id, item.remark]);
+  }, [item.id, item[field]]);
 
   async function commit() {
     if (draft.trim() === current.trim()) return;
     try {
       await api.patch(`/api/assr/${caseId}/items/${item.id}`, {
-        remark: draft.trim() || null,
+        [field]: draft.trim() || null,
       });
-      toast.success("Remark saved");
+      toast.success(`${label} remark saved`);
       onSaved();
     } catch (e: any) {
       toast.error(e?.message || "Failed to save remark");
@@ -7695,15 +7823,20 @@ function ItemRemarkInput({ caseId, item, disabled, onSaved, toast }: {
 
   if (disabled && !current) return null;
   return (
-    <input
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-      disabled={disabled}
-      placeholder="Remark — prints on customer & supplier copies"
-      className="mt-1 w-full rounded bg-bg/60 px-2 py-1 text-[11.5px] text-ink outline-none placeholder:text-ink-muted/60 focus:ring-1 focus:ring-primary/30 disabled:opacity-60"
-    />
+    <div className="mt-1 flex items-center gap-1.5">
+      <span className="w-[52px] shrink-0 text-[8.5px] font-bold uppercase tracking-wider text-ink-muted">
+        {label}
+      </span>
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        disabled={disabled}
+        placeholder={placeholder}
+        className="w-full rounded bg-bg/60 px-2 py-1 text-[11.5px] text-ink outline-none placeholder:text-ink-muted/60 focus:ring-1 focus:ring-primary/30 disabled:opacity-60"
+      />
+    </div>
   );
 }
 

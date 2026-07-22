@@ -691,17 +691,18 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       // ── ASSR Form (design handoff) — boxed meta grid, black section
       // bars, fixed items table, 3-up photo grid, dual sign-off. ──
       const officeItems = (items as any[]).map((it, i) => `
-        <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
+        <div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;">
           <span class="td">${i + 1}</span>
           <span class="td code">${esc([it.item_code, it.item_description].filter(Boolean).join(" — "))}</span>
           <span class="td">${esc(it.qty ?? 1)}</span>
+          <span class="td">${esc(it.qty_carton ?? 1)}</span>
           <span class="td remark">${it.remark ? esc(it.remark) : i === 0 && cs.action_remark ? esc(cs.action_remark) : ""}</span>
         </div>`);
       const blanks = Math.max(0, 3 - officeItems.length);
       for (let i = 0; i < blanks; i++) {
         officeItems.push(`
-        <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
-          <span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span>
+        <div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;">
+          <span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span>
         </div>`);
       }
       // Split the case photos into the two panels ops asked for on the
@@ -753,8 +754,8 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
 
     <!-- items -->
     <div class="bar">Items</div>
-    <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
-      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">REMARK (IF ANY)</span>
+    <div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;">
+      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">CTN</span><span class="th">REMARK (IF ANY)</span>
     </div>
     ${officeItems.join("")}
 
@@ -800,11 +801,12 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     ${isSupplier ? (() => {
       // ── Supplier Service Order (design handoff). ──
       const supItems = (items as any[]).map((it, i) => `
-        <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
+        <div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;">
           <span class="td">${i + 1}</span>
           <span class="td code">${esc([it.item_code, it.item_description].filter(Boolean).join(" — "))}</span>
           <span class="td">${esc(it.qty ?? 1)}</span>
-          <span class="td remark">${it.remark ? esc(it.remark) : i === 0 && cs.action_remark ? esc(cs.action_remark) : ""}</span>
+          <span class="td">${esc(it.qty_carton ?? 1)}</span>
+          <span class="td remark">${it.supplier_remark ? esc(it.supplier_remark) : i === 0 && cs.action_remark ? esc(cs.action_remark) : ""}</span>
         </div>`);
       const photos = inlinedImages.slice(0, 5).map((a, i) => `
         <div class="ph"><img src="${a.data_url}" alt="${esc(a.file_name || "")}" /><span class="tag">IMG_${String(i + 1).padStart(2, "0")}</span></div>`);
@@ -847,10 +849,10 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
 
     <!-- items -->
     <div class="bar">Items</div>
-    <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
-      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">REMARK (IF ANY)</span>
+    <div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;">
+      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">CTN</span><span class="th">REMARK (IF ANY)</span>
     </div>
-    ${supItems.join("") || `<div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;"><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span></div>`}
+    ${supItems.join("") || `<div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;"><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span></div>`}
 
     <!-- resolution plan -->
     <div class="bar">Resolution Plan</div>

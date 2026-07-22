@@ -17,7 +17,7 @@ import { useQuery } from "../../hooks/useQuery";
 import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../../hooks/useToast";
 import { useBranding } from "../../hooks/useBranding";
-import { saveDraft, deleteDraft, type MailDraft } from "./mail-local";
+import { saveDraft, deleteDraftBestEffort, type MailDraft } from "./mail-local";
 import { pickDefaultFromAddress } from "./mail-from-default";
 import {
   validateMailAttachments,
@@ -195,16 +195,20 @@ export function ComposeDialog({
   function handleSaveDraft() {
     if (!canSaveDraft) return;
     const id = draftId ?? crypto.randomUUID();
-    saveDraft({
-      id,
-      to: to.trim(),
-      subject: subject.trim(),
-      body,
-      fromAddress,
-      updatedAt: Date.now(),
-    });
-    toast.success("Draft saved.");
-    onClose();
+    try {
+      saveDraft({
+        id,
+        to: to.trim(),
+        subject: subject.trim(),
+        body,
+        fromAddress,
+        updatedAt: Date.now(),
+      });
+      toast.success("Draft saved.");
+      onClose();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Draft could not be saved. Please try again.");
+    }
   }
 
   // Read one file → raw base64 (strip the `data:<mime>;base64,` prefix).
@@ -310,7 +314,7 @@ export function ComposeDialog({
         return;
       }
       toast.success("Email sent.");
-      if (draftId) deleteDraft(draftId);
+      if (draftId) deleteDraftBestEffort(draftId);
       onClose();
       if (payload.threadId) {
         onSent?.(payload.threadId);

@@ -158,21 +158,28 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Phone normalisation — Malaysian numbers to a bare national-significant form
-// under the +60 country prefix, WITHOUT the leading trunk 0. The slip writes
-// "0197770309" / "012-345 6789" / "+6017 888 9999"; the form stores the part
-// AFTER +60, so a leading 0 must be dropped ("0197770309" → "197770309"). Any
-// existing +60 / 60 country prefix is also stripped. Non-MY-looking strings
-// fall through unchanged (digits-only) so nothing is silently corrupted.
+// Phone normalisation for an extracted slip — E.164, via the SAME normalizePhone
+// every other write path uses.
+//
+// This used to be a local normalizeMyPhone() that returned the bare national
+// part "under the +60 prefix" and stripped a leading 60/0. It DESTROYED any
+// number that was not Malaysian. A slip reading "+65 6123 4567" became the
+// digits "6561234567" — which starts with neither 60 nor 0, so it fell through
+// untouched — and every consumer then treated it as a Malaysian national part
+// and put +60 in front of it: +606561234567. The number was corrupted
+// server-side, so no amount of UI work could have saved it, and there is no way
+// to recover the original from the stored value.
+//
+// normalizePhone keeps an explicit +xx country code and assumes Malaysia only
+// for a bare local form, which is exactly the rule the slip needs: the operator
+// writes "012-345 6789" for a local customer and "+65 …" when they mean
+// Singapore. Returning E.164 also removes the "+60" + digits concatenation from
+// every consumer — the value that comes out of the scan is now the value that
+// gets stored.
 // ---------------------------------------------------------------------------
-function normalizeMyPhone(raw: string | null | undefined): string | null {
+function normalizeSlipPhone(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
-  let digits = raw.replace(/[^\d]/g, '');
-  if (digits === '') return null;
-  // Strip a leading +60 / 60 country code, then the trunk 0.
-  if (digits.startsWith('60')) digits = digits.slice(2);
-  if (digits.startsWith('0')) digits = digits.replace(/^0+/, '');
-  return digits === '' ? null : digits;
+  return normalizePhone(raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -2900,12 +2907,12 @@ async function postProcessSlip(
   googleMapsApiKey: string | undefined,
   catalog: Catalog,
 ): Promise<Warning[]> {
-  // Phone normalisation — store the bare national-significant form under +60
-  // (drop the trunk 0): "0197770309" -> "197770309". Applies to every extracted
-  // phone (main + spouse/emergency) so the form's PhoneInput seeds the correct
-  // digits. phones[0] is the primary; the rest ride along for the edit-gate.
+  // Phone normalisation — E.164, the same form every write path stores and the
+  // form's PhoneInput consumes. Applies to every extracted phone (main +
+  // spouse/emergency). phones[0] is the primary; the rest ride along for the
+  // edit-gate.
   parsed.phones = parsed.phones
-    .map((p) => normalizeMyPhone(p))
+    .map((p) => normalizeSlipPhone(p))
     .filter((p): p is string => p !== null);
 
   // Address via Google Geocoding (GOOGLE_MAPS_API_KEY). The LLM mis-parses
@@ -3262,10 +3269,12 @@ async function findDuplicateSo(
   // B) Same phone + (same slip serial OR same slip date + same total).
   try {
     const parsed = args.parsed;
-    // parsed.phones are already national-significant digits (postProcessSlip).
-    const phoneNat = (parsed?.phones?.[0] ?? '').replace(/\s+/g, '');
-    if (parsed && phoneNat) {
-      const storedPhone = normalizePhone(`+60${phoneNat}`) ?? `+60${phoneNat}`;
+    // parsed.phones are already E.164 (postProcessSlip). They used to be bare
+    // national digits, which is why this line hardcoded a +60 in front — the
+    // one place a Singapore slip was guaranteed to be looked up as a Malaysian
+    // number, so its duplicate check could never match.
+    const storedPhone = (parsed?.phones?.[0] ?? '').replace(/\s+/g, '');
+    if (parsed && storedPhone) {
       const ref = (parsed.customerSoRef ?? '').trim().toUpperCase();
       const slipDate = /^\d{4}-\d{2}-\d{2}$/.test((parsed.processingDate ?? '').trim())
         ? (parsed.processingDate as string).trim()

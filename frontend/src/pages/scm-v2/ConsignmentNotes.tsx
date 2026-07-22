@@ -25,7 +25,8 @@ import { buildVariantSummary, fmtQty } from '@2990s/shared';
 import {
   useConsignmentNotesPaged, useUpdateConsignmentNoteStatus, useConsignmentNoteDetail,
 } from '../../vendor/scm/lib/consignment-note-queries';
-import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
+import { SearchProgress } from '../../components/SearchProgress';
+import { useDebouncedSearchTerm, useSearchResultTransition } from '../../hooks/useServerSearch';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { useAuth } from '../../auth/AuthContext';
 import { BrandingPill, badgeFor } from '../../vendor/scm/lib/category-badges';
@@ -314,19 +315,28 @@ export const ConsignmentNotes = () => {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState('');
   // Debounce the search box so each keystroke doesn't fire a server round-trip.
-  const debouncedSearch = useDebouncedValue(search, 300);
+  const { requestTerm: debouncedSearch } = useDebouncedSearchTerm(search);
 
   /* Server-side pagination + search (mirrors Suppliers.tsx). Status chip +
      free-text search drive the SERVER query; reset to page 0 whenever either
      changes so we never strand the operator on an out-of-range page. */
   useEffect(() => { setPage(0); }, [statusChip, debouncedSearch]);
 
-  const { data, isLoading, error } = useConsignmentNotesPaged({
+  const { data, isLoading, isFetching, isPlaceholderData, error } = useConsignmentNotesPaged({
     page,
     pageSize: PAGE_SIZE,
     status: statusChip === 'all' ? undefined : statusChip,
     q: debouncedSearch.trim() || undefined,
   });
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: debouncedSearch,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const listLoading = isLoading || searchTransition.isSearching;
 
   /* Server page rows + grand total. Status + search are resolved server-side;
      the DataGrid's own per-column funnel filters + grouping now operate on the
@@ -467,11 +477,12 @@ export const ConsignmentNotes = () => {
               background: 'var(--c-paper)', color: 'var(--c-ink)', fontSize: 12,
             }}
           />
+          <SearchProgress active={searchTransition.isSearching} className="ml-2" />
         </div>
       </div>
 
       <DataGrid<CnRow>
-        rows={rows}
+        rows={searchTransition.resultsAreStale ? [] : rows}
         columns={COLUMNS}
         storageKey={STORAGE_KEY}
         exportName="Consignment Notes"
@@ -489,7 +500,7 @@ export const ConsignmentNotes = () => {
         groupBanner={false}
         onRowDoubleClick={(r) => openDetail(r)}
         rowStyle={(r) => r.status === 'CANCELLED' ? { opacity: 0.55, filter: 'grayscale(0.6)' } : undefined}
-        isLoading={isLoading}
+        isLoading={listLoading}
         emptyMessage='No consignment notes yet — click "New Consignment Note" to start.'
         expandable={{
           renderExpansion: (row) => <ExpandedCnLines id={row.id} canFinance={canFinance} />,
@@ -521,14 +532,14 @@ export const ConsignmentNotes = () => {
         }}
       />
 
-      <PaginationFooter
+      {!searchTransition.resultsAreStale && <PaginationFooter
         page={page}
         pageSize={PAGE_SIZE}
         total={total}
         noun="notes"
         onPrev={() => setPage((p) => Math.max(0, p - 1))}
         onNext={() => setPage((p) => p + 1)}
-      />
+      />}
     </div>
   );
 };

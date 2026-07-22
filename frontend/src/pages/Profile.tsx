@@ -10,9 +10,11 @@ import { api } from "../api/client";
 import { prepareImageForUpload } from "../lib/imagePipeline";
 import { formatDate, relativeTime, cn } from "../lib/utils";
 import {
-  isBrowserPushEnabled,
-  setBrowserPushEnabled,
-} from "../components/BrowserPushSink";
+  requestBrowserNotificationPermission,
+  setBrowserNotificationPreference,
+  useBrowserNotificationPermission,
+  useBrowserNotificationPreference,
+} from "../lib/browserNotificationPreference";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
 
@@ -274,20 +276,8 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
 
 function NotificationsSection() {
   const toast = useToast();
-  // Track the toggle + browser-level permission in local state so the UI
-  // re-renders after permission prompts resolve.
-  const [enabled, setEnabled] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("notifications:browserPush") === "1";
-    } catch {
-      return false;
-    }
-  });
-  const [permission, setPermission] = useState<NotificationPermission | "unsupported">(
-    typeof window !== "undefined" && "Notification" in window
-      ? Notification.permission
-      : "unsupported"
-  );
+  const enabled = useBrowserNotificationPreference();
+  const permission = useBrowserNotificationPermission();
 
   async function toggle() {
     if (permission === "unsupported") {
@@ -297,15 +287,13 @@ function NotificationsSection() {
     if (enabled) {
       // Turn OFF — just flip the preference. We don't revoke the
       // browser permission; that's the user's OS-level choice.
-      setBrowserPushEnabled(false);
-      setEnabled(false);
+      setBrowserNotificationPreference(false);
       toast.success("Browser notifications off");
       return;
     }
     // Turning ON — may need to prompt.
     if (permission === "default") {
-      const result = await Notification.requestPermission();
-      setPermission(result);
+      const result = await requestBrowserNotificationPermission();
       if (result !== "granted") {
         toast.error("Permission denied");
         return;
@@ -316,8 +304,7 @@ function NotificationsSection() {
       );
       return;
     }
-    setBrowserPushEnabled(true);
-    setEnabled(true);
+    setBrowserNotificationPreference(true);
     toast.success("Browser notifications on");
     // Fire a hello banner so they see it worked.
     try {
@@ -389,9 +376,6 @@ function NotificationsSection() {
     </section>
   );
 }
-
-// Silence the unused-import warning when the check doesn't branch.
-void isBrowserPushEnabled;
 
 function PasswordSection() {
   const toast = useToast();

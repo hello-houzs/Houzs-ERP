@@ -5,6 +5,9 @@ import { api } from "../api/client";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { MobileGantt } from "./MobileGantt";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
+import { SearchProgress } from "../components/SearchProgress";
+import { SearchScopeHint } from "../components/SearchScopeHint";
+import { useSearchResultTransition } from "../hooks/useServerSearch";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesNonDirector, isSalesDirectorUser } from "../auth/salesAccess";
 import { capability } from "../auth/capabilities";
@@ -453,11 +456,14 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     return p.toString();
   };
   const {
-    data, isLoading, error,
+    data, isLoading, isFetching, isPlaceholderData, error,
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
+    // `showAssigned` is read by buildParams, so it MUST be in the key (main) —
+    // and the query's signal is forwarded so a superseded search is cancelled
+    // rather than left racing (this branch).
     queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ, showAssigned],
-    queryFn: ({ pageParam }) => api.get<ListResponse>(`/api/projects?${buildParams(pageParam)}`),
+    queryFn: ({ pageParam, signal }) => api.get<ListResponse>(`/api/projects?${buildParams(pageParam)}`, { signal }),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
       const loaded = pages.reduce((n, p) => n + (p.data?.length ?? p.projects?.length ?? p.rows?.length ?? 0), 0);
@@ -470,6 +476,16 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     () => data?.pages.flatMap((p) => p.data ?? p.projects ?? p.rows ?? []) ?? [],
     [data],
   );
+  const totalCount = data?.pages[0]?.total ?? 0;
+  const searchTransition = useSearchResultTransition({
+    inputTerm: q,
+    requestTerm: debouncedQ,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const visibleRows = searchTransition.resultsAreStale ? [] : rows;
 
   /* Infinite-scroll trigger — an IntersectionObserver watches a 1px sentinel at
      the list's bottom and fetches the next page as it nears the viewport
@@ -511,7 +527,9 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search project · venue" />
           </div>
+          <SearchProgress active={searchTransition.isSearching} label="Searching…" />
         </div>
+        <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={totalCount} term={q} className="mt-1 px-1" />
         <div className="chips" style={{ marginTop: 11 }}>
           {(tickOnly || restrictedCohort) && (
             <button
@@ -540,9 +558,9 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
         )}
         {!isLoading && !error && (
           <>
-            {rows.length > 0 && (
+            {visibleRows.length > 0 && (
               <MobileVirtualList
-                items={rows}
+                items={visibleRows}
                 getKey={(r) => r.id}
                 estimateHeight={108}
                 renderItem={(r) => {
@@ -610,15 +628,15 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
             {/* Infinite-scroll sentinel — the IntersectionObserver watches this
                 1px marker at the list's bottom; it enters view (+600px) near the
                 end and pulls the next page. Only present while more pages exist. */}
-            {rows.length > 0 && hasNextPage && (
+            {visibleRows.length > 0 && hasNextPage && (
               <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
             )}
             {/* "Loading more…" while the next page is in flight; nothing once
                 every page is loaded (hasNextPage false). */}
-            {rows.length > 0 && isFetchingNextPage && (
+            {visibleRows.length > 0 && isFetchingNextPage && (
               <div style={{ textAlign: "center", padding: "14px 0 2px", fontSize: 11.5, color: "#9aa093" }}>Loading more…</div>
             )}
-            {!rows.length && (
+            {!visibleRows.length && !searchTransition.isSearching && (
               <div className="empty">
                 <div className="empty-t">No projects</div>
                 <div className="empty-s">No projects match this filter.</div>
@@ -652,6 +670,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const notify = useNotify();
   const prompt = usePrompt();
   const [busy, setBusy] = useState(false);
+  // Owner 2026-07-21: the system project code is unreadable at full length —
+  // the header meta collapses to one ellipsised line, tap toggles the full string.
+  const [metaExpanded, setMetaExpanded] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-pms-detail", id],
@@ -935,9 +956,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 {archived ? "Restore" : "Archive"}
               </button>
             )}
-            {/* Owner 2026-07-20: project-level edits (status here, the Project
-                card's Edit below) require the PMS EDIT section — sales roles
-                (pms.canEdit=false) get the read-only badge instead. */}
+            {/* Owner 2026-07-20: project-level edits (status + Edit here)
+                require the PMS EDIT section — sales roles (pms.canEdit=false)
+                get the read-only badge instead. */}
             {p && canWrite && access.canEdit && !archived && (
               <select
                 value={p.status ?? ""}
@@ -952,16 +973,80 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 <option value="cancelled">Cancelled</option>
               </select>
             )}
-            {p && (!canWrite || !access.canEdit || archived) && <StageBadge stage={p.stage} dark />}
+            {/* Edit lived on the (removed) Project card's summary — the card
+                is gone (owner 2026-07-22: header carries all its info), so the
+                sequential-prompt editor moved up here. Same flow, same gate. */}
+            {p && canWrite && access.canEdit && !archived && (
+              <button
+                className="tinybtn"
+                disabled={busy}
+                aria-label="Edit project"
+                style={{ background: "rgba(255,255,255,.08)", borderColor: "rgba(231,234,228,.18)", color: "#e7eae4" }}
+                onClick={async () => {
+                  if (busy) return;
+                  // Sequential single-field prompts (usePrompt returns one
+                  // value); each null/cancel ends the flow, blanks are skipped.
+                  const fields: Array<[string, string, string | null | undefined]> = [
+                    ["name", "Project name", p.name],
+                    ["booth_no", "Booth number", p.booth_no],
+                    ["venue", "Venue", p.venue],
+                    ["organizer", "Organizer", p.organizer],
+                    ["start_date", "Start date (YYYY-MM-DD)", p.start_date],
+                    ["end_date", "End date (YYYY-MM-DD)", p.end_date],
+                  ];
+                  const patch: Record<string, unknown> = {};
+                  for (const [key, label, cur] of fields) {
+                    const val = await prompt({ title: `Edit ${label}`, placeholder: label, defaultValue: (cur ?? "") as string });
+                    if (val == null) break; // cancelled — stop the flow
+                    const t = val.trim();
+                    if (key === "name" && !t) continue; // name can't be blanked
+                    if (t !== (cur ?? "")) patch[key] = t || null;
+                  }
+                  if (Object.keys(patch).length > 0) await patchProject(patch);
+                }}
+              >
+                Edit
+              </button>
+            )}
           </div>
         </div>
-        {/* Title block — prototype #project header VERBATIM: gold eyebrow
-            "Project", then the project name (16px/800 per Build Spec detail),
-            then a meta line carrying our real code/brand/event/venue data. */}
-        <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".13em", textTransform: "uppercase", color: "#8c968a", marginTop: 6 }}>Project</div>
-        <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", lineHeight: 1.3, marginTop: 3 }}>{p?.name || "—"}</div>
-        <div style={{ fontSize: 11.5, color: "#8c968a", marginTop: 5 }}>
-          {[p?.code, p?.brand, p?.event_type_name, p?.venue].filter(Boolean).join(" · ") || "—"}
+        {/* Title block — owner's 2026-07-22 header mockup, all users: stage
+            badge on its own line under the back row (lowercase), then the
+            title-cased project name, then a dates | booth line, then the
+            system-code line (code only, single-line ellipsis, tap-to-expand).
+            This header is the ONLY place for project facts now — the Project
+            info card below was removed the same day (its brand/organizer/venue
+            rows repeated what the title already says). */}
+        {p && (
+          <div style={{ marginTop: 8 }}>
+            <StageBadge stage={p.stage} lower />
+          </div>
+        )}
+        <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", lineHeight: 1.3, marginTop: 7 }}>{p?.name ? titleCaseName(p.name) : "—"}</div>
+        {p && (
+          <div className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#e7eae4", marginTop: 5 }}>
+            {dm(p.start_date)} – {dm(p.end_date)}
+            {p.booth_no ? (
+              <>
+                <span style={{ color: "#5c6156", fontWeight: 400, margin: "0 7px" }}>|</span>
+                Booth {p.booth_no}
+              </>
+            ) : null}
+          </div>
+        )}
+        <div
+          role="button"
+          aria-label="Project code"
+          aria-expanded={metaExpanded}
+          onClick={() => setMetaExpanded((v) => !v)}
+          style={{
+            fontSize: 11.5, color: "#8c968a", marginTop: 5,
+            ...(metaExpanded
+              ? { whiteSpace: "normal" as const, wordBreak: "break-all" as const }
+              : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }),
+          }}
+        >
+          {p?.code || "—"}
         </div>
       </header>
 
@@ -991,57 +1076,16 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             )}
 
-            {/* stage pipeline (design "Pipeline" card) — hidden from the field/sales cohort */}
-            {!cohort5 && <StagePipeline stage={p.stage} sections={data.section_progress} />}
+            {/* stage pipeline (design "Pipeline" card) — hidden from the
+                field/sales cohort, and from the owner account too (owner
+                2026-07-22: "remove pipeline for owner user in mobile"). */}
+            {!cohort5 && !isOwnerAdmin && <StagePipeline stage={p.stage} sections={data.section_progress} />}
 
-            {/* project detail */}
-            <details className="pacc" open>
-              <summary>
-                <span className="psec-t">Project</span>
-                {canWrite && access.canEdit && !archived && (
-                  <span
-                    role="button"
-                    className="tinybtn"
-                    style={{ marginLeft: "auto" }}
-                    onClick={async (e) => {
-                      e.preventDefault();
-                      if (busy) return;
-                      // Sequential single-field prompts (usePrompt returns one
-                      // value); each null/cancel ends the flow, blanks are skipped.
-                      const fields: Array<[string, string, string | null | undefined]> = [
-                        ["name", "Project name", p.name],
-                        ["booth_no", "Booth number", p.booth_no],
-                        ["venue", "Venue", p.venue],
-                        ["organizer", "Organizer", p.organizer],
-                        ["start_date", "Start date (YYYY-MM-DD)", p.start_date],
-                        ["end_date", "End date (YYYY-MM-DD)", p.end_date],
-                      ];
-                      const patch: Record<string, unknown> = {};
-                      for (const [key, label, cur] of fields) {
-                        const val = await prompt({ title: `Edit ${label}`, placeholder: label, defaultValue: (cur ?? "") as string });
-                        if (val == null) break; // cancelled — stop the flow
-                        const t = val.trim();
-                        if (key === "name" && !t) continue; // name can't be blanked
-                        if (t !== (cur ?? "")) patch[key] = t || null;
-                      }
-                      if (Object.keys(patch).length > 0) await patchProject(patch);
-                    }}
-                  >
-                    Edit
-                  </span>
-                )}
-                <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
-              </summary>
-              {/* Body — design "Project" card rows: Dates / Venue / Booth no. /
-                  Organizer / Branding, wired to our real columns. */}
-              <div className="pbody">
-                <div className="row" style={{ borderTop: "none" }}><span className="row-l">Dates</span><span className="row-v money">{dm(p.start_date)} – {dm(p.end_date)}</span></div>
-                <div className="row"><span className="row-l">Venue</span><span className="row-v">{p.venue || p.state || "—"}</span></div>
-                <div className="row"><span className="row-l">Booth no.</span><span className="row-v">{p.booth_no || "—"}</span></div>
-                <div className="row"><span className="row-l">Organizer</span><span className="row-v">{p.organizer || "—"}</span></div>
-                <div className="row" style={{ borderBottom: "none" }}><span className="row-l">Branding</span><span className="row-v">{p.brand || "—"}</span></div>
-              </div>
-            </details>
+            {/* The Project info card (Venue / Organizer / Branding rows) is
+                GONE — owner 2026-07-22: the header already carries all of it
+                (title = "State [Brand] Organizer @ Venue", plus the
+                dates | booth line), so the card was pure repetition. Its Edit
+                button moved into the header controls row. */}
 
             {/* project team */}
             <details className="pacc" open>
@@ -3375,18 +3419,41 @@ function ListChip({ children }: { children: ReactNode }) {
 // colour matching the desktop stageVariant, mapped onto the mobile badge
 // palette (STAGE_TINT). draft=neutral/grey · setup=open/amber ·
 // live+dismantle=in-progress/green · completed+closed=closed/grey ·
-// cancelled=error/clay-red.
-function StageBadge({ stage, dark }: { stage: string | null | undefined; dark?: boolean }) {
+// cancelled=error/clay-red. Owner 2026-07-21: ONE standard badge everywhere
+// (auto width, .spill padding, stage tint) — the detail header's bespoke gold
+// "dark" variant is gone; the solid tinted pill is legible on the dark header.
+// `lower` = the detail-header instance, which the owner's 2026-07-22 mockup
+// shows lowercase ("setup"); same tint + shape, only the casing differs.
+function StageBadge({ stage, lower }: { stage: string | null | undefined; lower?: boolean }) {
   const tint = STAGE_TINT[stageVariant(stage)];
   const label = stageLabel(stage);
   return (
-    <span className="spill" style={{
-      flex: "none",
-      background: dark ? "rgba(216,168,90,.16)" : tint.bg,
-      color: dark ? "#d8a85a" : tint.fg,
-      border: dark ? "1px solid rgba(216,168,90,.4)" : "none",
-    }}>{label}</span>
+    <span
+      className="spill"
+      style={{ flex: "none", background: tint.bg, color: tint.fg, border: "none", ...(lower ? { textTransform: "none" as const } : null) }}
+    >
+      {lower ? label.toLowerCase() : label}
+    </span>
   );
+}
+
+// Owner's 2026-07-22 header mockup shows "Penang [Zanotti] MLE @ Pisa Spice
+// Arena Convention Centre", not the ALL-CAPS string the DB stores — a
+// display-only transform. Tokens whose letters run ≤3 chars stay verbatim
+// (MLE, SD, C&C — the acronyms the mockup keeps uppercase); longer tokens are
+// title-cased at their first letter so wrappers survive ([ZANOTTI] →
+// [Zanotti], PISA → Pisa).
+function titleCaseName(name: string): string {
+  return name
+    .split(" ")
+    .map((word) => {
+      const letters = word.replace(/[^A-Za-z]/g, "");
+      if (letters.length <= 3) return word;
+      const lower = word.toLowerCase();
+      const i = lower.search(/[a-z]/);
+      return i === -1 ? word : lower.slice(0, i) + lower[i].toUpperCase() + lower.slice(i + 1);
+    })
+    .join(" ");
 }
 
 // Section-driven stage badge — the project's CURRENT active section

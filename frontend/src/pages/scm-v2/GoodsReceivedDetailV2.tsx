@@ -21,6 +21,7 @@ import {
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
+import { DATA_TABLE_LAYOUT_FAMILIES } from "../../components/dataTableLayoutFamilies";
 import { DetailGrid, DetailMain, DetailAside, Section } from "../../components/DetailLayout";
 import {
   useGrnDetail,
@@ -567,6 +568,7 @@ function GoodsReceivedDetailV2ReadOnly() {
             <Section title={`Received items · ${items.length}`}>
               <DataTable<GrnItem>
                 tableId={`grn-lines-${id}`}
+                layoutFamily={DATA_TABLE_LAYOUT_FAMILIES.goodsReceivedLines}
                 rows={items}
                 loading={false}
                 columns={lineColumns}

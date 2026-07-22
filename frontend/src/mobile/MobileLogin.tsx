@@ -3,6 +3,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { signInErrorMessage } from "../auth/loginErrors";
 import { AmbientSnow } from "../components/AmbientSnow";
+import { readRememberedEmail } from "../lib/rememberedEmail";
 import {
   HOUZS_COMPANY_CODE,
   defaultBrandingForCompany,
@@ -11,16 +12,13 @@ import {
 } from "../lib/branding";
 import "./mobile.css";
 
-const REMEMBER_KEY = "houzs_remember_email";
-
 /** Mobile login — 1:1 with the owner's design: dark surface, drifting aurora
  *  glows, ambient snow particles, staggered entrance. Wired to the real auth:
  *  Remember me persists the email, Forgot password opens the reset flow, Sign in
  *  authenticates (incl. 2FA challenge). */
 export function MobileLogin() {
   const { login, verifyTotpLogin } = useAuth();
-  const remembered = typeof localStorage !== "undefined" ? localStorage.getItem(REMEMBER_KEY) : null;
-  const [email, setEmail] = useState(remembered ?? "");
+  const [email, setEmail] = useState(() => readRememberedEmail());
   const [password, setPassword] = useState("");
   // Default Remember me ON — internal ERP, staff expect to stay signed in (7-day
   // session). Was `remembered != null`, which left it UNCHECKED on a fresh/cleared
@@ -38,8 +36,6 @@ export function MobileLogin() {
     if (busy) return;
     setErr(null); setBusy(true);
     try {
-      if (remember) localStorage.setItem(REMEMBER_KEY, email.trim());
-      else localStorage.removeItem(REMEMBER_KEY);
       const res = await login(email.trim(), password, remember);
       if (res.kind === "totp") { setChallenge(res.challenge); setBusy(false); }
       // res.kind === "ok": AuthContext sets the user; AuthGate swaps to the app.
@@ -109,13 +105,13 @@ export function MobileLogin() {
             <div className="hz-lg-item" style={{ ...delay(3), display: "flex", flexDirection: "column", gap: 13, marginTop: 18 }}>
               <label style={{ display: "block" }}>
                 <span style={labelStyle}>Email or phone</span>
-                <input value={email} onChange={(e) => setEmail(e.target.value)} autoCapitalize="none" autoCorrect="off" inputMode="email"
+                <input value={email} onChange={(e) => setEmail(e.target.value)} name="email" autoComplete="username" autoCapitalize="none" autoCorrect="off" inputMode="email"
                   onKeyDown={(e) => { if (e.key === "Enter") document.getElementById("hz-pw")?.focus(); }} style={inputStyle} placeholder="you@houzscentury.com" />
               </label>
               <label style={{ display: "block" }}>
                 <span style={labelStyle}>Password</span>
                 <div style={{ position: "relative" }}>
-                  <input id="hz-pw" type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)}
+                  <input id="hz-pw" type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} name="password" autoComplete="current-password"
                     onKeyDown={(e) => { if (e.key === "Enter") onSignIn(); }} style={{ ...inputStyle, paddingRight: 44 }} placeholder="••••••••" />
                   <button
                     type="button"
