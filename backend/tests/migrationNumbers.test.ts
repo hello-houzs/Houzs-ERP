@@ -53,7 +53,7 @@ const KNOWN_DUPLICATES: Record<string, string[]> = {
   //      not the tip you branched from.
   // Two 0175 files now on main, both applied under their own filenames in
   // `_pg_migrations`. Frozen here so the ratchet catches the NEXT one.
-  "src/db/migrations-pg": ["0029", "0091", "0092", "0093", "0094", "0104", "0108", "0112", "0123", "0175"],
+  "src/db/migrations-pg": ["0029", "0091", "0092", "0093", "0094", "0104", "0108", "0112", "0123"],
   "src/db/migrations": ["010"],
 };
 
