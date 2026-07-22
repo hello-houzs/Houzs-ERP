@@ -132,7 +132,11 @@ app.use("*", cors({ origin: "*", exposeHeaders: ["X-Request-Id"] }));
 app.use("*", dbInject);
 
 app.get("/", (c) => c.json({ ok: true, service: "autocount-sync-api" }));
-app.get("/health", (c) => c.json({ ok: true }));
+// `sha` is the commit this Worker was deployed from — stamped by deploy.yml
+// via `wrangler deploy --var GIT_SHA:<sha>`. A bare local `wrangler deploy`
+// carries no stamp (null), which is exactly what the deploy-watchdog workflow
+// keys on to detect and revert rogue/stale overwrites of the prod Worker.
+app.get("/health", (c) => c.json({ ok: true, sha: c.env.GIT_SHA ?? null }));
 
 // /api/auth/* is unauthenticated (login, bootstrap, accept-invite, status,
 // me, logout). It must be mounted BEFORE the auth middleware below.

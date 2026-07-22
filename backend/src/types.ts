@@ -83,6 +83,11 @@ export type Env = {
   // Public origin for building email links (portal survey URLs etc.).
   // Falls back to the worker URL if unset.
   PUBLIC_APP_URL?: string;
+  // Commit this Worker build was deployed from. Stamped ONLY by deploy.yml
+  // (`wrangler deploy --var GIT_SHA:<sha>`); absent on any bare local deploy.
+  // Read by GET /health and compared against main by the deploy-watchdog
+  // workflow, which auto-redeploys main when the live Worker goes stale.
+  GIT_SHA?: string;
   // "true" opens admin login-as-member to EVERY users.manage admin
   // (routes/users.ts impersonation). Set ONLY in [env.staging.vars] — never
   // on prod: there the wildcard owner (`*`) can always impersonate anyway,
