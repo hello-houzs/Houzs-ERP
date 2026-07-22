@@ -186,7 +186,10 @@ export default defineConfig(({ mode }) => {
           deps.filter((d) => !/(jspdf|xlsx|leaflet)/i.test(d)),
       },
       rollupOptions: {
-        output: {
+        // Cast is type-only: `codeSplitting` is Rolldown's chunking API, which
+        // rollup's OutputOptions typings don't know yet — `tsc -b` (the first
+        // half of `npm run build`) fails on the unknown key without it.
+        output: ({
           // Stable vendor chunks keep framework bytes cacheable and move
           // heavyweights (leaflet maps, lucide icons) outside the entry.
           // Vite 8's Rolldown can additionally split modules shared by the
@@ -212,7 +215,7 @@ export default defineConfig(({ mode }) => {
               },
               {
                 name: "initial-app",
-                test: (id) => !id.includes("node_modules"),
+                test: (id: string) => !id.includes("node_modules"),
                 tags: ["$initial"],
                 priority: 10,
               },
@@ -238,7 +241,7 @@ export default defineConfig(({ mode }) => {
             // same trap on the next dependency bump. Reachability is the thing
             // we actually mean, and Rolldown computes it for free.
           },
-        },
+        } as any),
       },
     },
     server: {
