@@ -1,4 +1,4 @@
--- 0169_scm_so_concurrency_domain_closure.sql (Postgres)
+-- 0173_scm_so_concurrency_domain_closure.sql (Postgres)
 -- Must run after 0163 -> 0167 -> 0168. This migration closes the remaining
 -- canonical Sales Order concurrency domains: transactional header followers
 -- and row-versioned payment corrections.

@@ -1,4 +1,4 @@
--- 0170_scm_stock_allocation_recompute_queue.sql
+-- 0174_scm_stock_allocation_recompute_queue.sql
 -- Durable singleton invalidation for the global SO stock-allocation projection.
 -- A command updates source-of-truth rows and this queue row in the SAME DB
 -- transaction. The inline drain is only a latency optimisation; the five-minute

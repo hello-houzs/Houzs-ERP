@@ -119,9 +119,9 @@ async function resetFixture(sql: Sql): Promise<void> {
       RETURN v;
     END $fn$;
   `);
-  await sql.unsafe(await migration('0168_scm_so_edit_lease_and_followers.sql'));
-  await sql.unsafe(await migration('0169_scm_so_concurrency_domain_closure.sql'));
-  await sql.unsafe(await migration('0170_scm_stock_allocation_recompute_queue.sql'));
+  await sql.unsafe(await migration('0172_scm_so_edit_lease_and_followers.sql'));
+  await sql.unsafe(await migration('0173_scm_so_concurrency_domain_closure.sql'));
+  await sql.unsafe(await migration('0174_scm_stock_allocation_recompute_queue.sql'));
 }
 
 async function callHeaderCas(
