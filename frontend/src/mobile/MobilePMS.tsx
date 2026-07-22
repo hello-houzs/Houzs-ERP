@@ -956,9 +956,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 {archived ? "Restore" : "Archive"}
               </button>
             )}
-            {/* Owner 2026-07-20: project-level edits (status here, the Project
-                card's Edit below) require the PMS EDIT section — sales roles
-                (pms.canEdit=false) get the read-only badge instead. */}
+            {/* Owner 2026-07-20: project-level edits (status + Edit here)
+                require the PMS EDIT section — sales roles (pms.canEdit=false)
+                get the read-only badge instead. */}
             {p && canWrite && access.canEdit && !archived && (
               <select
                 value={p.status ?? ""}
@@ -973,14 +973,50 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 <option value="cancelled">Cancelled</option>
               </select>
             )}
+            {/* Edit lived on the (removed) Project card's summary — the card
+                is gone (owner 2026-07-22: header carries all its info), so the
+                sequential-prompt editor moved up here. Same flow, same gate. */}
+            {p && canWrite && access.canEdit && !archived && (
+              <button
+                className="tinybtn"
+                disabled={busy}
+                aria-label="Edit project"
+                style={{ background: "rgba(255,255,255,.08)", borderColor: "rgba(231,234,228,.18)", color: "#e7eae4" }}
+                onClick={async () => {
+                  if (busy) return;
+                  // Sequential single-field prompts (usePrompt returns one
+                  // value); each null/cancel ends the flow, blanks are skipped.
+                  const fields: Array<[string, string, string | null | undefined]> = [
+                    ["name", "Project name", p.name],
+                    ["booth_no", "Booth number", p.booth_no],
+                    ["venue", "Venue", p.venue],
+                    ["organizer", "Organizer", p.organizer],
+                    ["start_date", "Start date (YYYY-MM-DD)", p.start_date],
+                    ["end_date", "End date (YYYY-MM-DD)", p.end_date],
+                  ];
+                  const patch: Record<string, unknown> = {};
+                  for (const [key, label, cur] of fields) {
+                    const val = await prompt({ title: `Edit ${label}`, placeholder: label, defaultValue: (cur ?? "") as string });
+                    if (val == null) break; // cancelled — stop the flow
+                    const t = val.trim();
+                    if (key === "name" && !t) continue; // name can't be blanked
+                    if (t !== (cur ?? "")) patch[key] = t || null;
+                  }
+                  if (Object.keys(patch).length > 0) await patchProject(patch);
+                }}
+              >
+                Edit
+              </button>
+            )}
           </div>
         </div>
         {/* Title block — owner's 2026-07-22 header mockup, all users: stage
             badge on its own line under the back row (lowercase), then the
             title-cased project name, then a dates | booth line, then the
             system-code line (code only, single-line ellipsis, tap-to-expand).
-            Brand + venue stay Project-card rows below; dates + booth moved UP
-            here, so their card rows are gone — one place per fact. */}
+            This header is the ONLY place for project facts now — the Project
+            info card below was removed the same day (its brand/organizer/venue
+            rows repeated what the title already says). */}
         {p && (
           <div style={{ marginTop: 8 }}>
             <StageBadge stage={p.stage} lower />
@@ -1043,56 +1079,11 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
             {/* stage pipeline (design "Pipeline" card) — hidden from the field/sales cohort */}
             {!cohort5 && <StagePipeline stage={p.stage} sections={data.section_progress} />}
 
-            {/* project detail */}
-            <details className="pacc" open>
-              <summary>
-                <span className="psec-t">Project</span>
-                {canWrite && access.canEdit && !archived && (
-                  <span
-                    role="button"
-                    className="tinybtn"
-                    style={{ marginLeft: "auto" }}
-                    onClick={async (e) => {
-                      e.preventDefault();
-                      if (busy) return;
-                      // Sequential single-field prompts (usePrompt returns one
-                      // value); each null/cancel ends the flow, blanks are skipped.
-                      const fields: Array<[string, string, string | null | undefined]> = [
-                        ["name", "Project name", p.name],
-                        ["booth_no", "Booth number", p.booth_no],
-                        ["venue", "Venue", p.venue],
-                        ["organizer", "Organizer", p.organizer],
-                        ["start_date", "Start date (YYYY-MM-DD)", p.start_date],
-                        ["end_date", "End date (YYYY-MM-DD)", p.end_date],
-                      ];
-                      const patch: Record<string, unknown> = {};
-                      for (const [key, label, cur] of fields) {
-                        const val = await prompt({ title: `Edit ${label}`, placeholder: label, defaultValue: (cur ?? "") as string });
-                        if (val == null) break; // cancelled — stop the flow
-                        const t = val.trim();
-                        if (key === "name" && !t) continue; // name can't be blanked
-                        if (t !== (cur ?? "")) patch[key] = t || null;
-                      }
-                      if (Object.keys(patch).length > 0) await patchProject(patch);
-                    }}
-                  >
-                    Edit
-                  </span>
-                )}
-                <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
-              </summary>
-              {/* Body — design "Project" card rows: Venue / Organizer /
-                  Branding, wired to our real columns. Owner 2026-07-21: rows
-                  get an explicit hairline (--line) — the default --line2
-                  divider reads invisible on phone screens. Owner 2026-07-22:
-                  Dates + Booth moved into the header mockup line, so their
-                  rows are gone (one place per fact). */}
-              <div className="pbody">
-                <div className="row" style={{ borderTop: "none", borderBottom: "1px solid var(--line)" }}><span className="row-l">Venue</span><span className="row-v">{p.venue || p.state || "—"}</span></div>
-                <div className="row" style={{ borderBottom: "1px solid var(--line)" }}><span className="row-l">Organizer</span><span className="row-v">{p.organizer || "—"}</span></div>
-                <div className="row" style={{ borderBottom: "none" }}><span className="row-l">Branding</span><span className="row-v">{p.brand || "—"}</span></div>
-              </div>
-            </details>
+            {/* The Project info card (Venue / Organizer / Branding rows) is
+                GONE — owner 2026-07-22: the header already carries all of it
+                (title = "State [Brand] Organizer @ Venue", plus the
+                dates | booth line), so the card was pure repetition. Its Edit
+                button moved into the header controls row. */}
 
             {/* project team */}
             <details className="pacc" open>
