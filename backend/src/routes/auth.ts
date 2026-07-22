@@ -181,8 +181,29 @@ app.post("/login", async (c) => {
     .bind(user.id)
     .run();
   const token = await createSession(c.env, user.id);
-  return c.json({ token, user_id: user.id });
+  return c.json({ token, user_id: user.id, staffId: await lookupStaffId(c.env, user.id) });
 });
+
+/* staffId: the caller's scm.staff uuid. The 2990 POS signs in by email through
+   THIS endpoint post-#949 and keys its whole session on it (apps/pos auth.tsx
+   reads body.staffId; without it the POS stored id='' — token minted, app
+   unusable, which locked every non-sales member out of the POS). Best-effort by
+   design: the ERP web frontend ignores the field, so a missing scm schema (the
+   D1 test mirror) or a transient read must never fail the web login. Members
+   without a staff row get null — the POS then fails loud instead of half-in.
+   Deliberately NOT also echoing a camelCase userId: the POS fallback chain
+   (staffId ?? userId ?? id) would seize on the integer and poison every
+   staff-keyed store with a non-uuid. */
+async function lookupStaffId(env: Env, userId: number): Promise<string | null> {
+  try {
+    const s = await env.DB.prepare(`SELECT id FROM scm.staff WHERE user_id = ?`)
+      .bind(userId)
+      .first<{ id: string }>();
+    return s?.id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * POST /api/auth/totp/login
@@ -260,7 +281,8 @@ app.post("/totp/login", async (c) => {
     .bind(userId)
     .run();
   const token = await createSession(c.env, userId);
-  return c.json({ token, user_id: userId });
+  // Same staffId contract as /login — the POS email path may be 2FA-gated.
+  return c.json({ token, user_id: userId, staffId: await lookupStaffId(c.env, userId) });
 });
 
 /**
