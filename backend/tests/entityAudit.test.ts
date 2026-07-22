@@ -416,7 +416,7 @@ function stubClient(opts: {
   return {
     rpc: async () => {
       if (!opts.rpc) throw new Error("rpc not stubbed");
-      return opts.rpc();
+      return await opts.rpc();
     },
     from: () => {
       opts.onFrom?.();

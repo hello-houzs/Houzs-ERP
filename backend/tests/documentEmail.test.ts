@@ -1,5 +1,5 @@
-import { env, fetchMock } from "cloudflare:test";
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { env } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { documentEmailHtml, sendEmail } from "../src/services/email";
 import { buildDeliveryOrderEmail, type DoEmailRow } from "../src/scm/lib/do-email";
 import {
@@ -10,6 +10,7 @@ import {
   validatePoAttachment,
   type PoEmailRow,
 } from "../src/scm/lib/po-email";
+import { createOutboundFetchMock } from "./outboundFetchMock";
 
 // Document-email TEMPLATE + customer-channel gating (mig 098/0009) + the
 // Delivery Order message builder.
@@ -49,11 +50,11 @@ const doRow = (over: Partial<DoEmailRow> = {}): DoEmailRow => ({
 
 const liveEnv = { ...env, RESEND_API_KEY: "re_test_key" } as typeof env;
 
-beforeAll(() => {
-  fetchMock.activate();
-  fetchMock.disableNetConnect();
+let outbound: ReturnType<typeof createOutboundFetchMock>;
+beforeEach(() => {
+  outbound = createOutboundFetchMock();
 });
-afterEach(() => fetchMock.assertNoPendingInterceptors());
+afterEach(() => outbound.assertDone());
 
 beforeEach(async () => {
   await env.DB.exec(`DELETE FROM email_log`);
@@ -336,10 +337,7 @@ describe("attachment-bearing sends are not retried body-only", () => {
   test("a failed send with outboxRetry:false leaves a FAILED row, not a pending one", async () => {
     await env.DB.exec(`DELETE FROM app_settings WHERE key='email.purchase_order'`);
     await env.DB.prepare(`INSERT INTO app_settings (key, value) VALUES ('email.purchase_order', '{"value":true}')`).run();
-    fetchMock
-      .get("https://api.resend.com")
-      .intercept({ path: "/emails", method: "POST" })
-      .reply(500, "provider exploded");
+    outbound.replyOnce("https://api.resend.com/emails", "POST", 500, "provider exploded");
 
     const res = await sendEmail(liveEnv, {
       to: "supplier@example.com",
@@ -361,10 +359,7 @@ describe("attachment-bearing sends are not retried body-only", () => {
   test("a failed send WITHOUT an attachment stays pending for the cron drain", async () => {
     await env.DB.exec(`DELETE FROM app_settings WHERE key='email.purchase_order'`);
     await env.DB.prepare(`INSERT INTO app_settings (key, value) VALUES ('email.purchase_order', '{"value":true}')`).run();
-    fetchMock
-      .get("https://api.resend.com")
-      .intercept({ path: "/emails", method: "POST" })
-      .reply(500, "provider exploded");
+    outbound.replyOnce("https://api.resend.com/emails", "POST", 500, "provider exploded");
 
     const res = await sendEmail(liveEnv, {
       to: "supplier2@example.com",

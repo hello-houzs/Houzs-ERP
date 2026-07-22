@@ -216,6 +216,11 @@ describe("/api/branding — per-company cache", () => {
   });
 
   test("KV unbound → full bypass, response still correct", async () => {
+    // Vitest Pool Workers 0.18 isolates storage per file (not per test). Reset
+    // the row changed by the preceding write/invalidation test explicitly.
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO app_settings (key, value) VALUES ('branding', ?)`,
+    ).bind(JSON.stringify({ companyName: "Houzs Base" })).run();
     const noKv = { DB: env.DB };
     const r1 = await getBranding("HOUZS", noKv);
     const r2 = await getBranding("HOUZS", noKv);
