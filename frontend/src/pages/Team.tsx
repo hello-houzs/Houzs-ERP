@@ -1354,7 +1354,7 @@ function MembersTab({
             {canImpersonate && u.status === "active" && (
               <button
                 onClick={() => loginAs(u)}
-                title="Log in as this member (staging)"
+                title="Log in as this member"
                 aria-label="Log in as this member"
                 className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
               >

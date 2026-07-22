@@ -2174,20 +2174,32 @@ app.post("/:id/totp/disable", requirePermission("users.manage"), async (c) => {
   return c.json({ ok: true });
 });
 
-// ── Impersonation (staging-only) ─────────────────────────────────────────────
-// Gated on IMPERSONATION_ENABLED, which is set ONLY in wrangler.toml's
-// [env.staging.vars] — on prod the flag is absent, the probe reports
-// disabled, and the mint endpoint 404s. Lets an admin walk the permission
-// matrix as any member without juggling test-account passwords. Mints a
-// REGULAR session for the target (2FA is bypassed by design — the admin
-// already proved users.manage), so "exit" is just logging out.
+// ── Impersonation ────────────────────────────────────────────────────────────
+// Two doors, both behind users.manage (Nico approved 2026-07-22):
+//   · Staging flag — IMPERSONATION_ENABLED === "true", set ONLY in
+//     wrangler.toml's [env.staging.vars]: every users.manage admin may hop
+//     between the shared test accounts. Ordinary 7-day sessions.
+//   · Wildcard owner — a caller whose permissions carry `*` (Super Admin
+//     role / god-tier position) may impersonate EVERYWHERE, prod included,
+//     with a 1-HOUR session instead (the "view-as" design the owner hand-off
+//     in frontend main.tsx describes: short-lived + audited).
+// Anyone else: the probe reports disabled and the mint endpoint 404s.
+// Mints a REGULAR session for the target (2FA is bypassed by design — the
+// caller already proved users.manage), so "exit" is just logging out.
+
+const hasWildcard = (
+  u: { permissions_set?: Set<string>; permissions: string[] } | undefined,
+): boolean => !!u && hasPermission(u.permissions_set ?? u.permissions, "*");
 
 app.get("/impersonation-enabled", requirePermission("users.manage"), (c) =>
-  c.json({ enabled: c.env.IMPERSONATION_ENABLED === "true" }),
+  c.json({
+    enabled: c.env.IMPERSONATION_ENABLED === "true" || hasWildcard(c.get("user")),
+  }),
 );
 
 app.post("/:id/impersonate", requirePermission("users.manage"), async (c) => {
-  if (c.env.IMPERSONATION_ENABLED !== "true") {
+  const viaStagingFlag = c.env.IMPERSONATION_ENABLED === "true";
+  if (!viaStagingFlag && !hasWildcard(c.get("user"))) {
     return c.json({ error: "Not found" }, 404);
   }
   const id = Number(c.req.param("id"));
@@ -2204,14 +2216,16 @@ app.post("/:id/impersonate", requirePermission("users.manage"), async (c) => {
   if (!row.length) return c.json({ error: "User not found" }, 404);
   if (row[0].status !== "active") return c.json({ error: "Account is disabled" }, 403);
 
-  const token = await createSession(c.env, id);
+  // Staging-flag door keeps the ordinary 7-day session (test-account hopping);
+  // the owner door mints a short-lived 1-hour session instead.
+  const token = await createSession(c.env, id, undefined, viaStagingFlag ? undefined : 60 * 60);
 
   await audit(c, {
     action: "user.impersonate",
     entityType: "user",
     entityId: id,
     summary: `Impersonation session minted for ${row[0].email} (#${id})`,
-    meta: { email: row[0].email },
+    meta: { email: row[0].email, via: viaStagingFlag ? "staging_flag" : "owner_wildcard" },
   });
 
   return c.json({ token, user_id: id });
