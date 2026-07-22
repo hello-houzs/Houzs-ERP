@@ -233,7 +233,7 @@ export async function createProject(env: Env, input: CreateProjectInput) {
       .first<{ slug: string | null }>();
     eventTypeSlug = et?.slug ?? null;
   }
-  /* Mig 0172 (owner 2026-07-22) — canonicalize the state at the door so
+  /* Mig 0175 (owner 2026-07-22) — canonicalize the state at the door so
      Projects stops writing UPPERCASE 'PENANG'/'KL' while SCM writes 'Pulau
      Pinang'/'Kuala Lumpur'. Foreign state names (China provinces) pass
      through unchanged. */
@@ -553,7 +553,7 @@ export async function patchProject(
     throw new Error("end_date must be on or after start_date");
   }
 
-  /* Mig 0172 — canonicalize MY state on the way in. Any PATCH that sends
+  /* Mig 0175 — canonicalize MY state on the way in. Any PATCH that sends
      'PENANG'/'KL'/'W.P. Kuala Lumpur' is rewritten to the canonical form
      ('Pulau Pinang'/'Kuala Lumpur') the SCM surfaces use, so cross-module
      bucketing stops splitting the same physical state. */

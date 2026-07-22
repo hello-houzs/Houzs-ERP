@@ -11,10 +11,10 @@
 // rows seeded from Pos Malaysia's postcode dataset).
 //
 // This helper mirrors the SQL function `scm.canonicalize_my_state()` from
-// migration 0172 so backend write paths can canonicalize BEFORE the row is
+// migration 0175 so backend write paths can canonicalize BEFORE the row is
 // inserted — the SQL function is the safety net; the TS helper is the front
 // door. Keep the two in sync: any addition to the WHEN-list below MUST also
-// land in 0172_scm_state_canonicalize.sql (or a follow-up migration), and
+// land in 0175_scm_state_canonicalize.sql (or a follow-up migration), and
 // vice versa.
 // ----------------------------------------------------------------------------
 

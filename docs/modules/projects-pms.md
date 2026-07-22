@@ -525,13 +525,13 @@ list handlers (e.g. `routes/projects.ts:3860-3861`), and
 `migrations-pg/0002_indexes.sql:124` creates `idx_projects_payment ON
 projects(payment_status)`.
 
-> **State vocabulary (mig 0172, owner 2026-07-22).** `projects.state` and
+> **State vocabulary (mig 0175, owner 2026-07-22).** `projects.state` and
 > `project_venues.state` are now canonicalised to the `scm.my_localities`
 > Title Case spelling (`Johor` / `Kuala Lumpur` / `Pulau Pinang` — not the
 > old PMS UPPERCASE `JOHOR` / `KL` / `PENANG`). Backend `createProject`,
 > `patchProject`, and `POST/PATCH /api/scm/venues` all run every incoming
 > `state` through `canonicalizeMyState()` (`backend/src/scm/lib/canonical-state.ts`);
-> the SQL function `scm.canonicalize_my_state()` in mig 0172 is the same
+> the SQL function `scm.canonicalize_my_state()` in mig 0175 is the same
 > mapping for future migrations. Cross-module Sales-by-state and
 > delivery-region reports can now bucket on the raw column without a
 > normalisation step in the query. Those columns exist only in the D1-era definition

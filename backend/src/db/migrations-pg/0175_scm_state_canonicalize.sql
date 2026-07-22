@@ -1,5 +1,5 @@
 -- ----------------------------------------------------------------------------
--- 0172 — Canonical Malaysian state vocabulary.
+-- 0175 — Canonical Malaysian state vocabulary.
 --
 -- Owner 2026-07-22 (Sales Order list showed "Pulau Pinang" and "PENANG" side
 -- by side): the PMS surfaces store an UPPERCASE list of 16 short codes

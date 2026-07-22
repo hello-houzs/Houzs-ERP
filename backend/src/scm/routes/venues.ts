@@ -112,7 +112,7 @@ venues.post("/", async (c) => {
     (body.notes as string | null | undefined) ??
     (body.address as string | null | undefined) ??
     null;
-  /* Mig 0172 — canonicalize MY state at write so venues stop landing as
+  /* Mig 0175 — canonicalize MY state at write so venues stop landing as
      'PENANG' / 'KL' while SCM stores 'Pulau Pinang' / 'Kuala Lumpur'. */
   const state = canonicalizeMyState((body.state as string | null | undefined) ?? null);
 
@@ -194,7 +194,7 @@ venues.patch("/:id", async (c) => {
   }
   if ("state" in body) {
     sets.push("state = ?");
-    /* Mig 0172 — canonicalize on PATCH too. */
+    /* Mig 0175 — canonicalize on PATCH too. */
     binds.push(canonicalizeMyState((body.state as string | null | undefined) ?? null));
   }
   if ("active" in body) {
