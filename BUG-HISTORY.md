@@ -1,5 +1,20 @@
 ## 2026-07-23
 
+### [HIGH] Sales Order list bucketed the same physical state twice — "Pulau Pinang" and "PENANG" as separate rows
+- **Symptom.** The owner opened the Sales Orders list and saw the `Cust. State` column carrying both `Pulau Pinang` (from one SO) and `PENANG` (from another) as if they were two different states. Cross-module reports (Sales by state, delivery routing) split the same physical state into two buckets, so the numbers under `PENANG` had to be manually re-added to `Pulau Pinang` to get the real Penang total.
+- **Root cause (traced).** Two independent state vocabularies co-existed in one database:
+  - PMS surfaces (`frontend/src/pages/Projects.tsx:686`, `ProjectMaintenance.tsx:307`) stored a hard-coded UPPERCASE short list — `JOHOR / KL / PENANG / N.S. / …` (16 rows).
+  - SCM surfaces read from `scm.my_localities` and stored the Title Case full names — `Johor / Kuala Lumpur / Pulau Pinang / Negeri Sembilan / …` (16 rows, seeded from Pos Malaysia's 5,870-postcode dataset).
+  Backend never validated: `body.state as string` in every SO / DO / SI / supplier / project / venue write path. `mfg-sales-orders.ts:852` even documented the divergence in a 2026-05-28 comment ("callers may send 'Penang' while my_localities stores 'Pulau Pinang'"), and its response was to fall back to `'Malaysia'` for country — the dirty state string was still stored as-is.
+- **Fix.** Mig 0175 (#1040):
+  - New SQL function `scm.canonicalize_my_state(text) → text` + TS mirror `canonicalizeMyState()` at `backend/src/scm/lib/canonical-state.ts` (16 unit tests, covers PMS UPPERCASE, `W.P.`/`Wilayah Persekutuan` variants, `Malacca` misspelling, idempotency, foreign-country pass-through).
+  - Backfill: `projects.state`, `project_venues.state`, `suppliers.state`, `customers.state`, and `customer_state` on SO / DO / SI / CO / CN / CR / DR / SO-amendments. Foreign rows (China provinces, SG regions) untouched.
+  - Backend write paths canonicalize at ingress: SO create + PATCH (`mfg-sales-orders.ts`), Project create + PATCH (`services/projects.ts`), Venue POST + PATCH (`scm/routes/venues.ts`), and `deriveCountryFromState` runs `canonicalizeMyState` before the `my_localities` lookup so its 2026-05-28 tolerant fallback almost never fires.
+  - Frontend PMS dropdowns swapped from UPPERCASE to canonical Title Case (`Projects.tsx`, `ProjectMaintenance.tsx`) — new PMS rows land canonical, existing UPPERCASE rows are back-filled by mig 0175.
+- **What this PR does NOT do (deferred).** Supplier postcode is still free-text (isolated one-line surface); Project add-postcode is a schema addition (`projects` has no postcode column yet); Warehouse add-state / add-postcode. Filed as follow-up tasks — none block the state canonicalization.
+- **The class, for next time.** Two spellings for one concept, plus a "tolerant fallback" that silently paves over the drift, is the same pattern as the phone `+600123456789` bug (2026-07-22). Whenever a lookup fails and a comment says "fall back to the common case", verify the LOOKUP KEY, not the fallback — the fallback is masking the real bug.
+- **Ref:** #1040.
+
 ### [HIGH] 2990's Delivery Planning board couldn't bucket any state → region — the mapping table was empty for 2990
 - **Symptom.** After the 2026-07-22 compare workflow, `scm.state_delivery_regions` for `company_id = HOUZS` had 22 rows and for `company_id = 2990` had **zero**. Anywhere the Delivery Planning UI bucketed a delivery by region (KL/Selangor/Northern/Southern/East-Coast/East-MY) for 2990, the query joined against zero mapping rows → the board rendered as if no state belonged to any region.
 - **Root cause (traced).** Mig 0053 seeded the regions + state→region mapping for a single-company world. Mig 0083 added `company_id` to both tables and back-filled every existing row to HOUZS. Mig 0092 rebuilt the region-table UNIQUE to `(company_id, code)` so multi-company was allowed. Nothing ever seeded 2990's rows.

@@ -69,6 +69,7 @@ import { orderSofaModuleRowsWithinBuilds, sortSoLinesByGroupRank } from '../shar
    + row-build lives in the lib; this route batches the DB collision check. */
 import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { warehouseLabel } from '../lib/warehouse-label';
+import { canonicalizeMyState } from '../lib/canonical-state';
 import {
   scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   isMirroredDocNo, mintsIntoMirroredNamespace, houzsOwns2990,
@@ -947,20 +948,20 @@ export const deriveCountryFromState = async (
   state: string | null | undefined,
 ): Promise<string | null> => {
   if (!state) return null;
+  /* Mig 0175 (owner 2026-07-22) — canonicalize BEFORE the my_localities lookup
+     so "PENANG" or "Penang" both resolve to "Pulau Pinang" and the lookup
+     returns Malaysia cleanly. The 2026-05-28 tolerant fallback below is kept
+     as a second safety net (a genuinely unknown foreign state name should
+     still not leave Country blank when the caller obviously typed something),
+     but with canonicalization in front it should almost never fire. */
+  const probe = canonicalizeMyState(state) ?? state;
   const { data } = await sb
     .from('my_localities')
     .select('country')
-    .eq('state', state)
+    .eq('state', probe)
     .limit(1)
     .maybeSingle();
   const country = (data as { country?: string } | null)?.country;
-  /* Commander 2026-05-28: a SO with a state set was showing a BLANK Country
-     when the state name didn't match a seeded locality — e.g. my_localities
-     stores "Pulau Pinang" but the form/caller used the common alias "Penang".
-     2990 is Malaysia-only today (every my_localities row is 'Malaysia'), so
-     fall back to 'Malaysia' for any non-empty-but-unmatched state instead of
-     leaving Country empty. The exact match above still wins first, so a future
-     non-MY locality set keeps working. */
   return country ?? 'Malaysia';
 };
 
@@ -3352,7 +3353,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
   }
   const cachedCombos = await loadActiveSofaCombos(sb, c);  // Phase 4b — sofa selling recompute
   const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb, companyId);  // migration 0124 — fabric-tier Δ (SoCreateContext → local companyId)
-  const cachedModelOverrides = await loadModelFabricTierOverrides(sb);  // migration 0172 — per-Model Δ
+  const cachedModelOverrides = await loadModelFabricTierOverrides(sb);  // migration 0175 — per-Model Δ
   const cachedCompartmentOverrides = await loadCompartmentFabricTierOverrides(sb);  // migration 0025 — per-compartment Δ
 
   /* Loo 2026-06-05 — maintained-dropdown 409 gate. Runs BEFORE any side
@@ -4737,7 +4738,10 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     emergency_contact_relationship: (body.emergencyContactRelationship as string) ?? null,
     target_date: (body.targetDate as string) ?? null,
     customer_id: orderCustomerId,
-    customer_state: (body.customerState as string) ?? null,
+    /* Mig 0175 — canonicalize MY state at write so 'PENANG' / 'Kl' / 'W.P.
+       Kuala Lumpur' land as the exact my_localities spelling. Foreign state
+       names (China, SG) round-trip unchanged. */
+    customer_state: canonicalizeMyState((body.customerState as string | null | undefined) ?? null),
     /* Task #121 — country snapshot auto-derived above. */
     customer_country: customerCountrySnapshot,
     /* Cutover #14 (mig 0158) — POS marketing demographics captured ON the SO,
@@ -6047,6 +6051,16 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
       updates[to] = body[from];
     }
   }
+  /* Mig 0175 (owner 2026-07-22) — canonicalize customer_state at write so a
+     PATCH that sends 'PENANG' / 'Kl' / 'W.P. Kuala Lumpur' lands as the exact
+     my_localities spelling. Foreign state names (China, SG) round-trip
+     unchanged. Runs BEFORE the change-detection compare below so the
+     no-op skip sees the canonical value, not the raw client string — a
+     PATCH sending 'PENANG' when storage already holds 'Pulau Pinang' is a
+     no-op after canonicalize and correctly drops out. */
+  if (updates['customer_state'] !== undefined) {
+    updates['customer_state'] = canonicalizeMyState(updates['customer_state'] as string | null);
+  }
 
   /* A PATCH is a real mutation only when at least one recognised, normalised
      field differs from storage. Compare before validation or derivation so an
@@ -7108,7 +7122,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
     addLinePwpSofaComboIds,  // pwpSofaComboIds — claimed above, or null
     specialAddonsLite,
     sofaModuleCostRowsLite,
-    modelOverridesLite,      // migration 0172 — per-Model Δ
+    modelOverridesLite,      // migration 0175 — per-Model Δ
     compartmentOverridesLite, // migration 0025 — per-compartment Δ
   );
   /* Pricing trust boundary (Owner 2026-05-31, see isPosTabletCaller). POS tablet
@@ -7592,7 +7606,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
       null,                // pwpSofaComboIds
       specialAddonsPatch,
       sofaModuleCostRowsPatch,
-      modelOverridesPatch, // migration 0172 — per-Model Δ
+      modelOverridesPatch, // migration 0175 — per-Model Δ
       compartmentOverridesPatch, // migration 0025 — per-compartment Δ
     );
     /* Task 6 — grandfathering: a line already carrying variants.freeItem was
@@ -8053,7 +8067,7 @@ export async function tbcUpdateCommandHandler(c: any, sb: any): Promise<Response
   const before = snap(prevVariants, fabPrev);
   const after  = snap(nextVariants, fabNext);
   const category = String(prodLite?.category ?? '').toUpperCase();
-  // migration 0172 — per-Model Δ override (same for prev/next; the Model doesn't
+  // migration 0175 — per-Model Δ override (same for prev/next; the Model doesn't
   // change on a TBC fill-in). Resolved by the line's model_id, replaces global.
   // migration 0025 — folded with any matching per-compartment Δ (MAX per tier)
   // over the build's cells; cells don't change on a TBC fill-in (fabric only).
