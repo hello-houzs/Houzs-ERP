@@ -2275,11 +2275,15 @@ export async function createLedgerLine(
     throw new Error("amount must be a non-negative number");
   }
   if (!input.category.trim()) throw new Error("category required");
+  // Stamp company_id from the parent project (mig 0170). Subquery keeps this
+  // atomic — if the project doesn't exist the FK below fails before the
+  // subquery lands, so we never orphan a line under a null company.
   const r = await env.DB.prepare(
     `INSERT INTO project_finance_lines
        (project_id, kind, category, description, amount, occurred_at,
-        r2_key, file_name, mime_type, notes, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        r2_key, file_name, mime_type, notes, created_by, company_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             (SELECT company_id FROM projects WHERE id = ?))`
   )
     .bind(
       input.project_id,
@@ -2292,7 +2296,8 @@ export async function createLedgerLine(
       input.file_name ?? null,
       input.mime_type ?? null,
       input.notes ?? null,
-      userId || null
+      userId || null,
+      input.project_id
     )
     .run();
   // Auto cost-line engine (mig 063) runs after non-auto writes only.
