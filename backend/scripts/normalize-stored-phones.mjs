@@ -118,7 +118,8 @@ async function ensureBackupTable() {
       run_id      text        NOT NULL,
       table_name  text        NOT NULL,
       column_name text        NOT NULL,
-      row_id      bigint      NOT NULL,
+      pk_column   text        NOT NULL DEFAULT 'id',
+      row_id      text        NOT NULL,
       old_value   text,
       new_value   text,
       applied_at  timestamptz NOT NULL DEFAULT now()
@@ -130,7 +131,7 @@ async function ensureBackupTable() {
 
 async function revert(runId) {
   const rows = await pg`
-    SELECT table_name, column_name, row_id, old_value
+    SELECT table_name, column_name, pk_column, row_id, old_value
     FROM phone_normalisation_backup
     WHERE run_id = ${runId}`;
   if (rows.length === 0) {
@@ -142,15 +143,43 @@ async function revert(runId) {
     await pg`
       UPDATE ${pg(r.table_name)}
       SET ${pg(r.column_name)} = ${r.old_value}
-      WHERE id = ${r.row_id}`;
+      WHERE ${pg(r.pk_column)}::text = ${r.row_id}`;
     n += 1;
   }
   notice(`Reverted ${n} values from run ${runId}.`);
 }
 
-async function processColumn({ table, column }) {
+/* The primary-key column of a table, resolved rather than assumed.
+ *
+ * This script used to hardcode `id`. creditors does not have one — it is keyed
+ * by creditor_code — so the staging dry run died with `column "id" does not
+ * exist` AFTER three tables had already been reported. In apply mode that would
+ * have been worse: each column commits in its own transaction, so the first
+ * three tables would have been written and creditors would not, leaving a
+ * half-done backfill whose only record of how far it got is a failed job log.
+ *
+ * Returns null for a table with no single-column primary key; the caller skips
+ * it loudly rather than guessing at a row identifier. */
+async function primaryKeyColumn(pg, table) {
   const rows = await pg`
-    SELECT id, ${pg(column)} AS value
+    SELECT a.attname AS col
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
+    WHERE i.indisprimary AND n.nspname = 'public' AND c.relname = ${table}`;
+  return rows.length === 1 ? rows[0].col : null;
+}
+
+async function processColumn({ table, column }) {
+  const pk = await primaryKeyColumn(pg, table);
+  if (!pk) {
+    warn(`SKIPPED ${table}.${column} — no single-column primary key, so a row cannot be identified for the backup. Fix by hand or extend this script deliberately.`);
+    return { table, column, skipped: true };
+  }
+
+  const rows = await pg`
+    SELECT ${pg(pk)}::text AS pk, ${pg(column)} AS value
     FROM ${pg(table)}
     WHERE ${pg(column)} IS NOT NULL
       AND btrim(${pg(column)}) <> ''
@@ -171,7 +200,7 @@ async function processColumn({ table, column }) {
       refusedRows.push(r);
       continue;
     }
-    changes.push({ id: r.id, old: r.value, next });
+    changes.push({ pk: r.pk, old: r.value, next });
   }
   const refused = refusedRows.length;
 
@@ -203,10 +232,11 @@ async function processColumn({ table, column }) {
     for (const c of changes) {
       await tx`
         INSERT INTO phone_normalisation_backup
-          (run_id, table_name, column_name, row_id, old_value, new_value)
-        VALUES (${RUN_ID}, ${table}, ${column}, ${c.id}, ${c.old}, ${c.next})`;
+          (run_id, table_name, column_name, pk_column, row_id, old_value, new_value)
+        VALUES (${RUN_ID}, ${table}, ${column}, ${pk}, ${c.pk}, ${c.old}, ${c.next})`;
       await tx`
-        UPDATE ${tx(table)} SET ${tx(column)} = ${c.next} WHERE id = ${c.id}`;
+        UPDATE ${tx(table)} SET ${tx(column)} = ${c.next}
+        WHERE ${tx(pk)}::text = ${c.pk}`;
     }
   });
 
