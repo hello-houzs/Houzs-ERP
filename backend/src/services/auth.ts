@@ -13,6 +13,8 @@ import {
   rememberSessionLiveness,
   forgetSessionLiveness,
   sessionLivenessFallback,
+  isSessionFallbackEnabled,
+  sessionFallbackTtlMs,
 } from "./sessionCache";
 import { isScopedProjectUser } from "./projectAcl";
 import { applySalesJdOverride } from "./salesJdAccess";
@@ -507,6 +509,20 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
 }
 
 export async function getUserBySession(env: Env, token: string): Promise<AuthUser | null> {
+  // The bounded DB-outage liveness fallback is OFF unless SESSION_FALLBACK_ENABLED
+  // is "true" (see sessionCache.ts). Resolved ONCE here and used as the guard on
+  // every fallback site below, so with the switch off neither
+  // sessionLivenessFallback nor rememberSessionLiveness is called at all: a DB
+  // read failure fails closed exactly as it did before the fallback existed, and
+  // no per-isolate liveness state accumulates. forgetSessionLiveness stays
+  // UNGUARDED on purpose — it only ever removes state, so entries recorded while
+  // the switch was on are still dropped by an authoritative revocation after it
+  // is turned off.
+  const fallbackEnabled = isSessionFallbackEnabled(env);
+  const fallbackTtlMs = fallbackEnabled
+    ? sessionFallbackTtlMs(env)
+    : 0; /* unused while disabled */
+
   // The KV value caches expensive permission/page/brand hydration, but is not
   // authoritative for session validity or authorization. Pair it with two
   // indexed DB reads so identity and every authz dependency are current on the
@@ -575,10 +591,11 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
 
   // The two DB reads above are the AUTHORITATIVE session-validity check. If they
   // THROW, the DB layer is unreachable (cold-start 503, Supavisor hiccup) — the
-  // session is not proven invalid. Bounded fallback (owner 2026-07-21): re-serve
-  // this token iff the DB most recently CONFIRMED it active within the TTL, else
-  // fail closed exactly as before. Only the two DB results gate that decision,
-  // so a cache-layer problem can never be mistaken for a DB outage.
+  // session is not proven invalid. With the fallback switch ON, re-serve this
+  // token iff the DB most recently CONFIRMED it active within the TTL; with the
+  // switch OFF (the default) we never look, and fail closed. Only the two DB
+  // results gate that decision, so a cache-layer problem can never be mistaken
+  // for a DB outage.
   const [cachedResult, authorityResult, componentResult] = await settled;
 
   // getCachedUser swallows its own errors and resolves null, so a rejection here
@@ -587,8 +604,10 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
     cachedResult.status === "fulfilled" ? cachedResult.value : null;
 
   if (authorityResult.status === "rejected" || componentResult.status === "rejected") {
-    const fallback = sessionLivenessFallback(token);
-    if (fallback) return fallback;
+    if (fallbackEnabled) {
+      const fallback = sessionLivenessFallback(token, Date.now(), fallbackTtlMs);
+      if (fallback) return fallback;
+    }
     throw authorityResult.status === "rejected"
       ? authorityResult.reason
       : (componentResult as PromiseRejectedResult).reason;
@@ -621,8 +640,9 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
     // old cache payload can never decide the request's origin.
     cached.session_origin = authority.origin;
     // The DB just CONFIRMED this session active — record it so a later DB blip
-    // can re-serve it for up to the fallback TTL.
-    rememberSessionLiveness(token, cached);
+    // can re-serve it for up to the fallback TTL. Only while the switch is on;
+    // off means no state is accumulated at all.
+    if (fallbackEnabled) rememberSessionLiveness(token, cached);
     return cached;
   }
 
@@ -658,8 +678,10 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
       .bind(token)
       .first<any>();
   } catch (err) {
-    const fallback = sessionLivenessFallback(token);
-    if (fallback) return fallback;
+    if (fallbackEnabled) {
+      const fallback = sessionLivenessFallback(token, Date.now(), fallbackTtlMs);
+      if (fallback) return fallback;
+    }
     throw err;
   }
 
@@ -679,8 +701,8 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
   user.authz_fingerprint = authzFingerprint;
   await setCachedUser(env, token, user);
   // Authoritatively hydrated + confirmed active — record for the bounded blip
-  // fallback.
-  rememberSessionLiveness(token, user);
+  // fallback, but only when the switch is on.
+  if (fallbackEnabled) rememberSessionLiveness(token, user);
   return user;
 }
 
