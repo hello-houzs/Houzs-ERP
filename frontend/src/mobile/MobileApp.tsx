@@ -259,17 +259,16 @@ export const MOBILE_MENU_GROUPS: { group: string; items: MobileMenuItem[] }[] = 
        its own live nav entry (anyAccess scm.finance.accounting), which is also
        the backend area guard on /api/scm/accounting/*. */
     { to: "/scm/accounting", label: "Chart of Accounts" },
+    /* Sales Report — moved from the Projects PMS group into the Finance
+       cluster (owner 2026-07-22, to match the desktop Sidebar move). Same
+       gate as before: `allowed("/reports/fair-report")` resolves to the
+       fair-report cohort (management + Sales Director), so an ordinary
+       salesperson never gets this row. Routes to the MOBILE screen
+       (MobileFairReport), NOT the desktop table. */
+    { to: "/reports/fair-report", label: "Sales Report" },
   ]},
   { group: "Projects · PMS", items: [
     { to: "/projects", label: "Projects" },
-    /* Fair Report — exhibition sales by document stage (SO / DO / Invoice).
-       Same cohort the desktop nav entry admits (NAV_TABS requireFairReport =
-       auth/salesAccess.canViewFairReport): management + the Sales Director only.
-       `allowed("/reports/fair-report")` resolves to exactly that gate, so an
-       ordinary salesperson never gets this row (off, not hide); the overlay is
-       independently guarded on canViewFairReport below. Routes to the MOBILE
-       screen (MobileFairReport), NOT the desktop table. */
-    { to: "/reports/fair-report", label: "Sales Report" },
   ]},
   { group: "After-sales", items: [
     { to: "/assr", label: "Service Case" },
