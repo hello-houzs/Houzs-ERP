@@ -37,6 +37,11 @@ import { readFileSync } from "node:fs";
 import postgres from "postgres";
 import { canonicalizeSinglePhone } from "./lib/phone-normalise.mjs";
 
+// Curated dial codes, longest first so 673 wins over 6 — mirrors
+// COUNTRY_DIAL_CODES in src/scm/shared/phone.ts.
+const DIALS = ["673","855","856","880","886","852","971","966","995","60","65","62","66","84","63","95","86","91","92","94","61","64","81","82","44","1"]
+  .sort((a, b) => b.length - a.length);
+
 // The columns the audit found, named explicitly rather than introspected: a
 // backfill must change exactly the set a human approved, not whatever a
 // pattern happens to match on the day it runs.
@@ -80,6 +85,43 @@ function malaysianLocalShape(raw) {
   if (digits.startsWith('60')) return true;
   if (digits.startsWith('1') && (digits.length === 9 || digits.length === 10)) return true;
   return false;
+}
+
+/* A value that is NOT Malaysian-local may still be perfectly good: the whole
+ * point of the 2026-07-22 dry run was that most of them already carry a country
+ * code and are only missing the "+".
+ *
+ *     "6590254610"  =  +65 9025 4610   a complete Singapore mobile
+ *     "880-1843395337" = +880 …        a complete Bangladeshi number
+ *
+ * Calling those "needs a human" wastes real phone calls on numbers that are
+ * already right. So they are split:
+ *
+ *   RECOVERABLE — the digits start with a dial code we know, and what follows
+ *     is a plausible national number (4-12 digits). Adding "+" is not a guess:
+ *     a Malaysian mobile is 01X and a landline 0X, so a string opening with 65
+ *     or 880 cannot be a Malaysian local number in the first place.
+ *
+ *   UNKNOWABLE — everything else. "NA", "#ERROR!", two numbers in one field, a
+ *     length that matches nothing. These are the ones worth a phone call.
+ *
+ * Returns the E.164 form for a recoverable value, or null. */
+function recoverableForeign(raw, dials) {
+  const digits = String(raw ?? '').replace(/\D+/g, '');
+  if (digits.length < 7 || digits.length > 15) return null;
+  for (const d of dials) {
+    if (!digits.startsWith(d)) continue;
+    const national = digits.slice(d.length);
+    // An E.164 national part never keeps the local trunk 0. If it does, the
+    // dial-code match is probably an accident: "660196657356" reads as
+    // +66 0196657356 (Thailand) but is far more likely "60196657356" — a real
+    // Malaysian number — with a 6 typed twice. Guessing Thailand there is the
+    // same mistake as guessing Malaysia for a Singapore number. Send it to a
+    // human.
+    if (national.startsWith('0')) return null;
+    if (national.length >= 4 && national.length <= 12) return `+${digits}`;
+  }
+  return null;
 }
 
 const APPLY = process.argv.includes("--apply");
@@ -159,11 +201,14 @@ async function processColumn({ table, column }) {
   const changes = [];
   const refusedRows = [];
   const ambiguous = [];
+  const recoverable = [];
   for (const r of rows) {
     if (!malaysianLocalShape(r.value)) {
       // Not unambiguously Malaysian — could be a foreign number stored without
       // its country code. Reported, never guessed at. See malaysianLocalShape.
-      ambiguous.push(r);
+      const rec = recoverableForeign(r.value, DIALS);
+      if (rec) { recoverable.push({ pk: r.pk, old: r.value, next: rec }); }
+      else { ambiguous.push(r); }
       continue;
     }
     const next = canonicalizeSinglePhone(r.value);
@@ -178,7 +223,8 @@ async function processColumn({ table, column }) {
   notice(
     `${table}.${column}: ${rows.length} without a country code — ` +
       `${changes.length} convertible, ${refused} unparseable, ` +
-      `${ambiguous.length} AMBIGUOUS (left alone, need a human)`,
+      `${recoverable.length} foreign-but-recoverable (just missing "+"), ` +
+      `${ambiguous.length} UNKNOWABLE (a human must call)`,
   );
 
   // A count does not prove correctness. Show what would actually change, so a
@@ -188,8 +234,13 @@ async function processColumn({ table, column }) {
   }
   if (changes.length > 8) notice(`    … and ${changes.length - 8} more of the same shapes`);
 
+  for (const r of recoverable.slice(0, 6)) {
+    notice(`    recoverable: ${JSON.stringify(r.old)}  ->  ${r.next}`);
+  }
+  if (recoverable.length > 6) notice(`    … and ${recoverable.length - 6} more recoverable`);
+
   for (const a of ambiguous.slice(0, 8)) {
-    notice(`    AMBIGUOUS, untouched: ${JSON.stringify(a.value)} — could be a foreign number without its country code`);
+    notice(`    UNKNOWABLE, untouched: ${JSON.stringify(a.value)}`);
   }
   if (ambiguous.length > 8) notice(`    … and ${ambiguous.length - 8} more ambiguous`);
 
