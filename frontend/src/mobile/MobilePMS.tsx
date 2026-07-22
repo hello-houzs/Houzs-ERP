@@ -1076,8 +1076,10 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             )}
 
-            {/* stage pipeline (design "Pipeline" card) — hidden from the field/sales cohort */}
-            {!cohort5 && <StagePipeline stage={p.stage} sections={data.section_progress} />}
+            {/* stage pipeline (design "Pipeline" card) — hidden from the
+                field/sales cohort, and from the owner account too (owner
+                2026-07-22: "remove pipeline for owner user in mobile"). */}
+            {!cohort5 && !isOwnerAdmin && <StagePipeline stage={p.stage} sections={data.section_progress} />}
 
             {/* The Project info card (Venue / Organizer / Branding rows) is
                 GONE — owner 2026-07-22: the header already carries all of it
