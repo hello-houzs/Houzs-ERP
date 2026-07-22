@@ -106,9 +106,33 @@ function malaysianLocalShape(raw) {
  *     length that matches nothing. These are the ones worth a phone call.
  *
  * Returns the E.164 form for a recoverable value, or null. */
+/* A leading 6 typed twice. Owner, 2026-07-23, on "660196657356": "這個是6019
+ * 馬來西亞 我們大部分還是馬來西亞的."
+ *
+ * This is decidable, not a lean: drop ONE leading 6 and ask whether what
+ * remains is a valid Malaysian number.
+ *
+ *     "660196657356" -> "60196657356" -> +60 19-665 7356   valid   => doubled 6
+ *     "6590254610"   -> "590254610"   -> not a MY number   invalid => really +65
+ *
+ * So it cannot misfire on the Singapore rows: dropping their 6 leaves nothing
+ * Malaysian behind. "most of ours are Malaysian" is the reason to look for this
+ * pattern, never the reason to conclude it. */
+function doubledLeadingSix(digits) {
+  if (!digits.startsWith('66')) return null;
+  const dropped = digits.slice(1);
+  if (!dropped.startsWith('60')) return null;
+  const national = dropped.slice(2);
+  const ok = (national.startsWith('1') && (national.length === 9 || national.length === 10))
+    || (!national.startsWith('1') && (national.length === 8 || national.length === 9));
+  return ok ? `+${dropped}` : null;
+}
+
 function recoverableForeign(raw, dials) {
   const digits = String(raw ?? '').replace(/\D+/g, '');
   if (digits.length < 7 || digits.length > 15) return null;
+  const six = doubledLeadingSix(digits);
+  if (six) return six;
   for (const d of dials) {
     if (!digits.startsWith(d)) continue;
     const national = digits.slice(d.length);
