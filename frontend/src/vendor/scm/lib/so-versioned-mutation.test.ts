@@ -1,0 +1,71 @@
+import { QueryClient } from '@tanstack/react-query';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+
+vi.mock('./authed-fetch', () => ({ authedFetch: vi.fn() }));
+
+import { authedFetch } from './authed-fetch';
+import { runSoVersionedMutation } from './so-versioned-mutation';
+
+const mockedFetch = vi.mocked(authedFetch);
+
+const queryClient = () => {
+  const qc = new QueryClient();
+  qc.setQueryData(['mfg-sales-order-detail', 'SO-1'], {
+    salesOrder: { doc_no: 'SO-1', version: 7 },
+    items: [],
+  });
+  return qc;
+};
+
+describe('standalone SO versioned mutation coordinator', () => {
+  beforeEach(() => mockedFetch.mockReset());
+
+  test('reserves from the loaded version, sends the action under that lease, then releases', async () => {
+    mockedFetch
+      .mockResolvedValueOnce({ version: 8, leaseToken: 'lease-from-server' })
+      .mockResolvedValueOnce({ ok: true });
+    const action = vi.fn(async ({ leaseToken }: { leaseToken: string }) => ({ leaseToken }));
+
+    const result = await runSoVersionedMutation(queryClient(), 'SO-1', 'photo-upload', action);
+
+    expect(result).toEqual({ leaseToken: 'lease-from-server' });
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(mockedFetch.mock.calls[0]?.[1]?.body))).toMatchObject({
+      version: 7,
+      reserveLineWrites: true,
+    });
+    expect(JSON.parse(String(mockedFetch.mock.calls[1]?.[1]?.body))).toMatchObject({
+      version: 8,
+      completeLineWrites: true,
+      lineWriteLeaseToken: 'lease-from-server',
+    });
+  });
+
+  test('a reservation conflict sends zero action writes and leaves caller input untouched', async () => {
+    const conflict = Object.assign(new Error('conflict'), { status: 409 });
+    mockedFetch.mockRejectedValueOnce(conflict);
+    const draft = { reason: 'customer approved this exact override' };
+    const action = vi.fn();
+
+    await expect(runSoVersionedMutation(queryClient(), 'SO-1', 'price-override', action))
+      .rejects.toBe(conflict);
+
+    expect(action).not.toHaveBeenCalled();
+    expect(draft).toEqual({ reason: 'customer approved this exact override' });
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('an action failure is rethrown after a best-effort matching release', async () => {
+    mockedFetch
+      .mockResolvedValueOnce({ version: 8, leaseToken: 'lease-from-server' })
+      .mockResolvedValueOnce({ ok: true });
+    const failed = new Error('upload failed');
+
+    await expect(runSoVersionedMutation(queryClient(), 'SO-1', 'photo-upload', async () => {
+      throw failed;
+    })).rejects.toBe(failed);
+
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
+  });
+});

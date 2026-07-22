@@ -17,6 +17,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { isServiceLine } from '../shared';
 import { recordSoAudit } from './so-audit';
+import { advanceSoGeneration } from './so-generation';
 
 export type SoLineQty = { id: string; qty: number };
 export type DoLineQty = { soItemId: string | null; qty: number };
@@ -205,9 +206,8 @@ export async function syncSoDeliveredFromDo(
       const note = target === 'DELIVERED'
         ? 'Auto: Delivery Order fully covers this SO'
         : 'Auto: SO no longer fully delivered (DO cancelled / reduced, or goods returned) — released to re-ship';
-      await sb.from('mfg_sales_orders')
-        .update({ status: target, updated_at: new Date().toISOString() })
-        .eq('doc_no', docNo);
+      const generation = await advanceSoGeneration(sb, docNo, { status: target }, { status });
+      if (!generation.applied) continue;
       // Mirror the status-PATCH audit trail (both tables) so the SO History
       // panel shows this auto-transition beside manual transitions.
       await sb.from('mfg_so_status_changes').insert({

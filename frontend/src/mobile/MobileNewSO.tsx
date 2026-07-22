@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { authedFetch, parseSaveProblems } from "../vendor/scm/lib/authed-fetch";
+import { runSoVersionedMutation } from "../vendor/scm/lib/so-versioned-mutation";
 import { SaveProblemsList, saveProblemsTitle } from "../vendor/scm/components/SaveProblemsList";
 import { uploadSlipFull } from "../vendor/scm/lib/slip";
 import { usePickableStaff } from "../vendor/scm/lib/admin-queries";
@@ -42,6 +43,8 @@ import { usePrompt } from "../vendor/scm/components/PromptDialog";
 import { useCreateAmendment, type CreateAmendmentLine } from "../vendor/scm/lib/so-amendment-queries";
 import { useCreateMfgSalesOrder } from "../vendor/scm/lib/sales-order-queries";
 import { invalidateSoShared } from "./sharedInvalidate";
+import { mobileLineAddHeaders } from "./mobile-so-line-save";
+import { uploadSoItemPhotoWithLease } from "./mobile-so-concurrency";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import type { MobileScanPrefill } from "./MobileScan";
 import { MobileSkuPicker, type PickedSku } from "./MobileSkuPicker";
@@ -129,6 +132,8 @@ type LineCat = "" | "sofa" | "bedframe" | "mattress";
 
 type LineItem = {
   key: string;
+  /** Stable POST idempotency key for this unsaved line intent. */
+  addIdempotencyKey: string;
   itemCode: string;
   itemGroup: string;
   itemId: string;
@@ -181,9 +186,8 @@ type SoHeader = {
   doc_no: string;
   /* Optimistic-lock token (migration 0153) — loaded here and echoed back on the
      edit-mode header PATCH so a concurrent editor's Save can't silently overwrite
-     this one (WO-8). Optional: absent on a pre-0153 payload → no version sent →
-     the PATCH stays last-writer-wins. */
-  version?: number;
+     this one (WO-8). */
+  version: number;
   debtor_name: string | null;
   status: string | null;
   phone: string | null;
@@ -323,7 +327,7 @@ const parseInches = (s: unknown): number => {
 
 function newLine(): LineItem {
   return {
-    key: uid(), itemCode: "", itemGroup: "", itemId: "",
+    key: uid(), addIdempotencyKey: newIdempotencyKey(), itemCode: "", itemGroup: "", itemId: "",
     name: "", qty: "1", price: "0.00", ddate: "", remark: "", cat: "",
     variants: {}, overriddenKeys: [], photoKeys: [], photoFiles: [],
   };
@@ -802,6 +806,7 @@ export function MobileNewSO({
      the whole edit session — a concurrent editor's Save 409s instead of being
      silently overwritten. */
   const loadedVersionRef = useRef<number | undefined>(undefined);
+  const activeLineLeaseRef = useRef<string | null>(null);
   const [prefillVenueId, setPrefillVenueId] = useState<string | null>(null);
   const [prefillVenueName, setPrefillVenueName] = useState<string>("");
   // SKU picker sheet — the line key it was opened for, or null when closed.
@@ -1449,7 +1454,7 @@ export function MobileNewSO({
      itemId (mirrors the desktop pendingPhotoFiles drain). On CREATE we re-fetch
      the items to pair each line's staged files with its minted id (matched by
      item_code + description in order). */
-  async function uploadStagedPhotos(soDocNo: string) {
+  async function uploadStagedPhotos(soDocNo: string, existingLeaseToken?: string | null) {
     const withFiles = lines.filter((l) => l.photoFiles.length > 0);
     if (withFiles.length === 0) return;
     // Resolve each staged line to a saved itemId. In edit mode a persisted line
@@ -1474,18 +1479,22 @@ export function MobileNewSO({
       return null;
     };
     let failed = 0;
-    for (const l of withFiles) {
-      const itemId = resolveId(l);
-      if (!itemId) { failed += l.photoFiles.length; continue; }
-      for (const file of l.photoFiles) {
-        try {
-          const fd = new FormData();
-          fd.append("file", file);
-          await authedFetch(`/mfg-sales-orders/${encodeURIComponent(soDocNo)}/items/${encodeURIComponent(itemId)}/photos`, {
-            method: "POST", body: fd,
-          });
-        } catch { failed += 1; }
+    const uploadUnderLease = async (lease: string) => {
+      for (const l of withFiles) {
+        const itemId = resolveId(l);
+        if (!itemId) { failed += l.photoFiles.length; continue; }
+        for (const file of l.photoFiles) {
+          try {
+            await uploadSoItemPhotoWithLease(soDocNo, itemId, file, lease);
+          } catch { failed += 1; }
+        }
       }
+    };
+    if (existingLeaseToken) {
+      await uploadUnderLease(existingLeaseToken);
+    } else {
+      await runSoVersionedMutation(qc, soDocNo, "mobile-new-so-photo-upload", ({ leaseToken }) =>
+        uploadUnderLease(leaseToken));
     }
     if (failed > 0) {
       void notify({ title: "Some photos didn't upload", body: `${failed} line photo(s) failed to upload. Add them again from the SO detail screen.`, tone: "error" });
@@ -1543,26 +1552,33 @@ export function MobileNewSO({
     return false;
   };
 
-  async function applyLineDiff(soDocNo: string): Promise<number> {
+  async function applyLineDiff(soDocNo: string, leaseToken: string): Promise<number> {
     const base = `/mfg-sales-orders/${encodeURIComponent(soDocNo)}/items`;
+    const leaseHeaders = { "X-SO-Edit-Lease": leaseToken };
     let failed = 0;
     const liveIds = new Set(lines.map((l) => l.itemId).filter(Boolean));
     for (const snap of origItems) {
       if (liveIds.has(snap.id)) continue;
-      try { await authedFetch(`${base}/${encodeURIComponent(snap.id)}`, { method: "DELETE" }); }
+      try { await authedFetch(`${base}/${encodeURIComponent(snap.id)}`, { method: "DELETE", headers: leaseHeaders }); }
       catch { failed += 1; }
     }
     const snapById = new Map(origItems.map((s) => [s.id, s]));
     for (const l of lines) {
       if (!l.itemCode.trim()) continue;
       if (!l.itemId) {
-        try { await authedFetch(base, { method: "POST", body: JSON.stringify(itemBody(l)) }); }
+        try {
+          await authedFetch(base, {
+            method: "POST",
+            headers: mobileLineAddHeaders(l, leaseToken),
+            body: JSON.stringify(itemBody(l)),
+          });
+        }
         catch { failed += 1; }
         continue;
       }
       const snap = snapById.get(l.itemId);
       if (snap && lineChanged(l, snap)) {
-        try { await authedFetch(`${base}/${encodeURIComponent(l.itemId)}`, { method: "PATCH", body: JSON.stringify(itemPatchBody(l)) }); }
+        try { await authedFetch(`${base}/${encodeURIComponent(l.itemId)}`, { method: "PATCH", headers: leaseHeaders, body: JSON.stringify(itemPatchBody(l)) }); }
         catch { failed += 1; }
       }
     }
@@ -1802,20 +1818,16 @@ export function MobileNewSO({
            server's delivery-date cascade (keyed on PRESENCE, not change) and
            wipes every per-line override. Skipping loses no refresh: this branch
            invalidates everything itself once the whole composite save settles. */
-        if (hasHeaderChanges(dirtyPatch)) {
-          /* Attach the loaded optimistic-lock token (WO-8). Added here, not into
-             dirtyPatch, so `version` is never mistaken for a header change (it
-             would otherwise make an otherwise-empty PATCH fire). A 409 here throws
-             and the outer catch shows the plain "someone else updated…" sentence
-             authed-fetch maps from so_version_conflict. */
-          const headerBody =
-            loadedVersionRef.current != null
-              ? { ...dirtyPatch, version: loadedVersionRef.current }
-              : dirtyPatch;
-          await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}`, {
+        if (amendmentMode && hasHeaderChanges(dirtyPatch)) {
+          /* Attach the mandatory loaded token after the dirty check, so `version`
+             never turns an otherwise-empty patch into a mutation. A 409 throws;
+             the catch leaves every input in place and shows the curated conflict. */
+          const headerBody = { ...dirtyPatch, version: loadedVersionRef.current };
+          const headerResult = await authedFetch<{ ok: boolean; version: number }>(`/mfg-sales-orders/${encodeURIComponent(docNo)}`, {
             method: "PATCH",
             body: JSON.stringify(headerBody),
           });
+          loadedVersionRef.current = headerResult.version;
         }
 
         if (amendmentMode) {
@@ -1860,15 +1872,56 @@ export function MobileNewSO({
           return;
         }
 
+        const liveIds = new Set(lines.map((l) => l.itemId).filter(Boolean));
+        const snapById = new Map(origItems.map((s) => [s.id, s]));
+        const hasStagedPhotos = lines.some((line) => line.photoFiles.length > 0);
+        const hasDirectLineChanges = !lineEditingBlocked && (
+          origItems.some((snap) => !liveIds.has(snap.id))
+          || lines.some((l) => !l.itemId || (snapById.get(l.itemId) ? lineChanged(l, snapById.get(l.itemId)!) : true))
+          || hasStagedPhotos
+        );
+        let leaseToken: string | null = null;
+        if (hasDirectLineChanges) {
+          leaseToken = activeLineLeaseRef.current ??= newIdempotencyKey();
+          const reserved = await authedFetch<{ ok: boolean; version: number }>(`/mfg-sales-orders/${encodeURIComponent(docNo)}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              reserveLineWrites: true,
+              lineWriteLeaseToken: leaseToken,
+              version: loadedVersionRef.current,
+            }),
+          });
+          loadedVersionRef.current = reserved.version;
+        }
+
         /* FIX D2/D3 — skip line mutations + photo staging when line editing is
            blocked (shipped/has-children OR processing-date-locked); the backend
            rejects them 409 so_locked_processing anyway. */
         if (!lineEditingBlocked) {
-          const failed = await applyLineDiff(docNo);
-          if (failed > 0) {
-            void notify({ title: "Some line changes didn't save", body: `${failed} line change(s) failed. Re-open the order and check the items.`, tone: "error" });
+          if (leaseToken) {
+            const failed = await applyLineDiff(docNo, leaseToken);
+            if (failed > 0) {
+              throw new Error(`${failed} line change(s) did not save. Your edits are still here; try Save again.`);
+            }
           }
-          await uploadStagedPhotos(docNo);
+          await uploadStagedPhotos(docNo, leaseToken);
+        }
+
+        if (hasHeaderChanges(dirtyPatch) || leaseToken) {
+          const headerBody = {
+            ...dirtyPatch,
+            version: loadedVersionRef.current,
+            ...(leaseToken ? {
+              lineWriteLeaseToken: leaseToken,
+              ...(!hasHeaderChanges(dirtyPatch) ? { completeLineWrites: true } : {}),
+            } : {}),
+          };
+          const headerResult = await authedFetch<{ ok: boolean; version: number }>(`/mfg-sales-orders/${encodeURIComponent(docNo)}`, {
+            method: "PATCH",
+            body: JSON.stringify(headerBody),
+          });
+          loadedVersionRef.current = headerResult.version;
+          activeLineLeaseRef.current = null;
         }
         await recordSlipBackedPayments(docNo);
 
@@ -1911,6 +1964,20 @@ export function MobileNewSO({
       if (res?.docNo && onSaved) onSaved(res.docNo);
       else onBack();
     } catch (e) {
+      const heldLease = activeLineLeaseRef.current;
+      if (isEdit && docNo && heldLease && loadedVersionRef.current != null) {
+        try {
+          await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              completeLineWrites: true,
+              lineWriteLeaseToken: heldLease,
+              version: loadedVersionRef.current,
+            }),
+          });
+        } catch { /* expiry is the recovery backstop */ }
+        activeLineLeaseRef.current = null;
+      }
       /* Aggregated save-gate failure (validation_failed) — show EVERY reason at
          once, same popup + list as desktop (owner 2026-07-18). Anything else
          keeps the inline error line. */
