@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit -p .",
     "pretest": "npm run test:scale-contract",
     "test": "vitest run",
+    "test:pg": "vitest run --config vitest.pg.config.ts",
     "test:watch": "vitest",
     "test:scale-contract": "node --test tests/scaleTargetGuard.node.mjs tests/scaleRealSchemaContract.node.mjs tests/scaleRouteDrift.node.mjs tests/routeMatrixDrift.node.mjs",
     "perf:scale": "node scripts/scale-harness.mjs",

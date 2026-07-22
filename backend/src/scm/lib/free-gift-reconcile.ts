@@ -232,8 +232,9 @@ export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string, c: any
       }
     }
   } catch (e) {
-    // A reconcile failure must never break the edit — log and fall through to
-    // the totals recompute below.
+    if (sb?.__atomicCommand === true) throw e;
+    // Legacy non-transactional callers keep best-effort behaviour. Atomic
+    // commands rethrow above so the enclosing command rolls back.
     // eslint-disable-next-line no-console
     console.error('[free-gift-reconcile] failed for', docNo, e);
   }

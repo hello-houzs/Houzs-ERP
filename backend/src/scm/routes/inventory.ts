@@ -43,7 +43,7 @@ inventory.get('/warehouses', async (c) => {
   const sb = c.get('supabase');
   const includeInactive = c.req.query('includeInactive') === 'true';
   let q = scopeToCompany(
-    sb.from('warehouses').select('id, code, name, location, is_active, is_default, is_showroom, venue_name'),
+    sb.from('warehouses').select('id, code, name, location, is_active, is_default, is_showroom, venue_name, type'),
     c,
   ).order('code');
   if (!includeInactive) q = q.eq('is_active', true);
@@ -68,6 +68,21 @@ inventory.post('/warehouses', async (c) => {
   const co = requireActiveCompanyId(c);
   if (!co.ok) return c.json(co.refusal, 409);
 
+  /* TYPE (mig 0171) — 5-bucket enum on scm.warehouses. Default 'warehouse'
+     when unspecified so existing callers that don't know about the field still
+     land a valid row. `isShowroom=true` is treated as an implicit type upgrade
+     to 'showroom' so the two boolean callers (WarehouseFormDrawer with its old
+     checkbox path, plus any programmatic seeder) stay coherent — the invariant
+     `is_showroom = (type = 'showroom')` is what the venue-binding resolver
+     (mig 0148) reads. */
+  const rawType = typeof body.type === 'string' ? body.type.trim().toLowerCase() : '';
+  const ALLOWED_TYPES = ['warehouse', 'showroom', 'display', 'service', 'others'] as const;
+  const wantType: (typeof ALLOWED_TYPES)[number] | null =
+    (ALLOWED_TYPES as readonly string[]).includes(rawType) ? (rawType as (typeof ALLOWED_TYPES)[number]) : null;
+  const finalType: (typeof ALLOWED_TYPES)[number] =
+    wantType ?? (body.isShowroom === true ? 'showroom' : 'warehouse');
+  const finalIsShowroom = finalType === 'showroom' || body.isShowroom === true;
+
   const { data, error } = await sb.from('warehouses').insert({
     company_id: co.companyId, // multi-company: stamp the active company (mig 0086)
     code, name,
@@ -80,11 +95,13 @@ inventory.post('/warehouses', async (c) => {
        to venue_name. venue_name is NOT derived from `name`: a warehouse is
        named for stock ("KL-WH-02"), a venue for the report ("Kuala Lumpur
        Showroom"), and auto-deriving would put a stock code into exhibition
-       P&L. A flagged showroom with no venue_name simply resolves to nothing. */
-    is_showroom: body.isShowroom === true,
+       P&L. A flagged showroom with no venue_name simply resolves to nothing.
+       Mig 0171 keeps is_showroom = (type = 'showroom'). */
+    is_showroom: finalIsShowroom,
     venue_name: typeof body.venueName === 'string' && body.venueName.trim()
       ? body.venueName.trim() : null,
-  }).select('id, code, name, location, is_active, is_default, is_showroom, venue_name').single();
+    type: finalType,
+  }).select('id, code, name, location, is_active, is_default, is_showroom, venue_name, type').single();
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_code' }, 409);
     return c.json({ error: 'insert_failed', reason: error.message }, 500);
@@ -132,12 +149,29 @@ export const patchWarehouseHandler = async (c: any) => {
   if (typeof body.location === 'string')  updates.location = body.location;
   if (typeof body.isActive === 'boolean') updates.is_active = body.isActive;
   if (typeof body.isDefault === 'boolean') updates.is_default = body.isDefault;
-  /* SHOWROOM (migration 0148). Un-flagging is deliberately NOT cascaded to the
-     staff parked under this warehouse: the resolver re-checks is_showroom at
-     resolve time, so clearing the flag stops it supplying venues immediately
-     while the parkings stay visible on the Members page for whoever has to
-     re-home those people. A silent mass-unpark would lose that information. */
-  if (typeof body.isShowroom === 'boolean') updates.is_showroom = body.isShowroom;
+  /* SHOWROOM (migration 0148) + TYPE (mig 0171). Un-flagging is deliberately
+     NOT cascaded to the staff parked under this warehouse: the resolver
+     re-checks is_showroom at resolve time, so clearing the flag stops it
+     supplying venues immediately while the parkings stay visible on the
+     Members page for whoever has to re-home those people. A silent mass-unpark
+     would lose that information.
+
+     The `type` and `isShowroom` fields must move together (invariant:
+     is_showroom = (type = 'showroom')). If the caller sends either, derive the
+     other so the row stays coherent — a caller sending only isShowroom=true
+     upgrades type to 'showroom', a caller sending type='warehouse' clears
+     is_showroom. */
+  const ALLOWED_TYPES = ['warehouse', 'showroom', 'display', 'service', 'others'] as const;
+  const rawType = typeof body.type === 'string' ? body.type.trim().toLowerCase() : null;
+  const typedType = rawType && (ALLOWED_TYPES as readonly string[]).includes(rawType)
+    ? (rawType as (typeof ALLOWED_TYPES)[number]) : null;
+  if (typedType) {
+    updates.type = typedType;
+    updates.is_showroom = typedType === 'showroom';
+  } else if (typeof body.isShowroom === 'boolean') {
+    updates.is_showroom = body.isShowroom;
+    updates.type = body.isShowroom ? 'showroom' : 'warehouse';
+  }
   if (body.venueName !== undefined) {
     const v = typeof body.venueName === 'string' ? body.venueName.trim() : '';
     updates.venue_name = v || null;
@@ -150,7 +184,7 @@ export const patchWarehouseHandler = async (c: any) => {
   const { data, error } = await scopeToCompanyId(
     sb.from('warehouses').update(updates).eq('id', id),
     co.companyId,
-  ).select('id, code, name, location, is_active, is_default, is_showroom, venue_name').maybeSingle();
+  ).select('id, code, name, location, is_active, is_default, is_showroom, venue_name, type').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   // No row matched id + company: not this company's warehouse, or gone.
   if (!data) return c.json(NOT_THIS_COMPANY, 404);

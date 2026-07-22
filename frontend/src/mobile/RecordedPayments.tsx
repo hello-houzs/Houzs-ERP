@@ -56,6 +56,7 @@ import { PaymentInfoBlock, type RecordedPaymentLike } from "./PaymentInfoBlock";
    (dual-read camelCase ?? snake_case — the historical #1 bug on this stack). */
 export type RecordedPayment = RecordedPaymentLike & {
   id: string;
+  version: number;
   amount_centi: number | null;
   collected_by?: string | null;
   slip_key?: string | null;
@@ -382,7 +383,7 @@ export function AddPaymentSheet({
         /* No key on the EDIT path, deliberately: a PATCH sets named fields on ONE
            row addressed by id, so firing it twice writes the same row the same
            way. It cannot duplicate money; only the POST below creates a row. */
-        await editPaymentMut.mutateAsync({ docNo, id: editPayment.id, ...body });
+        await editPaymentMut.mutateAsync({ docNo, id: editPayment.id, version: editPayment.version, ...body });
       } else {
         await addPaymentMut.mutateAsync({ docNo, ...body, idempotencyKey: idemKey });
       }
@@ -615,7 +616,9 @@ export function RecordedPaymentsList({
     setError(null);
     setWorking(true);
     try {
-      await deletePaymentMut.mutateAsync({ docNo, id: paymentId });
+      const row = payments.find((p) => p.id === paymentId);
+      if (!row) throw new Error("Payment is no longer loaded. Refresh before deleting it.");
+      await deletePaymentMut.mutateAsync({ docNo, id: paymentId, version: row.version });
       await onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't delete the payment. Please try again.");

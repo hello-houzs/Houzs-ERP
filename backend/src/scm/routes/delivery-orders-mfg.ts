@@ -42,6 +42,7 @@ import { loadSofaBatchStock, sofaStockKey } from '../lib/sofa-set-coverage';
 import { currentDocNoByKey, type CurrentEvent } from '../lib/current-doc';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { recordSoAudit, type FieldChange } from '../lib/so-audit';
+import { advanceSoGeneration } from '../lib/so-generation';
 import { recordEntityAudit, diffFields, compactChanges, fieldChange } from '../lib/entity-audit';
 import { markIdempotencyNoWrite } from '../../middleware/idempotency';
 
@@ -2880,12 +2881,11 @@ deliveryOrdersMfg.post('/', async (c) => {
         { id: user.id, name: (user.user_metadata as { name?: string } | undefined)?.name ?? null },
         `Delivery Order ${h.do_number ?? h.id}`,
       );
-      createSoMirror.updated_at = new Date().toISOString();
-      const { error: soErr } = await sb.from('mfg_sales_orders').update(createSoMirror).eq('doc_no', createSoDocNo);
-      if (soErr) {
+      const generation = await advanceSoGeneration(sb, createSoDocNo, createSoMirror);
+      if (!generation.applied) {
         /* eslint-disable-next-line no-console */
-        console.error('[so_amend_mirror] create-path failed', { doId: h.id, soDocNo: createSoDocNo, reason: soErr.message });
-        soAmendMirrorError = soErr.message;
+        console.error('[so_amend_mirror] create-path conflict', { doId: h.id, soDocNo: createSoDocNo, reason: generation.reason });
+        soAmendMirrorError = `so_${generation.reason}`;
       } else {
         soAmendMirrored = true;
         await emitMirrorAudit();
@@ -3606,12 +3606,11 @@ deliveryOrdersMfg.patch('/:id', async (c) => {
         { id: patchUser.id, name: (patchUser.user_metadata as { name?: string } | undefined)?.name ?? null },
         `Delivery Order ${id}`,
       );
-      soAmendMirror.updated_at = new Date().toISOString();
-      const { error: soErr } = await sb.from('mfg_sales_orders').update(soAmendMirror).eq('doc_no', mirrorSoDocNo);
-      if (soErr) {
+      const generation = await advanceSoGeneration(sb, mirrorSoDocNo, soAmendMirror);
+      if (!generation.applied) {
         /* eslint-disable-next-line no-console */
-        console.error('[so_amend_mirror] failed', { doId: id, soDocNo: mirrorSoDocNo, reason: soErr.message });
-        soMirrorError = soErr.message;
+        console.error('[so_amend_mirror] conflict', { doId: id, soDocNo: mirrorSoDocNo, reason: generation.reason });
+        soMirrorError = `so_${generation.reason}`;
       } else {
         writtenSo = true;
         await emitMirrorAudit();

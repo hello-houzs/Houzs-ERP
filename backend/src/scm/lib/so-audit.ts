@@ -81,10 +81,14 @@ export async function recordSoAudit(
       note:                args.note ?? null,
     });
     if (error) {
+      if ((sb as unknown as { __atomicCommand?: boolean }).__atomicCommand === true) {
+        throw new Error(`SO audit insert failed: ${error.message}`);
+      }
       // eslint-disable-next-line no-console
       console.error('[so-audit] insert failed (non-fatal):', args.docNo, args.action, error.message);
     }
   } catch (e) {
+    if ((sb as unknown as { __atomicCommand?: boolean }).__atomicCommand === true) throw e;
     // eslint-disable-next-line no-console
     console.error('[so-audit] unexpected error (non-fatal):', args.docNo, args.action, e);
   }
