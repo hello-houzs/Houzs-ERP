@@ -586,6 +586,12 @@ export function PurchaseInvoicesListV2() {
     hasError: Boolean(error),
   });
   const listLoading = isLoading || searchTransition.isSearching;
+  // The list below is replaced by a pending panel while a search is in flight,
+  // and these tiles summarise the SAME payload - so a settled-looking "RM 0.00"
+  // (or the PREVIOUS term's money under a placeholder page) would outlive the
+  // rows it describes. Same flag SearchScopeHint already uses for its count.
+  const statsPending =
+    isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale;
   const cancelPi = useCancelPurchaseInvoice();
   const recordPayment = useRecordPiPayment();
 
@@ -895,6 +901,7 @@ export function PurchaseInvoicesListV2() {
 
         <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
           <StatCard
+            pending={statsPending}
             label="Total PIs"
             value={total.toLocaleString("en-MY")}
             subtitle="All matching PIs"
@@ -902,12 +909,14 @@ export function PurchaseInvoicesListV2() {
             active
           />
           <StatCard
+            pending={statsPending}
             label="Billed"
             value={fmtRm(money.billed)}
             subtitle="Sum on this page"
             rail="bg-accent"
           />
           <StatCard
+            pending={statsPending}
             label="Owed"
             value={fmtRm(money.owed)}
             subtitle="Balance owed · on this page"
@@ -915,6 +924,7 @@ export function PurchaseInvoicesListV2() {
             rail="bg-err"
           />
           <StatCard
+            pending={statsPending}
             label="Paid"
             value={fmtRm(money.paid)}
             subtitle="Cash out · on this page"

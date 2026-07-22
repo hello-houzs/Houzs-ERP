@@ -75,4 +75,28 @@ describe("list search scope contracts", () => {
     const soDetail = source("pages/scm-v2/SalesOrderDetailListing.tsx");
     expect(soDetail).toMatch(/pending=\{query\.isLoading[^}]*\}/);
   });
+
+  // Every paginated SCM list swaps its rows for a pending panel mid-search. The
+  // KPI strip above summarises the same payload, so it has to declare the same
+  // unknown state - otherwise "Outstanding RM 0.00" outlives the rows it
+  // describes, on the six money-carrying lists at once.
+  test.each([
+    "pages/scm-v2/MfgSalesOrdersListV2.tsx",
+    "pages/scm-v2/SalesInvoicesListV2.tsx",
+    "pages/scm-v2/PurchaseOrdersListV2.tsx",
+    "pages/scm-v2/PurchaseInvoicesListV2.tsx",
+    "pages/scm-v2/MfgDeliveryOrdersListV2.tsx",
+    "pages/scm-v2/GoodsReceivedListV2.tsx",
+    // Loaded-scope lists: no search transition, but the same [] -> RM 0.00 on
+    // the first paint and on a failed fetch.
+    "pages/scm-v2/DeliveryReturnsListV2.tsx",
+    "pages/scm-v2/PurchaseReturnsListV2.tsx",
+  ])("declares the unknown state on every KPI tile of %s", (file) => {
+    const contents = source(file);
+    expect(contents).toContain("const statsPending =");
+    const tiles = contents.match(/<StatCard/g) ?? [];
+    const declared = contents.match(/pending=\{statsPending\}/g) ?? [];
+    expect(tiles.length).toBeGreaterThan(0);
+    expect(declared).toHaveLength(tiles.length);
+  });
 });

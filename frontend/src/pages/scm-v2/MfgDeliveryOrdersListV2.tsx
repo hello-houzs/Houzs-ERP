@@ -868,6 +868,12 @@ export function MfgDeliveryOrdersListV2() {
     hasError: Boolean(error),
   });
   const listLoading = isLoading || searchTransition.isSearching;
+  // The list below is replaced by a pending panel while a search is in flight,
+  // and these tiles summarise the SAME payload - so a settled-looking "RM 0.00"
+  // (or the PREVIOUS term's money under a placeholder page) would outlive the
+  // rows it describes. Same flag SearchScopeHint already uses for its count.
+  const statsPending =
+    isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale;
   const updateStatus = useUpdateMfgDeliveryOrderStatus();
 
   // Server already filtered + sorted this page — render verbatim, no client
@@ -1589,6 +1595,7 @@ export function MfgDeliveryOrdersListV2() {
 
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
+              pending={statsPending}
               label="Total DOs"
               value={total.toLocaleString("en-MY")}
               subtitle="All matching orders"
@@ -1596,12 +1603,14 @@ export function MfgDeliveryOrdersListV2() {
               active
             />
             <StatCard
+              pending={statsPending}
               label="Revenue"
               value={fmtRm(revenueCenti)}
               subtitle="Sum on this page"
               rail="bg-accent"
             />
             <StatCard
+              pending={statsPending}
               label="In transit"
               value={counts.in_transit.toLocaleString("en-MY")}
               subtitle="Dispatched · en route"
@@ -1609,6 +1618,7 @@ export function MfgDeliveryOrdersListV2() {
               rail="bg-accent-bright"
             />
             <StatCard
+              pending={statsPending}
               label="Delivered"
               value={counts.delivered.toLocaleString("en-MY")}
               subtitle="Signed / delivered / invoiced"

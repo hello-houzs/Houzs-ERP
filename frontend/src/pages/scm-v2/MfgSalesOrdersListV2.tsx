@@ -1019,6 +1019,12 @@ export function MfgSalesOrdersListV2() {
     hasError: Boolean(error),
   });
   const listLoading = isLoading || searchTransition.isSearching;
+  // The list below is replaced by a pending panel while a search is in flight,
+  // and these tiles summarise the SAME payload - so a settled-looking "RM 0.00"
+  // (or the PREVIOUS term's money under a placeholder page) would outlive the
+  // rows it describes. Same flag SearchScopeHint already uses for its count.
+  const statsPending =
+    isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale;
   const updateStatus = useUpdateMfgSalesOrderStatus();
 
   // The server already filtered (status + search) and sorted this page; the
@@ -1884,6 +1890,7 @@ export function MfgSalesOrdersListV2() {
 
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
+              pending={statsPending}
               label="Total Orders"
               value={total.toLocaleString("en-MY")}
               subtitle="All matching orders"
@@ -1891,12 +1898,14 @@ export function MfgSalesOrdersListV2() {
               active
             />
             <StatCard
+              pending={statsPending}
               label="Revenue"
               value={fmtRm(stats.revenueCenti)}
               subtitle={stats.fullSet ? "All matching orders" : "Sum on this page"}
               rail="bg-accent"
             />
             <StatCard
+              pending={statsPending}
               label="Outstanding"
               value={fmtRm(stats.outstandingCenti)}
               subtitle={stats.fullSet ? "Balance due" : "Balance on this page"}
@@ -1904,6 +1913,7 @@ export function MfgSalesOrdersListV2() {
               rail="bg-err"
             />
             <StatCard
+              pending={statsPending}
               label="Paid"
               value={fmtRm(stats.paidCenti)}
               subtitle={stats.fullSet ? "Receipts to date" : "Receipts on this page"}

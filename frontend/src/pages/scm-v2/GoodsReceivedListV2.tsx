@@ -483,6 +483,12 @@ export function GoodsReceivedListV2() {
     hasError: Boolean(error),
   });
   const listLoading = isLoading || searchTransition.isSearching;
+  // The list below is replaced by a pending panel while a search is in flight,
+  // and these tiles summarise the SAME payload - so a settled-looking "RM 0.00"
+  // (or the PREVIOUS term's money under a placeholder page) would outlive the
+  // rows it describes. Same flag SearchScopeHint already uses for its count.
+  const statsPending =
+    isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale;
   const postGrn = usePostGrn();
   const cancelGrn = useCancelGrn();
 
@@ -753,10 +759,10 @@ export function GoodsReceivedListV2() {
         </div>
 
         <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
-          <StatCard label="Total GRNs" value={total.toLocaleString("en-MY")} subtitle="All matching GRNs" rail="bg-primary" active />
-          <StatCard label="Received Value" value={fmtRm(money.received)} subtitle="Value on this page" tone="success" rail="bg-synced" />
-          <StatCard label="Awaiting PI" value={fmtRm(money.awaitingPi)} subtitle="Not yet invoiced · on this page" tone="warning" rail="bg-accent-bright" />
-          <StatCard label="Draft" value={fmtRm(money.draft)} subtitle="Not yet posted · on this page" rail="bg-accent" />
+          <StatCard pending={statsPending} label="Total GRNs" value={total.toLocaleString("en-MY")} subtitle="All matching GRNs" rail="bg-primary" active />
+          <StatCard pending={statsPending} label="Received Value" value={fmtRm(money.received)} subtitle="Value on this page" tone="success" rail="bg-synced" />
+          <StatCard pending={statsPending} label="Awaiting PI" value={fmtRm(money.awaitingPi)} subtitle="Not yet invoiced · on this page" tone="warning" rail="bg-accent-bright" />
+          <StatCard pending={statsPending} label="Draft" value={fmtRm(money.draft)} subtitle="Not yet posted · on this page" rail="bg-accent" />
         </div>
 
         <div className="sticky top-0 z-10 -mx-4 mb-3 bg-bg/95 px-4 py-2 backdrop-blur-sm md:hidden">
