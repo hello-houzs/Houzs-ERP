@@ -133,27 +133,10 @@
   background: rgba(255, 255, 255, 0.25);
   color: var(--c-paper);
 }
-.columnsMenuBackdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 39;
-  background: rgba(0, 0, 0, 0.08);
-}
-.columnsMenu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 40;
-  width: 220px;
-  max-height: 320px;
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-3, 0 8px 24px rgba(0, 0, 0, 0.16));
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
+/* (The old .columnsMenuBackdrop / .columnsMenu anchored-popover pair is gone —
+   the Columns surface is now the NON-MODAL .columnsDrawer below, so the grid
+   stays scrollable while it is open. The .columnsMenu* child classes survive
+   because the drawer reuses them for its header / rows.) */
 .columnsMenuHeader {
   display: flex;
   align-items: center;
