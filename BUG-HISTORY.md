@@ -1,6 +1,5 @@
 ## 2026-07-22
 
-<<<<<<< HEAD
 ### [P1] POS shipping/billing address selectors were strict state-first — Houzs frontend + POS Maintenance already had the bidirectional flow (owner audit)
 - **Symptom.** In POS NewOrder (customer-first SO create) and Handover AddressStep (both delivery and billing blocks), the City select was `disabled` until State was picked; the Postcode select was `disabled` until State AND City were picked. Sales who knew the postcode first (customer volunteers it) or the city first (walk-in from a nearby suburb) had to look up the State just to unlock the next field, on every walk-in.
 - **Root cause (traced).** POS never ported the four reverse-lookup helpers from Houzs's `frontend/src/vendor/scm/lib/localities-queries.ts` (`resolvePostcode`, `resolveCityState`, `allCities`, `allPostcodes`), so the UI had no way to fill State back from a City or a Postcode without a wrong guess. The underlying `my_localities` dataset was already loaded (`useLocalities`) — only the selector plumbing was missing. The Houzs SO Detail DeliveryAddressCard (`frontend/src/pages/scm-v2/SalesOrderNew.tsx:810-831`) has run bidirectionally since day one.
