@@ -117,7 +117,8 @@ function purgeLegacyKeys(): void {
     const stale: string[] = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
-      if (key === ACTIVE_COMPANY_KEY || key?.startsWith(`${ACTIVE_COMPANY_KEY}:`)) stale.push(key);
+      if (key === null) continue;
+      if (key === ACTIVE_COMPANY_KEY || key.startsWith(`${ACTIVE_COMPANY_KEY}:`)) stale.push(key);
     }
     for (const key of stale) localStorage.removeItem(key);
   } catch {}
