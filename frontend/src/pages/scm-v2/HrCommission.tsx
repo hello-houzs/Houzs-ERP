@@ -171,7 +171,7 @@ export const HrCommission = () => {
         ]);
       }
     }
-    const XLSX = await import('xlsx');
+    const XLSX = await import('../../lib/xlsx-runtime');
     const ws = XLSX.utils.aoa_to_sheet(rows);
     ws['!cols'] = rows[0].map((_, i) => {
       let w = 10;
@@ -180,7 +180,7 @@ export const HrCommission = () => {
     });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Commission');
-    XLSX.writeFile(wb, `Commission ${applied.from} to ${applied.to}.xlsx`);
+    XLSX.writeFileXLSX(wb, `Commission ${applied.from} to ${applied.to}.xlsx`);
   };
 
   return (
