@@ -1,5 +1,6 @@
-import { env, fetchMock } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { createOutboundFetchMock } from "./outboundFetchMock";
 import { app } from "../src/index";
 import { getUserBySession } from "../src/services/auth";
 import {
@@ -51,16 +52,22 @@ async function compose(sessionToken: string, fromAddress: string): Promise<Respo
   );
 }
 
+/* Vitest Pool Workers 0.18 (PR #925) REMOVED the undici `fetchMock` export from
+   cloudflare:test. This file arrived from PR #918, which was rebased before that
+   upgrade landed, so it was the one suite still on the old API — green on its own
+   PR, broken the moment both were on main together. `createOutboundFetchMock` is
+   the repo's existing fail-closed replacement (see clientErrors / documentEmail /
+   emailOutbox, which were migrated with the upgrade). */
+let outbound: ReturnType<typeof createOutboundFetchMock>;
+
 function mockResend(id: string): void {
-  fetchMock
-    .get("https://api.resend.com")
-    .intercept({ path: "/emails", method: "POST" })
-    .reply(200, { id });
+  outbound.replyOnce("https://api.resend.com/emails", "POST", 200, { id });
 }
 
 beforeAll(async () => {
-  fetchMock.activate();
-  fetchMock.disableNetConnect();
+  // Replaces fetchMock.activate() + disableNetConnect(): the helper stubs
+  // globalThis.fetch and throws on any outbound call that was not registered.
+  outbound = createOutboundFetchMock();
 
   // Mail Center's schema is PG-only in this repository; the isolated vitest DB
   // is D1. Recreate the route's real table shapes here so the authorization and
@@ -112,7 +119,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  fetchMock.assertNoPendingInterceptors();
+  // Replaces fetchMock.assertNoPendingInterceptors(): fails if a registered
+  // Resend reply was never consumed, and restores globalThis.fetch either way.
+  outbound.assertDone();
   await env.SESSION_CACHE.delete(`sess:${token}`);
   await env.SESSION_CACHE.delete(`sess:${otherToken}`);
   await env.DB.exec(`DELETE FROM email_messages`);
