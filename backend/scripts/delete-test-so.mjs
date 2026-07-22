@@ -41,24 +41,45 @@ const CHILD_TABLES = [
 async function main() {
   console.log(`\n== delete-test-so :: DOC_NO=${DOC_NO} mode=${APPLY ? "APPLY" : "DRY-RUN"} ==\n`);
 
-  // (1) Load the parent row + its critical state fields.
+  // (1) Load the parent row + its critical state fields. has_children is a
+  // COMPUTED field on this codebase (stamped at query time from downstream
+  // tables — see scm/routes/consignment-notes.ts et al.), NOT a stored
+  // column. The check runs below via direct downstream-table scans.
   const [so] = await db`
-    SELECT doc_no, status, proceeded_at, has_children, company_id, created_at
+    SELECT doc_no, status, proceeded_at, company_id, created_at
       FROM scm.mfg_sales_orders
      WHERE doc_no = ${DOC_NO}`;
   if (!so) {
     console.log(`SO ${DOC_NO} NOT FOUND. Nothing to delete.`);
     return;
   }
-  console.log(`Parent  : ${DOC_NO}  status=${so.status}  company_id=${so.company_id}  proceeded_at=${so.proceeded_at ?? "—"}  has_children=${so.has_children ?? false}`);
+  console.log(`Parent  : ${DOC_NO}  status=${so.status}  company_id=${so.company_id}  proceeded_at=${so.proceeded_at ?? "—"}`);
 
   // (2) Refuse on any signal this is not a fresh test SO.
   const finalStatuses = new Set(["INVOICED", "DELIVERED", "CLOSED", "SHIPPED"]);
   if (finalStatuses.has(String(so.status).toUpperCase())) {
     throw new Error(`REFUSED: status=${so.status} — this SO has moved past CONFIRMED. Not a test row.`);
   }
-  if (so.has_children === true || so.has_children === 1) {
-    throw new Error(`REFUSED: has_children=true — there's a downstream document (DO/SI) attached.`);
+
+  // Downstream-doc check: probe delivery_orders + sales_invoices + delivery_returns
+  // for any row that references this SO. Any hit → real order, not a test.
+  // Tables are read via to_regclass so a missing schema element (D1 mirror,
+  // pre-migration) doesn't blow the script — the probe just returns 0.
+  const downstreamProbes = [
+    { table: "scm.delivery_orders",    col: "so_doc_no" },
+    { table: "scm.sales_invoices",     col: "so_doc_no" },
+    { table: "scm.delivery_returns",   col: "so_doc_no" },
+  ];
+  let downstreamTotal = 0;
+  for (const p of downstreamProbes) {
+    const exists = await db.unsafe(`SELECT to_regclass('${p.table}') AS t`);
+    if (!exists[0].t) { console.log(`Probe   : ${p.table.padEnd(40)} (schema absent — skip)`); continue; }
+    const rows = await db.unsafe(`SELECT count(*)::int AS n FROM ${p.table} WHERE ${p.col} = $1`, [DOC_NO]);
+    downstreamTotal += rows[0].n;
+    console.log(`Probe   : ${p.table.padEnd(40)} downstream rows=${rows[0].n}`);
+  }
+  if (downstreamTotal > 0) {
+    throw new Error(`REFUSED: ${downstreamTotal} downstream doc row(s) reference ${DOC_NO}. Not a test SO.`);
   }
 
   // (3) Discover every row that references it. Print BEFORE deleting so the
