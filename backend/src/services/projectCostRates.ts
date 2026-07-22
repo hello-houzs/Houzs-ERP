@@ -201,11 +201,16 @@ async function upsertAutoLines(
         .run();
       bySource.delete(spec.source);
     } else {
+      // Stamp company_id from the parent project (mig 0170) so the
+      // /finance/pnl cost pull can filter by the active company —
+      // auto-recomputed cost lines went unscoped alongside manual ones
+      // until this fix.
       await env.DB.prepare(
         `INSERT INTO project_finance_lines
            (project_id, kind, category, description, amount,
-            auto_source, created_by)
-         VALUES (?, 'cost', ?, ?, ?, ?, ?)`,
+            auto_source, created_by, company_id)
+         VALUES (?, 'cost', ?, ?, ?, ?, ?,
+                 (SELECT company_id FROM projects WHERE id = ?))`,
       )
         .bind(
           projectId,
@@ -214,6 +219,7 @@ async function upsertAutoLines(
           spec.amount,
           spec.source,
           userId || null,
+          projectId,
         )
         .run();
     }

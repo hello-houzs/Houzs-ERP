@@ -171,28 +171,37 @@ async function rawSales(env: Env, start: string, end: string, companyId?: number
   return rows.results ?? [];
 }
 
-async function rawProjectCost(env: Env, start: string, end: string) {
+// Owner audit 2026-07-22: costs were UNSCOPED while sales was scoped, so
+// caller in A saw A revenue minus (A+B) costs — distorted P&L. Migration
+// 0170 added project_finance_lines.company_id + backfill; assr_cases already
+// carried company_id from mig 0083 (route just wasn't filtering). Both cost
+// pulls now scope on the active company, matching rawSales' predicate shape:
+// `companyId === undefined` (pre-migration / cold-start) omits the filter so
+// single-company Houzs stays unchanged.
+async function rawProjectCost(env: Env, start: string, end: string, companyId?: number) {
   const rows = await env.DB.prepare(
     `SELECT COALESCE(occurred_at, created_at) AS d, COALESCE(amount, 0) AS a
        FROM project_finance_lines
       WHERE kind = 'cost' AND archived_at IS NULL
         AND COALESCE(occurred_at, created_at) >= ?
-        AND COALESCE(occurred_at, created_at) < ?`
+        AND COALESCE(occurred_at, created_at) < ?
+        ${companyId != null ? "AND company_id = ?" : ""}`
   )
-    .bind(start, end)
+    .bind(start, end, ...(companyId != null ? [companyId] : []))
     .all<{ d: string; a: number }>();
   return rows.results ?? [];
 }
 
-async function rawServiceCost(env: Env, start: string, end: string) {
+async function rawServiceCost(env: Env, start: string, end: string, companyId?: number) {
   const rows = await env.DB.prepare(
     `SELECT COALESCE(completion_date, updated_at) AS d, COALESCE(po_amount, 0) AS a
        FROM assr_cases
       WHERE po_amount IS NOT NULL AND archived_at IS NULL
         AND COALESCE(completion_date, updated_at) >= ?
-        AND COALESCE(completion_date, updated_at) < ?`
+        AND COALESCE(completion_date, updated_at) < ?
+        ${companyId != null ? "AND company_id = ?" : ""}`
   )
-    .bind(start, end)
+    .bind(start, end, ...(companyId != null ? [companyId] : []))
     .all<{ d: string; a: number }>();
   return rows.results ?? [];
 }
@@ -243,10 +252,10 @@ app.get("/pnl", requirePermission("projects.read"), async (c) => {
       ? rawSales(c.env, overallStart, overallEnd, companyId)
       : Promise.resolve([]),
     scope === "all" || scope === "projects"
-      ? rawProjectCost(c.env, overallStart, overallEnd)
+      ? rawProjectCost(c.env, overallStart, overallEnd, companyId)
       : Promise.resolve([]),
     scope === "all" || scope === "service"
-      ? rawServiceCost(c.env, overallStart, overallEnd)
+      ? rawServiceCost(c.env, overallStart, overallEnd, companyId)
       : Promise.resolve([]),
     scope === "all" || scope === "po"
       ? rawPoCost(c.env, overallStart, overallEnd, companyId)
