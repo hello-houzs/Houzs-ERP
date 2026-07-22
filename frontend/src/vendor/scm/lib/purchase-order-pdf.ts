@@ -38,6 +38,7 @@
 
 import { buildDefaultSofaCells, effectiveDelivery, findModule, fmtMoneyCenti, SOFA_MODULES, type Cell, type Depth } from '@2990s/shared';
 import {
+import { formatPhone } from '@2990s/shared/phone';
   orderSofaModuleRowsWithinBuilds,
   sortSoLinesByGroupRank,
 } from '@2990s/shared/so-line-display';
@@ -285,7 +286,10 @@ async function renderPurchaseOrderInto(
       rows: [
         ['Company', s.name],
         ['Address', supplierAddressLines.join(', ')],
-        ['Tel', s.phone ?? sFull.mobile],
+        // formatPhone like every other document. This was the one generator
+        // printing a supplier phone raw, so the same stored number read
+        // "+60123456789" on a PO and "+60 12-345 6789" on the SO beside it.
+        ['Tel', formatPhone(s.phone ?? sFull.mobile ?? '') || (s.phone ?? sFull.mobile)],
         ['Fax', sFull.fax],
         ['Attn', sFull.attention ?? s.contact_person],
       ],
