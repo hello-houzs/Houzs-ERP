@@ -215,9 +215,16 @@ export function splitE164(stored: string | null | undefined): { dial: string; na
  * Returns '' when there is no national number (so an empty field clears cleanly).
  */
 export function combineE164(dial: string, national: string): string {
-  const n = onlyDigits(String(national ?? ''));
-  if (n === '') return '';
+  const raw = onlyDigits(String(national ?? ''));
+  if (raw === '') return '';
   const d = onlyDigits(String(dial ?? '')) || DEFAULT_DIAL;
+  // Defence-in-depth for the PhoneInput dedup (owner sighting 2026-07-22:
+  // "+60601161556133"). splitE164 already applies the same strip on the
+  // read path, and the input onChange strips it there — repeat here so a
+  // caller that hand-composes a national from an unclean source can't
+  // reintroduce the double-dial-code invariant that the DB has no defence
+  // against once the number is stored.
+  const n = raw.startsWith(d) ? raw.slice(d.length) : raw;
   return `+${d}${n}`;
 }
 
