@@ -3842,7 +3842,21 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
     }
   }
   // Non-admin with no resolvable arms (no session id) → fail closed.
-  const scopeWhere = seeAll
+  /* Owner 2026-07-22 — pending + cancelled fairs are company-wide calendar
+     signal: a tentative booking or a freed slot exists BEFORE anyone is
+     assigned to it, so the assignment arms can never match those rows and
+     scoped staff (sales reps, crew-scoped helpers/storekeepers) reported
+     them missing from their calendars. Event BARS therefore gate the
+     assignment scope on status — confirmed fairs stay assignment-scoped
+     (the 2026-07-05/06/21 rules, unchanged) while pending + cancelled
+     fairs show to every calendar viewer. TASKS keep the strict scope:
+     work items on someone else's fair are noise, not planning signal. */
+  const projectScopeWhere = seeAll
+    ? ""
+    : assignArms.length
+      ? ` AND (p.status IN ('pending','cancelled') OR (${assignArms.join(" OR ")}))`
+      : ` AND 1 = 0`;
+  const taskScopeWhere = seeAll
     ? ""
     : assignArms.length
       ? ` AND (${assignArms.join(" OR ")})`
@@ -3876,7 +3890,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
       WHERE p.archived_at IS NULL
         AND p.start_date IS NOT NULL
         AND substr(p.start_date, 1, 10) <= substr(?, 1, 10)
-        AND substr(COALESCE(p.end_date, p.start_date), 1, 10) >= substr(?, 1, 10)${scopeWhere}${coSql}`
+        AND substr(COALESCE(p.end_date, p.start_date), 1, 10) >= substr(?, 1, 10)${projectScopeWhere}${coSql}`
   )
     .bind(to, from, ...scopeBinds)
     .all();
@@ -3895,7 +3909,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
         AND c.status != 'done'
         AND c.status != 'na'
         AND c.due_date IS NOT NULL
-        AND substr(c.due_date, 1, 10) BETWEEN substr(?, 1, 10) AND substr(?, 1, 10)${scopeWhere}${coSql}
+        AND substr(c.due_date, 1, 10) BETWEEN substr(?, 1, 10) AND substr(?, 1, 10)${taskScopeWhere}${coSql}
       ORDER BY c.due_date, p.brand, c.id`
   )
     // The MY date is the FIRST bind — the is_overdue placeholder sits in the
