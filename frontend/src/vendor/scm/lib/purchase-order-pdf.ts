@@ -37,8 +37,8 @@
 // ----------------------------------------------------------------------------
 
 import { buildDefaultSofaCells, effectiveDelivery, findModule, fmtMoneyCenti, SOFA_MODULES, type Cell, type Depth } from '@2990s/shared';
-import {
 import { formatPhone } from '@2990s/shared/phone';
+import {
   orderSofaModuleRowsWithinBuilds,
   sortSoLinesByGroupRank,
 } from '@2990s/shared/so-line-display';
