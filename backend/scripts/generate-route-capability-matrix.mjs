@@ -1,7 +1,35 @@
+// Route capability inventory + drift gate.
+//
+// Generates docs/generated/route-capability-matrix.csv — every mounted route
+// with the auth/company boundary and the capability gates that apply to it —
+// and, with --check, fails when the committed artifact no longer matches the
+// source. That gate's job is that A ROUTE'S GATE CHANGING MUST BE NOTICED.
+//
+// THE COMPARED ARTIFACT IS SEMANTIC ONLY (2026-07-22). The `source` column
+// records the FILE a route is declared in and nothing else. Line numbers are
+// not in it, because a line number is not a fact about authorization and
+// putting one in a checked-in artifact made the artifact go stale whenever
+// anything above a route moved — which failed unrelated PRs, and, since
+// deploy.yml and deploy-staging.yml also run `audit:routes`, jammed deploys.
+// Run with --locations to print method/path/file:line when you need to FIND a
+// route; that output is not compared and not committed.
+//
+// The comparison is a MULTISET comparison (see scripts/lib/route-matrix-diff.mjs
+// for the full reasoning, including why order-sensitivity was the second half
+// of the bug). Nothing about the gate's reach is relaxed: method, path, source
+// file, both boundaries, all three gate columns, the handler guard, the mutation
+// flag and the review state are all compared exactly, and a difference in any of
+// them is named in the failure output.
+//
+//   node scripts/generate-route-capability-matrix.mjs            # write
+//   node scripts/generate-route-capability-matrix.mjs --check    # gate (CI)
+//   node scripts/generate-route-capability-matrix.mjs --locations # find a route
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+
+import { diffMatrices, formatDiff } from "./lib/route-matrix-diff.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const backendRoot = path.resolve(scriptDir, "..");
@@ -12,6 +40,7 @@ const summaryPath = path.join(repoRoot, "docs", "generated", "route-capability-s
 const manualRoutesPath = path.join(scriptDir, "route-capability-manual.json");
 const duplicateAllowlistPath = path.join(scriptDir, "route-capability-duplicate-allowlist.json");
 const checkOnly = process.argv.includes("--check");
+const locationsOnly = process.argv.includes("--locations");
 const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete"]);
 const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -65,10 +94,10 @@ function relativeFile(filePath) {
   return path.relative(repoRoot, filePath).replaceAll("\\", "/");
 }
 
-// A route's provenance is recorded as `file:line`, but the LINE number is
-// volatile: any unrelated edit to a route file shifts it. Drift checks must
-// compare the stable source FILE, never the line, or a cosmetic shift jams
-// every deploy (see the --check block). Strips a trailing `:<line>` only.
+// A route's LINE number is volatile: any unrelated edit to a route file shifts
+// it. It is therefore kept for humans (error messages, --locations, the
+// hand-maintained duplicate allowlist) and never emitted into the compared
+// artifact. Strips a trailing `:<line>` only.
 function stripSourceLine(source) {
   return source.replace(/:\d+$/, "");
 }
@@ -423,7 +452,11 @@ for (const parsed of routeFiles) {
               handlerGuard: inHandlerGuard,
               mutation: mutation ? "YES" : "NO",
               reviewState,
-              source: `${relativeFile(parsed.filePath)}:${line}`,
+              // `source` is what the compared artifact carries: the FILE only.
+              // `sourceLine` never leaves this process — it backs the duplicate
+              // checks, the error messages and --locations.
+              source: relativeFile(parsed.filePath),
+              sourceLine: `${relativeFile(parsed.filePath)}:${line}`,
             });
           }
         }
@@ -487,8 +520,11 @@ if (pathHasPrefix("/api/foo", "/api/foobar") || !pathHasPrefix("/api/foo/bar", "
 
 const rowIdentities = new Set();
 for (const row of rows) {
-  const identity = `${row.method}\u0000${row.path}\u0000${row.source}`;
-  if (rowIdentities.has(identity)) throw new Error(`Duplicate route inventory row: ${row.method} ${row.path} ${row.source}`);
+  // Identity uses the LINE-bearing source on purpose: two registrations of the
+  // same method+path in the same FILE are distinct declarations (the duplicate
+  // allowlist holds one); this check catches the parser emitting one twice.
+  const identity = `${row.method}\u0000${row.path}\u0000${row.sourceLine}`;
+  if (rowIdentities.has(identity)) throw new Error(`Duplicate route inventory row: ${row.method} ${row.path} ${row.sourceLine}`);
   rowIdentities.add(identity);
 }
 
@@ -496,7 +532,7 @@ const routeDeclarations = new Map();
 for (const row of rows) {
   const key = `${row.method} ${row.path}`;
   const sources = routeDeclarations.get(key) ?? [];
-  sources.push(row.source);
+  sources.push(row.sourceLine);
   routeDeclarations.set(key, sources);
 }
 const duplicateDeclarations = [...routeDeclarations.entries()].filter(([, sources]) => sources.length > 1);
@@ -522,10 +558,30 @@ if (staleDuplicateAllowlist.length > 0) {
 // Never use localeCompare for a checked-in artifact: Node's ICU locale can
 // differ between Windows development and Ubuntu Actions. JS relational string
 // comparison is defined by UTF-16 code units and is stable across runtimes.
+//
+// Sort on EMITTED columns only, never on the line number. Sorting on a volatile
+// key means the committed file can reorder when nothing semantic moved, which is
+// churn the artifact does not need and a merge conflict it does not deserve.
+// The final tiebreaker is the whole emitted row, so the file is a deterministic
+// function of its own contents.
+const emittedRow = (row) => [
+  row.method,
+  row.path,
+  row.auth,
+  row.company,
+  row.mountGate,
+  row.localGate,
+  row.directGate,
+  row.handlerGuard,
+  row.mutation,
+  row.reviewState,
+  row.source,
+];
 rows.sort((a, b) =>
   compareCodePoints(a.path, b.path)
   || compareCodePoints(a.method, b.method)
   || compareCodePoints(a.source, b.source)
+  || compareCodePoints(emittedRow(a).join("\u0000"), emittedRow(b).join("\u0000"))
 );
 const headers = [
   "method",
@@ -542,19 +598,7 @@ const headers = [
 ];
 const body = [
   headers.join(","),
-  ...rows.map((row) => [
-    row.method,
-    row.path,
-    row.auth,
-    row.company,
-    row.mountGate,
-    row.localGate,
-    row.directGate,
-    row.handlerGuard,
-    row.mutation,
-    row.reviewState,
-    row.source,
-  ].map(csv).join(",")),
+  ...rows.map((row) => emittedRow(row).map(csv).join(",")),
   "",
 ].join("\n");
 
@@ -582,26 +626,54 @@ const summaryBody = [
   "",
 ].join("\n");
 
-if (checkOnly) {
-  // The `source` column keeps each route's provenance as `file:line` for humans,
-  // but the LINE number is volatile: any unrelated edit to a route file shifts
-  // it, which made a byte-exact drift check (#917) read the checked-in matrix as
-  // "stale" even when every route's semantics were identical. That coupling
-  // jammed all prod + staging deploys and every PR's backend CI twice on
-  // 2026-07-21 (see BUG-HISTORY). Compare with the trailing `:<line>` of the
-  // source column stripped, so the gate still fires on real drift — a route
-  // added/removed, or a changed method / path / auth boundary / company boundary
-  // / gate / mutation, or a route moving to a different source FILE — but not on
-  // a pure within-file line shift. Splitting on \r?\n also keeps the compare
-  // line-ending agnostic (autocrlf checks this artifact out as CRLF on Windows).
-  const driftComparable = (text) =>
-    text.split(/\r?\n/).map(stripSourceLine).join("\n");
-  if (!fs.existsSync(outputPath) || driftComparable(fs.readFileSync(outputPath, "utf8")) !== driftComparable(body)) {
-    console.error(`Route capability matrix is stale. Run: node backend/scripts/generate-route-capability-matrix.mjs`);
+if (locationsOnly) {
+  // Informational only — NOT written to disk, NOT compared. This is where the
+  // `file:line` a reader wants lives now that the compared artifact carries the
+  // file alone. Regenerate it any time; it can never make CI red.
+  console.log("method,path,source");
+  for (const row of rows) console.log([row.method, row.path, row.sourceLine].map(csv).join(","));
+} else if (checkOnly) {
+  // Semantic, order-independent drift comparison. See scripts/lib/route-matrix-diff.mjs
+  // for why: a byte-exact compare of a generated, sorted, line-number-bearing
+  // artifact fails on cosmetic edits made by other people, and #953's
+  // line-stripping fixed only half of that (the artifact still CONTAINED the
+  // volatile numbers, and the compare was still order-sensitive, so a clean git
+  // text-merge of two route-adding PRs could land an interleaving no CI run ever
+  // saw — which is the case that jams deploy.yml and deploy-staging.yml).
+  //
+  // What still fails, exactly as before: a route added, a route removed, a route
+  // moved to another FILE, and ANY change to method, path, auth boundary,
+  // company boundary, mount/router/direct gate, handler guard, mutation flag or
+  // review state. Those are now reported by name, with gate changes printed
+  // first — the old output was one line that said "stale" and taught everyone to
+  // regenerate without reading.
+  if (!fs.existsSync(outputPath)) {
+    console.error("Route capability matrix is missing. Run: node backend/scripts/generate-route-capability-matrix.mjs");
     process.exit(1);
   }
-  if (!fs.existsSync(summaryPath) || driftComparable(fs.readFileSync(summaryPath, "utf8")) !== driftComparable(summaryBody)) {
-    console.error(`Route capability summary is stale. Run: node backend/scripts/generate-route-capability-matrix.mjs`);
+  const diff = diffMatrices(fs.readFileSync(outputPath, "utf8"), body);
+  if (diff.drifted) {
+    console.error("Route capability matrix has DRIFTED from the source.\n");
+    console.error(formatDiff(diff));
+    console.error(
+      "\nIf every difference above is intended, regenerate and commit:\n" +
+        "  node backend/scripts/generate-route-capability-matrix.mjs\n" +
+        "If a gate changed and you did not mean to change it, fix the route instead."
+    );
+    process.exit(1);
+  }
+  // The summary is DERIVED from the matrix — if the rows match, the counts must
+  // match, so a mismatch here means the checked-in summary was hand-edited or
+  // mangled by a merge, not that routes drifted. Say that, so nobody reads it as
+  // an authorization finding. Compared with line endings normalised (autocrlf
+  // checks this artifact out as CRLF on Windows, LF in Actions).
+  const normalise = (text) => text.replace(/\r\n/g, "\n");
+  if (!fs.existsSync(summaryPath) || normalise(fs.readFileSync(summaryPath, "utf8")) !== normalise(summaryBody)) {
+    console.error(
+      "Route capability SUMMARY is stale while the matrix is current — the summary is\n" +
+        "derived from the matrix, so this is a regeneration problem, not a gate change.\n" +
+        "Run: node backend/scripts/generate-route-capability-matrix.mjs"
+    );
     process.exit(1);
   }
   console.log(`Route capability matrix is current (${rows.length} routes).`);

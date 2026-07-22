@@ -314,7 +314,11 @@ re-check the cited file rather than trusting the line.
 - `BUG-HISTORY.md` — read the entries for a subsystem before changing it. It is the
   record of what has already been tried and why it failed.
 - `docs/generated/route-capability-matrix.csv` — every mounted route with its full
-  path, auth boundary, company boundary and gate.
+  path, auth boundary, company boundary and gate. The `source` column is the
+  declaring FILE only; run
+  `node backend/scripts/generate-route-capability-matrix.mjs --locations` when you
+  need the line number (line numbers are deliberately kept out of the compared
+  artifact — see the script header).
 - `docs/PERMISSION-MATRIX.md`, `docs/ARCHITECTURE.md`, `docs/agents/operating-spec.md`.
 - `docs/modules/sales-order.md` for the SO document flow in depth.
 - `frontend/src/pages/scm-v2/_VENDORING_PROGRESS.md` for what was vendored, when, and
