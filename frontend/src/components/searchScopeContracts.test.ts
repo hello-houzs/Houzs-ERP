@@ -62,4 +62,17 @@ describe("list search scope contracts", () => {
     expect(contents).toContain("searchTransition.resultsAreStale || isPlaceholderData");
     expect(contents).toContain("resultsAreStale ? [] : rows");
   });
+
+  // The rows are blanked while a search is in flight (above), which zeroes every
+  // aggregate computed from them. Each headline tile must therefore declare the
+  // unknown state rather than print a settled-looking figure.
+  test("never states a money aggregate derived from rows it blanked", () => {
+    const inventory = source("pages/scm-v2/Inventory.tsx");
+    expect(inventory).toContain("const statsPending =");
+    expect(inventory).toContain('value={fmtRm(stats.totalValue)} pending={statsPending}');
+    expect(inventory).toContain("pending={breakdownPending}");
+
+    const soDetail = source("pages/scm-v2/SalesOrderDetailListing.tsx");
+    expect(soDetail).toMatch(/pending=\{query\.isLoading[^}]*\}/);
+  });
 });

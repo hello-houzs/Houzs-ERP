@@ -363,12 +363,19 @@ const BalancesTab = ({
     totalValue: visibleRows.reduce((s, r) => s + (r.total_value_sen ?? 0), 0),
   }), [visibleRows]);
 
+  // `visibleRows` is deliberately EMPTY while a search/filter is in flight, so
+  // these three aggregates are all 0 — and "Inventory Value RM 0.00" is a
+  // sentence, not a spinner. Mark them unknown until the rows they summarise are
+  // the rows actually on screen. An error is unknown too: the aggregate would
+  // otherwise describe a list that failed to load.
+  const statsPending = isLoading || searching || resultsAreStale || Boolean(error);
+
   return (
     <>
       <div className={STAT_GRID_3}>
-        <StatCard label="Total Qty" value={fmtQty(stats.totalQty)} />
-        <StatCard label="Distinct SKUs" value={stats.distinctSku} />
-        <StatCard label="Inventory Value" value={fmtRm(stats.totalValue)} />
+        <StatCard label="Total Qty" value={fmtQty(stats.totalQty)} pending={statsPending} />
+        <StatCard label="Distinct SKUs" value={stats.distinctSku} pending={statsPending} />
+        <StatCard label="Inventory Value" value={fmtRm(stats.totalValue)} pending={statsPending} />
       </div>
 
       <p className={styles.eyebrow}>
@@ -903,6 +910,7 @@ const ProductBreakdownDrawer = ({
   const balances = (breakdown.data?.balances ?? []).filter((b) => b.product_code === code);
   const totalQty = balances.reduce((s, b) => s + (b.qty ?? 0), 0);
   const totalVal = balances.reduce((s, b) => s + (b.value_sen ?? 0), 0);
+  const breakdownPending = breakdown.data === undefined || Boolean(breakdown.error);
 
   return (
     <div
@@ -927,8 +935,11 @@ const ProductBreakdownDrawer = ({
         </div>
 
         <div className={`${STAT_GRID_3} mt-4`}>
-          <StatCard label="Total Qty" value={fmtQty(totalQty)} />
-          <StatCard label="Total Value" value={fmtRm(totalVal)} />
+          {/* Both are reduces over `balances`, which is [] until the breakdown
+              resolves — so the drawer would open on a confident "RM 0.00" for a
+              SKU that may well hold stock. Unknown until it is known. */}
+          <StatCard label="Total Qty" value={fmtQty(totalQty)} pending={breakdownPending} />
+          <StatCard label="Total Value" value={fmtRm(totalVal)} pending={breakdownPending} />
         </div>
 
         {/* Per-warehouse × attribute-composition breakdown. One row per
@@ -1271,6 +1282,9 @@ const CogsTab = ({
           label="Total COGS"
           value={fmtRm(totalCogs)}
           subtitle={`${cogs.length} consumptions`}
+          /* Sum over an empty-because-unloaded list. RM 0.00 for "we haven't
+             fetched the consumptions yet" is a lie the operator can act on. */
+          pending={isLoading}
         />
       </div>
 

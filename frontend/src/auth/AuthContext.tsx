@@ -39,6 +39,17 @@ function resetMemoryCaches(): void {
   clearApiCache();
 }
 
+/**
+ * Everything a session may take with it when it ends: transient nav handoffs,
+ * the bound storage identity, in-memory caches and the persisted query
+ * snapshots.
+ *
+ * It does NOT take the durable payment-retry intents. Those are payments the
+ * operator has already collected and the server has not accepted yet; a 401 is
+ * a routine event (a 7-day session simply expired) and must never be the reason
+ * money collected at the counter stops existing. clearAllScmHandoffs leaves
+ * them alone by design — see lib/scmHandoffStorage.
+ */
 function resetSessionCaches(): void {
   clearAllScmHandoffs();
   clearBrowserStorageIdentity();

@@ -181,9 +181,21 @@ export function listScmHandoffInstances<T>(
   return matches;
 }
 
-/** Remove every scoped handoff and known historical bare key on identity/tenant exit. */
+/**
+ * Drop the TRANSIENT navigation handoffs (the "I picked these lines, now open
+ * the create form" sessionStorage crumbs) plus the known historical bare keys.
+ *
+ * Durable payment-retry intents are deliberately NOT touched. Each one is a
+ * payment the operator has already COLLECTED and that the server has not
+ * accepted yet; deleting it deletes the only record of money taken. They are
+ * already keyed `:u<user>:c<company>:` and re-validated against the bound
+ * identity on every read, so keeping them leaks nothing to the next person on a
+ * shared browser — it simply means an expired session, a logout or a company
+ * switch no longer throws the money away. They expire on their own after
+ * SCM_PAYMENT_RETRY_TTL_MS (under the backend's idempotency retention), and the
+ * retry flow removes each one as it is posted.
+ */
 export function clearAllScmHandoffs(): void {
-  const identity = getBrowserStorageIdentity();
   try {
     const keys: string[] = [];
     for (let index = 0; index < sessionStorage.length; index += 1) {
@@ -195,6 +207,15 @@ export function clearAllScmHandoffs(): void {
   } catch {
     // Best effort for privacy cleanup when browser storage is unavailable.
   }
+}
+
+/**
+ * Discard the CURRENT identity's durable payment-retry intents. Reserved for
+ * the operator explicitly abandoning them; nothing in the session lifecycle
+ * (401, logout, company switch) may call this — see clearAllScmHandoffs.
+ */
+export function discardDurableScmHandoffs(): void {
+  const identity = getBrowserStorageIdentity();
   if (!identity) return;
   try {
     const scope = `:u${identity.userId}:c${identity.companyId}:`;

@@ -24,7 +24,11 @@
 
 import type { QueryClient } from "@tanstack/react-query";
 import { authSessionFingerprint, subscribeAuthTokenChange } from "./authToken";
-import { getActiveCompanyId } from "./activeCompany";
+import {
+  getActiveCompanyId,
+  hasStoredCompanySelection,
+  subscribeActiveCompany,
+} from "./activeCompany";
 
 // Injected at build time by vite.config `define`. Unique per deploy.
 declare const __BUILD_ID__: string;
@@ -39,8 +43,29 @@ const IDLE_TIMEOUT_MS = 5000;
 // by ACTIVE COMPANY — a cold open after switching company must NOT hydrate the
 // other company's list (multi-company isolation). Both are read at call time
 // because the active company can change during a session.
+//
 function activeCompany(): string {
   return String(getActiveCompanyId() ?? 0);
+}
+
+/**
+ * Is the "0" bucket honest right now?
+ *
+ * `getActiveCompanyId()` is null in two very different situations: a
+ * single-company install where nobody ever picks a company (0 genuinely means
+ * "the backend hostname default"), and a brand-new tab on a multi-company
+ * install in the moments before /auth/me says who we are. Hydrating the "0"
+ * snapshot in the SECOND case can paint the default company's rows into a tab
+ * that is about to resolve to another company — the exact cross-company
+ * staleness the company namespace exists to prevent.
+ *
+ * The two are distinguishable: a browser where somebody has ever picked a
+ * company carries a durable per-user record. When one exists and this tab has
+ * not resolved yet, hydration waits for adoption instead of guessing.
+ */
+function companyBucketIsTrustworthy(): boolean {
+  if (getActiveCompanyId() !== null) return true;
+  return !hasStoredCompanySelection();
 }
 // Identity fingerprint for the CURRENT session. The bearer token is the only
 // identity signal available synchronously at module-init time (hydrate runs
@@ -191,11 +216,20 @@ export function installQueryPersist(qc: QueryClient): () => void {
   // replace the previous wiring instead of accumulating cache/window listeners.
   disposeInstalledPersist?.();
   if (typeof window === "undefined" || !("localStorage" in window)) return () => {};
-  hydrate(qc);
+  let hydrated = false;
+  if (companyBucketIsTrustworthy()) {
+    hydrate(qc);
+    hydrated = true;
+  }
   // Capture the tenant context owned by this QueryClient. A delayed/flush save
   // must not change destination merely because the switcher updated storage.
   let installedCompany = activeCompany();
   let installedSession = sessionFp();
+  // True only while this QueryClient was installed BEFORE the tab knew its
+  // tenant. A deliberate company switch is a different thing entirely — it is
+  // followed by a full reload, and its pending flush must keep writing to the
+  // OLD bucket (see the pagehide/visibilitychange test).
+  let awaitingCompany = getActiveCompanyId() === null;
   let disposed = false;
   let timer: number | undefined;
   let idleHandle: number | undefined;
@@ -253,7 +287,26 @@ export function installQueryPersist(qc: QueryClient): () => void {
     });
     installedSession = sessionFp();
     installedCompany = activeCompany();
+    awaitingCompany = getActiveCompanyId() === null;
+    hydrated = hydrated && !awaitingCompany;
     if (!installedSession) clearQuerySnapshots();
+  });
+
+  // On a cold open in a new tab the active company resolves AFTER install:
+  // adoptActiveCompanyForUser runs when /auth/me lands. Bind to the bucket that
+  // is now known to be right and take the hydration deliberately skipped above.
+  // Strictly the FIRST resolution — a later switch must not re-point this
+  // client, or a queued flush would relabel one company's rows as another's.
+  const unsubscribeCompany = subscribeActiveCompany(() => {
+    if (!awaitingCompany) return;
+    if (getActiveCompanyId() === null) return;
+    awaitingCompany = false;
+    cancelPending();
+    installedCompany = activeCompany();
+    if (!hydrated) {
+      hydrate(qc);
+      hydrated = true;
+    }
   });
 
   function cancelPending(): void {
@@ -273,6 +326,7 @@ export function installQueryPersist(qc: QueryClient): () => void {
     cancelPending();
     unsubscribeCache();
     unsubscribeAuth();
+    unsubscribeCompany();
     window.removeEventListener("pagehide", flush);
     window.removeEventListener("visibilitychange", onVisibilityChange);
     if (disposeInstalledPersist === dispose) disposeInstalledPersist = undefined;

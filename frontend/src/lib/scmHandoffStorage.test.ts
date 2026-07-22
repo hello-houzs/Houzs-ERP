@@ -4,6 +4,7 @@ import { AUTH_TOKEN_KEY } from "./authToken";
 import { bindBrowserStorageIdentity, clearBrowserStorageIdentity } from "./storageIdentity";
 import {
   clearAllScmHandoffs,
+  discardDurableScmHandoffs,
   readScmHandoff,
   removeScmHandoff,
   SCM_HANDOFF_KEYS,
@@ -72,12 +73,26 @@ describe("SCM handoff storage", () => {
     expect(readScmHandoff("soPaymentRetry", "SO-1")).toEqual({ payment: "owner-1" });
   });
 
-  it("clears only the current identity's durable payment intents", () => {
+  it("keeps durable payment intents when a session ends", () => {
+    // clearAllScmHandoffs is what a 401 / logout / company switch runs. Those
+    // intents are money already collected, so ending a session must not be able
+    // to delete them.
+    bindBrowserStorageIdentity(1);
+    writeScmHandoff("soPaymentRetry", { payment: "owner-1" }, "SO-1");
+
+    clearAllScmHandoffs();
+    clearBrowserStorageIdentity();
+    bindBrowserStorageIdentity(1);
+
+    expect(readScmHandoff("soPaymentRetry", "SO-1")).toEqual({ payment: "owner-1" });
+  });
+
+  it("discards only the current identity's durable payment intents", () => {
     bindBrowserStorageIdentity(1);
     writeScmHandoff("soPaymentRetry", { payment: "owner-1" }, "SO-1");
     bindBrowserStorageIdentity(2);
     writeScmHandoff("soPaymentRetry", { payment: "owner-2" }, "SO-2");
-    clearAllScmHandoffs();
+    discardDurableScmHandoffs();
     bindBrowserStorageIdentity(1);
     expect(readScmHandoff("soPaymentRetry", "SO-1")).toEqual({ payment: "owner-1" });
     bindBrowserStorageIdentity(2);
@@ -164,7 +179,7 @@ describe("SCM handoff storage", () => {
     expect(readScmHandoff("poFromSoPicks")).toEqual([2]);
   });
 
-  it("clears scoped and legacy handoffs while preserving unrelated session state", () => {
+  it("clears transient and legacy handoffs, keeps durable ones, preserves unrelated session state", () => {
     bindBrowserStorageIdentity(1);
     for (const key of SCM_HANDOFF_KEYS) {
       writeScmHandoff(key, { key }, key.endsWith("PaymentRetry") ? "DOC-1" : undefined);
@@ -177,10 +192,14 @@ describe("SCM handoff storage", () => {
     for (const key of SCM_HANDOFF_KEYS) {
       expect(sessionStorage.getItem(physicalKey(key))).toBeNull();
     }
-    expect(localStorage.getItem(durablePhysicalKey("soPaymentRetry", 1, 0, "DOC-1"))).toBeNull();
-    expect(localStorage.getItem(durablePhysicalKey("siPaymentRetry", 1, 0, "DOC-1"))).toBeNull();
+    expect(localStorage.getItem(durablePhysicalKey("soPaymentRetry", 1, 0, "DOC-1"))).not.toBeNull();
+    expect(localStorage.getItem(durablePhysicalKey("siPaymentRetry", 1, 0, "DOC-1"))).not.toBeNull();
     expect(sessionStorage.getItem("cnFromOrderPicks")).toBeNull();
     expect(sessionStorage.getItem("unrelated")).toBe("keep");
+
+    discardDurableScmHandoffs();
+    expect(localStorage.getItem(durablePhysicalKey("soPaymentRetry", 1, 0, "DOC-1"))).toBeNull();
+    expect(localStorage.getItem(durablePhysicalKey("siPaymentRetry", 1, 0, "DOC-1"))).toBeNull();
   });
 
   it("never reads, migrates, or deletes a historical bare-key payload", () => {

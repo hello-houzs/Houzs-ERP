@@ -1,7 +1,13 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AUTH_TOKEN_KEY, writeAuthToken } from "./authToken";
-import { setActiveCompanyId } from "./activeCompany";
+import {
+  ACTIVE_COMPANY_BY_USER_KEY,
+  adoptActiveCompanyForUser,
+  getActiveCompanyId,
+  releaseActiveCompanyBinding,
+  setActiveCompanyId,
+} from "./activeCompany";
 import { installQueryPersist } from "./query-persist";
 
 const originalRequestIdle = Object.getOwnPropertyDescriptor(window, "requestIdleCallback");
@@ -25,6 +31,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
   sessionStorage.clear();
+  releaseActiveCompanyBinding();
   if (originalRequestIdle) Object.defineProperty(window, "requestIdleCallback", originalRequestIdle);
   else delete (window as { requestIdleCallback?: Window["requestIdleCallback"] }).requestIdleCallback;
   if (originalCancelIdle) Object.defineProperty(window, "cancelIdleCallback", originalCancelIdle);
@@ -143,6 +150,45 @@ describe("query snapshot scheduling", () => {
     expect(values).toContain("CURRENT-WIRING-SO");
     expect(values).not.toContain("OLD-WIRING-SO");
     expect(() => oldDispose()).not.toThrow();
+  });
+
+  it("waits for the tenant instead of hydrating another company's snapshot", () => {
+    vi.useFakeTimers();
+    localStorage.setItem(AUTH_TOKEN_KEY, "cold-open-session");
+
+    // Step 1: this same session, with NO company selected, writes a snapshot
+    // into the hostname-default bucket.
+    const seed = new QueryClient();
+    const disposeSeed = installQueryPersist(seed);
+    seed.setQueryData(["mfg-sales-orders", "all"], [{ id: "DEFAULT-COMPANY-SO" }]);
+    window.dispatchEvent(new Event("pagehide"));
+    disposeSeed();
+    const defaultKey = snapshotKeys().find((key) => key.endsWith(":0"));
+    expect(defaultKey).toBeTruthy();
+
+    // Step 2: a cold open in a NEW tab. Somebody on this browser has picked a
+    // company, so a null active company means "not resolved yet", not
+    // "single-company install" — the default bucket must not be painted in.
+    localStorage.setItem(ACTIVE_COMPANY_BY_USER_KEY, JSON.stringify({ u42: 7 }));
+    sessionStorage.clear();
+    releaseActiveCompanyBinding();
+
+    const qc = new QueryClient();
+    install(qc);
+    expect(qc.getQueryData(["mfg-sales-orders", "all"])).toBeUndefined();
+
+    // Step 3: /auth/me lands, the tab adopts user 42's company, and everything
+    // it now writes belongs to company 7.
+    adoptActiveCompanyForUser(42);
+    expect(getActiveCompanyId()).toBe(7);
+    expect(qc.getQueryData(["mfg-sales-orders", "all"])).toBeUndefined();
+    qc.setQueryData(["mfg-sales-orders", "all"], [{ id: "COMPANY-7-SO" }]);
+    window.dispatchEvent(new Event("pagehide"));
+
+    const companyKey = snapshotKeys().find((key) => key.endsWith(":7"));
+    expect(companyKey).toBeTruthy();
+    expect(localStorage.getItem(companyKey!)).toContain("COMPANY-7-SO");
+    expect(localStorage.getItem(companyKey!)).not.toContain("DEFAULT-COMPANY-SO");
   });
 
   it("drops old list rows when another tab replaces the remembered session", () => {

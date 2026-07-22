@@ -171,14 +171,22 @@ function CompanySwitcher() {
   // No-op: hidden entirely until there is a real choice to make.
   if (companies.length <= 1) return null;
 
-  // Active = the stored pick when it's still a valid company, else the backend's
-  // resolved active (hostname default), else the first company.
+  // Active = the stored pick when it's still a valid company, else the company
+  // the BACKEND says it actually resolved for this request (the hostname
+  // default when we sent no X-Company-Id).
+  //
+  // There is deliberately NO `companies[0]` fallback. Falling back to the first
+  // row is a positional guess: it labels the user with a company nobody has
+  // confirmed they are in, and every document they then raise is attributed
+  // somewhere else. When neither source can answer we say so — an unlabelled
+  // switcher is a prompt to choose; a wrong label is a silent misattribution.
+  const resolvedByBackend = data?.activeCompanyId ?? null;
   const activeId =
-    (stored && companies.some((co) => co.id === stored) ? stored : null) ??
-    data?.activeCompanyId ??
-    companies[0]?.id ??
-    null;
-  const active = companies.find((co) => co.id === activeId) ?? companies[0];
+    (stored !== null && companies.some((co) => co.id === stored) ? stored : null) ??
+    (resolvedByBackend !== null && companies.some((co) => co.id === resolvedByBackend)
+      ? resolvedByBackend
+      : null);
+  const active = activeId === null ? undefined : companies.find((co) => co.id === activeId);
 
   async function pick(id: number) {
     setOpen(false);
@@ -223,9 +231,16 @@ function CompanySwitcher() {
         className="flex items-center gap-1.5 rounded-md border border-border bg-bg/40 px-2 py-1 text-[11.5px] font-medium text-ink-secondary transition-colors hover:bg-bg/60 hover:text-accent"
         aria-haspopup="listbox"
         aria-expanded={open}
-        title="Switch company"
+        title={active ? "Switch company" : "No company selected — choose one"}
       >
-        <span className="max-w-[9rem] truncate">{active?.name ?? "Company"}</span>
+        {/* Never a company NAME we have not confirmed. "Select company" reads as
+            an unanswered question, which is exactly what it is. */}
+        <span
+          className={cn("max-w-[9rem] truncate", !active && "italic text-warning-text")}
+          data-company-unresolved={active ? undefined : "true"}
+        >
+          {active?.name ?? "Select company"}
+        </span>
         <ChevronsUpDown size={13} strokeWidth={2} className="shrink-0 text-ink-muted/70" />
       </button>
 

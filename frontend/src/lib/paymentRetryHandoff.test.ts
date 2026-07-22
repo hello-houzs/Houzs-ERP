@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { bindBrowserStorageIdentity, clearBrowserStorageIdentity } from "./storageIdentity";
+import { adoptActiveCompanyForUser, releaseActiveCompanyBinding, setActiveCompanyId } from "./activeCompany";
+import { clearAllScmHandoffs } from "./scmHandoffStorage";
 import { newPaymentDraft } from "../vendor/scm/components/PaymentsTable";
 import {
   clearPaymentRetryHandoff,
@@ -15,6 +17,7 @@ import {
 afterEach(() => {
   vi.useRealTimers();
   clearBrowserStorageIdentity();
+  releaseActiveCompanyBinding();
   sessionStorage.clear();
   localStorage.clear();
 });
@@ -102,6 +105,42 @@ describe("payment retry handoff", () => {
     const duplicate = { ...first, uid: "different-ui-row", amountCenti: 2000 };
     expect(writePaymentRetryHandoff("so", "SO-1", [first, duplicate])).toBe(false);
     expect(readPaymentRetryHandoff("so", "SO-1")).toBeNull();
+  });
+
+  test("SURVIVES A 401 — an expired session must not delete collected money", () => {
+    // AuthContext's 401 path runs exactly this sequence (resetSessionCaches).
+    // These drafts are payments the operator has already taken at the counter
+    // and the server has not accepted yet; a routine session expiry is not
+    // permission to destroy the only record of them.
+    bindBrowserStorageIdentity(7);
+    const draft = { ...newPaymentDraft(), amountCenti: 45_000 };
+    writePaymentRetryHandoff("so", "SO-1", [draft]);
+
+    clearAllScmHandoffs();
+    clearBrowserStorageIdentity();
+
+    // Signing back in restores the same user + company scope, so the intents
+    // are readable again — nothing was thrown away in between.
+    bindBrowserStorageIdentity(7);
+    expect(readPaymentRetryHandoff("so", "SO-1")?.drafts).toEqual([draft]);
+  });
+
+  test("SURVIVES A COMPANY SWITCH back to the company it was staged in", () => {
+    adoptActiveCompanyForUser(7);
+    setActiveCompanyId(3);
+    bindBrowserStorageIdentity(7);
+    const draft = { ...newPaymentDraft(), amountCenti: 12_500 };
+    writePaymentRetryHandoff("si", "SI-9", [draft]);
+
+    // The switcher's sequence: drop the transient handoffs, then change tenant.
+    clearAllScmHandoffs();
+    setActiveCompanyId(4);
+    bindBrowserStorageIdentity(7);
+    expect(readPaymentRetryHandoff("si", "SI-9")).toBeNull(); // scoped out, not deleted
+
+    setActiveCompanyId(3);
+    bindBrowserStorageIdentity(7);
+    expect(readPaymentRetryHandoff("si", "SI-9")?.drafts).toEqual([draft]);
   });
 
   test("plans edits from the frozen baseline without deleting or reviving concurrent rows", () => {

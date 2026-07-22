@@ -51,7 +51,7 @@ const SCM_TRANSIENT_KEYS = new Set(
 export const BROWSER_STORAGE_KEY_REGISTRY: readonly StorageKeyRegistration[] = [
   { id: "auth-token", classification: "AUTH", storage: ["localStorage", "sessionStorage"], keyFamily: "auth:token", matches: exact("auth:token") },
   { id: "auth-local-suppression", classification: "AUTH", storage: ["sessionStorage"], keyFamily: "auth:local-token-suppressed", matches: exact("auth:local-token-suppressed") },
-  { id: "active-company", classification: "AUTH", storage: ["localStorage"], keyFamily: "houzs.activeCompanyId:<session fingerprint>", matches: prefix("houzs.activeCompanyId:") },
+  { id: "active-company", classification: "AUTH", storage: ["localStorage", "sessionStorage"], keyFamily: "houzs.activeCompanyId.v2 (durable, keyed u<user>) + houzs.activeCompanyId.tab (this tab) + pre-v2 ownerless keys, cleanup only", matches: prefix("houzs.activeCompanyId") },
   { id: "remembered-login", classification: "AUTH", storage: ["localStorage"], keyFamily: "houzs:login:lastEmail:v1 (+ legacy aliases)", matches: (key) => ["houzs:login:lastEmail:v1", "auth:lastEmail", "houzs_remember_email"].includes(key) },
   { id: "mail-drafts", classification: "DRAFT_UI", storage: ["localStorage"], keyFamily: "houzs-mail-local:v1|v2:u<user>:c<company>", matches: (key) => key === "houzs-mail-local:v1" || key.startsWith("houzs-mail-local:v2:") },
   { id: "payment-retry-handoffs", classification: "DRAFT_UI", storage: ["localStorage"], keyFamily: "houzs:scm-handoff:v<version>:(so|si)PaymentRetry:u<user>:c<company>:<document>", matches: (key) => /^houzs:scm-handoff:v\d+:(?:so|si)PaymentRetry:u\d+:c\d+:.+$/.test(key) },
@@ -93,7 +93,6 @@ export function classifyBrowserStorageKey(
  * explicit ownership review; consumers should otherwise use existing helpers. */
 export const PRODUCTION_STORAGE_CALLERS = [
   "components/AndroidInstallGuide.tsx",
-  "components/AnnouncementBanner.tsx",
   "components/announcementLocalAcks.ts",
   "components/AssistantLauncher.tsx",
   "components/assistantLauncherPosition.ts",
@@ -102,6 +101,10 @@ export const PRODUCTION_STORAGE_CALLERS = [
   "components/PwaBanners.tsx",
   "components/pwaDismissal.ts",
   "components/RouteFallback.tsx",
+  // The banner's local-ack memo moved into the shared hook (desktop + mobile
+  // pop-ups answer "have I seen this?" the same way); AnnouncementBanner.tsx is
+  // presentation only and no longer touches storage.
+  "components/useAnnouncementBanner.ts",
   "hooks/useIdentityPreference.ts",
   "hooks/useLocalStorage.ts",
   "hooks/useStickyFilters.ts",
