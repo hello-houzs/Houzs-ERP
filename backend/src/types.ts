@@ -83,8 +83,10 @@ export type Env = {
   // Public origin for building email links (portal survey URLs etc.).
   // Falls back to the worker URL if unset.
   PUBLIC_APP_URL?: string;
-  // "true" enables admin login-as-member (routes/users.ts impersonation).
-  // Set ONLY in [env.staging.vars] — must never be set on prod.
+  // "true" opens admin login-as-member to EVERY users.manage admin
+  // (routes/users.ts impersonation). Set ONLY in [env.staging.vars] — never
+  // on prod: there the wildcard owner (`*`) can always impersonate anyway,
+  // via short-lived 1-hour audited sessions, without this flag.
   IMPERSONATION_ENABLED?: string;
   // Cost/margin DISPLAY switch — the ONE backend-authoritative toggle for
   // whether SCM sales-document cost/margin may reach the wire at all. "false"

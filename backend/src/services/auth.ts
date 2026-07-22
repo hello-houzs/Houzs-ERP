@@ -246,14 +246,17 @@ export interface AuthUser {
 
 /** Mint a session. `origin` defaults to undefined -> NULL = an ordinary
  *  office/desktop session that may price freely. Pass SESSION_ORIGIN_POS ONLY
- *  from the POS PIN door; see the SessionOrigin note above. */
+ *  from the POS PIN door; see the SessionOrigin note above.
+ *  `ttlSeconds` overrides the default 7-day lifetime — the owner-on-prod
+ *  impersonation path (routes/users.ts) mints 1-hour sessions with it. */
 export async function createSession(
   env: Env,
   userId: number,
   origin?: SessionOrigin,
+  ttlSeconds: number = SESSION_TTL_SECONDS,
 ): Promise<string> {
   const token = generateToken();
-  const expires = isoIn(SESSION_TTL_SECONDS);
+  const expires = isoIn(ttlSeconds);
   await env.DB.prepare(
     `INSERT INTO sessions (token, user_id, expires_at, origin) VALUES (?, ?, ?, ?)`
   )

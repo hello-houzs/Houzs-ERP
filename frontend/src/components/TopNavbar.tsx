@@ -443,7 +443,7 @@ function labelForPath(pathname: string): string {
 // the CompanySwitcher popover pattern in this file: click-outside + Esc close.
 
 function ProfileMenu() {
-  const { user, logout } = useAuth();
+  const { user, logout, can } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -559,24 +559,27 @@ function ProfileMenu() {
               <UserRound size={14} className="shrink-0" />
               Profile
             </Link>
-            {/* Nico 2026-07-14 — jumps to the Team page where the owner-only
-                "Login as" per-member button lives (POST /api/users/:id/impersonate,
-                see main.tsx view-as hand-off block). Menu item is shown to
-                everyone; the per-member button on Team is where the actual
-                role gate sits, so non-owners land on Team without a Login-as
-                affordance and can back out. */}
-            <Link
-              to="/team"
-              role="menuitem"
-              onClick={() => setOpen(false)}
-              className={cn(
-                "mt-0.5 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[12.5px] font-medium text-ink transition-colors hover:bg-primary/[.07] hover:text-primary",
-                location.pathname === "/team" && "bg-primary/[.07] text-primary",
-              )}
-            >
-              <UserRoundCog size={14} className="shrink-0" />
-              Switch user
-            </Link>
+            {/* Nico 2026-07-22 — OWNER-ONLY (wildcard `*` = Super Admin role /
+                god-tier position; same signal the backend's impersonation gate
+                uses). Jumps to the Team page where the per-member "Login as"
+                button lives (POST /api/users/:id/impersonate, see main.tsx
+                view-as hand-off block). Non-owners don't see this entry at
+                all — an admin who can't impersonate shouldn't be offered a
+                dead-end "Switch user". */}
+            {can("*") && (
+              <Link
+                to="/team"
+                role="menuitem"
+                onClick={() => setOpen(false)}
+                className={cn(
+                  "mt-0.5 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[12.5px] font-medium text-ink transition-colors hover:bg-primary/[.07] hover:text-primary",
+                  location.pathname === "/team" && "bg-primary/[.07] text-primary",
+                )}
+              >
+                <UserRoundCog size={14} className="shrink-0" />
+                Switch user
+              </Link>
+            )}
             <button
               type="button"
               role="menuitem"
