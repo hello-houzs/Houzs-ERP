@@ -165,7 +165,7 @@ type CaseViewMode = "list" | "board" | "calendar";
 type CaseFilters = {
   stage?: string;
   search?: string;
-  include_archived?: number;
+  archived_only?: number;
   exclude_stage?: string;
   assigned_to?: number;
   creditor_code?: string;
@@ -435,7 +435,7 @@ function CasesView({
   const caseFilters: CaseFilters = {
     stage: stage === "ALL" ? undefined : stage,
     search: search || undefined,
-    include_archived: showArchived ? 1 : undefined,
+    archived_only: showArchived ? 1 : undefined,
     exclude_stage: excludeStageParam,
     assigned_to: myCases && user?.id ? user.id : undefined,
     creditor_code: creditorFilter || undefined,
@@ -449,7 +449,7 @@ function CasesView({
           search,
           page,
           per_page: perPage,
-          include_archived: showArchived ? 1 : undefined,
+          archived_only: showArchived ? 1 : undefined,
           exclude_stage: excludeStageParam,
           assigned_to: myCases && user?.id ? user.id : undefined,
           creditor_code: creditorFilter || undefined,
@@ -862,7 +862,7 @@ function CasesView({
             onChange={(e) => { setPage(1); setShowArchived(e.target.checked); }}
             className="accent-accent"
           />
-          Show archived
+          Archived
         </label>
         <Button
           variant="ghost"
@@ -873,7 +873,7 @@ function CasesView({
                 `/api/assr/export.csv${buildQuery({
                   stage: stage === "ALL" ? undefined : stage,
                   search,
-                  include_archived: showArchived ? 1 : undefined,
+                  archived_only: showArchived ? 1 : undefined,
                   exclude_stage: excludeStageParam,
                 })}`,
                 "service-cases.csv"
@@ -1231,7 +1231,7 @@ function CasesBoardView({
     [
       effective.stage,
       effective.search,
-      effective.include_archived,
+      effective.archived_only,
       effective.exclude_stage,
       effective.assigned_to,
       effective.creditor_code,
@@ -1475,7 +1475,7 @@ function CasesCalendarView({
     [
       effective.stage,
       effective.search,
-      effective.include_archived,
+      effective.archived_only,
       effective.exclude_stage,
       effective.assigned_to,
       effective.creditor_code,

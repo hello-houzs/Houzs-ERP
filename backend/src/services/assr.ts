@@ -1461,6 +1461,9 @@ export interface ListAssrFilters {
   page?: number;
   per_page?: number;
   include_archived?: boolean;
+  /** Show ONLY archived rows (Nick 2026-07-21: the Show-archived
+   *  toggle is a separate archived list, not a merged view). */
+  archived_only?: boolean;
   /** Comma-separated stage slugs to exclude. Used by the "Hide
    *  completed" toggle to drop finished cases from the working list
    *  without dropping them from the dataset. */
@@ -1601,10 +1604,11 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
   const where: string[] = [];
   const binds: any[] = [];
 
-  // Soft-delete filter: hide archived rows unless explicitly
-  // requested. Keeps the default list clean while still letting
-  // managers review archived cases with ?include_archived=1.
-  if (!f.include_archived) where.push("c.archived_at IS NULL");
+  // Soft-delete filter: archived_only flips the list to ONLY archived
+  // rows (the UI's Archived view); otherwise archived rows are hidden
+  // unless explicitly merged in with ?include_archived=1.
+  if (f.archived_only) where.push("c.archived_at IS NOT NULL");
+  else if (!f.include_archived) where.push("c.archived_at IS NULL");
 
   if (f.stage) {
     const stages = f.stage.split(",").map((s) => s.trim()).filter(Boolean);
@@ -1784,7 +1788,8 @@ export async function exportAssrCases(
 ) {
   const where: string[] = [];
   const binds: any[] = [];
-  if (!f.include_archived) where.push("c.archived_at IS NULL");
+  if (f.archived_only) where.push("c.archived_at IS NOT NULL");
+  else if (!f.include_archived) where.push("c.archived_at IS NULL");
   if (f.stage) {
     const stages = f.stage.split(",").map((s) => s.trim()).filter(Boolean);
     if (stages.length === 1) {
