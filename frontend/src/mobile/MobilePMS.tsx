@@ -973,20 +973,34 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 <option value="cancelled">Cancelled</option>
               </select>
             )}
-            {p && (!canWrite || !access.canEdit || archived) && <StageBadge stage={p.stage} />}
           </div>
         </div>
-        {/* Title block — prototype #project header VERBATIM: gold eyebrow
-            "Project", then the project name (16px/800 per Build Spec detail),
-            then the system-code meta line. Owner 2026-07-21: brand + venue are
-            NOT repeated here — they live in the Project card rows below (one
-            place per fact); event type stays (shown nowhere else). The code
-            line ellipsises to one line and expands on tap, because full codes
-            never fit a phone width. */}
-        <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".13em", textTransform: "uppercase", color: "#8c968a", marginTop: 6 }}>Project</div>
-        <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", lineHeight: 1.3, marginTop: 3 }}>{p?.name || "—"}</div>
+        {/* Title block — owner's 2026-07-22 header mockup, all users: stage
+            badge on its own line under the back row (lowercase), then the
+            title-cased project name, then a dates | booth line, then the
+            system-code line (code only, single-line ellipsis, tap-to-expand).
+            Brand + venue stay Project-card rows below; dates + booth moved UP
+            here, so their card rows are gone — one place per fact. */}
+        {p && (
+          <div style={{ marginTop: 8 }}>
+            <StageBadge stage={p.stage} lower />
+          </div>
+        )}
+        <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", lineHeight: 1.3, marginTop: 7 }}>{p?.name ? titleCaseName(p.name) : "—"}</div>
+        {p && (
+          <div className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#e7eae4", marginTop: 5 }}>
+            {dm(p.start_date)} – {dm(p.end_date)}
+            {p.booth_no ? (
+              <>
+                <span style={{ color: "#5c6156", fontWeight: 400, margin: "0 7px" }}>|</span>
+                Booth {p.booth_no}
+              </>
+            ) : null}
+          </div>
+        )}
         <div
           role="button"
+          aria-label="Project code"
           aria-expanded={metaExpanded}
           onClick={() => setMetaExpanded((v) => !v)}
           style={{
@@ -996,7 +1010,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }),
           }}
         >
-          {[p?.code, p?.event_type_name].filter(Boolean).join(" · ") || "—"}
+          {p?.code || "—"}
         </div>
       </header>
 
@@ -1067,14 +1081,14 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 )}
                 <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
               </summary>
-              {/* Body — design "Project" card rows: Dates / Venue / Booth no. /
-                  Organizer / Branding, wired to our real columns. Owner
-                  2026-07-21: rows get an explicit hairline (--line) — the
-                  default --line2 divider reads invisible on phone screens. */}
+              {/* Body — design "Project" card rows: Venue / Organizer /
+                  Branding, wired to our real columns. Owner 2026-07-21: rows
+                  get an explicit hairline (--line) — the default --line2
+                  divider reads invisible on phone screens. Owner 2026-07-22:
+                  Dates + Booth moved into the header mockup line, so their
+                  rows are gone (one place per fact). */}
               <div className="pbody">
-                <div className="row" style={{ borderTop: "none", borderBottom: "1px solid var(--line)" }}><span className="row-l">Dates</span><span className="row-v money">{dm(p.start_date)} – {dm(p.end_date)}</span></div>
-                <div className="row" style={{ borderBottom: "1px solid var(--line)" }}><span className="row-l">Venue</span><span className="row-v">{p.venue || p.state || "—"}</span></div>
-                <div className="row" style={{ borderBottom: "1px solid var(--line)" }}><span className="row-l">Booth no.</span><span className="row-v">{p.booth_no || "—"}</span></div>
+                <div className="row" style={{ borderTop: "none", borderBottom: "1px solid var(--line)" }}><span className="row-l">Venue</span><span className="row-v">{p.venue || p.state || "—"}</span></div>
                 <div className="row" style={{ borderBottom: "1px solid var(--line)" }}><span className="row-l">Organizer</span><span className="row-v">{p.organizer || "—"}</span></div>
                 <div className="row" style={{ borderBottom: "none" }}><span className="row-l">Branding</span><span className="row-v">{p.brand || "—"}</span></div>
               </div>
@@ -3415,12 +3429,38 @@ function ListChip({ children }: { children: ReactNode }) {
 // cancelled=error/clay-red. Owner 2026-07-21: ONE standard badge everywhere
 // (auto width, .spill padding, stage tint) — the detail header's bespoke gold
 // "dark" variant is gone; the solid tinted pill is legible on the dark header.
-function StageBadge({ stage }: { stage: string | null | undefined }) {
+// `lower` = the detail-header instance, which the owner's 2026-07-22 mockup
+// shows lowercase ("setup"); same tint + shape, only the casing differs.
+function StageBadge({ stage, lower }: { stage: string | null | undefined; lower?: boolean }) {
   const tint = STAGE_TINT[stageVariant(stage)];
   const label = stageLabel(stage);
   return (
-    <span className="spill" style={{ flex: "none", background: tint.bg, color: tint.fg, border: "none" }}>{label}</span>
+    <span
+      className="spill"
+      style={{ flex: "none", background: tint.bg, color: tint.fg, border: "none", ...(lower ? { textTransform: "none" as const } : null) }}
+    >
+      {lower ? label.toLowerCase() : label}
+    </span>
   );
+}
+
+// Owner's 2026-07-22 header mockup shows "Penang [Zanotti] MLE @ Pisa Spice
+// Arena Convention Centre", not the ALL-CAPS string the DB stores — a
+// display-only transform. Tokens whose letters run ≤3 chars stay verbatim
+// (MLE, SD, C&C — the acronyms the mockup keeps uppercase); longer tokens are
+// title-cased at their first letter so wrappers survive ([ZANOTTI] →
+// [Zanotti], PISA → Pisa).
+function titleCaseName(name: string): string {
+  return name
+    .split(" ")
+    .map((word) => {
+      const letters = word.replace(/[^A-Za-z]/g, "");
+      if (letters.length <= 3) return word;
+      const lower = word.toLowerCase();
+      const i = lower.search(/[a-z]/);
+      return i === -1 ? word : lower.slice(0, i) + lower[i].toUpperCase() + lower.slice(i + 1);
+    })
+    .join(" ");
 }
 
 // Section-driven stage badge — the project's CURRENT active section
