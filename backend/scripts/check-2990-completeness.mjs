@@ -20,6 +20,7 @@
 // backfill.
 import { readFileSync } from "node:fs";
 import postgres from "postgres";
+import { createClient } from "@supabase/supabase-js";
 
 function resolveUrl() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
@@ -41,6 +42,35 @@ const notice = (msg) =>
 
 const pg = postgres(url, { ssl: "require", prepare: false, max: 1 });
 
+// Optional 2990 SOURCE probe. When SOURCE_SUPABASE_URL + SOURCE_SERVICE_ROLE_KEY
+// are set (same env vars the importer uses), we also count the same tables on
+// the 2990 upstream Supabase and print a THIRD column: "2990 SOURCE" alongside
+// "HOUZS" and "2990 (in Houzs DB)". The diff is the gap — exactly what didn't
+// get imported.
+const SOURCE_URL = process.env.SOURCE_SUPABASE_URL;
+const SOURCE_KEY = process.env.SOURCE_SERVICE_ROLE_KEY;
+const src = SOURCE_URL && SOURCE_KEY
+  ? createClient(SOURCE_URL, SOURCE_KEY, { auth: { persistSession: false } })
+  : null;
+
+// count(*) on the source. Uses Supabase's `head + count exact` trick so we
+// don't pay for the payload. Returns null if the table is missing / unreadable
+// on the source, so a missing 2990-side table renders "(src missing)" rather
+// than crashing the whole sweep.
+async function srcCount(table) {
+  if (!src) return undefined; // "not probed" sentinel — distinct from null
+  try {
+    const { count, error } = await src
+      .schema("public")
+      .from(table)
+      .select("*", { count: "exact", head: true });
+    if (error) return null;
+    return count ?? 0;
+  } catch {
+    return null;
+  }
+}
+
 // Absent-table safe: to_regclass returns null when the table isn't there, so
 // the count query short-circuits to null and we render "(missing)" rather
 // than crashing the whole check.
@@ -60,16 +90,28 @@ async function countGlobal(tableFqn) {
   return rows[0].n;
 }
 
-function fmt(rows, houzsId, id2990) {
-  if (rows === null) return "(table missing)";
-  const byCo = Object.fromEntries(rows.map((r) => [String(r.company_id), r.n]));
-  const houzs = byCo[String(houzsId)] ?? 0;
-  const two = byCo[String(id2990)] ?? 0;
-  const other = rows
-    .filter((r) => r.company_id !== houzsId && r.company_id !== id2990)
-    .reduce((a, r) => a + r.n, 0);
-  return `HOUZS=${houzs}  2990=${two}` + (other > 0 ? `  other=${other}` : "");
+function fmt(rows, houzsId, id2990, srcN) {
+  const base = rows === null
+    ? "(table missing)"
+    : (() => {
+        const byCo = Object.fromEntries(rows.map((r) => [String(r.company_id), r.n]));
+        const houzs = byCo[String(houzsId)] ?? 0;
+        const two = byCo[String(id2990)] ?? 0;
+        const other = rows
+          .filter((r) => r.company_id !== houzsId && r.company_id !== id2990)
+          .reduce((a, r) => a + r.n, 0);
+        return `HOUZS=${houzs}  2990=${two}` + (other > 0 ? `  other=${other}` : "");
+      })();
+  // srcN: undefined = not probed, null = probe failed / missing, number = count
+  if (srcN === undefined) return base;
+  if (srcN === null) return `${base}  |  2990 SOURCE=(missing)`;
+  const twoIn = rows === null ? 0
+    : (Object.fromEntries(rows.map((r) => [String(r.company_id), r.n]))[String(id2990)] ?? 0);
+  const diff = srcN - twoIn;
+  const flag = diff > 0 ? `  ← ${diff} MISSING` : diff < 0 ? `  (+${-diff} extra in Houzs?)` : "";
+  return `${base}  |  2990 SOURCE=${srcN}${flag}`;
 }
+
 
 try {
   const cos = await pg`SELECT id, code FROM companies WHERE code IN ('HOUZS','2990')`;
@@ -84,15 +126,17 @@ try {
 
   // ── § Sofa configurator / fabric backbone ─────────────────────────────
   notice("=== Sofa + fabric masters (per company) ===");
-  notice(`  scm.fabric_library         : ${fmt(await countByCompany("scm.fabric_library"), HOUZS, CO2990)}`);
-  notice(`  scm.fabric_colours         : ${fmt(await countByCompany("scm.fabric_colours"), HOUZS, CO2990)}`);
-  notice(`  scm.fabric_trackings       : ${fmt(await countByCompany("scm.fabric_trackings"), HOUZS, CO2990)}`);
-  notice(`  scm.fabric_tier_addon_config: ${fmt(await countByCompany("scm.fabric_tier_addon_config"), HOUZS, CO2990)}`);
-  notice(`  scm.sofa_combo_pricing     : ${fmt(await countByCompany("scm.sofa_combo_pricing"), HOUZS, CO2990)}`);
-  notice(`  scm.bundle_library         : ${fmt(await countByCompany("scm.bundle_library"), HOUZS, CO2990)}`);
-  notice(`  scm.compartment_library    : ${fmt(await countByCompany("scm.compartment_library"), HOUZS, CO2990)}`);
-  notice(`  scm.size_library           : ${fmt(await countByCompany("scm.size_library"), HOUZS, CO2990)}`);
-  notice(`  scm.addons                 : ${fmt(await countByCompany("scm.addons"), HOUZS, CO2990)}`);
+  if (src) notice("  (2990 SOURCE column shows count on the upstream Supabase — diff = missing on Houzs 2990)");
+  notice(`  scm.fabric_library         : ${fmt(await countByCompany("scm.fabric_library"), HOUZS, CO2990, await srcCount("fabric_library"))}`);
+  notice(`  scm.fabric_colours         : ${fmt(await countByCompany("scm.fabric_colours"), HOUZS, CO2990, await srcCount("fabric_colours"))}`);
+  notice(`  scm.fabric_trackings       : ${fmt(await countByCompany("scm.fabric_trackings"), HOUZS, CO2990, await srcCount("fabric_trackings"))}`);
+  notice(`  scm.fabric_tier_addon_config: ${fmt(await countByCompany("scm.fabric_tier_addon_config"), HOUZS, CO2990, await srcCount("fabric_tier_addon_config"))}`);
+  notice(`  scm.sofa_combo_pricing     : ${fmt(await countByCompany("scm.sofa_combo_pricing"), HOUZS, CO2990, await srcCount("sofa_combo_pricing"))}`);
+  notice(`  scm.bundle_library         : ${fmt(await countByCompany("scm.bundle_library"), HOUZS, CO2990, await srcCount("bundle_library"))}`);
+  notice(`  scm.compartment_library    : ${fmt(await countByCompany("scm.compartment_library"), HOUZS, CO2990, await srcCount("compartment_library"))}`);
+  notice(`  scm.size_library           : ${fmt(await countByCompany("scm.size_library"), HOUZS, CO2990, await srcCount("size_library"))}`);
+  notice(`  scm.addons                 : ${fmt(await countByCompany("scm.addons"), HOUZS, CO2990, await srcCount("addons"))}`);
+  notice(`  scm.accounts               : ${fmt(await countByCompany("scm.accounts"), HOUZS, CO2990, await srcCount("accounts"))}`);
   notice("");
 
   // ── § Product catalogue by category ────────────────────────────────────
