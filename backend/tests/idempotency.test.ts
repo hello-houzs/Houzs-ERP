@@ -147,27 +147,34 @@ describe("idempotency middleware", () => {
     expect(marker?.updated_at).toBeTruthy();
   });
 
-  test("the same key never replays another authenticated user's response", async () => {
+  test("the same key is isolated by authenticated principal", async () => {
     const other = await seedAdmin();
 
     const first = await createProject(adminBearer, "shared-client-key");
     const second = await createProject(other.bearer, "shared-client-key");
 
     expect(first.status).toBe(201);
-    // Phase-1 keeps the legacy global PK for an old-Worker-safe rollout. Until
-    // the follow-up constraint migration, a cross-owner collision is blocked.
-    expect(second.status).toBe(409);
+    expect(second.status).toBe(201);
     expect(second.replay).toBeNull();
-    expect(second.json.error).toBe("idempotency_key_conflict");
-    expect(second.json.id).toBeUndefined();
-    expect(await projectCount()).toBe(1);
+    expect(second.json.id).not.toBe(first.json.id);
+    expect(await projectCount()).toBe(2);
+
+    const firstRetry = await createProject(adminBearer, "shared-client-key");
+    const secondRetry = await createProject(other.bearer, "shared-client-key");
+    expect(firstRetry.replay).toBe("true");
+    expect(secondRetry.replay).toBe("true");
+    expect(firstRetry.json.id).toBe(first.json.id);
+    expect(secondRetry.json.id).toBe(second.json.id);
+    expect(await projectCount()).toBe(2);
 
     const rows = await env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM idempotency_keys WHERE key = ?`,
+      `SELECT user_id FROM idempotency_keys WHERE key = ? ORDER BY user_id`,
     )
       .bind("shared-client-key")
-      .first<{ n: number }>();
-    expect(Number(rows?.n ?? 0)).toBe(1);
+      .all<{ user_id: number }>();
+    expect(rows.results.map((row) => row.user_id)).toEqual(
+      [adminUserId, other.userId].sort((a, b) => a - b),
+    );
   });
 
   test("the same user and key cannot be reused with a different payload", async () => {
@@ -212,10 +219,26 @@ describe("idempotency middleware", () => {
     const companyOne = await send(1);
     const companyTwo = await send(2);
     expect(companyOne.status).toBe(201);
-    expect(companyTwo.status).toBe(409);
+    expect(companyTwo.status).toBe(201);
     expect(companyTwo.headers.get("Idempotent-Replay")).toBeNull();
-    expect(await companyTwo.json()).toMatchObject({ error: "idempotency_key_conflict" });
-    expect(runs).toBe(1);
+    expect(await companyTwo.json()).toEqual({ run: 2 });
+
+    const companyOneRetry = await send(1);
+    expect(companyOneRetry.status).toBe(201);
+    expect(companyOneRetry.headers.get("Idempotent-Replay")).toBe("true");
+    expect(await companyOneRetry.json()).toEqual({ run: 1 });
+    expect(runs).toBe(2);
+
+    const claims = await env.DB.prepare(
+      `SELECT tenant_scope FROM idempotency_keys
+        WHERE key = ? ORDER BY tenant_scope`,
+    )
+      .bind("same-company-client-key")
+      .all<{ tenant_scope: string }>();
+    expect(claims.results.map((claim) => claim.tenant_scope)).toEqual([
+      "company:1",
+      "company:2",
+    ]);
   });
 
   test("query parameters are payload-bound instead of widening the indexed scope", async () => {

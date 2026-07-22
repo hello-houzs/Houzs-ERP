@@ -15,11 +15,22 @@ import {
   useCreateWarehouse,
   useUpdateWarehouse,
   type Warehouse,
+  type WarehouseType,
 } from '../lib/inventory-queries';
 import { useNotify } from './NotifyDialog';
 import styles from '../../../pages/scm-v2/Suppliers.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
+
+/* Ordered for the dropdown — most-used first. Labels are the display text, the
+   value is the enum literal stored in scm.warehouses.type (mig 0171). */
+const TYPE_OPTIONS: { value: WarehouseType; label: string }[] = [
+  { value: 'warehouse', label: 'Warehouse (stock)' },
+  { value: 'showroom',  label: 'Showroom (sales + venue)' },
+  { value: 'display',   label: 'Display (partner display stock)' },
+  { value: 'service',   label: 'Service centre' },
+  { value: 'others',    label: 'Others (HQ, etc.)' },
+];
 
 export const WarehouseFormDrawer = ({
   editing, onClose, onSaved,
@@ -32,13 +43,18 @@ export const WarehouseFormDrawer = ({
   const create = useCreateWarehouse();
   const update = useUpdateWarehouse();
   const notify = useNotify();
+  /* Derive the initial type from either the stored `type` (mig 0171) or the
+     legacy is_showroom flag — a pre-migration edit still opens with a coherent
+     choice. Default 'warehouse' for a fresh create. */
+  const initialType: WarehouseType =
+    editing?.type ?? (editing?.is_showroom ? 'showroom' : 'warehouse');
   const [form, setForm] = useState({
     code: editing?.code ?? '',
     name: editing?.name ?? '',
     location: editing?.location ?? '',
     isActive: editing?.is_active ?? true,
     isDefault: editing?.is_default ?? false,
-    isShowroom: editing?.is_showroom ?? false,
+    type: initialType,
     venueName: editing?.venue_name ?? '',
   });
 
@@ -50,11 +66,12 @@ export const WarehouseFormDrawer = ({
       return;
     }
     /* Block the half-configured showroom at the point of creation. A warehouse
-       flagged as a Showroom with no Venue name is not an error the database can
-       see — it simply resolves to NO venue, so every order from every
+       classified as Showroom with no Venue name is not an error the database
+       can see — it simply resolves to NO venue, so every order from every
        salesperson parked under it silently carries a blank venue. Catching it
        here, while someone is looking at the form, is the only cheap moment. */
-    if (form.isShowroom && !form.venueName.trim()) {
+    const isShowroom = form.type === 'showroom';
+    if (isShowroom && !form.venueName.trim()) {
       notify({
         title: 'A Showroom needs a Venue name.',
         body: 'Sales orders raised by salespeople parked under this showroom will be attributed to this venue.',
@@ -70,8 +87,8 @@ export const WarehouseFormDrawer = ({
         location: form.location,
         isActive: form.isActive,
         isDefault: form.isDefault,
-        isShowroom: form.isShowroom,
-        venueName: form.isShowroom ? form.venueName.trim() : null,
+        type: form.type,
+        venueName: isShowroom ? form.venueName.trim() : null,
       }, { onSuccess: done });
     } else {
       create.mutate({
@@ -79,8 +96,8 @@ export const WarehouseFormDrawer = ({
         name: form.name,
         location: form.location || undefined,
         isDefault: form.isDefault,
-        isShowroom: form.isShowroom,
-        venueName: form.isShowroom ? form.venueName.trim() : null,
+        type: form.type,
+        venueName: isShowroom ? form.venueName.trim() : null,
       }, { onSuccess: done });
     }
   };
@@ -113,16 +130,22 @@ export const WarehouseFormDrawer = ({
               value={form.location ?? ''} placeholder="Address / area"
               onChange={(e) => setForm((s) => ({ ...s, location: e.target.value }))} />
           </label>
-          {/* ── Showroom (owner 2026-07-19) ────────────────────────────────
-              Marking a warehouse as a Showroom is a VENUE decision, not a stock
-              one, so the Venue name sits directly under the flag rather than in
-              a separate screen — the two are meaningless apart. */}
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 'var(--space-2)' }}>
-            <input type="checkbox" checked={form.isShowroom}
-              onChange={(e) => setForm((s) => ({ ...s, isShowroom: e.target.checked }))} />
-            Mark as Showroom
+          {/* ── Type (mig 0171) ───────────────────────────────────────────
+              5-bucket classification: warehouse / showroom / display / service
+              / others. Owner 2026-07-22: SO reports and delivery routing bucket
+              by this, so it must be picked here (not derived from the code). */}
+          <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
+            <div className={styles.eyebrow}>Type *</div>
+            <select className={styles.searchInput} style={{ width: '100%' }}
+              value={form.type}
+              onChange={(e) => setForm((s) => ({ ...s, type: e.target.value as WarehouseType }))}
+            >
+              {TYPE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
           </label>
-          {form.isShowroom && (
+          {form.type === 'showroom' && (
             <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
               <div className={styles.eyebrow}>Venue name *</div>
               <input className={styles.searchInput} style={{ width: '100%' }}

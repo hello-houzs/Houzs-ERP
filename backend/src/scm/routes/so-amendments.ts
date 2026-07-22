@@ -25,7 +25,7 @@ import { applySoAmendment, reviseBoundPo, ReceivedFloorError } from '../lib/so-r
 import { hasHouzsPerm, canViewAllSales, canWriteScmConfig } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit } from '../lib/so-audit';
-import { scopeToCompany, isMirroredDocNo, houzsOwns2990, MIRRORED_SO_READONLY, activeCompanyId } from '../lib/companyScope';
+import { scopeToCompany, isMirroredDocNo, houzsOwns2990, MIRRORED_SO_READONLY, activeCompanyId, requireActiveCompanyId } from '../lib/companyScope';
 import {
   enqueueAmendmentCommand,
   commandsEnabled,
@@ -33,6 +33,8 @@ import {
 } from '../lib/amendment-command';
 import { readBridgeCommandConfig, probeBridge } from '../lib/bridge-2990-command';
 import type { Context } from 'hono';
+import { deferScmAfterCommit, runScmPgCommand } from '../lib/pg-supabase-transaction';
+import { scheduleStockAllocationAfterCommand } from '../lib/stock-allocation-job';
 
 export const soAmendments = new Hono<{ Bindings: Env; Variables: Variables }>();
 soAmendments.use('*', supabaseAuth);
@@ -57,7 +59,14 @@ async function gateActorStaffId(
   return (await resolveCallerStaffId(sb, houzsUserId)) ?? fallbackStaffId;
 }
 
-type AmendmentForWrite = { id: string; so_doc_no: string; status: AmendStatus };
+type AmendmentForWrite = {
+  id: string;
+  so_doc_no: string;
+  status: AmendStatus;
+  version: number;
+  apply_lease_token?: string | null;
+  apply_lease_expires_at?: string | null;
+};
 type AmendmentWriteLoad =
   // A Houzs-NATIVE amendment: apply locally, exactly as before.
   | { ok: true; mirrored: false; amendment: AmendmentForWrite }
@@ -92,7 +101,9 @@ async function loadAmendmentForWrite(
   c: Context<any>,
 ): Promise<AmendmentWriteLoad> {
   const { data } = await scopeToCompany(
-    sb.from('so_amendments').select('id, so_doc_no, status').eq('id', id),
+    sb.from('so_amendments')
+      .select('id, so_doc_no, status, version, apply_lease_token, apply_lease_expires_at')
+      .eq('id', id),
     c,
   ).maybeSingle();
   if (!data) return { ok: false, reason: 'not_found' };
@@ -161,8 +172,15 @@ async function dispatchMirroredCommand(
   // still PENDING — a duplicate decision that is already in-flight or resolved
   // (idempotency key) must not be re-fired.
   if (enq.row.status === 'PENDING') {
-    const p = dispatchOne(sb, cfg.config, enq.row);
-    try { c.executionCtx.waitUntil(p); } catch { void p; }
+    const dispatch = () => {
+      // The command adapter is valid only until commit. Use the request's
+      // normal service client after the durable enqueue and audit commit.
+      const p = dispatchOne(c.get('supabase'), cfg.config, enq.row);
+      try { c.executionCtx.waitUntil(p); } catch { void p; }
+      return Promise.resolve();
+    };
+    if (sb?.__atomicCommand === true) deferScmAfterCommit(c, dispatch);
+    else dispatch();
   }
 
   // Houzs-side audit of WHO dispatched — the real caller by name (requirement 3).
@@ -364,13 +382,19 @@ soAmendments.patch('/:id/supplier-confirm', async (c) => {
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:                               to,
+    version:                              Number(amendment.version ?? 1) + 1,
     supplier_confirmed_by:                await gateActorStaffId(sb, c.get('houzsUser')?.id, user.id),
     supplier_confirmation_ref:            ref,
     supplier_confirmation_note:           body.note ?? null,
     supplier_confirmation_attachment_key: body.attachmentKey ?? null,
     updated_at:                           new Date().toISOString(),
-  }).eq('id', id).select('id, so_doc_no, amendment_no, status').single();
+  }).eq('id', id)
+    .eq('status', amendment.status)
+    .eq('version', Number(amendment.version ?? 1))
+    .select('id, so_doc_no, amendment_no, status, version')
+    .maybeSingle();
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
+  if (!updated) return c.json({ error: 'amendment_version_conflict' }, 409);
 
   await recordSoAudit(sb, {
     docNo: amendment.so_doc_no,
@@ -393,8 +417,8 @@ soAmendments.patch('/:id/supplier-confirm', async (c) => {
 
    If the SO has NO bound PO this is the TERMINAL step — the amendment rests at
    SO_APPROVED. */
-soAmendments.patch('/:id/approve-so', async (c) => {
-  const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+export async function approveSoCommandHandler(c: any, sb: any): Promise<Response> {
+  const id = c.req.param('id'); const user = c.get('user');
 
   if (!hasHouzsPerm(c, 'scm.amendment.approve_so')) {
     return c.json({
@@ -418,13 +442,76 @@ soAmendments.patch('/:id/approve-so', async (c) => {
   const to = nextStatus(amendment.status, action);
   if (!to) return c.json({ error: 'bad_transition' }, 409);
 
+  /* Claim BOTH the amendment and its SO before the first apply write. The
+     version predicates detect conflicts while runScmPgCommand keeps the claim,
+     snapshot, line mutations, totals, audit, and final status in one database
+     transaction. */
+  const applyToken = crypto.randomUUID();
+  const applyVersion = Number(amendment.version ?? 1);
+  const claimNow = new Date().toISOString();
+  const claimExpiry = new Date(Date.now() + 10 * 60_000).toISOString();
+  const { data: claimed, error: claimError } = await sb.from('so_amendments').update({
+    version: applyVersion + 1,
+    apply_lease_token: applyToken,
+    apply_lease_expires_at: claimExpiry,
+    updated_at: claimNow,
+  }).eq('id', id)
+    .eq('status', amendment.status)
+    .eq('version', applyVersion)
+    .or(`apply_lease_token.is.null,apply_lease_expires_at.lt.${claimNow}`)
+    .select('id, version')
+    .maybeSingle();
+  if (claimError) return c.json({ error: 'update_failed', reason: claimError.message }, 500);
+  if (!claimed) return c.json({ error: 'amendment_version_conflict' }, 409);
+
+  const releaseAmendmentClaim = async () => {
+    await sb.from('so_amendments').update({
+      apply_lease_token: null,
+      apply_lease_expires_at: null,
+    }).eq('id', id).eq('version', applyVersion + 1).eq('apply_lease_token', applyToken);
+  };
+
+  const { data: soGeneration, error: soGenerationError } = await sb.from('mfg_sales_orders')
+    .select('version, edit_lease_token, edit_lease_expires_at')
+    .eq('doc_no', amendment.so_doc_no)
+    .maybeSingle();
+  if (soGenerationError || !soGeneration) {
+    await releaseAmendmentClaim();
+    return c.json({
+      error: soGenerationError ? 'load_failed' : 'not_found',
+      reason: soGenerationError?.message,
+    }, soGenerationError ? 500 : 404);
+  }
+  const soVersion = Number((soGeneration as { version?: number | string }).version ?? 1);
+  const { data: soClaimed, error: soClaimError } = await sb.from('mfg_sales_orders').update({
+    edit_lease_token: applyToken,
+    edit_lease_expires_at: claimExpiry,
+  }).eq('doc_no', amendment.so_doc_no)
+    .eq('version', soVersion)
+    .or(`edit_lease_token.is.null,edit_lease_expires_at.lt.${claimNow}`)
+    .select('doc_no')
+    .maybeSingle();
+  if (soClaimError || !soClaimed) {
+    await releaseAmendmentClaim();
+    if (soClaimError) return c.json({ error: 'update_failed', reason: soClaimError.message }, 500);
+    return c.json({ error: 'so_edit_lease_conflict' }, 409);
+  }
+
   /* Apply the revision. A hard failure leaves the amendment status unchanged (we
      only advance status AFTER a clean apply) so the operator can retry — the
      snapshot upsert is idempotent on (so_doc_no, revision). */
   let applied: { soDocNo: string; revision: number };
   try {
-    applied = await applySoAmendment(sb, id, user.id, c);
+    applied = await applySoAmendment(sb, id, user.id, c, { soVersion, leaseToken: applyToken });
   } catch (e) {
+    await sb.from('mfg_sales_orders').update({
+      edit_lease_token: null,
+      edit_lease_expires_at: null,
+    }).eq('doc_no', amendment.so_doc_no).eq('version', soVersion).eq('edit_lease_token', applyToken);
+    await sb.from('so_amendments').update({
+      apply_lease_token: null,
+      apply_lease_expires_at: null,
+    }).eq('id', id).eq('version', applyVersion + 1).eq('apply_lease_token', applyToken);
     // eslint-disable-next-line no-console
     console.error('[so-amendment] approve-so apply failed:', e);
     return c.json({
@@ -435,13 +522,28 @@ soAmendments.patch('/:id/approve-so', async (c) => {
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:         to,
+    version:        applyVersion + 2,
+    apply_lease_token: null,
+    apply_lease_expires_at: null,
     so_approved_by: await gateActorStaffId(sb, c.get('houzsUser')?.id, user.id),
     so_approved_at: new Date().toISOString(),
     updated_at:     new Date().toISOString(),
-  }).eq('id', id).select('id, so_doc_no, amendment_no, status').single();
+  }).eq('id', id)
+    .eq('status', amendment.status)
+    .eq('version', applyVersion + 1)
+    .eq('apply_lease_token', applyToken)
+    .select('id, so_doc_no, amendment_no, status, version')
+    .maybeSingle();
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
+  if (!updated) return c.json({ error: 'amendment_version_conflict' }, 409);
 
+  await scheduleStockAllocationAfterCommand(c, sb, `amendment-approve-so:${amendment.so_doc_no}`);
   return c.json({ amendment: updated, revision: applied.revision });
+}
+soAmendments.patch('/:id/approve-so', (c) => {
+  const company = requireActiveCompanyId(c);
+  if (!company.ok) return c.json(company.refusal, 409);
+  return runScmPgCommand(c, (sb) => approveSoCommandHandler(c, sb));
 });
 
 /* ── PATCH /:id/approve-po ─────────────────────────────────────────────────
@@ -452,8 +554,8 @@ soAmendments.patch('/:id/approve-so', async (c) => {
 
    Received floor: reviseBoundPo throws a ReceivedFloorError BEFORE mutating if
    any revised qty would drop below that PO line's already-received_qty → 409. */
-soAmendments.patch('/:id/approve-po', async (c) => {
-  const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+export async function approvePoCommandHandler(c: any, sb: any) {
+  const id = c.req.param('id'); const user = c.get('user');
 
   if (!hasHouzsPerm(c, 'scm.amendment.approve_po')) {
     return c.json({
@@ -476,6 +578,24 @@ soAmendments.patch('/:id/approve-po', async (c) => {
   }
   const to = nextStatus(amendment.status, action);
   if (!to) return c.json({ error: 'bad_transition' }, 409);
+
+  const applyToken = crypto.randomUUID();
+  const applyVersion = Number(amendment.version ?? 1);
+  const claimNow = new Date().toISOString();
+  const claimExpiry = new Date(Date.now() + 10 * 60_000).toISOString();
+  const { data: claimed, error: claimError } = await sb.from('so_amendments').update({
+    version: applyVersion + 1,
+    apply_lease_token: applyToken,
+    apply_lease_expires_at: claimExpiry,
+    updated_at: claimNow,
+  }).eq('id', id)
+    .eq('status', amendment.status)
+    .eq('version', applyVersion)
+    .or(`apply_lease_token.is.null,apply_lease_expires_at.lt.${claimNow}`)
+    .select('id')
+    .maybeSingle();
+  if (claimError) return c.json({ error: 'update_failed', reason: claimError.message }, 500);
+  if (!claimed) return c.json({ error: 'amendment_version_conflict' }, 409);
 
   let revised: Awaited<ReturnType<typeof reviseBoundPo>>;
   try {
@@ -501,11 +621,20 @@ soAmendments.patch('/:id/approve-po', async (c) => {
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:         to,
+    version:        applyVersion + 2,
+    apply_lease_token: null,
+    apply_lease_expires_at: null,
     po_approved_by: await gateActorStaffId(sb, c.get('houzsUser')?.id, user.id),
     po_approved_at: new Date().toISOString(),
     updated_at:     new Date().toISOString(),
-  }).eq('id', id).select('id, so_doc_no, amendment_no, status').single();
+  }).eq('id', id)
+    .eq('status', amendment.status)
+    .eq('version', applyVersion + 1)
+    .eq('apply_lease_token', applyToken)
+    .select('id, so_doc_no, amendment_no, status, version')
+    .maybeSingle();
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
+  if (!updated) return c.json({ error: 'amendment_version_conflict' }, 409);
 
   await recordSoAudit(sb, {
     docNo: amendment.so_doc_no,
@@ -526,6 +655,11 @@ soAmendments.patch('/:id/approve-po', async (c) => {
   });
 
   return c.json({ amendment: updated, revisedPurchaseOrders: revised.perPo, warnings: revised.warnings });
+}
+soAmendments.patch('/:id/approve-po', (c) => {
+  const company = requireActiveCompanyId(c);
+  if (!company.ok) return c.json(company.refusal, 409);
+  return runScmPgCommand(c, (sb) => approvePoCommandHandler(c, sb));
 });
 
 /* ── PATCH /:id/send ───────────────────────────────────────────────────────
@@ -561,10 +695,16 @@ soAmendments.patch('/:id/send', async (c) => {
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:     to,
+    version:    Number(amendment.version ?? 1) + 1,
     sent_at:    new Date().toISOString(),
     updated_at: new Date().toISOString(),
-  }).eq('id', id).select('id, so_doc_no, amendment_no, status').single();
+  }).eq('id', id)
+    .eq('status', amendment.status)
+    .eq('version', Number(amendment.version ?? 1))
+    .select('id, so_doc_no, amendment_no, status, version')
+    .maybeSingle();
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
+  if (!updated) return c.json({ error: 'amendment_version_conflict' }, 409);
 
   await recordSoAudit(sb, {
     docNo: amendment.so_doc_no,
@@ -635,13 +775,19 @@ soAmendments.patch('/:id/reject', async (c) => {
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:           to,
+    version:          Number(amendment.version ?? 1) + 1,
     resolution:       'REJECTED',
     rejection_reason: reason,
     rejected_by:      await gateActorStaffId(sb, c.get('houzsUser')?.id, user.id),
     rejected_at:      new Date().toISOString(),
     updated_at:       new Date().toISOString(),
-  }).eq('id', id).select('id, so_doc_no, amendment_no, status, resolution, rejection_reason').single();
+  }).eq('id', id)
+    .eq('status', amendment.status)
+    .eq('version', Number(amendment.version ?? 1))
+    .select('id, so_doc_no, amendment_no, status, resolution, rejection_reason, version')
+    .maybeSingle();
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
+  if (!updated) return c.json({ error: 'amendment_version_conflict' }, 409);
 
   await recordSoAudit(sb, {
     docNo: amendment.so_doc_no,
@@ -717,13 +863,19 @@ soAmendments.patch('/:id/withdraw', async (c) => {
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:           to,
+    version:          Number(amendment.version ?? 1) + 1,
     resolution:       'WITHDRAWN',
     rejection_reason: reason || 'Withdrawn by the person who raised it.',
     rejected_by:      callerStaffId ?? user.id,
     rejected_at:      new Date().toISOString(),
     updated_at:       new Date().toISOString(),
-  }).eq('id', id).select('id, so_doc_no, amendment_no, status, resolution, rejection_reason').single();
+  }).eq('id', id)
+    .eq('status', amendment.status)
+    .eq('version', Number(amendment.version ?? 1))
+    .select('id, so_doc_no, amendment_no, status, resolution, rejection_reason, version')
+    .maybeSingle();
   if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
+  if (!updated) return c.json({ error: 'amendment_version_conflict' }, 409);
 
   await recordSoAudit(sb, {
     docNo: amendment.so_doc_no,

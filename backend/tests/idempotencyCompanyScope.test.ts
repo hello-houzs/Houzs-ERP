@@ -74,7 +74,7 @@ beforeEach(async () => {
 });
 
 describe("auth -> companyContext -> idempotency integration", () => {
-  test("the resolved active company owns the claim and another company cannot replay it", async () => {
+  test("the resolved active company owns an independent claim and never cross-replays", async () => {
     const app = new Hono<{ Bindings: Env }>();
     let writes = 0;
     app.use("*", auth);
@@ -105,16 +105,25 @@ describe("auth -> companyContext -> idempotency integration", () => {
     expect(await first.json()).toMatchObject({ write: 1, companyId: 1 });
 
     const secondCompany = await send(2);
-    expect(secondCompany.status).toBe(409);
+    expect(secondCompany.status).toBe(201);
     expect(secondCompany.headers.get("Idempotent-Replay")).toBeNull();
-    expect(await secondCompany.json()).toMatchObject({ error: "idempotency_key_conflict" });
-    expect(writes).toBe(1);
+    expect(await secondCompany.json()).toMatchObject({ write: 2, companyId: 2 });
 
-    const claim = await env.DB.prepare(
-      `SELECT user_id, tenant_scope FROM idempotency_keys WHERE key = ?`,
+    const firstAgain = await send(1);
+    expect(firstAgain.status).toBe(201);
+    expect(firstAgain.headers.get("Idempotent-Replay")).toBe("true");
+    expect(await firstAgain.json()).toMatchObject({ write: 1, companyId: 1 });
+    expect(writes).toBe(2);
+
+    const claims = await env.DB.prepare(
+      `SELECT user_id, tenant_scope FROM idempotency_keys
+        WHERE key = ? ORDER BY tenant_scope`,
     )
       .bind("company-ordering-key")
-      .first<{ user_id: number; tenant_scope: string }>();
-    expect(claim).toEqual({ user_id: userId, tenant_scope: "company:1" });
+      .all<{ user_id: number; tenant_scope: string }>();
+    expect(claims.results).toEqual([
+      { user_id: userId, tenant_scope: "company:1" },
+      { user_id: userId, tenant_scope: "company:2" },
+    ]);
   });
 });

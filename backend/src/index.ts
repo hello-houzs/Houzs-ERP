@@ -70,6 +70,7 @@ import mailInbound from "./routes/mail-inbound";
 // 2990 DB via pg_net, no user JWT) — mounted at the top level, outside /api/scm.
 import { soMirror } from "./scm/routes/so-mirror";
 import { drainCommands } from "./scm/lib/amendment-command";
+import { drainStockAllocationRecompute } from "./scm/lib/stock-allocation-job";
 import { amendmentMirror } from "./scm/routes/amendment-mirror";
 import { customerMirror } from "./scm/routes/customer-mirror";
 import { staffMirror } from "./scm/routes/staff-mirror";
@@ -430,6 +431,21 @@ export default {
             if (r.processed) console.log(`[cron amendment-cmd] ${JSON.stringify(r)}`);
           })
           .catch((e) => console.error("[cron amendment-cmd]", e))
+      );
+      // Durable SO allocation projection: every source-data mutation first
+      // queues the singleton invalidation in its own DB transaction. This sweep
+      // is the crash/network backstop for the low-latency after-commit attempt.
+      ctx.waitUntil(
+        drainStockAllocationRecompute(env)
+          .then((r) => {
+            /* A dead-lettered job is the one state that must NEVER read as
+               routine: allocation has stopped and stays stopped until a human
+               acts. Logged at error level on every sweep so it cannot hide in
+               the noise. */
+            if (r.deadLettered) console.error(`[cron so-allocation] DEAD LETTER ${JSON.stringify(r)}`);
+            else if (r.processed || r.reason) console.log(`[cron so-allocation] ${JSON.stringify(r)}`);
+          })
+          .catch((e) => console.error("[cron so-allocation]", e))
       );
     } else if (event.cron === "*/30 * * * *") {
       // ASSR/QMS v3.1 — per-stage alert scanner (half / approaching / breach).

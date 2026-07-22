@@ -445,6 +445,14 @@ class PreparedStatement {
     return res;
   }
 
+  /** Execute on the transaction connection supplied by batch(). No retry is
+   * allowed here: retrying on a fresh connection would escape the transaction
+   * and recreate the partial-commit bug batch() is meant to prevent. */
+  async execInTransaction<T = Record<string, unknown>>(tx: Sql): Promise<T[]> {
+    const text = toPgPlaceholders(rewriteDialect(this.query));
+    return tx.unsafe(text, this.args as never[]) as unknown as Promise<T[]>;
+  }
+
   async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
     const res = (await this.exec<T>()) as T[] & { count?: number };
     return {
@@ -513,9 +521,7 @@ export function d1Compat(makeSql: () => Sql): D1Like {
     batch: (statements: PreparedStatement[]) =>
       sql.begin((tx) =>
         Promise.all(
-          statements.map((s) =>
-            (s as unknown as { exec(): Promise<unknown> }).exec(),
-          ),
+          statements.map((statement) => statement.execInTransaction(tx as unknown as Sql)),
         ),
       ) as unknown as Promise<unknown[]>,
   };
