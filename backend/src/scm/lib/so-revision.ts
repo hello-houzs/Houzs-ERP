@@ -225,6 +225,7 @@ export async function applySoAmendment(
   amendmentId: string,
   userId: string | null,
   c?: Context<any>,
+  concurrency?: { soVersion: number; leaseToken: string },
 ): Promise<{ soDocNo: string; revision: number }> {
   // (1) Load amendment + lines + SO header.
   const { data: amdRow, error: amdErr } = await sb
@@ -508,6 +509,9 @@ export async function applySoAmendment(
         })
         .eq('doc_no', docNo);
       if (cascErr) {
+        if ((sb as unknown as { __atomicCommand?: boolean }).__atomicCommand === true) {
+          throw new Error(`applySoAmendment: delivery-date cascade failed: ${cascErr.message}`);
+        }
         // eslint-disable-next-line no-console
         console.error('[so-amendment] delivery-date line cascade failed (non-fatal):', cascErr.message);
       }
@@ -534,6 +538,9 @@ export async function applySoAmendment(
           .eq('doc_no', docNo)
           .eq('cancelled', false);
         if (whErr) {
+          if ((sb as unknown as { __atomicCommand?: boolean }).__atomicCommand === true) {
+            throw new Error(`applySoAmendment: warehouse rebind failed: ${whErr.message}`);
+          }
           // eslint-disable-next-line no-console
           console.error('[so-amendment] warehouse rebind failed (non-fatal):', whErr.message);
         }
@@ -544,20 +551,35 @@ export async function applySoAmendment(
   /* (4-continued) Re-derive the delivery fee (rebuilds SVC-DELIVERY* lines on
      the authoritative computeSoDeliveryFee) AND fold header totals — the same
      helper the create + add-line paths call after a line change; it internally
-     runs recomputeTotals. Best-effort (logs, never throws). */
+     runs recomputeTotals. Legacy callers are best-effort; atomic commands
+     rethrow so the enclosing transaction rolls back. */
   try {
     await rederiveDeliveryFee(sb, docNo, c);
   } catch (e) {
+    if ((sb as unknown as { __atomicCommand?: boolean }).__atomicCommand === true) throw e;
     // eslint-disable-next-line no-console
     console.error('[so-amendment] rederiveDeliveryFee failed (non-fatal):', e);
   }
 
   // (5) Bump the SO's revision + updated_at.
-  const { error: bumpErr } = await sb
+  let bump = sb
     .from('mfg_sales_orders')
-    .update({ revision: nextRevision, updated_at: new Date().toISOString() })
+    .update({
+      revision: nextRevision,
+      ...(concurrency ? {
+        version: concurrency.soVersion + 1,
+        edit_lease_token: null,
+        edit_lease_expires_at: null,
+      } : {}),
+      updated_at: new Date().toISOString(),
+    })
     .eq('doc_no', docNo);
+  if (concurrency) {
+    bump = bump.eq('version', concurrency.soVersion).eq('edit_lease_token', concurrency.leaseToken);
+  }
+  const { data: bumped, error: bumpErr } = await bump.select('doc_no').maybeSingle();
   if (bumpErr) throw new Error(`applySoAmendment: revision bump failed: ${bumpErr.message}`);
+  if (!bumped) throw new Error('applySoAmendment: Sales Order version changed during amendment apply');
 
   // (6) Audit — best-effort, keyed on the SO doc_no like every other SO mutation.
   await recordSoAudit(sb, {

@@ -682,10 +682,13 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
      (freshly refetched) persisted row reappears. */
   const commitEdit = (d: PaymentDraft) => {
     if (!isSaved || !d.editingPersistedId) return;
+    const persisted = persistedPayments.find((p) => p.id === d.editingPersistedId);
+    if (!persisted) return;
     const { method } = labelToApi(d.methodLabel);
     const body = {
       docNo:        (props as SavedModeProps).docNo,
       id:           d.editingPersistedId,
+      version:      persisted.version,
       paidAt:       d.paidAt,
       method,
       amountCenti:  d.amountCenti,
@@ -694,7 +697,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
       collectedBy:  d.collectedBy  || null,
       ...draftMethodFields(method, d),
     };
-    editPayment.mutate(body as { docNo: string; id: string } & Record<string, unknown>, {
+    editPayment.mutate(body, {
       onSuccess: () => removeDraft(d.uid),
       onError: (e) => {
         // eslint-disable-next-line no-console
@@ -1028,7 +1031,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                               confirmLabel: 'Delete',
                               danger: true,
                             })) {
-                              deletePayment.mutate({ docNo: (props as SavedModeProps).docNo, id: p.id });
+                              deletePayment.mutate({ docNo: (props as SavedModeProps).docNo, id: p.id, version: p.version });
                             }
                           }}
                           title="Remove payment (same-day only)"

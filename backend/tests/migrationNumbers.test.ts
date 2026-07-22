@@ -36,7 +36,17 @@ const MIGRATION_GLOBS: Record<string, Record<string, unknown>> = {
    readability problem, not an execution one — which is exactly why it kept
    happening unnoticed. Frozen here so the ratchet catches the NEXT one. */
 const KNOWN_DUPLICATES: Record<string, string[]> = {
-  "src/db/migrations-pg": ["0029", "0091", "0092", "0093", "0094", "0104", "0108", "0112", "0123"],
+  // 0175 landed twice under an unfortunate rename chain in the same afternoon:
+  //   1. #1039 merged as `0171_scm_warehouse_type_and_unify.sql`, colliding with
+  //      `0171_idempotency_phase2_constraints.sql` (parallel PR from same base).
+  //   2. #1044 hotfixed the red main by renaming the warehouse migration to
+  //      `0175_scm_warehouse_type_and_unify.sql`.
+  //   3. #1040 then merged as `0175_scm_state_canonicalize.sql` — the same PR
+  //      had already renamed to 0175 to duck the 0172 collision it saw at
+  //      branch time.
+  // Two 0175 files now on main, both applied under their own filenames in
+  // `_pg_migrations`. Frozen here so the ratchet catches the NEXT one.
+  "src/db/migrations-pg": ["0029", "0091", "0092", "0093", "0094", "0104", "0108", "0112", "0123", "0175"],
   "src/db/migrations": ["010"],
 };
 

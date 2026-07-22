@@ -414,7 +414,19 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   // clashes with something in the system") — the operator needs the ACTION
   // (reload), not a system-internals sentence.
   so_version_conflict:
-    'Someone else updated this order while you were editing. Reload to see the latest changes.',
+    'Someone else updated this order while you were editing. Your changes are still on this screen. Copy anything you need, then refresh to review the latest order.',
+  so_version_required:
+    'This order was opened with an older screen. Your changes are still here. Copy anything you need, then refresh the order before saving again.',
+  so_version_invalid:
+    'The order version is invalid. Your changes are still here. Refresh the order before saving again.',
+  so_edit_lease_conflict:
+    'This order is being saved on another screen. Your changes are still here. Wait a moment, then try Save again.',
+  so_edit_lease_invalid:
+    'This save session is no longer valid. Your changes are still here. Refresh the order before saving again.',
+  payment_version_conflict:
+    'Someone else changed this payment first. Your input is still here. Refresh the payments before trying again.',
+  payment_version_required:
+    'This payment was loaded without a version. Refresh the payments before changing it.',
   // The add-on amount is folded into the line's selling price and never prints
   // as its own figure, so the description is the only thing on the customer's
   // document that says what the extra charge was for. Naming the field is the

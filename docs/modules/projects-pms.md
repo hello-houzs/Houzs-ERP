@@ -523,7 +523,18 @@ the four setup/dismantle timestamps, the driver/lorry/helper FK columns, plus
 `p.state`, `p.event_type_id` and `p.payment_status` are read by the calendar and
 list handlers (e.g. `routes/projects.ts:3860-3861`), and
 `migrations-pg/0002_indexes.sql:124` creates `idx_projects_payment ON
-projects(payment_status)`. Those columns exist only in the D1-era definition
+projects(payment_status)`.
+
+> **State vocabulary (mig 0175, owner 2026-07-22).** `projects.state` and
+> `project_venues.state` are now canonicalised to the `scm.my_localities`
+> Title Case spelling (`Johor` / `Kuala Lumpur` / `Pulau Pinang` — not the
+> old PMS UPPERCASE `JOHOR` / `KL` / `PENANG`). Backend `createProject`,
+> `patchProject`, and `POST/PATCH /api/scm/venues` all run every incoming
+> `state` through `canonicalizeMyState()` (`backend/src/scm/lib/canonical-state.ts`);
+> the SQL function `scm.canonicalize_my_state()` in mig 0175 is the same
+> mapping for future migrations. Cross-module Sales-by-state and
+> delivery-region reports can now bucket on the raw column without a
+> normalisation step in the query. Those columns exist only in the D1-era definition
 (`backend/src/db/d1-schema-dump.sql:988-1029`, added by `migrations/024`, `026`,
 `039`, `083`, `088`, `101`), which also carries `booth_no`, `size_sqm`,
 `notion_url`, `notes`, `archived_by`, `banner_message`, `banner_tone`, and the
