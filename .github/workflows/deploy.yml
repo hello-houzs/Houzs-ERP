@@ -133,4 +133,17 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: frontend
           command: pages deploy ./dist --project-name=houzs-erp --commit-dirty=true
+      # The smoke asserts the LIVE entry chunk and sw VERSION equal the ones
+      # just built, so its retry budget has to cover Cloudflare Pages
+      # propagation. The script's defaults (8 x 2s = 16s) are too tight:
+      # measured on the 2026-07-22 recovery deploy, a fetch immediately after
+      # `pages deploy` reported success still returned the PREVIOUS entry
+      # chunk, and the new one appeared on a fetch ~2 minutes later. At 16s
+      # this step would have failed a release that was entirely correct — a
+      # red production deploy caused by the checker, not the deploy. 20 x 5s
+      # = 100s of tolerance, still bounded, and a genuine non-propagation
+      # (wrong project, failed upload) fails just as loudly, only later.
       - run: npm run smoke -- "${{ vars.FRONTEND_SMOKE_URL || 'https://erp.houzscentury.com' }}"
+        env:
+          FRONTEND_SMOKE_ATTEMPTS: 20
+          FRONTEND_SMOKE_RETRY_MS: 5000

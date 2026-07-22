@@ -132,4 +132,9 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: frontend
           command: pages deploy ./dist --project-name=houzs-erp-staging --commit-dirty=true
+      # See deploy.yml for why the script's 16s default is too tight for
+      # Cloudflare Pages propagation.
       - run: npm run smoke -- "${{ vars.STAGING_FRONTEND_SMOKE_URL || 'https://houzs-erp-staging.pages.dev' }}"
+        env:
+          FRONTEND_SMOKE_ATTEMPTS: 20
+          FRONTEND_SMOKE_RETRY_MS: 5000
