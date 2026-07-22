@@ -147,7 +147,10 @@ export const SalesOrderNew = () => {
   const idemKey  = useIdempotencyKey();
   const addPayment = useAddSalesOrderPayment();
   const uploadPhoto = useUploadSoItemPhoto();
-  const staffQ   = usePickableStaff();
+  // onlySales=true — owner 2026-07-22: the salesperson dropdown was showing
+  // every ACTIVE staff granted to the active company (Bernard, HOUZS CENTURY,
+  // Kris, Test Admin, …). Narrow to Sales-position / Sales-department only.
+  const staffQ   = usePickableStaff({ onlySales: true });
   const venuesQ  = useVenues();
   const loc      = useLocalities();
   /* FIX (d) — fabric colour + library lookups for the scan seed (same sources
