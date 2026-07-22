@@ -403,10 +403,8 @@ describePg('Sales Order PostgreSQL concurrency migration', () => {
        at RUNTIME, so only actually taking the p_recustomer branch proves the
        right overload is reached. */
     await admin.unsafe('DELETE FROM scm.customer_upsert_calls');
-    const before = await admin.unsafe<Array<{ version: number }>>(
-      "SELECT version FROM scm.mfg_sales_orders WHERE doc_no = 'SO-PG-1'",
-    );
-    const expected = Number(before[0].version);
+    await admin`INSERT INTO scm.mfg_sales_orders (doc_no, note, company_id) VALUES ('SO-PG-1', 'recustomer', 77)`;
+    const expected = 1;
     const rows = await admin.begin(async (tx) => {
       await tx.unsafe('SET LOCAL ROLE service_role');
       return tx.unsafe<Array<{ applied: boolean; resolved_customer_id: string | null }>>(
