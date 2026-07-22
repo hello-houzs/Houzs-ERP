@@ -3489,13 +3489,26 @@ function DetailContent({
                       >
                         {item.item_description || ""}
                       </span>
-                      <ItemQtyStepper
-                        caseId={id}
-                        item={item}
-                        disabled={c.stage === "completed" || !!c.archived_at}
-                        onSaved={() => detail.reload()}
-                        toast={toast}
-                      />
+                      <div className="flex items-center gap-0.5">
+                        <span className="mr-0.5 text-[8.5px] font-semibold uppercase tracking-wide text-ink-muted">Set</span>
+                        <ItemQtyStepper
+                          caseId={id}
+                          item={item}
+                          disabled={c.stage === "completed" || !!c.archived_at}
+                          onSaved={() => detail.reload()}
+                          toast={toast}
+                        />
+                      </div>
+                      <div className="flex items-center gap-0.5">
+                        <span className="mr-0.5 text-[8.5px] font-semibold uppercase tracking-wide text-ink-muted">Ctn</span>
+                        <ItemCartonStepper
+                          caseId={id}
+                          item={item}
+                          disabled={c.stage === "completed" || !!c.archived_at}
+                          onSaved={() => detail.reload()}
+                          toast={toast}
+                        />
+                      </div>
                       {c.stage !== "completed" && (
                         <button
                           onClick={() => removeItem(item.id)}
@@ -7679,6 +7692,66 @@ function ItemQtyStepper({ caseId, item, disabled, onSaved, toast }: {
         disabled={saving}
         className="px-1.5 py-0.5 text-[12px] font-bold text-ink-muted hover:text-ink disabled:opacity-40"
         title="Increase quantity"
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+function ItemCartonStepper({ caseId, item, disabled, onSaved, toast }: {
+  caseId: number;
+  item: any;
+  disabled?: boolean;
+  onSaved: () => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const qtyCarton = Math.max(1, Number(item.qty_carton ?? 1));
+  const [saving, setSaving] = useState(false);
+
+  async function set(next: number) {
+    const clamped = Math.max(1, Math.round(next));
+    if (clamped === qtyCarton || saving) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/assr/${caseId}/items/${item.id}`, { qty_carton: clamped });
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to update carton quantity");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (disabled) {
+    return <span className="text-[11px] text-ink-muted">&times;{qtyCarton}</span>;
+  }
+  return (
+    <div className="flex items-center gap-0.5 rounded border border-border bg-bg/50">
+      <button
+        type="button"
+        onClick={() => set(qtyCarton - 1)}
+        disabled={saving || qtyCarton <= 1}
+        className="px-1.5 py-0.5 text-[12px] font-bold text-ink-muted hover:text-ink disabled:opacity-40"
+        title="Decrease cartons"
+      >
+        −
+      </button>
+      <input
+        type="number"
+        min={1}
+        value={qtyCarton}
+        onChange={(e) => set(parseInt(e.target.value, 10) || 1)}
+        disabled={saving}
+        className="w-8 border-x border-border bg-transparent py-0.5 text-center text-[11px] font-semibold text-ink outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        title="Cartons"
+      />
+      <button
+        type="button"
+        onClick={() => set(qtyCarton + 1)}
+        disabled={saving}
+        className="px-1.5 py-0.5 text-[12px] font-bold text-ink-muted hover:text-ink disabled:opacity-40"
+        title="Increase cartons"
       >
         +
       </button>

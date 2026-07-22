@@ -1229,6 +1229,23 @@ export async function setItemQty(
   return (r.meta.changes ?? 0) > 0;
 }
 
+// Per-item carton quantity (owner 2026-07-21) — a second, user-selected
+// quantity beside the per-set qty; feeds the ITEMS table's CTN column on
+// both print copies.
+export async function setItemCartonQty(
+  env: Env,
+  assrId: number,
+  itemId: number,
+  qtyCarton: number
+): Promise<boolean> {
+  const r = await env.DB.prepare(
+    `UPDATE assr_items SET qty_carton = ? WHERE id = ? AND assr_id = ?`
+  )
+    .bind(qtyCarton, itemId, assrId)
+    .run();
+  return (r.meta.changes ?? 0) > 0;
+}
+
 // ── Attachments ───────────────────────────────────────────────
 
 export function assrAttachmentKey(

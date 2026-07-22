@@ -21,6 +21,7 @@ import {
   setCaseCreditorManual,
   setItemRemark,
   setItemQty,
+  setItemCartonQty,
 } from "../services/assr";
 import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken, issueSalesToken, revokeCaseTokens } from "../services/caseTracking";
@@ -2838,7 +2839,7 @@ app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async 
   const id = parseInt(c.req.param("id"), 10);
   const itemId = parseInt(c.req.param("itemId"), 10);
   if (isNaN(id) || isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
-  const body = await c.req.json<{ remark?: string | null; qty?: number }>();
+  const body = await c.req.json<{ remark?: string | null; qty?: number; qty_carton?: number }>();
   const userId = (c as any).get?.("userId") ?? null;
   const prevItem = await c.env.DB.prepare(
     `SELECT item_code, remark, qty FROM assr_items WHERE id = ? AND assr_id = ?`
@@ -2865,6 +2866,14 @@ app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async 
         { category: "service", source_channel: "app" }
       );
     }
+  }
+
+  // Carton quantity — a second, user-selected quantity. Not logged to the
+  // timeline (date + remark only, owner 2026-07-21).
+  if (body.qty_carton !== undefined) {
+    const qtyCarton = Math.max(1, Math.round(Number(body.qty_carton) || 0));
+    const ok = await setItemCartonQty(c.env, id, itemId, qtyCarton);
+    if (!ok) return c.json({ error: "Not found" }, 404);
   }
 
   // Remark — capture the prior value so the change is recorded
