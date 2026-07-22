@@ -304,23 +304,27 @@ function OrganizerManager() {
 // so the picker can't introduce a casing variant that downstream
 // filters would miss. Cities (SEREMBAN, IPOH, KUANTAN…) are rolled
 // up to their state — they're not valid picks here.
+/* Canonical Malaysian states — aligned to `scm.my_localities` after mig 0172
+   (owner 2026-07-22). Was UPPERCASE short list; now matches SCM Title Case
+   spelling so cross-module Sales-by-state / delivery-region reports bucket
+   the same state under one label. */
 const MY_STATES = [
-  "JOHOR",
-  "KEDAH",
-  "KELANTAN",
-  "KL",
-  "LABUAN",
-  "MELAKA",
-  "NEGERI SEMBILAN",
-  "PAHANG",
-  "PENANG",
-  "PERAK",
-  "PERLIS",
-  "PUTRAJAYA",
-  "SABAH",
-  "SARAWAK",
-  "SELANGOR",
-  "TERENGGANU",
+  "Johor",
+  "Kedah",
+  "Kelantan",
+  "Kuala Lumpur",
+  "Labuan",
+  "Melaka",
+  "Negeri Sembilan",
+  "Pahang",
+  "Perak",
+  "Perlis",
+  "Pulau Pinang",
+  "Putrajaya",
+  "Sabah",
+  "Sarawak",
+  "Selangor",
+  "Terengganu",
 ] as const;
 
 function VenueManager() {

@@ -3,6 +3,7 @@ import { recomputeAutoCostLines } from "./projectCostRates";
 import { scopeNotExpiredSql } from "./projectAcl";
 import { isSensitiveChecklistItem, isSetupDismantleSection } from "./pmsAccess";
 import { todayMyt } from "../scm/lib/my-time";
+import { canonicalizeMyState } from "../scm/lib/canonical-state";
 
 // ── Codes ─────────────────────────────────────────────────────
 // Format: `YYYY-MM-{ORGANIZER}-{STATE}-{VENUE}-{BRAND}` — built from
@@ -232,6 +233,12 @@ export async function createProject(env: Env, input: CreateProjectInput) {
       .first<{ slug: string | null }>();
     eventTypeSlug = et?.slug ?? null;
   }
+  /* Mig 0172 (owner 2026-07-22) — canonicalize the state at the door so
+     Projects stops writing UPPERCASE 'PENANG'/'KL' while SCM writes 'Pulau
+     Pinang'/'Kuala Lumpur'. Foreign state names (China provinces) pass
+     through unchanged. */
+  input.state = canonicalizeMyState(input.state ?? null);
+
   // Derive code from identity fields. Throws if state/venue/brand are
   // missing; route layer converts to a 400. Organizer null OR
   // event_type=solo → "SOLO".
@@ -544,6 +551,14 @@ export async function patchProject(
     "end_date" in body ? (body.end_date as string | null) : prevEnd;
   if (nextStart && nextEnd && nextEnd < nextStart) {
     throw new Error("end_date must be on or after start_date");
+  }
+
+  /* Mig 0172 — canonicalize MY state on the way in. Any PATCH that sends
+     'PENANG'/'KL'/'W.P. Kuala Lumpur' is rewritten to the canonical form
+     ('Pulau Pinang'/'Kuala Lumpur') the SCM surfaces use, so cross-module
+     bucketing stops splitting the same physical state. */
+  if ("state" in body) {
+    body.state = canonicalizeMyState(body.state as string | null);
   }
 
   const sets: string[] = [];

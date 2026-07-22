@@ -69,6 +69,7 @@ import { orderSofaModuleRowsWithinBuilds, sortSoLinesByGroupRank } from '../shar
    + row-build lives in the lib; this route batches the DB collision check. */
 import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { warehouseLabel } from '../lib/warehouse-label';
+import { canonicalizeMyState } from '../lib/canonical-state';
 import {
   scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   isMirroredDocNo, mintsIntoMirroredNamespace, houzsOwns2990,
@@ -842,20 +843,20 @@ export const deriveCountryFromState = async (
   state: string | null | undefined,
 ): Promise<string | null> => {
   if (!state) return null;
+  /* Mig 0172 (owner 2026-07-22) — canonicalize BEFORE the my_localities lookup
+     so "PENANG" or "Penang" both resolve to "Pulau Pinang" and the lookup
+     returns Malaysia cleanly. The 2026-05-28 tolerant fallback below is kept
+     as a second safety net (a genuinely unknown foreign state name should
+     still not leave Country blank when the caller obviously typed something),
+     but with canonicalization in front it should almost never fire. */
+  const probe = canonicalizeMyState(state) ?? state;
   const { data } = await sb
     .from('my_localities')
     .select('country')
-    .eq('state', state)
+    .eq('state', probe)
     .limit(1)
     .maybeSingle();
   const country = (data as { country?: string } | null)?.country;
-  /* Commander 2026-05-28: a SO with a state set was showing a BLANK Country
-     when the state name didn't match a seeded locality — e.g. my_localities
-     stores "Pulau Pinang" but the form/caller used the common alias "Penang".
-     2990 is Malaysia-only today (every my_localities row is 'Malaysia'), so
-     fall back to 'Malaysia' for any non-empty-but-unmatched state instead of
-     leaving Country empty. The exact match above still wins first, so a future
-     non-MY locality set keeps working. */
   return country ?? 'Malaysia';
 };
 
@@ -4632,7 +4633,10 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     emergency_contact_relationship: (body.emergencyContactRelationship as string) ?? null,
     target_date: (body.targetDate as string) ?? null,
     customer_id: orderCustomerId,
-    customer_state: (body.customerState as string) ?? null,
+    /* Mig 0172 — canonicalize MY state at write so 'PENANG' / 'Kl' / 'W.P.
+       Kuala Lumpur' land as the exact my_localities spelling. Foreign state
+       names (China, SG) round-trip unchanged. */
+    customer_state: canonicalizeMyState((body.customerState as string | null | undefined) ?? null),
     /* Task #121 — country snapshot auto-derived above. */
     customer_country: customerCountrySnapshot,
     /* Cutover #14 (mig 0158) — POS marketing demographics captured ON the SO,
@@ -5907,6 +5911,14 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     } else {
       updates[to] = body[from];
     }
+  }
+  /* Mig 0172 (owner 2026-07-22) — canonicalize customer_state at write so a
+     PATCH that sends 'PENANG' / 'Kl' / 'W.P. Kuala Lumpur' lands as the exact
+     my_localities spelling. Foreign state names (China, SG) round-trip
+     unchanged. Runs after the mapping loop so this catches whatever landed
+     from `customerState` (mapped to customer_state above). */
+  if (updates['customer_state'] !== undefined) {
+    updates['customer_state'] = canonicalizeMyState(updates['customer_state'] as string | null);
   }
   /* VENUE OVERRIDE (owner 2026-07-19, migration 0148) — the operator has just
      edited the venue on this order, so the value is now theirs, not the

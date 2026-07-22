@@ -680,26 +680,29 @@ function composeDefaultProjectName(p: {
   return `${left} @ ${venue}`;
 }
 
-// Canonical Malaysian states — kept in sync with ProjectMaintenance's
-// MY_STATES (single source of truth lives there, mirrored here so the
-// New Project form can offer the same dropdown without an import cycle).
+/* Canonical Malaysian states — aligned to `scm.my_localities` after mig 0172
+   (owner 2026-07-22). PMS used to store an UPPERCASE short list (`JOHOR` /
+   `KL` / `PENANG`) while SCM stored the Title Case full names (`Johor` /
+   `Kuala Lumpur` / `Pulau Pinang`); a shared Sales-by-state report split the
+   same physical state into two buckets. This list IS the SCM one — new rows
+   land canonical, existing UPPERCASE rows are back-filled by the migration. */
 const PROJECT_STATES = [
-  "JOHOR",
-  "KEDAH",
-  "KELANTAN",
-  "KL",
-  "LABUAN",
-  "MELAKA",
-  "NEGERI SEMBILAN",
-  "PAHANG",
-  "PENANG",
-  "PERAK",
-  "PERLIS",
-  "PUTRAJAYA",
-  "SABAH",
-  "SARAWAK",
-  "SELANGOR",
-  "TERENGGANU",
+  "Johor",
+  "Kedah",
+  "Kelantan",
+  "Kuala Lumpur",
+  "Labuan",
+  "Melaka",
+  "Negeri Sembilan",
+  "Pahang",
+  "Perak",
+  "Perlis",
+  "Pulau Pinang",
+  "Putrajaya",
+  "Sabah",
+  "Sarawak",
+  "Selangor",
+  "Terengganu",
 ] as const;
 
 // ── Stage helpers ────────────────────────────────────────────

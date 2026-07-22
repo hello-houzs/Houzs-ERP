@@ -34,6 +34,7 @@
 import { Hono } from "hono";
 import { supabaseAuth } from "../middleware/auth";
 import { activeCompanyId, activeCompanySql } from "../lib/companyScope";
+import { canonicalizeMyState } from "../lib/canonical-state";
 import type { Env, Variables } from "../env";
 
 export const venues = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -111,7 +112,9 @@ venues.post("/", async (c) => {
     (body.notes as string | null | undefined) ??
     (body.address as string | null | undefined) ??
     null;
-  const state = (body.state as string | null | undefined) ?? null;
+  /* Mig 0172 — canonicalize MY state at write so venues stop landing as
+     'PENANG' / 'KL' while SCM stores 'Pulau Pinang' / 'Kuala Lumpur'. */
+  const state = canonicalizeMyState((body.state as string | null | undefined) ?? null);
 
   const companyPred = activeCompanySql(c);
   const existing = await c.env.DB.prepare(
@@ -191,7 +194,8 @@ venues.patch("/:id", async (c) => {
   }
   if ("state" in body) {
     sets.push("state = ?");
-    binds.push((body.state as string | null | undefined) ?? null);
+    /* Mig 0172 — canonicalize on PATCH too. */
+    binds.push(canonicalizeMyState((body.state as string | null | undefined) ?? null));
   }
   if ("active" in body) {
     sets.push("active = ?");
