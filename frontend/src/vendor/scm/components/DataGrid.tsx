@@ -328,9 +328,8 @@ function DataGridInner<T>({
      grid card's `overflow: hidden`, which otherwise clips the dropdown when the
      card is short (few rows). Anchor it to the toolbar button's live rect. */
   const columnsBtnRef = useRef<HTMLButtonElement>(null);
-  /* Ref on the popover panel so the scroll-to-close guard can tell an INSIDE
-     scroll (the operator scrolling the column list) from an OUTSIDE scroll
-     (the page/grid moving, which should dismiss the detached fixed popover). */
+  /* Ref on the drawer panel (kept for element queries; the old scroll-to-close
+     guard is gone — the drawer is non-modal, see the close effect below). */
   const columnsMenuRef = useRef<HTMLDivElement>(null);
   /* Drag-to-reorder INSIDE the Columns drawer (unified column UX, owner
      2026-07-22): dragging a row writes the same layout.order the header drag
@@ -395,28 +394,17 @@ function DataGridInner<T>({
     };
   }, [rowCtx]);
 
-  /* Close the Columns popover on outside click — mirrors the `ctx` pattern.
-     The popover itself stops propagation on its container so clicks inside
-     don't dismiss it. Escape also closes for keyboard parity. */
+  /* The Columns drawer is NON-MODAL (owner 2026-07-22: the grid must stay
+     fully interactive — including HORIZONTAL scroll — while the drawer is
+     open, so reorder / show-hide changes land visibly live). So: no backdrop,
+     no outside-click close, no scroll-close. It closes only via its ✕, the
+     toolbar button toggle, or Escape — the same contract as the shared
+     right-side <Panel/> the DataTable pages use. */
   useEffect(() => {
     if (!columnsMenuOpen) return;
-    const close = () => setColumnsMenuOpen(false);
-    /* Scrolling the menu's OWN list must not close the menu. We listen on the
-       capture phase so we still catch scrolls of any outer page container, but
-       skip the event when it originates inside the menu itself. */
-    const onScroll = (e: Event) => {
-      if (e.target instanceof Node && columnsMenuRef.current?.contains(e.target)) return;
-      close();
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
-    window.addEventListener('click', close);
-    window.addEventListener('scroll', onScroll, true);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setColumnsMenuOpen(false); };
     window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('click', close);
-      window.removeEventListener('scroll', onScroll, true);
-      window.removeEventListener('keydown', onKey);
-    };
+    return () => window.removeEventListener('keydown', onKey);
   }, [columnsMenuOpen]);
 
   /* Close the per-column filter dropdown on outside click / Escape. */
@@ -1225,10 +1213,6 @@ function DataGridInner<T>({
           </button>
           {columnsMenuOpen && (
             <>
-              <div
-                className={styles.columnsMenuBackdrop}
-                onClick={() => setColumnsMenuOpen(false)}
-              />
               <div
                 ref={columnsMenuRef}
                 className={styles.columnsDrawer}
