@@ -169,6 +169,7 @@ export const PaymentVouchers = () => {
         exportName="Payment Vouchers"
         rowKey={(r) => r.id}
         searchPlaceholder="Search vouchers…"
+        loadedSearchLimit={500}
         groupBanner={false}
         onRowDoubleClick={(r) => navigate(`/scm/payment-vouchers/${r.id}`)}
         rowStyle={(r) => r.status === 'CANCELLED'

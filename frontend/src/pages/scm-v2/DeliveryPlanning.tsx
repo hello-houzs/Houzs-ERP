@@ -751,14 +751,6 @@ export const DeliveryPlanning = () => {
     ];
   }, [data?.regions]);
 
-  /* code → display label, from the master (drives the Region grid column). */
-  const regionLabel = useMemo<Record<string, string>>(() => {
-    const m: Record<string, string> = {};
-    for (const r of data?.regions ?? []) m[r.key] = r.label;
-    return m;
-  }, [data?.regions]);
-  const regionLabelOf = (code: string): string => regionLabel[code] ?? code;
-
   const activeRegionLabel = regionTabs.find((r) => r.key === activeRegion)?.label ?? 'All';
 
   const setState = (s: string) => {
@@ -781,7 +773,30 @@ export const DeliveryPlanning = () => {
     [allOrders, activeState],
   );
 
-  const columns = useMemo<DataGridColumn<PlanningOrder>[]>(() => [
+  const columns = useMemo<DataGridColumn<PlanningOrder>[]>(() => {
+    /* The DEFAULT header order (owner 2026-07-22 header tidy): identity →
+       status → dates → fleet → documents → money, with every default-hidden
+       HC / crew-detail column grouped after, so the Columns drawer reads in
+       the same logical blocks. The array below stays grouped by DATA SOURCE
+       (easier to maintain against the API shape); this list is what pristine
+       layouts actually show. A user's saved layout.order still wins. A key
+       missing here falls to the end in definition order. */
+    const DP_DEFAULT_ORDER = [
+      'row_type', 'so_doc_no', 'company_code', 'debtor_name', 'phone',
+      'region', 'delivery_state', 'delivery_substatus',
+      'customer_delivery_date', 'amended_delivery_date', 'sched_date', 'days_left',
+      'stock_remark', 'driver', 'lorry', 'do', 'do_date',
+      'shipout_date', 'eta_arriving_port', 'arrives_em_warehouse_date',
+      'customer_delivered_date', 'balance_centi',
+      // ── default-hidden from here down (drawer order) ──
+      'branding', 'address', 'postcode', 'building_type', 'possession_date',
+      'house_type', 'replacement_disposal', 'referral', 'warehouse',
+      'so_date', 'processing_date', 'amend_date_from_customer', 'amend_reason',
+      'internal_expected_dd', 'time_range', 'time_confirmed', 'arrival_at', 'departure_at',
+      'driver_ic', 'driver_contact', 'driver_2', 'helper_1', 'helper_2',
+    ];
+    const pos = new Map(DP_DEFAULT_ORDER.map((k, i) => [k, i] as const));
+    const cols: DataGridColumn<PlanningOrder>[] = [
     {
       /* Row type — SO delivery vs ASSR (service-case) job. A chip per row so the
          two kinds read apart at a glance. */
@@ -826,7 +841,9 @@ export const DeliveryPlanning = () => {
       searchValue: (o) => o.phone ?? '',
     },
     {
-      key: 'branding', label: 'Branding', width: 130, groupable: true,
+      /* Default-hidden since the 2026-07-22 header tidy — product brand rarely
+         drives scheduling; re-show it from the Columns drawer when needed. */
+      key: 'branding', label: 'Branding', width: 130, groupable: true, defaultHidden: true,
       accessor: (o) => o.branding ?? '—',
       searchValue: (o) => o.branding ?? '',
       groupValue: (o) => o.branding ?? '(none)',
@@ -840,12 +857,6 @@ export const DeliveryPlanning = () => {
       key: 'postcode', label: 'Postcode', width: 100, defaultHidden: true,
       accessor: (o) => o.postcode ?? '—',
       searchValue: (o) => o.postcode ?? '',
-    },
-    {
-      key: 'customer_state', label: 'State', width: 120, groupable: true, defaultHidden: true,
-      accessor: (o) => o.customer_state ?? '—',
-      searchValue: (o) => o.customer_state ?? '',
-      groupValue: (o) => o.customer_state ?? '(none)',
     },
     {
       key: 'building_type', label: 'Property', width: 120, groupable: true, defaultHidden: true,
@@ -880,12 +891,17 @@ export const DeliveryPlanning = () => {
       groupValue: (o) => o.referral ?? '(none)',
     },
     {
-      key: 'region', label: 'Region', width: 110, sortable: true, groupable: true,
-      accessor: (o) => regionLabelOf(o.region),
-      searchValue: (o) => regionLabelOf(o.region),
-      groupValue: (o) => regionLabelOf(o.region),
-      exportValue: (o) => regionLabelOf(o.region),
-      sortFn: (a, b) => regionLabelOf(a.region).localeCompare(regionLabelOf(b.region)),
+      /* The order's ACTUAL customer state (Kuala Lumpur / Selangor / Johor …).
+         Key stays 'region' so existing saved column layouts keep this column
+         visible in place — but it now shows the granular state, not the region
+         BUCKET. The bucket is the tab row above; which states roll up into which
+         bucket is owner-maintained in Delivery Regions. */
+      key: 'region', label: 'Cust. State', width: 140, sortable: true, groupable: true,
+      accessor: (o) => o.customer_state?.trim() || '—',
+      searchValue: (o) => o.customer_state ?? '',
+      groupValue: (o) => o.customer_state?.trim() || '(none)',
+      exportValue: (o) => o.customer_state ?? '',
+      sortFn: (a, b) => (a.customer_state ?? '').localeCompare(b.customer_state ?? ''),
     },
     {
       key: 'warehouse', label: 'Warehouse', width: 150, sortable: true, groupable: true, defaultHidden: true,
@@ -908,7 +924,7 @@ export const DeliveryPlanning = () => {
       filterType: 'date', dateValue: (o) => o.processing_date,
     },
     {
-      key: 'customer_delivery_date', label: 'Delivery Date', width: 130, sortable: true,
+      key: 'customer_delivery_date', label: 'Cust. Date', width: 130, sortable: true,
       accessor: (o) => (
         <span style={{ fontVariantNumeric: 'tabular-nums' }}>
           {fmtDateOrDash(o.customer_delivery_date)}
@@ -923,14 +939,14 @@ export const DeliveryPlanning = () => {
        to. "Amend (Cust)" (the customer's requested new date) default-HIDES. The
        ORIGINAL "Delivery Date" column above is unchanged. */
     {
-      key: 'amended_delivery_date', label: 'Amended', width: 130, sortable: true,
+      key: 'amended_delivery_date', label: 'Amended Date', width: 130, sortable: true,
       accessor: (o) => fmtDateOrDash(o.amended_delivery_date),
       searchValue: (o) => o.amended_delivery_date ?? '',
       sortFn: (a, b) => String(a.amended_delivery_date ?? '').localeCompare(String(b.amended_delivery_date ?? '')),
       filterType: 'date', dateValue: (o) => o.amended_delivery_date,
     },
     {
-      key: 'amend_date_from_customer', label: 'Amend (Cust)', width: 130, sortable: true, defaultHidden: true,
+      key: 'amend_date_from_customer', label: 'Cust. Requested', width: 140, sortable: true, defaultHidden: true,
       accessor: (o) => fmtDateOrDash(o.amend_date_from_customer),
       searchValue: (o) => o.amend_date_from_customer ?? '',
       sortFn: (a, b) => String(a.amend_date_from_customer ?? '').localeCompare(String(b.amend_date_from_customer ?? '')),
@@ -944,7 +960,7 @@ export const DeliveryPlanning = () => {
       searchValue: (o) => o.amend_reason ?? '',
     },
     {
-      key: 'internal_expected_dd', label: 'Est. (New)', width: 120, sortable: true, defaultHidden: true,
+      key: 'internal_expected_dd', label: 'Internal Est.', width: 130, sortable: true, defaultHidden: true,
       accessor: (o) => fmtDateOrDash(o.internal_expected_dd),
       searchValue: (o) => o.internal_expected_dd ?? '',
       sortFn: (a, b) => String(a.internal_expected_dd ?? '').localeCompare(String(b.internal_expected_dd ?? '')),
@@ -969,7 +985,7 @@ export const DeliveryPlanning = () => {
       groupValue: (o) => (isAssr(o) || isDp(o) ? '(n/a)' : o.stock_status),
     },
     {
-      key: 'delivery_state', label: 'State', width: 160, sortable: true, groupable: true,
+      key: 'delivery_state', label: 'Delivery State', width: 160, sortable: true, groupable: true,
       /* Inline-editable: writes a manual delivery_state override (wins over the
          derived state). Real stock readiness stays visible in the Stock column. */
       accessor: (o) => <StatusEditCell order={o} sched={sched} />,
@@ -994,7 +1010,7 @@ export const DeliveryPlanning = () => {
        The cross-border ones (shipout_date, eta_arriving_port,
        customer_delivered_date) default-SHOW when the active region is EM/SG. */
     {
-      key: 'delivery_substatus', label: 'Delivery Status', width: 160, groupable: true,
+      key: 'delivery_substatus', label: 'Sub-status', width: 150, groupable: true,
       accessor: (o) => <SubstatusPill value={o.delivery_substatus} />,
       searchValue: (o) => o.delivery_substatus ?? '',
       groupValue: (o) => o.delivery_substatus ?? '(none)',
@@ -1013,7 +1029,7 @@ export const DeliveryPlanning = () => {
       searchValue: (o) => o.time_range ?? '',
     },
     {
-      key: 'time_confirmed', label: 'Time OK', width: 90, align: 'right', defaultHidden: true,
+      key: 'time_confirmed', label: 'Time Confirmed', width: 130, align: 'right', defaultHidden: true,
       accessor: (o) => (o.time_confirmed == null ? '—' : o.time_confirmed ? 'Yes' : 'No'),
       searchValue: (o) => (o.time_confirmed == null ? '' : o.time_confirmed ? 'Yes' : 'No'),
     },
@@ -1120,12 +1136,15 @@ export const DeliveryPlanning = () => {
       sortFn: (a, b) => String(a.do_date ?? '').localeCompare(String(b.do_date ?? '')),
       filterType: 'date', dateValue: (o) => o.do_date,
     },
+    ];
+    // Stable sort into the default header order above (unlisted keys keep
+    // their definition order at the end).
+    return cols.sort((a, b) => (pos.get(a.key) ?? 999) - (pos.get(b.key) ?? 999));
   // The EM/SG cross-border default-show (isEmSg) depends on activeRegion →
-  // recompute the columns on region change. regionLabel feeds the Region column's
-  // display labels (from the config master). The editable Status/Date/Driver/Lorry
+  // recompute the columns on region change. The editable Status/Date/Driver/Lorry
   // accessors close over `sched` + the driver/lorry option lists, so they join the
   // deps (a new driver/lorry list must re-render the pickers).
-  ], [activeRegion, regionLabel, sched, drivers, lorries]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeRegion, sched, drivers, lorries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-4">

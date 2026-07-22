@@ -64,6 +64,19 @@ export type Env = {
   // Optional KV cache for the hydrated session user (see services/sessionCache.ts).
   // Absent in tests/local — auth falls back to the DB path unchanged.
   SESSION_CACHE?: KVNamespace;
+  // Bounded DB-outage session-liveness fallback. "true" = during a DB read
+  // failure getUserBySession may re-serve a session the DB most recently
+  // confirmed active, for up to SESSION_FALLBACK_TTL_MS, instead of logging
+  // everyone out on a cold-start 503 / pooler blip. ABSENT OR ANYTHING ELSE =
+  // OFF (fail-closed default): the fallback code path is not entered at all and
+  // a DB read failure rejects the request. Parsed by
+  // services/sessionCache.isSessionFallbackEnabled.
+  SESSION_FALLBACK_ENABLED?: string;
+  // Milliseconds a DB-confirmed session may be re-served while the DB is down.
+  // Only read when SESSION_FALLBACK_ENABLED is "true". Default 60000, clamped
+  // to 1000..300000; anything non-numeric or out of range uses the default.
+  // Parsed by services/sessionCache.sessionFallbackTtlMs.
+  SESSION_FALLBACK_TTL_MS?: string;
   AUTOCOUNT_API_URL: string;
   AUTOCOUNT_API_KEY: string;
   // Inbound-sync kill switch. "true" = skip every AutoCount pull (cron + manual).
@@ -78,8 +91,15 @@ export type Env = {
   // Public origin for building email links (portal survey URLs etc.).
   // Falls back to the worker URL if unset.
   PUBLIC_APP_URL?: string;
-  // "true" enables admin login-as-member (routes/users.ts impersonation).
-  // Set ONLY in [env.staging.vars] — must never be set on prod.
+  // Commit this Worker build was deployed from. Stamped ONLY by deploy.yml
+  // (`wrangler deploy --var GIT_SHA:<sha>`); absent on any bare local deploy.
+  // Read by GET /health and compared against main by the deploy-watchdog
+  // workflow, which auto-redeploys main when the live Worker goes stale.
+  GIT_SHA?: string;
+  // "true" opens admin login-as-member to EVERY users.manage admin
+  // (routes/users.ts impersonation). Set ONLY in [env.staging.vars] — never
+  // on prod: there the wildcard owner (`*`) can always impersonate anyway,
+  // via short-lived 1-hour audited sessions, without this flag.
   IMPERSONATION_ENABLED?: string;
   // Cost/margin DISPLAY switch — the ONE backend-authoritative toggle for
   // whether SCM sales-document cost/margin may reach the wire at all. "false"
@@ -89,6 +109,23 @@ export type Env = {
   // regression). Parsed once via scm/lib/costing-enabled.isCostingDisplayEnabled.
   // Mirrors the FE build-time COSTING_DISPLAY_ENABLED, but THIS is authoritative.
   COSTING_DISPLAY_ENABLED?: string;
+  /** Error tracking (services/errorTracking.ts). The ONE switch: while unset —
+   *  the default on every environment — the reporter makes no network call, no
+   *  log line and no allocation, so the ERP behaves exactly as it did before it
+   *  existed. Set once with `wrangler secret put SENTRY_DSN` to turn on BOTH
+   *  backend throws and relayed browser crashes. A Sentry DSN or a self-hosted
+   *  GlitchTip DSN both work — same wire protocol. See
+   *  docs/error-tracking-options.md. */
+  SENTRY_DSN?: string;
+  /** Environment label on every reported event. Defaults to "production";
+   *  [env.staging.vars] sets "staging" so one project can hold both without the
+   *  two polluting each other's alert rules. Plain var, not a secret. */
+  SENTRY_ENVIRONMENT?: string;
+  /** Fraction of errors to report, "0".."1". Absent / unparseable = 1 (report
+   *  everything), which is the right default at this volume — the per-isolate
+   *  storm brake, not sampling, is what protects the free quota. Dial down only
+   *  if the monthly quota is genuinely being spent on steady-state noise. */
+  SENTRY_SAMPLE_RATE?: string;
   // CUTOVER FLIP SWITCH (task #15). "true" = Houzs owns the 2990- doc namespace
   // (post-flip) so the mirror guards stop blocking; unset/"false" = pre-flip
   // read-only mirror. Parsed via scm/lib/companyScope.houzsOwns2990. Flip in the

@@ -1,6 +1,13 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Link, NavLink, useLocation } from "react-router-dom";
-import { Check, ChevronRight, ChevronsUpDown } from "lucide-react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import {
+  Check,
+  ChevronRight,
+  ChevronsUpDown,
+  LogOut,
+  UserRound,
+  UserRoundCog,
+} from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { useBreadcrumbs } from "../hooks/useBreadcrumbs";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -16,6 +23,7 @@ import {
   setActiveCompanyId,
   subscribeActiveCompany,
 } from "../lib/activeCompany";
+import { clearAllScmHandoffs } from "../lib/scmHandoffStorage";
 
 /**
  * Desktop-only sticky top navbar. Hosts breadcrumb (left), search +
@@ -88,28 +96,7 @@ export function TopNavbar() {
           <>
             <PresenceIndicator />
             <NotificationBell collapsed direction="down" align="end" />
-            <NavLink
-              to="/profile"
-              className="group flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-bg/60"
-              title={`${user.name || user.email} — Profile`}
-              aria-label="Profile"
-            >
-              <Avatar
-                userId={user.id}
-                hasImage={user.profile_pic_r2_key}
-                name={user.name}
-                email={user.email}
-                size={28}
-              />
-              <div className="hidden min-w-0 xl:block">
-                <div className="truncate text-[11.5px] font-semibold text-ink group-hover:text-accent">
-                  {user.name || user.email.split("@")[0]}
-                </div>
-                <div className="truncate text-[9.5px] text-ink-muted">
-                  {user.role_name}
-                </div>
-              </div>
-            </NavLink>
+            <ProfileMenu />
           </>
         )}
       </div>
@@ -170,14 +157,22 @@ function CompanySwitcher() {
   // No-op: hidden entirely until there is a real choice to make.
   if (companies.length <= 1) return null;
 
-  // Active = the stored pick when it's still a valid company, else the backend's
-  // resolved active (hostname default), else the first company.
+  // Active = the stored pick when it's still a valid company, else the company
+  // the BACKEND says it actually resolved for this request (the hostname
+  // default when we sent no X-Company-Id).
+  //
+  // There is deliberately NO `companies[0]` fallback. Falling back to the first
+  // row is a positional guess: it labels the user with a company nobody has
+  // confirmed they are in, and every document they then raise is attributed
+  // somewhere else. When neither source can answer we say so — an unlabelled
+  // switcher is a prompt to choose; a wrong label is a silent misattribution.
+  const resolvedByBackend = data?.activeCompanyId ?? null;
   const activeId =
-    (stored && companies.some((co) => co.id === stored) ? stored : null) ??
-    data?.activeCompanyId ??
-    companies[0]?.id ??
-    null;
-  const active = companies.find((co) => co.id === activeId) ?? companies[0];
+    (stored !== null && companies.some((co) => co.id === stored) ? stored : null) ??
+    (resolvedByBackend !== null && companies.some((co) => co.id === resolvedByBackend)
+      ? resolvedByBackend
+      : null);
+  const active = activeId === null ? undefined : companies.find((co) => co.id === activeId);
 
   async function pick(id: number) {
     setOpen(false);
@@ -204,11 +199,17 @@ function CompanySwitcher() {
     // observer to refetch — so a list kept showing the previous company until it
     // happened to remount. A full page reload is the bulletproof fix: nothing
     // stale can render because the whole app re-boots. We persist the new active
-    // company to localStorage FIRST (setActiveCompanyId is a synchronous
-    // localStorage write), so after the reload the app boots under the new company
-    // and every request carries the new X-Company-Id header. Company switches are
-    // rare + deliberate, so the reload cost is an acceptable trade for guaranteed
-    // zero cross-company staleness.
+    // company FIRST — setActiveCompanyId writes this tab's sessionStorage pick
+    // AND the durable per-user record synchronously — so after the reload the app
+    // boots under the new company and every request carries the new X-Company-Id
+    // header. Company switches are rare + deliberate, so the reload cost is an
+    // acceptable trade for guaranteed zero cross-company staleness.
+    //
+    // clearAllScmHandoffs drops the TRANSIENT navigation handoffs only. Staged
+    // payment-retry intents are company-scoped and stay put: they are money
+    // already collected, and switching company is not permission to destroy it
+    // (see lib/scmHandoffStorage).
+    clearAllScmHandoffs();
     setActiveCompanyId(id);
     window.location.reload();
   }
@@ -221,9 +222,16 @@ function CompanySwitcher() {
         className="flex items-center gap-1.5 rounded-md border border-border bg-bg/40 px-2 py-1 text-[11.5px] font-medium text-ink-secondary transition-colors hover:bg-bg/60 hover:text-accent"
         aria-haspopup="listbox"
         aria-expanded={open}
-        title="Switch company"
+        title={active ? "Switch company" : "No company selected — choose one"}
       >
-        <span className="max-w-[9rem] truncate">{active?.name ?? "Company"}</span>
+        {/* Never a company NAME we have not confirmed. "Select company" reads as
+            an unanswered question, which is exactly what it is. */}
+        <span
+          className={cn("max-w-[9rem] truncate", !active && "italic text-warning-text")}
+          data-company-unresolved={active ? undefined : "true"}
+        >
+          {active?.name ?? "Select company"}
+        </span>
         <ChevronsUpDown size={13} strokeWidth={2} className="shrink-0 text-ink-muted/70" />
       </button>
 
@@ -426,4 +434,164 @@ function labelForPath(pathname: string): string {
   }
   const seg = segs[0] || "";
   return seg ? seg[0].toUpperCase() + seg.slice(1) : "";
+}
+
+// ── Profile menu ───────────────────────────────────────────
+// Nico 2026-07-14 — clicking the avatar in the top rail now opens a small
+// dropdown with Profile + Log out, instead of jumping straight to /profile
+// (which was a surprise for anyone reaching for a sign-out control). Follows
+// the CompanySwitcher popover pattern in this file: click-outside + Esc close.
+
+function ProfileMenu() {
+  const { user, logout, can } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const activeRoute = location.pathname === "/profile";
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (!wrapRef.current) return;
+      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [open]);
+
+  if (!user) return null;
+
+  async function onLogout() {
+    setOpen(false);
+    // Same rule as the company switcher: transient SCM navigation handoffs
+    // must not survive an SPA identity change, or the next user picks up the
+    // outgoing user's in-flight state.
+    clearAllScmHandoffs();
+    try {
+      await logout();
+    } finally {
+      // logout() clears the SPA session; route back to /login so the user
+      // lands somewhere sensible even when a stray page was open.
+      navigate("/login", { replace: true });
+    }
+  }
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "group flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-bg/60",
+          (open || activeRoute) && "bg-bg/60",
+        )}
+        title={`${user.name || user.email}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Account menu"
+      >
+        <Avatar
+          userId={user.id}
+          hasImage={user.profile_pic_r2_key}
+          name={user.name}
+          email={user.email}
+          size={28}
+        />
+        <div className="hidden min-w-0 xl:block">
+          <div
+            className={cn(
+              "truncate text-[11.5px] font-semibold text-ink",
+              !open && "group-hover:text-primary",
+            )}
+          >
+            {user.name || user.email.split("@")[0]}
+          </div>
+          <div className="truncate text-[9.5px] text-ink-muted">
+            {user.role_name}
+          </div>
+        </div>
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          aria-label="Account menu"
+          className="absolute right-0 top-[calc(100%+6px)] z-40 w-[220px] overflow-hidden rounded-lg border border-border bg-surface shadow-slab animate-toast-in"
+        >
+          {/* Identity strip — echoes who the menu belongs to; the chip alone
+              is easy to misread once the menu is open and the trigger's
+              hover state has dropped. */}
+          <div className="flex items-center gap-2.5 border-b border-border-subtle px-3 py-2.5">
+            <Avatar
+              userId={user.id}
+              hasImage={user.profile_pic_r2_key}
+              name={user.name}
+              email={user.email}
+              size={32}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[12.5px] font-semibold text-ink">
+                {user.name || user.email.split("@")[0]}
+              </div>
+              <div className="truncate text-[10.5px] text-ink-muted">
+                {user.email}
+              </div>
+            </div>
+          </div>
+          <div className="p-1">
+            <Link
+              to="/profile"
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className={cn(
+                "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[12.5px] font-medium text-ink transition-colors hover:bg-primary/[.07] hover:text-primary",
+                activeRoute && "bg-primary/[.07] text-primary",
+              )}
+            >
+              <UserRound size={14} className="shrink-0" />
+              Profile
+            </Link>
+            {/* Nico 2026-07-22 — OWNER-ONLY (wildcard `*` = Super Admin role /
+                god-tier position; same signal the backend's impersonation gate
+                uses). Jumps to the Team page where the per-member "Login as"
+                button lives (POST /api/users/:id/impersonate, see main.tsx
+                view-as hand-off block). Non-owners don't see this entry at
+                all — an admin who can't impersonate shouldn't be offered a
+                dead-end "Switch user". */}
+            {can("*") && (
+              <Link
+                to="/team"
+                role="menuitem"
+                onClick={() => setOpen(false)}
+                className={cn(
+                  "mt-0.5 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[12.5px] font-medium text-ink transition-colors hover:bg-primary/[.07] hover:text-primary",
+                  location.pathname === "/team" && "bg-primary/[.07] text-primary",
+                )}
+              >
+                <UserRoundCog size={14} className="shrink-0" />
+                Switch user
+              </Link>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => void onLogout()}
+              className="mt-0.5 flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[12.5px] font-medium text-ink transition-colors hover:bg-err/[.08] hover:text-err"
+            >
+              <LogOut size={14} className="shrink-0" />
+              Log out
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

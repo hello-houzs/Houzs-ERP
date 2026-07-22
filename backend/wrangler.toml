@@ -51,6 +51,26 @@ AUTOCOUNT_SYNC_DISABLED = "false"
 # path), by design. Flip to "false" + redeploy to hide; parsed by
 # scm/lib/costing-enabled.isCostingDisplayEnabled.
 COSTING_DISPLAY_ENABLED = "true"
+# ── SESSION-REVOCATION FALLBACK (security relaxation — OFF by default) ───────
+# "false"/absent (CURRENT STATE) = session revocation is strictly authoritative:
+# if the authoritative DB read fails, the request is REJECTED. A cold-start 503
+# or a Supavisor blip therefore logs everyone out until it clears — the pre-2026-07
+# behaviour, unchanged.
+# "true" = during a DB READ FAILURE ONLY, getUserBySession may re-serve a session
+# the DB most recently CONFIRMED active, for up to SESSION_FALLBACK_TTL_MS. That
+# buys availability across brief blips at the cost of a BOUNDED (<= TTL) delay
+# before a revocation takes effect while the DB is unreachable. With a reachable
+# DB, revocation is immediate either way.
+# Off is the default because absence must never relax a security control. To
+# enable: set "true" here + redeploy (`cd backend && npx wrangler deploy` from a
+# branch rebased on origin/main). To disable again: set "false" + redeploy.
+# Parsed by services/sessionCache.isSessionFallbackEnabled.
+SESSION_FALLBACK_ENABLED = "false"
+# How long (ms) a DB-confirmed session may be re-served while the DB is down.
+# Read ONLY when SESSION_FALLBACK_ENABLED = "true". Default 60000; clamped to
+# 1000..300000, and anything non-numeric falls back to the default. Lower it to
+# shorten the worst-case revocation delay during an outage.
+SESSION_FALLBACK_TTL_MS = "60000"
 # ── CUTOVER FLIP SWITCH (task #15) ──────────────────────────────────────────
 # "false" (pre-flip): 2990's apps/api is the WRITER of the `2990-` doc namespace
 # and Houzs holds a READ-ONLY mirror, so the mirror guards (companyScope.ts
@@ -187,6 +207,18 @@ dataset = "houzs_erp_metrics"
 #   AE_QUERY_TOKEN       — Cloudflare API token, Account Analytics:Read
 #   CF_ACCOUNT_ID        — Cloudflare account id
 # Other worker secrets:
+#   SENTRY_DSN           — error tracking. NOT SET, deliberately: while it is
+#                          absent the reporter (src/services/errorTracking.ts)
+#                          makes no network call and no log line, so production
+#                          behaves exactly as it did before it was added. One
+#                          command turns it on for BOTH the Worker and relayed
+#                          browser crashes:
+#                            wrangler secret put SENTRY_DSN
+#                          Accepts a Sentry DSN or a self-hosted GlitchTip DSN
+#                          (same wire protocol) — the choice of who holds the
+#                          data is the DSN, not the code. Full rationale, cost
+#                          and the exact list of fields that leave the building:
+#                          docs/error-tracking-options.md.
 #   AUTOCOUNT_API_KEY
 #   DASHBOARD_API_KEY
 #   GOOGLE_MAPS_API_KEY  — used by the planner geocoder (Phase 2)
@@ -254,12 +286,24 @@ AUTOCOUNT_SYNC_DISABLED = "true"
 # [vars] block for what "false" does. Set "false" here to rehearse the hidden
 # state before flipping prod.
 COSTING_DISPLAY_ENABLED = "true"
+# Session-revocation fallback (see prod block) — OFF here too, so staging mirrors
+# prod's current state. Set "true" here first to rehearse the relaxed behaviour
+# (kill the Hyperdrive origin, confirm sessions survive <= TTL) before flipping
+# prod.
+SESSION_FALLBACK_ENABLED = "false"
+SESSION_FALLBACK_TTL_MS = "60000"
 # Cutover flip switch (see prod block). Set "true" on staging to rehearse the
 # post-flip write path (POS creates 2990- SOs natively) before flipping prod.
 HOUZS_OWNS_2990 = "true"
 PUBLIC_APP_URL = "https://houzs-erp-staging.pages.dev"
 EMAIL_FROM = "Houzs ERP Staging <no-reply@houzscentury.com>"
 EMAIL_REPLY_TO = "Houzs Century <hello@houzscentury.com>"
+# Environment label stamped on every reported error (services/errorTracking.ts).
+# Inert on its own — nothing is reported until SENTRY_DSN is set. It exists so
+# that if staging ever gets a DSN, its noise lands under environment=staging and
+# can be excluded from the production alert rule instead of paging someone at
+# 2am for a rehearsal. Prod needs no counterpart: the default is "production".
+SENTRY_ENVIRONMENT = "staging"
 # Admin "login as member" on the Team page (routes/users.ts). Staging-only:
 # the flag must never be added to the prod vars block.
 IMPERSONATION_ENABLED = "true"

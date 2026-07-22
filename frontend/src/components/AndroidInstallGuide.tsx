@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { MoreVertical, Plus, X } from "lucide-react";
 import { isAndroidInstallable, onInstallAvailability } from "../pwa";
+import { shouldShowPwaPrompt } from "./pwaDismissal";
 
 /**
  * AndroidInstallGuide — manual "Add to Home screen" coach for Android
@@ -31,9 +32,7 @@ export function AndroidInstallGuide({
     if (!isAndroidInstallable()) return;
     const t = setTimeout(() => {
       try {
-        const v = localStorage.getItem(DISMISS_KEY);
-        const ageDays = (Date.now() - (v ? parseInt(v, 10) : 0)) / 86400000;
-        if (ageDays >= NAG_AFTER_DAYS) setShow(true);
+        setShow(shouldShowPwaPrompt(DISMISS_KEY, NAG_AFTER_DAYS));
       } catch {
         setShow(true);
       }

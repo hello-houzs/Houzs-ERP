@@ -171,6 +171,7 @@ const JeTab = () => {
       storageKey="dg-accounting-je"
       rowKey={(r) => r.id}
       searchPlaceholder="Filter visible entries…"
+      loadedSearchLimit={500}
       groupBanner={false}
       isLoading={q.isLoading}
       emptyMessage="No entries."

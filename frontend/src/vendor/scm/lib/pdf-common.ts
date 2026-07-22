@@ -17,6 +17,7 @@ import {
   HOUZS_COMPANY_CODE,
   type BrandingLogo,
 } from '../../../lib/branding';
+import { canonicalizeSinglePhone, formatPhone } from '../../shared/phone';
 
 /* HOUZS letterhead — name / reg no / address / phone / email now come from the
    centralised Branding config (one editable record in Settings → Branding),
@@ -58,7 +59,15 @@ export const COMPANY = {
     return splitAddressLines(composeCompanyAddress(getBrandingCache()));
   },
   get phone(): string {
-    return getBrandingCache().phone;
+    // Printed on every document, so it shows the same canonical shape the rest
+    // of the app uses: "+60 3-1234 5678", not "03-1234 5678". canonicalize-
+    // SinglePhone refuses anything that is not unambiguously one number (this
+    // field has held "03-1234 5678 / 019-876 5432"), and formatPhone returns
+    // its input untouched for anything it does not recognise — so a value
+    // either renders in the canonical form or exactly as it was stored. It is
+    // applied on READ as well as on write because rows saved before the write
+    // path canonicalised still hold the local form.
+    return formatPhone(canonicalizeSinglePhone(getBrandingCache().phone));
   },
   get email(): string {
     return getBrandingCache().email;

@@ -33,6 +33,7 @@ import {
   type OutstandingSoItem,
 } from '../../vendor/scm/lib/suppliers-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, removeScmHandoff, writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { activeOptions, maintPickerValues } from '@2990s/shared';
 import { useFabricTrackings, fabricOptionLabel } from '../../vendor/scm/lib/fabric-queries';
@@ -399,22 +400,17 @@ export const PurchaseOrderNew = () => {
   const appliedFromSoRef = useRef(false);
   useEffect(() => {
     if (appliedFromSoRef.current || suppliers.isLoading) return;
-    let rawPicks: string | null = null;
-    try { rawPicks = sessionStorage.getItem('poFromSoPicks'); } catch { /* ignore */ }
+    const pickedRows = readScmHandoff<Array<OutstandingSoItem & { _pickQty?: number }>>('poFromSoPicks');
     /* Commander 2026-05-30 — restore the stashed draft REGARDLESS of whether
        picks came back. If the operator hit Cancel on the picker, picks are
        absent but they STILL want their in-progress lines/header back — losing
        the draft on Cancel was the original complaint. The draft is cleared
        once it's been read so a fresh /new visit (no draft) starts blank. */
-    let draft: {
+    const draft = readScmHandoff<{
       supplierId?: string; poDate?: string; expectedAt?: string;
       purchaseLocationId?: string; notes?: string; lines?: DraftLine[];
-    } | null = null;
-    try {
-      const rawDraft = sessionStorage.getItem('poNewDraft');
-      if (rawDraft) draft = JSON.parse(rawDraft);
-    } catch { /* ignore */ }
-    try { sessionStorage.removeItem('poNewDraft'); } catch { /* ignore */ }
+    }>('poNewDraft');
+    removeScmHandoff('poNewDraft');
 
     appliedFromSoRef.current = true;
     try {
@@ -427,10 +423,9 @@ export const PurchaseOrderNew = () => {
         if (draft.notes)              setNotes(draft.notes);
         if (Array.isArray(draft.lines) && draft.lines.length) setLines(draft.lines);
       }
-      if (rawPicks) {
-        sessionStorage.removeItem('poFromSoPicks');
-        const rows = JSON.parse(rawPicks) as Array<OutstandingSoItem & { _pickQty?: number }>;
-        if (Array.isArray(rows) && rows.length) applyFromSo(rows);
+      if (pickedRows) {
+        removeScmHandoff('poFromSoPicks');
+        if (Array.isArray(pickedRows) && pickedRows.length) applyFromSo(pickedRows);
       }
     } catch { /* malformed — ignore */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -440,11 +435,12 @@ export const PurchaseOrderNew = () => {
      Restored on return (see the effect above) so the picked lines APPEND to
      what's already here instead of resetting the form. */
   const goToFromSo = () => {
-    try {
-      sessionStorage.setItem('poNewDraft', JSON.stringify({
-        supplierId, poDate, expectedAt, purchaseLocationId, notes, lines,
-      }));
-    } catch { /* quota — fall through, picks still apply */ }
+    if (!writeScmHandoff('poNewDraft', {
+      supplierId, poDate, expectedAt, purchaseLocationId, notes, lines,
+    })) {
+      notify({ title: 'Unable to continue', body: 'This browser could not safely store the current Purchase Order draft. Nothing was discarded; free some browser storage and try again.', tone: 'error' });
+      return;
+    }
     navigate('/scm/purchase-orders/from-so');
   };
 

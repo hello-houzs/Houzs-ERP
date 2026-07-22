@@ -2,6 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { identityStorageKey } from "../lib/storageIdentity";
+import {
+  mergeAndWriteAnnouncementAcks,
+  readAnnouncementAcks,
+  type AnnouncementAcks,
+} from "./announcementLocalAcks";
 import type { AnnAttachment, AnnMediaLayout } from "./AnnouncementMedia";
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -75,25 +81,12 @@ const POLL_MS = 60_000;
 // the next poll picks up the server's ackedIds.
 const LOCAL_ACKS_KEY = "announcements:localAcks";
 
-function readLocalAcks(): Record<string, number> {
-  try {
-    const raw = localStorage.getItem(LOCAL_ACKS_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return {};
-    return parsed as Record<string, number>;
-  } catch {
-    return {};
-  }
-}
-
-function writeLocalAcks(next: Record<string, number>) {
-  try {
-    localStorage.setItem(LOCAL_ACKS_KEY, JSON.stringify(next));
-  } catch {
-    // non-fatal
-  }
-}
+// Scoped by the bound user+company: on a shared browser an ack by one user must
+// not silently hide an office notice from the next one. No identity bound yet
+// (pre-/auth/me) → no key → the memo is simply empty, never cross-user.
+// Parsing, capping and clock-skew rejection live in announcementLocalAcks so
+// this hook and its tests share one definition of a valid ack map.
+const localAcksStorageKey = () => identityStorageKey(LOCAL_ACKS_KEY);
 
 // "Waved away for now" ids. MODULE-level, not component state: the phone
 // unmounts its pop-up whenever the shell navigates, and a notice the user has
@@ -143,8 +136,8 @@ export function useAnnouncementBanner(options?: {
   const pollMs = options?.pollMs ?? POLL_MS;
   const { user } = useAuth();
   const qc = useQueryClient();
-  const [localAcks, setLocalAcks] = useState<Record<string, number>>(() =>
-    readLocalAcks(),
+  const [localAcks, setLocalAcks] = useState<AnnouncementAcks>(() =>
+    readAnnouncementAcks(localAcksStorageKey()),
   );
   // Render-visible mirror of the module-level dismiss set, SEEDED from it so a
   // remount (the phone unmounting its pop-up on navigation) doesn't forget what
@@ -192,10 +185,25 @@ export function useAnnouncementBanner(options?: {
           changed = true;
         }
       }
-      if (changed) writeLocalAcks(next);
-      return changed ? next : prev;
+      return changed
+        ? mergeAndWriteAnnouncementAcks(localAcksStorageKey(), next)
+        : prev;
     });
   }, [serverAcked]);
+
+  // Another tab under the SAME identity acking a notice must not leave this tab
+  // popping it again. Only this identity's key is watched.
+  useEffect(() => {
+    const key = localAcksStorageKey();
+    if (!key) return;
+    const sync = (event: StorageEvent) => {
+      if (event.storageArea === localStorage && event.key === key) {
+        setLocalAcks(readAnnouncementAcks(key));
+      }
+    };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, [user?.id]);
 
   // The current banner = the newest active notice that this device hasn't
   // acked (or that the office has reminded since the local ack). Newest first
@@ -219,11 +227,12 @@ export function useAnnouncementBanner(options?: {
   const ack = useCallback(
     async (a: BannerAnnouncement) => {
       const now = Date.now();
-      setLocalAcks((prev) => {
-        const next = { ...prev, [a.id]: now };
-        writeLocalAcks(next);
-        return next;
-      });
+      setLocalAcks((prev) =>
+        mergeAndWriteAnnouncementAcks(localAcksStorageKey(), {
+          ...prev,
+          [a.id]: now,
+        }),
+      );
       dismissSession(a);
       try {
         await api.post(`/api/announcements/${a.id}/ack`);

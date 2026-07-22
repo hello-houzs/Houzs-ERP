@@ -54,6 +54,7 @@ import {
   subscribe as subscribeLocal,
   getSnapshot as getLocalSnapshot,
   deleteDraft,
+  hasQuarantinedLegacyDrafts,
   type MailDraft,
 } from "./mail-local";
 import {
@@ -284,7 +285,7 @@ function cleanSnippet(s: string): string {
 }
 
 // ── ThreadList ───────────────────────────────────────────────────────────
-function ThreadList({
+export function ThreadList({
   threads,
   loading,
   activeId,
@@ -309,14 +310,23 @@ function ThreadList({
   onInjectTest: () => void;
   onRowAction: (action: RowAction, t: MailThreadRow) => void;
 }) {
+  if (loading) {
+    return (
+      <div role="status" aria-live="polite" className="flex flex-col items-center justify-center gap-1.5 px-4 py-10 text-center">
+        <InboxIcon className="h-6 w-6 text-ink-muted/40" />
+        <p className="text-xs font-medium text-ink-muted">Loading…</p>
+      </div>
+    );
+  }
+
   if (threads.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-10 text-center">
         <InboxIcon className="h-6 w-6 text-ink-muted/40" />
         <p className="text-xs font-medium text-ink-muted">
-          {loading ? "Loading…" : emptyLabel(folder)}
+          {emptyLabel(folder)}
         </p>
-        {!loading && folder === "inbox" && (
+        {folder === "inbox" && (
           <>
             <p className="max-w-xs text-[11px] leading-snug text-ink-muted/70">
               Incoming mail syncs in automatically every few minutes. Mail is
@@ -786,26 +796,40 @@ function emptyLabel(folder: Folder): string {
 // ── Drafts list ────────────────────────────────────────────────────────────
 function DraftsList({
   drafts,
+  legacyFound,
   onResume,
+  onDiscard,
 }: {
   drafts: MailDraft[];
+  legacyFound: boolean;
   onResume: (d: MailDraft) => void;
+  onDiscard: (d: MailDraft) => void;
 }) {
+  const legacyNotice = legacyFound ? (
+    <div role="status" className="m-3 rounded-md border border-warning-text/30 bg-warning-bg px-3 py-2 text-[11px] leading-relaxed text-warning-text">
+      This device contains older drafts whose user and company ownership cannot be verified. They are retained but not shown or assigned automatically. Recovery requires an owner decision.
+    </div>
+  ) : null;
   if (drafts.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-10 text-center">
-        <FileText className="h-6 w-6 text-ink-muted/40" />
-        <p className="text-xs font-medium text-ink-muted">No drafts</p>
-        <p className="max-w-xs text-[11px] leading-snug text-ink-muted/70">
-          Start a new email and choose "Save draft" to keep it here. Drafts are
-          stored on this device only.
-        </p>
-      </div>
+      <>
+        {legacyNotice}
+        <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-10 text-center">
+          <FileText className="h-6 w-6 text-ink-muted/40" />
+          <p className="text-xs font-medium text-ink-muted">No drafts</p>
+          <p className="max-w-xs text-[11px] leading-snug text-ink-muted/70">
+            Start a new email and choose "Save draft" to keep it here. Drafts are
+            stored on this device only.
+          </p>
+        </div>
+      </>
     );
   }
   return (
-    <ul className="divide-y divide-border">
-      {drafts.map((d) => (
+    <>
+      {legacyNotice}
+      <ul className="divide-y divide-border">
+        {drafts.map((d) => (
         <li key={d.id} className="group flex items-stretch hover:bg-surface-dim/50">
           <button
             onClick={() => onResume(d)}
@@ -826,13 +850,14 @@ function DraftsList({
             </div>
           </button>
           <div className="flex shrink-0 items-center pr-2 opacity-0 transition group-hover:opacity-100">
-            <RowIconButton title="Discard draft" onClick={() => deleteDraft(d.id)}>
+            <RowIconButton title="Discard draft" onClick={() => onDiscard(d)}>
               <Trash2 className="h-4 w-4" />
             </RowIconButton>
           </div>
         </li>
-      ))}
-    </ul>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -1001,7 +1026,12 @@ export function MailInbox() {
     return p.toString();
   }, [apiStatus, folder, filter, addressesByDept, labelFilter, debouncedQ]);
 
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [listQueryStr]);
+
   const [listRows, setListRows] = useState<MailThreadRow[]>([]);
+  const [listRowsQuery, setListRowsQuery] = useState("");
   const [listTotal, setListTotal] = useState(0);
   const [listPage, setListPage] = useState(1);
   const [listHasMore, setListHasMore] = useState(false);
@@ -1009,8 +1039,14 @@ export function MailInbox() {
   const [listLoadingMore, setListLoadingMore] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [listReloadKey, setListReloadKey] = useState(0);
+  const listGenerationRef = useRef(0);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    const generation = ++listGenerationRef.current;
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    setListLoadingMore(false);
     if (!usesThreadList) {
       setListRows([]);
       setListTotal(0);
@@ -1018,7 +1054,7 @@ export function MailInbox() {
       setListLoading(false);
       return;
     }
-    let alive = true;
+    const ctrl = new AbortController();
     setListLoading(true);
     (async () => {
       try {
@@ -1027,31 +1063,40 @@ export function MailInbox() {
         p.set("pageSize", String(LIST_PAGE_SIZE));
         const data = await api.get<ThreadsPageResp>(
           `/api/mail-center/threads?${p.toString()}`,
+          { signal: ctrl.signal },
         );
-        if (!alive) return;
+        if (ctrl.signal.aborted || generation !== listGenerationRef.current) return;
         setListRows(Array.isArray(data.threads) ? data.threads : []);
+        setListRowsQuery(listQueryStr);
         setListTotal(Number(data.total ?? 0));
         setListHasMore(!!data.hasMore);
         setListPage(1);
         setListError(null);
       } catch {
-        if (!alive) return;
+        if (ctrl.signal.aborted || generation !== listGenerationRef.current) return;
         setListRows([]);
+        setListRowsQuery(listQueryStr);
         setListTotal(0);
         setListHasMore(false);
         setListError("Couldn't load mail. Please try again.");
       } finally {
-        if (alive) setListLoading(false);
+        if (!ctrl.signal.aborted && generation === listGenerationRef.current) {
+          setListLoading(false);
+        }
       }
     })();
     return () => {
-      alive = false;
+      ctrl.abort();
+      loadMoreAbortRef.current?.abort();
     };
     // listReloadKey / activeCompanyId force a refetch on mutation + company switch.
   }, [usesThreadList, listQueryStr, listReloadKey, activeCompanyId]);
 
   async function loadMoreThreads() {
-    if (listLoadingMore || !listHasMore) return;
+    if (listLoadingMore || loadMoreAbortRef.current || !listHasMore) return;
+    const generation = listGenerationRef.current;
+    const ctrl = new AbortController();
+    loadMoreAbortRef.current = ctrl;
     setListLoadingMore(true);
     try {
       const nextPage = listPage + 1;
@@ -1060,7 +1105,9 @@ export function MailInbox() {
       p.set("pageSize", String(LIST_PAGE_SIZE));
       const data = await api.get<ThreadsPageResp>(
         `/api/mail-center/threads?${p.toString()}`,
+        { signal: ctrl.signal },
       );
+      if (ctrl.signal.aborted || generation !== listGenerationRef.current) return;
       setListRows((prev) => [
         ...prev,
         ...(Array.isArray(data.threads) ? data.threads : []),
@@ -1070,9 +1117,13 @@ export function MailInbox() {
       setListPage(nextPage);
       setListError(null);
     } catch {
+      if (ctrl.signal.aborted || generation !== listGenerationRef.current) return;
       setListError("Couldn't load more mail. Please try again.");
     } finally {
-      setListLoadingMore(false);
+      if (loadMoreAbortRef.current === ctrl) {
+        loadMoreAbortRef.current = null;
+        setListLoadingMore(false);
+      }
     }
   }
 
@@ -1084,6 +1135,12 @@ export function MailInbox() {
   }
   const loading = listLoading || countsLoading;
   const error = listError ?? countsError;
+  const listSearching =
+    usesThreadList && q.trim().length > 0 &&
+    (q.trim() !== debouncedQ.trim() || listLoading);
+  const listBusy =
+    usesThreadList &&
+    (listLoading || q.trim() !== debouncedQ.trim() || listRowsQuery !== listQueryStr);
 
   // The server already narrowed the list; the only remaining client split is the
   // optional Primary/Notifications category tab over the loaded pages.
@@ -1103,6 +1160,7 @@ export function MailInbox() {
     if (!prefs.categoryTabs || category === "all") return categoryBase;
     return categoryBase.filter((t) => classifyCategory(t.counterpartyEmail) === category);
   }, [categoryBase, category, prefs.categoryTabs]);
+  const interactiveVisible = listBusy ? [] : visible;
 
   const liveThreads = useMemo(
     () => (threads ?? []).filter((t) => !t.trashedAt),
@@ -1156,8 +1214,8 @@ export function MailInbox() {
   const drafts = local.drafts;
 
   const selectedArr = useMemo(
-    () => visible.filter((t) => selectedIds.has(t.id)),
-    [visible, selectedIds],
+    () => interactiveVisible.filter((t) => selectedIds.has(t.id)),
+    [interactiveVisible, selectedIds],
   );
   const selectedVisibleIds = useMemo(
     () => new Set(selectedArr.map((t) => t.id)),
@@ -1175,7 +1233,7 @@ export function MailInbox() {
   }
 
   function selectAllVisible() {
-    setSelectedIds(new Set(visible.map((t) => t.id)));
+    setSelectedIds(new Set(interactiveVisible.map((t) => t.id)));
   }
 
   function clearSelection() {
@@ -1337,7 +1395,7 @@ export function MailInbox() {
   }
 
   const composeDisabled = activeAddresses.length === 0;
-  const allVisibleSelected = visible.length > 0 && selectedCount >= visible.length;
+  const allVisibleSelected = interactiveVisible.length > 0 && selectedCount >= interactiveVisible.length;
 
   return (
     <div className="space-y-4">
@@ -1380,8 +1438,21 @@ export function MailInbox() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search mail…"
-          className="h-10 w-full rounded-md border border-border bg-surface pl-8 pr-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+          aria-label="Search all mail"
+          className={cn(
+            "h-10 w-full rounded-md border border-border bg-surface pl-8 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20",
+            listSearching ? "pr-24" : "pr-3",
+          )}
         />
+        {listSearching && (
+          <span
+            role="status"
+            aria-live="polite"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-medium text-primary"
+          >
+            Searching…
+          </span>
+        )}
       </div>
 
       <div
@@ -1550,7 +1621,7 @@ export function MailInbox() {
             <CategoryTabs active={category} counts={categoryCounts} onSelect={setCategory} />
           )}
 
-          {folder !== "drafts" && visible.length > 0 && (
+          {!listBusy && folder !== "drafts" && interactiveVisible.length > 0 && (
             <div className="flex items-center justify-between gap-2 border-b border-border bg-surface-dim/30 px-3 py-1.5">
               <label className="flex cursor-pointer items-center gap-2 text-xs text-ink-muted">
                 <input
@@ -1570,7 +1641,7 @@ export function MailInbox() {
             </div>
           )}
 
-          {selectedCount > 0 && folder !== "drafts" && (
+          {!listBusy && selectedCount > 0 && folder !== "drafts" && (
             <BulkBar
               count={selectedCount}
               folder={folder}
@@ -1588,16 +1659,25 @@ export function MailInbox() {
           {folder === "drafts" ? (
             <DraftsList
               drafts={drafts}
+              legacyFound={hasQuarantinedLegacyDrafts()}
               onResume={(d) => {
                 setResumeDraft(d);
                 setComposeOpen(true);
+              }}
+              onDiscard={(d) => {
+                try {
+                  deleteDraft(d.id);
+                  toast.success("Draft discarded.");
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : "Draft could not be discarded. Please try again.");
+                }
               }}
             />
           ) : (
             <>
               <ThreadList
-                threads={visible}
-                loading={listLoading}
+                threads={interactiveVisible}
+                loading={listBusy}
                 activeId={isDesktop && splitView ? selectedId : null}
                 folder={folder}
                 density={prefs.density}
@@ -1610,7 +1690,7 @@ export function MailInbox() {
               />
               {/* Server-side pagination: pull the next page in place. The
                   windowed <ul> keeps the DOM light as the array grows. */}
-              {listHasMore && (
+              {!listBusy && listHasMore && (
                 <div className="border-t border-border bg-surface-dim/20 p-3 text-center">
                   <button
                     type="button"

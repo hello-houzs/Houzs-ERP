@@ -36,7 +36,14 @@ import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
-import { activeCompanyId, stampCompany, scopeToAllowedCompanies } from '../lib/companyScope';
+import {
+  activeCompanyId,
+  stampCompany,
+  scopeToAllowedCompanies,
+  requireActiveCompanyId,
+  scopeToCompanyId,
+  NOT_THIS_COMPANY,
+} from '../lib/companyScope';
 
 export const deliveryPlanningRegions = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryPlanningRegions.use('*', supabaseAuth);
@@ -116,9 +123,13 @@ const regionPatchSchema = z.object({
   active:    z.boolean().optional(),
 });
 
-// ── PATCH /:id — patch a region bucket.
+// ── PATCH /:id — patch a region bucket. STRICT company scope (owner audit
+//   2026-07-22): the id-only WHERE was a blind-id cross-company WRITE — a
+//   caller in company A could re-name company B's region by knowing its UUID.
 deliveryPlanningRegions.patch('/:id', async (c) => {
   const id = c.req.param('id');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
   const parsed = regionPatchSchema.safeParse(body);
@@ -133,36 +144,49 @@ deliveryPlanningRegions.patch('/:id', async (c) => {
   if (Object.keys(updates).length === 0) return c.json({ error: 'no_changes' }, 400);
 
   const sb = c.get('supabase');
-  const { data, error } = await sb.from('delivery_planning_regions')
-    .update(updates).eq('id', id).select(REGION_COLS).maybeSingle();
+  const { data, error } = await scopeToCompanyId(
+    sb.from('delivery_planning_regions').update(updates).eq('id', id),
+    co.companyId,
+  ).select(REGION_COLS).maybeSingle();
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_code' }, 409);
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ region: regionOut(data as RegionRow) });
 });
 
 // ── DELETE /:id — delete a region. BLOCKED when any state still maps to it
 //    (the FK is ON DELETE CASCADE, so we guard in the app to avoid silently
 //    wiping a state's mapping — same "guard delete if in use" pattern).
+//    STRICT company scope (owner audit 2026-07-22).
 deliveryPlanningRegions.delete('/:id', async (c) => {
   const id = c.req.param('id');
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   const sb = c.get('supabase');
 
-  const { data: inUse, error: useErr } = await sb.from('state_delivery_regions')
-    .select('id').eq('region_id', id).limit(1);
+  // In-use check is scoped to this company's mappings (a mapping in another
+  // company is not this caller's concern and its existence must not leak).
+  const { data: inUse, error: useErr } = await scopeToCompanyId(
+    sb.from('state_delivery_regions').select('id').eq('region_id', id),
+    co.companyId,
+  ).limit(1);
   if (useErr) return c.json({ error: 'check_failed', reason: useErr.message }, 500);
   if ((inUse ?? []).length > 0) {
     return c.json({ error: 'region_in_use', reason: 'One or more states still map to this region. Remove those mappings first.' }, 409);
   }
 
-  const { error } = await sb.from('delivery_planning_regions').delete().eq('id', id);
+  const { data: deleted, error } = await scopeToCompanyId(
+    sb.from('delivery_planning_regions').delete().eq('id', id),
+    co.companyId,
+  ).select('id').maybeSingle();
   if (error) {
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
     return c.json({ error: 'delete_failed', reason: error.message }, 500);
   }
+  if (!deleted) return c.json(NOT_THIS_COMPANY, 404);
   return c.json({ ok: true });
 });
 
@@ -178,9 +202,12 @@ type StateRegionRow = {
 
 /* Build code-by-id + id-by-code maps from the region master (one read). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function loadRegionMaps(sb: any) {
+async function loadRegionMaps(sb: any, c: any) {
   const { data, error } = await paginateAll<RegionRow>((from, to) =>
-    sb.from('delivery_planning_regions').select('id, code, name, active').range(from, to),
+    scopeToAllowedCompanies(
+      sb.from('delivery_planning_regions').select('id, code, name, active'),
+      c,
+    ).range(from, to),
   );
   if (error) return { error, codeById: new Map<string, string>(), idByCode: new Map<string, string>() };
   const codeById = new Map<string, string>();
@@ -195,13 +222,14 @@ async function loadRegionMaps(sb: any) {
 // ── GET /states — full per-state → region-codes map (drives the editor table).
 deliveryPlanningRegions.get('/states', async (c) => {
   const sb = c.get('supabase');
-  const { codeById, error: rErr } = await loadRegionMaps(sb);
+  const { codeById, error: rErr } = await loadRegionMaps(sb, c);
   if (rErr) return c.json({ error: 'fetch_failed', reason: rErr.message }, 500);
 
   const { data, error } = await paginateAll<StateRegionRow>((from, to) =>
-    sb.from('state_delivery_regions')
-      .select('state_key, country, region_id')
-      .range(from, to),
+    scopeToAllowedCompanies(
+      sb.from('state_delivery_regions').select('state_key, country, region_id'),
+      c,
+    ).range(from, to),
   );
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
 
@@ -230,15 +258,14 @@ deliveryPlanningRegions.get('/states/:stateKey', async (c) => {
   const country = (c.req.query('country') ?? 'Malaysia').trim() || 'Malaysia';
   const sb = c.get('supabase');
 
-  const { codeById, error: rErr } = await loadRegionMaps(sb);
+  const { codeById, error: rErr } = await loadRegionMaps(sb, c);
   if (rErr) return c.json({ error: 'fetch_failed', reason: rErr.message }, 500);
 
   const { data, error } = await paginateAll<StateRegionRow>((from, to) =>
-    sb.from('state_delivery_regions')
-      .select('state_key, country, region_id')
-      .eq('state_key', stateKey)
-      .eq('country', country)
-      .range(from, to),
+    scopeToAllowedCompanies(
+      sb.from('state_delivery_regions').select('state_key, country, region_id'),
+      c,
+    ).eq('state_key', stateKey).eq('country', country).range(from, to),
   );
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
 
@@ -258,9 +285,18 @@ const putStateSchema = z.object({
 
 // ── PUT /states/:stateKey — REPLACE a state's region set (multi). Delete the
 //    state's existing rows, then insert the new set. Unknown codes are reported.
+//    STRICT company scope (owner audit 2026-07-22): the DELETE branch was
+//    unscoped, so a caller in company A could wipe company B's mapping for a
+//    given state_key + country. Now the DELETE is pinned to this company's
+//    rows only, and the code→id resolution is drawn from THIS company's
+//    region masters (loadRegionMaps is now scopeToAllowedCompanies-widened,
+//    but we further tighten: the caller's write can only reference regions
+//    they can see under scope).
 deliveryPlanningRegions.put('/states/:stateKey', async (c) => {
   const stateKey = c.req.param('stateKey');
   if (!stateKey) return c.json({ error: 'state_required' }, 400);
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
   const parsed = putStateSchema.safeParse(body);
@@ -269,7 +305,7 @@ deliveryPlanningRegions.put('/states/:stateKey', async (c) => {
   const wantCodes = [...new Set(parsed.data.regionCodes.map((x) => x.toUpperCase()))];
 
   const sb = c.get('supabase');
-  const { idByCode, error: rErr } = await loadRegionMaps(sb);
+  const { idByCode, error: rErr } = await loadRegionMaps(sb, c);
   if (rErr) return c.json({ error: 'fetch_failed', reason: rErr.message }, 500);
 
   // Resolve codes → ids; reject if any code is unknown (so a typo can't silently
@@ -280,9 +316,13 @@ deliveryPlanningRegions.put('/states/:stateKey', async (c) => {
   }
   const regionIds = wantCodes.map((code) => idByCode.get(code)!);
 
-  // Replace: clear the state's existing rows, then insert the new set.
-  const { error: delErr } = await sb.from('state_delivery_regions')
-    .delete().eq('state_key', stateKey).eq('country', country);
+  // Replace: clear THIS company's existing rows for the state, then insert the
+  // new set. Scoping the DELETE by company_id is the fix — the previous
+  // (state_key + country) predicate wiped every company's mapping.
+  const { error: delErr } = await scopeToCompanyId(
+    sb.from('state_delivery_regions').delete().eq('state_key', stateKey).eq('country', country),
+    co.companyId,
+  );
   if (delErr) {
     if (delErr.code === '42501') return c.json({ error: 'forbidden', reason: delErr.message }, 403);
     return c.json({ error: 'replace_failed', reason: delErr.message }, 500);

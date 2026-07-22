@@ -30,6 +30,9 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { ListErrorPanel, SearchPendingPanel, SearchProgress } from "../../components/SearchProgress";
+import { SearchScopeHint } from "../../components/SearchScopeHint";
+import { useDebouncedSearchTerm, useSearchResultTransition } from "../../hooks/useServerSearch";
 import {
   useGrnsPaged,
   useGrnDetail,
@@ -458,23 +461,34 @@ export function GoodsReceivedListV2() {
   const [sort, setSort] = useState<string | undefined>(undefined);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [printingDocs, setPrintingDocs] = useState(false);
-  const [debouncedSearch, setDebouncedSearch] = useState(search);
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(t);
-  }, [search]);
+  const { requestTerm: debouncedSearch } = useDebouncedSearchTerm(search);
 
   // Send the active tab's BUCKET NAME as `status`; the backend resolves it to
   // the raw statuses it covers (draft/posted/cancelled are 1:1). `all` omits it.
   const apiStatus = status === "all" ? undefined : status;
 
-  const { data, isLoading, error } = useGrnsPaged({
+  const { data, isLoading, isFetching, isPlaceholderData, error } = useGrnsPaged({
     page,
     pageSize,
     status: apiStatus,
     q: debouncedSearch,
     sort,
   });
+  const searchTransition = useSearchResultTransition({
+    inputTerm: search,
+    requestTerm: debouncedSearch,
+    isFetching,
+    isPlaceholderData,
+    hasData: data !== undefined,
+    hasError: Boolean(error),
+  });
+  const listLoading = isLoading || searchTransition.isSearching;
+  // The list below is replaced by a pending panel while a search is in flight,
+  // and these tiles summarise the SAME payload - so a settled-looking "RM 0.00"
+  // (or the PREVIOUS term's money under a placeholder page) would outlive the
+  // rows it describes. Same flag SearchScopeHint already uses for its count.
+  const statsPending =
+    isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale;
   const postGrn = usePostGrn();
   const cancelGrn = useCancelGrn();
 
@@ -745,10 +759,10 @@ export function GoodsReceivedListV2() {
         </div>
 
         <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
-          <StatCard label="Total GRNs" value={total.toLocaleString("en-MY")} subtitle="All matching GRNs" rail="bg-primary" active />
-          <StatCard label="Received Value" value={fmtRm(money.received)} subtitle="Value on this page" tone="success" rail="bg-synced" />
-          <StatCard label="Awaiting PI" value={fmtRm(money.awaitingPi)} subtitle="Not yet invoiced · on this page" tone="warning" rail="bg-accent-bright" />
-          <StatCard label="Draft" value={fmtRm(money.draft)} subtitle="Not yet posted · on this page" rail="bg-accent" />
+          <StatCard pending={statsPending} label="Total GRNs" value={total.toLocaleString("en-MY")} subtitle="All matching GRNs" rail="bg-primary" active />
+          <StatCard pending={statsPending} label="Received Value" value={fmtRm(money.received)} subtitle="Value on this page" tone="success" rail="bg-synced" />
+          <StatCard pending={statsPending} label="Awaiting PI" value={fmtRm(money.awaitingPi)} subtitle="Not yet invoiced · on this page" tone="warning" rail="bg-accent-bright" />
+          <StatCard pending={statsPending} label="Draft" value={fmtRm(money.draft)} subtitle="Not yet posted · on this page" rail="bg-accent" />
         </div>
 
         <div className="sticky top-0 z-10 -mx-4 mb-3 bg-bg/95 px-4 py-2 backdrop-blur-sm md:hidden">
@@ -756,9 +770,11 @@ export function GoodsReceivedListV2() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search GRN, supplier, PO…"
+            placeholder="Search GRN no, delivery note or notes…"
             className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
+          <SearchProgress active={searchTransition.isSearching} label={searchTransition.statusText} className="mt-1.5" />
+          <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={total} term={search} className="mt-1" />
         </div>
 
         <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -768,8 +784,8 @@ export function GoodsReceivedListV2() {
         </div>
 
         <div className="md:hidden">
-          <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
-          <div className="pb-24">
+          {error ? <ListErrorPanel message={(error as Error).message} /> : searchTransition.resultsAreStale ? <SearchPendingPanel label={searchTransition.statusText} /> : <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />}
+          {!searchTransition.resultsAreStale && <div className="pb-24">
             <PaginationFooter
               page={page}
               pageSize={pageSize}
@@ -777,13 +793,13 @@ export function GoodsReceivedListV2() {
               onPrev={() => setPageParam(page - 1)}
               onNext={() => setPageParam(page + 1)}
             />
-          </div>
+          </div>}
         </div>
 
         <div className="hidden md:block">
           {view === "table" ? (
             <>
-              {selectedIds.size > 0 && (
+              {selectedIds.size > 0 && !searchTransition.resultsAreStale && (
                 <div className="mb-3 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2.5 shadow-stone">
                   <span className="text-[13px] font-semibold text-ink">
                     {selectedIds.size} selected
@@ -809,7 +825,7 @@ export function GoodsReceivedListV2() {
               <DataTable<GrnRow>
                 tableId="grns-v2"
                 rows={rows}
-                loading={isLoading}
+                loading={listLoading}
                 error={error ? (error as Error).message ?? "Failed to load" : null}
                 columns={columns}
                 getRowKey={(r) => r.id}
@@ -823,16 +839,16 @@ export function GoodsReceivedListV2() {
                 serverSort
                 onSortChange={setSortAndReset}
                 emptyLabel={filtersActive ? "No GRNs match — try Reset layout to clear filters." : "No GRNs yet."}
-                search={{ value: search, onChange: setSearch, placeholder: "Search GRN no, supplier, PO, delivery note…" }}
+                search={{ value: search, onChange: setSearch, placeholder: "Search GRN no, delivery note or notes…", debounceMs: 0, searching: searchTransition.isSearching, countPending: isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale, scope: "server", totalRecords: total }}
                 resetFilters={{ active: filtersActive, onReset: resetLayout, label: "Reset layout" }}
               />
-              <PaginationFooter
+              {!searchTransition.resultsAreStale && <PaginationFooter
                 page={page}
                 pageSize={pageSize}
                 total={total}
                 onPrev={() => setPageParam(page - 1)}
                 onNext={() => setPageParam(page + 1)}
-              />
+              />}
             </>
           ) : (
             <>
@@ -842,22 +858,24 @@ export function GoodsReceivedListV2() {
                     type="search"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search GRN no, supplier, PO, delivery note…"
+                    placeholder="Search GRN no, delivery note or notes…"
                     className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
                   />
+                  <SearchProgress active={searchTransition.isSearching} />
+                  <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={total} term={search} />
                   {filtersActive && (
                     <button type="button" onClick={resetLayout} className="text-[12px] font-semibold text-primary hover:underline">Reset layout</button>
                   )}
                 </div>
               </div>
-              <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+              {error ? <ListErrorPanel message={(error as Error).message} /> : searchTransition.resultsAreStale ? <SearchPendingPanel label={searchTransition.statusText} /> : <><CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
               <PaginationFooter
                 page={page}
                 pageSize={pageSize}
                 total={total}
                 onPrev={() => setPageParam(page - 1)}
                 onNext={() => setPageParam(page + 1)}
-              />
+              /></>}
             </>
           )}
         </div>

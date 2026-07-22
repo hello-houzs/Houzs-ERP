@@ -35,6 +35,7 @@ import {
 } from '../../vendor/scm/lib/suppliers-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import styles from './SalesOrderDetail.module.css';
@@ -134,9 +135,8 @@ export const PurchaseOrderFromSo = () => {
          qty can't be over-picked across draft + new picks. */
   const draftQtyById = useMemo(() => {
     try {
-      const raw = sessionStorage.getItem('poNewDraft');
-      if (!raw) return new Map<string, number>();
-      const d = JSON.parse(raw) as { lines?: Array<{ soItemId?: string | null; qty?: number }> };
+      const d = readScmHandoff<{ lines?: Array<{ soItemId?: string | null; qty?: number }> }>('poNewDraft');
+      if (!d) return new Map<string, number>();
       const m = new Map<string, number>();
       for (const l of (d.lines ?? [])) {
         if (!l.soItemId) continue;
@@ -465,7 +465,10 @@ export const PurchaseOrderFromSo = () => {
         return row ? { ...row, _pickQty: v.qty } : null;
       })
       .filter(Boolean);
-    try { sessionStorage.setItem('poFromSoPicks', JSON.stringify(out)); } catch { /* quota */ }
+    if (!writeScmHandoff('poFromSoPicks', out)) {
+      setDialog({ title: 'Unable to continue', body: 'This browser could not safely store your picked lines. Your selection is still here; free some browser storage and try again.' });
+      return;
+    }
     navigate('/scm/purchase-orders/new');
   };
 

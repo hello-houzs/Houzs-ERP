@@ -36,6 +36,7 @@ import {
   requestIdFromError,
   requestIdFromResponse,
 } from '../../../lib/requestCorrelation';
+import { companyHeader } from '../../../lib/activeCompany';
 
 // PROD fallback is same-origin (Pages Function proxies /api/*); see
 // authed-fetch.ts for the rationale.
@@ -45,22 +46,12 @@ const API_URL =
   '/api/scm';
 
 // Multi-company (Phase 0c): stamp the active company on every SCM request so
-// the backend's companyContext resolves it. The id is written by the top-bar
-// switcher (src/lib/activeCompany.ts) under 'houzs.activeCompanyId'; read the
-// localStorage key DIRECTLY here to keep this vendored file self-contained
-// (same style as the auth:token read below). Absent → NO header → backend falls
-// back to its hostname default, so single-company Houzs is unchanged. Read it
-// FRESH per request so switching company mid-session is picked up immediately.
-function companyHeader(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem('houzs.activeCompanyId');
-    const n = raw ? Number(raw) : NaN;
-    return Number.isFinite(n) && n > 0 ? { 'X-Company-Id': String(n) } : {};
-  } catch {
-    return {};
-  }
-}
-
+// the backend's companyContext resolves it. The id comes from the SHARED
+// accessor (src/lib/activeCompany.ts); the local localStorage re-read this file
+// used to carry is gone, so there is exactly one implementation of the rule.
+// Absent → NO header → backend falls back to its hostname default, so
+// single-company Houzs is unchanged. Read FRESH per request so switching
+// company mid-session is picked up immediately.
 export type SaveDiff = { field: string; expected: unknown; actual: unknown };
 
 export type SaveResult<T> =

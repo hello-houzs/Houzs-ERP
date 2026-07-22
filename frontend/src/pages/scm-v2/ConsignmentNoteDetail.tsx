@@ -530,7 +530,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
 }, ref) => {
   const localities = useLocalities();
   const localityRows = useMemo(() => localities.data ?? [], [localities.data]);
-  const staffQ = usePickableStaff();
+  const staffQ = usePickableStaff({ onlySales: true });
   const staffList = (staffQ.data ?? []).filter((s) => s.active);
 
   const customerTypeOptsQ = useSoDropdownOptions('customer_type');

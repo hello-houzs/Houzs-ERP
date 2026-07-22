@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
 import { checkRateLimit } from "../middleware/rateLimit";
+import { captureError } from "../services/errorTracking";
 
 // ---------------------------------------------------------------------------
 // /api/client-errors -- self-hosted client error reporting (owner ruling: no
@@ -112,6 +113,15 @@ app.post("/", async (c) => {
   const nowIso = new Date().toISOString();
   const day = nowIso.slice(0, 10);
 
+  // Resolved once, outside the loop. c.executionCtx throws when the runtime
+  // supplied none; the reporter is fire-and-forget either way.
+  let waitUntil: ((p: Promise<unknown>) => void) | undefined;
+  try {
+    waitUntil = c.executionCtx.waitUntil.bind(c.executionCtx);
+  } catch {
+    waitUntil = undefined;
+  }
+
   let stored = 0;
   for (const ev of parsed.data.events) {
     const message = ev.message.slice(0, MAX_MESSAGE);
@@ -136,6 +146,32 @@ app.post("/", async (c) => {
       .bind(occurredAt, day, userId, companyId, route, message, stack, buildId, userAgent, hash, nowIso, nowIso)
       .run();
     stored++;
+
+    // Mirror the SAME sanitized event to the error tracker so a white-screen
+    // gets an alert in minutes instead of waiting for the 02:00 digest. INERT
+    // until SENTRY_DSN is set — with no DSN this returns immediately.
+    //
+    // WHY THE RELAY GOES THROUGH HERE AND NOT THROUGH THE BROWSER. Sending
+    // from the SPA would (a) bake a DSN into a public bundle, (b) hand the
+    // ingest server every staff member's real IP address, and (c) create a
+    // second payload path to audit. Relaying from the Worker means the ingest
+    // server's only client is Cloudflare, and the values below are the ones
+    // this route already sanitized and capped — the query string is gone, the
+    // route is a pathname, identity is the session's numeric ids.
+    captureError(
+      c.env,
+      new Error(message),
+      {
+        source: "browser",
+        route,
+        requestId: c.get("requestId"),
+        userId,
+        companyId,
+        release: buildId || undefined,
+        stack: stack ?? undefined,
+      },
+      waitUntil,
+    );
   }
 
   return c.json({ success: true, stored });

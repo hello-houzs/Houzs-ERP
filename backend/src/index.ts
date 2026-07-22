@@ -10,6 +10,9 @@ import scmApp from "./scm";
 import { publicScmImages } from "./scm/routes/public-images";
 import { idempotency } from "./middleware/idempotency";
 import { requestLog } from "./middleware/requestLog";
+// Error tracking (Sentry-protocol, no SDK). Completely inert until the owner
+// sets the SENTRY_DSN Worker secret — see services/errorTracking.ts.
+import { captureError } from "./services/errorTracking";
 import assr from "./routes/assr";
 import logs from "./routes/logs";
 import auditRoutes from "./routes/audit";
@@ -133,7 +136,11 @@ app.use("*", cors({ origin: "*", exposeHeaders: ["X-Request-Id"] }));
 app.use("*", dbInject);
 
 app.get("/", (c) => c.json({ ok: true, service: "autocount-sync-api" }));
-app.get("/health", (c) => c.json({ ok: true }));
+// `sha` is the commit this Worker was deployed from — stamped by deploy.yml
+// via `wrangler deploy --var GIT_SHA:<sha>`. A bare local `wrangler deploy`
+// carries no stamp (null), which is exactly what the deploy-watchdog workflow
+// keys on to detect and revert rogue/stale overwrites of the prod Worker.
+app.get("/health", (c) => c.json({ ok: true, sha: c.env.GIT_SHA ?? null }));
 
 // /api/auth/* is unauthenticated (login, bootstrap, accept-invite, status,
 // me, logout). It must be mounted BEFORE the auth middleware below.
@@ -331,6 +338,45 @@ app.onError((err, c) => {
   const res = new Response(base.body, base);
   res.headers.set("Access-Control-Allow-Origin", "*");
   res.headers.set("Access-Control-Expose-Headers", "X-Request-Id");
+
+  // Error tracking. INERT until the owner sets the SENTRY_DSN secret — with no
+  // DSN this call returns before doing anything (no fetch, no log, no latency),
+  // which is the default state on every environment. See
+  // services/errorTracking.ts and docs/error-tracking-options.md.
+  //
+  // Only 5xx is reported. A handler that deliberately threw an HTTPException
+  // with a 4xx status is telling a caller it got the request wrong; sending
+  // those would bury the real failures and burn the free monthly quota on
+  // validation noise.
+  //
+  // The route PATTERN, not the URL, is what travels: c.req.routePath is
+  // "/api/scm/sales-orders/:id" where the URL would carry ids and (on a search)
+  // the customer's name in the query string.
+  if (res.status >= 500) {
+    // c.executionCtx throws when the runtime did not supply one (some test
+    // harnesses). Falling back to a floating promise is correct here — the
+    // reporter is fire-and-forget by design.
+    let waitUntil: ((p: Promise<unknown>) => void) | undefined;
+    try {
+      waitUntil = c.executionCtx.waitUntil.bind(c.executionCtx);
+    } catch {
+      waitUntil = undefined;
+    }
+    captureError(
+      c.env,
+      err,
+      {
+        source: "worker",
+        route: c.req.routePath || new URL(c.req.url).pathname,
+        method: c.req.method,
+        status: res.status,
+        requestId: c.get("requestId"),
+        userId: c.get("user")?.id ?? null,
+        companyId: c.get("companyId") ?? null,
+      },
+      waitUntil,
+    );
+  }
   return res;
 });
 

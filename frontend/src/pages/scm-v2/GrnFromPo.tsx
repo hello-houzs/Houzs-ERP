@@ -25,6 +25,7 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { readScmHandoff, writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { ArrowLeft, Save, X, CheckSquare, Square, Filter } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
@@ -138,9 +139,8 @@ export const GrnFromPo = () => {
          Pick Qty is capped at (remaining − draft). Mirrors PurchaseOrderFromSo. */
   const draftQtyById = useMemo(() => {
     try {
-      const raw = sessionStorage.getItem('grnNewDraft');
-      if (!raw) return new Map<string, number>();
-      const d = JSON.parse(raw) as { lines?: Array<{ purchaseOrderItemId?: string | null; qtyReceived?: number }> };
+      const d = readScmHandoff<{ lines?: Array<{ purchaseOrderItemId?: string | null; qtyReceived?: number }> }>('grnNewDraft');
+      if (!d) return new Map<string, number>();
       const m = new Map<string, number>();
       for (const l of (d.lines ?? [])) {
         if (!l.purchaseOrderItemId) continue;
@@ -461,7 +461,10 @@ export const GrnFromPo = () => {
       return;
     }
 
-    try { sessionStorage.setItem('grnFromPoPicks', JSON.stringify(out)); } catch { /* quota */ }
+    if (!writeScmHandoff('grnFromPoPicks', out)) {
+      setDialog({ title: 'Unable to continue', body: 'This browser could not safely store your picked lines. Your selection is still here; free some browser storage and try again.' });
+      return;
+    }
     navigate('/scm/grns/new');
   };
 

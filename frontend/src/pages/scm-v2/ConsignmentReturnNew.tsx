@@ -29,6 +29,7 @@ import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useCreateConsignmentReturn } from '../../vendor/scm/lib/consignment-return-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, removeScmHandoff } from '../../lib/scmHandoffStorage';
 import { useConsignmentNoteDetail } from '../../vendor/scm/lib/consignment-note-queries';
 import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import {
@@ -69,7 +70,7 @@ export const ConsignmentReturnNew = () => {
      stalled submit, fresh on remount. */
   const idemKey = useIdempotencyKey();
   const create = useCreateConsignmentReturn();
-  const staffQ = usePickableStaff();
+  const staffQ = usePickableStaff({ onlySales: true });
   const loc = useLocalities();
   const cnDetail = useConsignmentNoteDetail(fromConsignmentNote);
 
@@ -180,9 +181,7 @@ export const ConsignmentReturnNew = () => {
       uom: string | null; qty: number; condition: string;
       unitPriceCenti: number; discountCenti: number; unitCostCenti: number; variants: unknown;
     };
-    let stash: Stash[] | null = null;
-    try { stash = JSON.parse(sessionStorage.getItem('crFromNotePicks') ?? 'null'); }
-    catch { stash = null; }
+    const stash = readScmHandoff<Stash[]>('crFromNotePicks');
     if (!stash || stash.length === 0) return;
 
     const first = stash[0];
@@ -205,7 +204,7 @@ export const ConsignmentReturnNew = () => {
       condition: s.condition || 'NEW',
       doItemId: s.noteItemId,
     })));
-    sessionStorage.removeItem('crFromNotePicks');
+    removeScmHandoff('crFromNotePicks');
     setPrefilled(true);
   }, [fromPicks, prefilled]);
 

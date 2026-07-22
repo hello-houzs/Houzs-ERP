@@ -30,6 +30,7 @@ import {
   useCreateDeliveryReturn, useMfgDeliveryOrderDetail,
 } from '../../vendor/scm/lib/delivery-return-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { readScmHandoff, removeScmHandoff } from '../../lib/scmHandoffStorage';
 import { usePickableStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import {
@@ -63,7 +64,7 @@ export const DeliveryReturnNew = () => {
      useCreateDeliveryReturn), so a re-press after a stalled submit books the
      goods back IN twice unless it replays. */
   const idemKey = useIdempotencyKey();
-  const staffQ = usePickableStaff();
+  const staffQ = usePickableStaff({ onlySales: true });
   const loc = useLocalities();
 
   // Prefill source — the DO this return is being issued from (if any).
@@ -160,11 +161,7 @@ export const DeliveryReturnNew = () => {
       description: string | null; uom: string | null; qty: number; condition: string;
       unitPriceCenti: number; discountCenti: number; unitCostCenti: number; variants: unknown;
     };
-    let stash: Stash[] | null = null;
-    if (fromPicks) {
-      try { stash = JSON.parse(sessionStorage.getItem('drFromDoPicks') ?? 'null'); }
-      catch { stash = null; }
-    }
+    const stash = fromPicks ? readScmHandoff<Stash[]>('drFromDoPicks') : null;
 
     if (stash && stash.length > 0) {
       setLines(stash.map((s, i) => ({
@@ -183,7 +180,7 @@ export const DeliveryReturnNew = () => {
         doItemId: s.doItemId,
         condition: s.condition || 'NEW',
       })));
-      sessionStorage.removeItem('drFromDoPicks');
+      removeScmHandoff('drFromDoPicks');
     } else if (doItems.length > 0) {
       setLines(doItems.map((it) => ({
         ...emptySoLine(),

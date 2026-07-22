@@ -3,27 +3,88 @@ name: Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  # Detect which side actually changed so a frontend-only push doesn't rebuild +
-  # redeploy the backend Worker (and vice versa). This roughly halves Actions
-  # minutes on the common single-side push AND stops the needless Worker
-  # cold-start every unrelated deploy caused. A change to this workflow, or to
-  # either dir, triggers that side.
+  # Detect backend changes so a frontend-only push does not redeploy the Worker.
+  # Frontend release is intentionally unconditional: queued main runs can be
+  # collapsed during a merge burst, and a per-push path diff then cannot prove
+  # that the currently live Pages build contains the latest frontend SHA.
+  #
+  # The backend filter keeps a diff, but NOT against this push. On 2026-07-22
+  # three merged backend PRs -- two of them authorisation fixes -- sat
+  # undeployed for hours with every dashboard green, because their deploy runs
+  # were collapsed out of the concurrency queue and the run that DID execute was
+  # a docs-only push whose `github.event.before..github.sha` range contained no
+  # backend files. The filter answered the question it was asked correctly; the
+  # question was wrong. See docs/deploy-collision-coe.md.
+  #
+  # So the base is the SHA of the last run that actually DEPLOYED the backend,
+  # which makes the filter ask "is there anything unreleased?" instead of "did
+  # this one push touch backend?".
   changes:
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      last_backend_sha: ${{ steps.released.outputs.sha }}
     steps:
+      # Full history: both the paths filter and the ancestor guard below need to
+      # reach a commit that may be many merges back.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The last Deploy run whose `backend` JOB concluded success. A run can be
+      # green overall with backend skipped, so the run conclusion alone is the
+      # wrong signal -- that is exactly how the 2026-07-22 window stayed
+      # invisible.
+      #
+      # FAILS OPEN, DELIBERATELY. If the API is unreachable, the scan finds
+      # nothing, or the SHA is no longer in history (force-push, expired
+      # retention), this emits an empty value and every consumer treats that as
+      # "deploy the backend". A needless cold start costs minutes; the other
+      # direction costs an unreleased security fix, which is the failure this
+      # whole change exists to prevent.
+      - id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          sha=""
+          runs=$(gh api --paginate             "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy.yml/runs?branch=main&per_page=50"             --jq '.workflow_runs[] | select(.status=="completed") | .id' 2>/dev/null | head -40) || true
+          for id in $runs; do
+            ok=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs"                   --jq '[.jobs[] | select(.name=="backend" and .conclusion=="success")] | length' 2>/dev/null) || ok=0
+            if [ "${ok:-0}" != "0" ]; then
+              cand=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}" --jq .head_sha 2>/dev/null) || cand=""
+              # Only usable if we can still reach it in this clone.
+              if [ -n "$cand" ] && git cat-file -e "${cand}^{commit}" 2>/dev/null; then
+                sha="$cand"
+                break
+              fi
+            fi
+          done
+          if [ -z "$sha" ]; then
+            echo "::notice::No previous successful backend deploy resolved — the backend will run (fail-open)."
+          else
+            echo "::notice::Last released backend SHA: ${sha}"
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      # With no resolved base this evaluates the push range, and the guard below
+      # forces the backend on anyway — so the fail-open path cannot skip.
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          base: ${{ steps.released.outputs.sha }}
           filters: |
             backend:
               - 'backend/**'
@@ -34,7 +95,7 @@ jobs:
 
   backend:
     needs: changes
-    if: ${{ needs.changes.outputs.backend == 'true' }}
+    if: ${{ github.ref == 'refs/heads/main' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.last_backend_sha == '') }}
     runs-on: ubuntu-latest
     environment: Production
     defaults:
@@ -42,6 +103,42 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # REFUSE TO PUBLISH AN ANCESTOR OF WHAT IS ALREADY LIVE.
+      #
+      # Nothing here used to check this. The concurrency queue can hold a run
+      # for a long time -- on 2026-07-22 one waited 40 minutes -- so by the time
+      # it reaches wrangler, main has moved and this run is publishing OLDER
+      # code. That day run 850014c was an ancestor of the already-deployed
+      # 644d25d, and finishing it would have silently reverted three merged
+      # PRs. The only thing that stopped it was `npm test` failing for an
+      # unrelated reason. A red test is not a rollback policy.
+      #
+      # A slow run is a time machine. This turns that into a red job with a
+      # sentence explaining itself, instead of a quiet revert nobody sees.
+      #
+      # Skips when the base is unknown (fail-open, same rule as the filter) and
+      # when the SHAs are equal (a rerun of the live commit is legitimate --
+      # that is how the 2026-07-22 window was recovered).
+      - name: Refuse to deploy older code than what is live
+        if: ${{ needs.changes.outputs.last_backend_sha != '' }}
+        working-directory: .
+        env:
+          LIVE: ${{ needs.changes.outputs.last_backend_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$LIVE" = "$GITHUB_SHA" ]; then
+            echo "::notice::Redeploying the live commit ($GITHUB_SHA) — allowed."
+            exit 0
+          fi
+          if git merge-base --is-ancestor "$GITHUB_SHA" "$LIVE"; then
+            echo "::error title=Deploy would roll production back::This run is building ${GITHUB_SHA}, which is an ANCESTOR of the live backend ${LIVE}. Publishing it would silently revert everything merged in between. The queue reordered these runs; re-run the deploy for the current tip of main instead."
+            exit 1
+          fi
+          echo "::notice::${GITHUB_SHA} is not behind the live backend ${LIVE} — proceeding."
+
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -68,7 +165,12 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: backend
-          command: deploy
+          # --var GIT_SHA stamps the Worker with the exact commit it was built
+          # from (surfaced at GET /health). The deploy-watchdog workflow compares
+          # that stamp against main every 15 min and auto-redeploys when a bare
+          # `wrangler deploy` from a stale clone overwrites prod (4th incident
+          # 2026-07-22) — a rogue deploy has no stamp, so it's always caught.
+          command: deploy --var GIT_SHA:${{ github.sha }}
           # Worker secrets pushed on every deploy (idempotent). FORM_INTAKE_KEY
           # guards the Google Form intake webhook (/api/assr-form-intake).
           secrets: |
@@ -90,7 +192,12 @@ jobs:
 
   frontend:
     needs: changes
-    if: ${{ needs.changes.outputs.frontend == 'true' }}
+    if: ${{ github.ref == 'refs/heads/main' }}
+    # Always publish the latest frontend for every completed main run. GitHub
+    # collapses queued runs during a burst of merges; a per-push path diff can
+    # therefore miss frontend files that existed only in an earlier cancelled
+    # run. Rebuilding the latest SHA is the correctness boundary and also makes
+    # workflow_dispatch a reliable one-click recovery path.
     runs-on: ubuntu-latest
     environment: Production
     defaults:
@@ -105,6 +212,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test
       - run: npm run build
         env:
           # Vite inlines this into the public JS bundle at build time.
@@ -112,9 +220,31 @@ jobs:
           # baked into client-side JS anyway. See plan file for
           # rationale.
           VITE_API_URL: ${{ vars.VITE_API_URL }}
+      # NOT `npm run check:bundle`. Since #918 that gate's verdict is a DELTA
+      # against the merge base, and a push to main has no merge base to measure
+      # — the script falls back to enforcing the absolute ceiling and exits 1.
+      # That is exactly the failure mode main just removed from PR CI (four
+      # innocent PRs in eight days), and here it would block a PRODUCTION
+      # DEPLOY rather than a PR. The gate belongs on the PR, where it already
+      # runs with a baseline.
+      - run: npm run check:sw
       - uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: frontend
           command: pages deploy ./dist --project-name=houzs-erp --commit-dirty=true
+      # The smoke asserts the LIVE entry chunk and sw VERSION equal the ones
+      # just built, so its retry budget has to cover Cloudflare Pages
+      # propagation. The script's defaults (8 x 2s = 16s) are too tight:
+      # measured on the 2026-07-22 recovery deploy, a fetch immediately after
+      # `pages deploy` reported success still returned the PREVIOUS entry
+      # chunk, and the new one appeared on a fetch ~2 minutes later. At 16s
+      # this step would have failed a release that was entirely correct — a
+      # red production deploy caused by the checker, not the deploy. 20 x 5s
+      # = 100s of tolerance, still bounded, and a genuine non-propagation
+      # (wrong project, failed upload) fails just as loudly, only later.
+      - run: npm run smoke -- "${{ vars.FRONTEND_SMOKE_URL || 'https://erp.houzscentury.com' }}"
+        env:
+          FRONTEND_SMOKE_ATTEMPTS: 20
+          FRONTEND_SMOKE_RETRY_MS: 5000

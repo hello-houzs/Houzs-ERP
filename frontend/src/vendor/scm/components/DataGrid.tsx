@@ -34,11 +34,17 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Search, Columns3, RotateCcw, Filter, Download } from 'lucide-react';
+import { Search, Columns3, RotateCcw, Filter, Download, GripVertical, X } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useDebouncedValue } from '../lib/hooks';
 import { SkeletonRows } from './Skeleton';
 import { DateField } from './DateField';
+import {
+  DEFAULT_DATA_GRID_LAYOUT,
+  type DataGridLayout,
+  readDataGridLayout,
+  writeDataGridLayout,
+} from './dataGridLayoutStorage';
 import styles from './DataGrid.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -115,6 +121,11 @@ export type DataGridProps<T> = {
   /** row id accessor — required for selection + key */
   rowKey: (row: T) => string;
   searchPlaceholder?: string;
+  /** Optional exact loaded-set count for the client search hint. Defaults to
+      rows.length; pass a pre-filter count when the caller already narrowed rows. */
+  loadedSearchCount?: number;
+  /** Known upstream cap; makes client-only search scope explicit to operators. */
+  loadedSearchLimit?: number;
   /** Human filename stem for the "Export Excel" button, e.g. "Purchase Orders".
       Falls back to a cleaned storageKey when omitted. A YYYY-MM-DD date is
       appended automatically. (Wei Siang 2026-06-20 — storageKey filenames like
@@ -197,37 +208,7 @@ export type DataGridProps<T> = {
   hideSearch?: boolean;
 };
 
-type Layout = {
-  order: string[];
-  hidden: string[];
-  widths: Record<string, number>;
-  groupBy: string[];
-  pinned: string[];
-  sort: { key: string; dir: 'asc' | 'desc' } | null;
-};
-
-const DEFAULT_LAYOUT: Layout = {
-  order: [],
-  hidden: [],
-  widths: {},
-  groupBy: [],
-  pinned: [],
-  sort: null,
-};
-
-function readLayout(key: string): Layout {
-  if (typeof window === 'undefined') return DEFAULT_LAYOUT;
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return DEFAULT_LAYOUT;
-    const parsed = JSON.parse(raw) as Partial<Layout>;
-    return { ...DEFAULT_LAYOUT, ...parsed };
-  } catch { return DEFAULT_LAYOUT; }
-}
-function writeLayout(key: string, layout: Layout) {
-  if (typeof window === 'undefined') return;
-  try { window.localStorage.setItem(key, JSON.stringify(layout)); } catch { /* quota */ }
-}
+type Layout = DataGridLayout;
 
 const coerceSearchString = (v: ReactNode): string => {
   if (v == null || v === false) return '';
@@ -288,6 +269,7 @@ function DataGridInner<T>({
   storageKey,
   rowKey,
   searchPlaceholder = 'Search…',
+  loadedSearchCount,
   exportName,
   onRowDoubleClick,
   onRowClick,
@@ -305,6 +287,7 @@ function DataGridInner<T>({
   selectable,
   embedded = false,
   hideSearch = false,
+  loadedSearchLimit,
 }: DataGridProps<T>) {
   /* HOUZS-style inline expansion (PR so-list-houzs-port). Tracks the set of
      expanded row ids; rendering inserts a colSpan sub-<tr> directly under
@@ -319,11 +302,11 @@ function DataGridInner<T>({
       return n;
     });
   }, []);
-  const [layout, setLayoutRaw] = useState<Layout>(() => readLayout(storageKey));
+  const [layout, setLayoutRaw] = useState<Layout>(() => readDataGridLayout(storageKey));
   const setLayout = useCallback((updater: (l: Layout) => Layout) => {
     setLayoutRaw((prev) => {
       const next = updater(prev);
-      writeLayout(storageKey, next);
+      writeDataGridLayout(storageKey, next);
       return next;
     });
   }, [storageKey]);
@@ -345,11 +328,14 @@ function DataGridInner<T>({
      grid card's `overflow: hidden`, which otherwise clips the dropdown when the
      card is short (few rows). Anchor it to the toolbar button's live rect. */
   const columnsBtnRef = useRef<HTMLButtonElement>(null);
-  /* Ref on the popover panel so the scroll-to-close guard can tell an INSIDE
-     scroll (the operator scrolling the column list) from an OUTSIDE scroll
-     (the page/grid moving, which should dismiss the detached fixed popover). */
+  /* Ref on the drawer panel (kept for element queries; the old scroll-to-close
+     guard is gone — the drawer is non-modal, see the close effect below). */
   const columnsMenuRef = useRef<HTMLDivElement>(null);
-  const [columnsMenuPos, setColumnsMenuPos] = useState<{ top: number; right: number } | null>(null);
+  /* Drag-to-reorder INSIDE the Columns drawer (unified column UX, owner
+     2026-07-22): dragging a row writes the same layout.order the header drag
+     writes, so the drawer and the header are two views of one order. */
+  const [columnsMenuDragKey, setColumnsMenuDragKey] = useState<string | null>(null);
+  const [columnsMenuOverKey, setColumnsMenuOverKey] = useState<string | null>(null);
   /* Per-column value filter (Commander 2026-05-29 — "没有 drop-down 菜单让我
      去做选择"). filters[colKey] = the set of allowed values; absent / empty =
      no filter on that column. filterMenu anchors the open dropdown. */
@@ -408,28 +394,17 @@ function DataGridInner<T>({
     };
   }, [rowCtx]);
 
-  /* Close the Columns popover on outside click — mirrors the `ctx` pattern.
-     The popover itself stops propagation on its container so clicks inside
-     don't dismiss it. Escape also closes for keyboard parity. */
+  /* The Columns drawer is NON-MODAL (owner 2026-07-22: the grid must stay
+     fully interactive — including HORIZONTAL scroll — while the drawer is
+     open, so reorder / show-hide changes land visibly live). So: no backdrop,
+     no outside-click close, no scroll-close. It closes only via its ✕, the
+     toolbar button toggle, or Escape — the same contract as the shared
+     right-side <Panel/> the DataTable pages use. */
   useEffect(() => {
     if (!columnsMenuOpen) return;
-    const close = () => setColumnsMenuOpen(false);
-    /* Scrolling the menu's OWN list must not close the menu. We listen on the
-       capture phase so we still catch scrolls of any outer page container, but
-       skip the event when it originates inside the menu itself. */
-    const onScroll = (e: Event) => {
-      if (e.target instanceof Node && columnsMenuRef.current?.contains(e.target)) return;
-      close();
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
-    window.addEventListener('click', close);
-    window.addEventListener('scroll', onScroll, true);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setColumnsMenuOpen(false); };
     window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('click', close);
-      window.removeEventListener('scroll', onScroll, true);
-      window.removeEventListener('keydown', onKey);
-    };
+    return () => window.removeEventListener('keydown', onKey);
   }, [columnsMenuOpen]);
 
   /* Close the per-column filter dropdown on outside click / Escape. */
@@ -560,6 +535,16 @@ function DataGridInner<T>({
       return { ...l, hidden };
     });
   }, [columns, setLayout]);
+  /* "Show all" — every column visible. Materializes the order when the layout
+     is still pristine: an empty order + empty hidden would put the layout back
+     on the defaults overlay and instantly re-hide every defaultHidden column. */
+  const showAllColumns = useCallback(() => {
+    setLayout((l) => ({
+      ...l,
+      hidden: [],
+      order: l.order.length ? l.order : columns.map((c) => c.key),
+    }));
+  }, [columns, setLayout]);
 
   // ── Resolve visible/ordered columns ───────────────────────────────
   // If `expandable` is set, prepend a synthetic 32px chevron column that
@@ -580,34 +565,36 @@ function DataGridInner<T>({
       : new Set(layout.hidden);
   }, [columns, layout.order, layout.hidden]);
 
+  /* The FULL resolved column order — the user's saved order merged with the
+     current column set. A column added AFTER the user last customised their
+     layout isn't in `layout.order`; instead of dumping it at the far-right end
+     (where it's easy to miss), splice it in at its DEFINITION position — right
+     after its nearest preceding sibling from `columns` that's already in the
+     order. So a newly-shipped column (e.g. the Delivery-Planning "Company"
+     column) appears where the developer placed it, visible, without the user
+     having to Reset layout. Shared by the table AND the Columns popover, so the
+     popover lists rows (including hidden ones, in place) in on-grid order. */
+  const resolvedOrder = useMemo(() => {
+    const byKey = new Map(columns.map((c) => [c.key, c]));
+    if (!layout.order.length) return columns.map((c) => c.key);
+    const result = layout.order.filter((k) => byKey.has(k));
+    const present = new Set(result);
+    columns.forEach((c, idx) => {
+      if (present.has(c.key)) return;
+      let insertAt = 0;
+      for (let j = idx - 1; j >= 0; j -= 1) {
+        const pos = result.indexOf(columns[j]!.key);
+        if (pos >= 0) { insertAt = pos + 1; break; }
+      }
+      result.splice(insertAt, 0, c.key);
+      present.add(c.key);
+    });
+    return result;
+  }, [columns, layout.order]);
+
   const visibleColumns = useMemo(() => {
     const byKey = new Map(columns.map((c) => [c.key, c]));
-    // Merge the user's saved column order with the current column set. A column
-    // added AFTER the user last customised their layout isn't in `layout.order`;
-    // instead of dumping it at the far-right end (where it's easy to miss), splice
-    // it in at its DEFINITION position — right after its nearest preceding sibling
-    // from `columns` that's already in the order. So a newly-shipped column (e.g.
-    // the Delivery-Planning "Company" column) appears where the developer placed
-    // it, visible, without the user having to Reset layout. Applies to every grid.
-    let order: string[];
-    if (layout.order.length) {
-      const result = layout.order.filter((k) => byKey.has(k));
-      const present = new Set(result);
-      columns.forEach((c, idx) => {
-        if (present.has(c.key)) return;
-        let insertAt = 0;
-        for (let j = idx - 1; j >= 0; j -= 1) {
-          const pos = result.indexOf(columns[j]!.key);
-          if (pos >= 0) { insertAt = pos + 1; break; }
-        }
-        result.splice(insertAt, 0, c.key);
-        present.add(c.key);
-      });
-      order = result;
-    } else {
-      order = columns.map((c) => c.key);
-    }
-    const base = order
+    const base = resolvedOrder
       .filter((k) => !effectiveHidden.has(k))
       .map((k) => byKey.get(k)!)
       .filter(Boolean);
@@ -629,7 +616,7 @@ function DataGridInner<T>({
       });
     }
     return synthetic.length ? [...synthetic, ...base] : base;
-  }, [columns, layout.order, effectiveHidden, expandable, selectable]);
+  }, [columns, resolvedOrder, effectiveHidden, expandable, selectable]);
 
   // ── Filtered + sorted + grouped rows ──────────────────────────────
   /* Precompute one lowercased search blob per row (once per rows/columns
@@ -873,7 +860,7 @@ function DataGridInner<T>({
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
       // persist final widths
-      setLayoutRaw((prev) => { writeLayout(storageKey, prev); return prev; });
+      setLayoutRaw((prev) => { writeDataGridLayout(storageKey, prev); return prev; });
       resizingRef.current = null;
     };
     window.addEventListener('mousemove', onMove);
@@ -904,7 +891,7 @@ function DataGridInner<T>({
     const w = Math.max(60, Math.min(420, Math.round(max * 7.5 + 20)));
     setLayout((l) => ({ ...l, widths: { ...l.widths, [key]: w } }));
   };
-  const resetLayout = () => setLayout(() => DEFAULT_LAYOUT);
+  const resetLayout = () => setLayout(() => ({ ...DEFAULT_DATA_GRID_LAYOUT }));
 
   /* ── Export to Excel (system-wide via DataGrid) ───────────────────────
      Exports exactly what the operator sees: the post-filter + post-search +
@@ -1154,16 +1141,23 @@ function DataGridInner<T>({
         {toolbar}
         <div className={styles.toolbarSpacer} />
         {!embedded && !hideSearch && (
-          <div className={styles.searchWrap}>
-            <Search {...ICON} aria-hidden />
-            <input
-              ref={searchRef}
-              className={styles.searchInput}
-              type="search"
-              placeholder={searchPlaceholder}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+          <div className={styles.searchGroup}>
+            <div className={styles.searchWrap}>
+              <Search {...ICON} aria-hidden />
+              <input
+                ref={searchRef}
+                className={styles.searchInput}
+                type="search"
+                placeholder={searchPlaceholder}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <div className={styles.searchScope} data-search-scope>
+              {loadedSearchLimit
+                ? `Searches up to ${loadedSearchLimit.toLocaleString()} loaded rows only`
+                : `Searches ${(loadedSearchCount ?? rows.length).toLocaleString()} loaded rows only`}
+            </div>
           </div>
         )}
         {/* Clear-all-filters — appears only when ≥1 column filter is active.
@@ -1207,12 +1201,7 @@ function DataGridInner<T>({
             onClick={(e) => {
               e.stopPropagation();
               setColumnsMenuOpen((v) => {
-                const next = !v;
-                if (next && columnsBtnRef.current) {
-                  const r = columnsBtnRef.current.getBoundingClientRect();
-                  setColumnsMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
-                }
-                return next;
+                return !v;
               });
             }}
           >
@@ -1225,32 +1214,91 @@ function DataGridInner<T>({
           {columnsMenuOpen && (
             <>
               <div
-                className={styles.columnsMenuBackdrop}
-                onClick={() => setColumnsMenuOpen(false)}
-              />
-              <div
                 ref={columnsMenuRef}
-                className={styles.columnsMenu}
-                style={columnsMenuPos ? { position: 'fixed', top: columnsMenuPos.top, right: columnsMenuPos.right } : undefined}
+                className={styles.columnsDrawer}
                 onClick={(e) => e.stopPropagation()}
               >
                 <header className={styles.columnsMenuHeader}>
                   <span>Columns ({visibleColumns.length - (expandable ? 1 : 0)})</span>
-                  <button
-                    type="button"
-                    className={styles.columnsMenuReset}
-                    onClick={resetColumns}
-                    title="Reset to defaults"
-                  >
-                    <RotateCcw size={12} strokeWidth={1.75} aria-hidden />
-                    <span>Reset</span>
-                  </button>
+                  <span className={styles.columnsMenuHeaderBtns}>
+                    <button
+                      type="button"
+                      className={styles.columnsMenuReset}
+                      onClick={showAllColumns}
+                      title="Show every column"
+                    >
+                      <span>Show all</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.columnsMenuReset}
+                      onClick={resetColumns}
+                      title="Reset to defaults"
+                    >
+                      <RotateCcw size={12} strokeWidth={1.75} aria-hidden />
+                      <span>Reset</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.columnsMenuReset}
+                      onClick={() => setColumnsMenuOpen(false)}
+                      title="Close"
+                      aria-label="Close columns drawer"
+                    >
+                      <X size={13} strokeWidth={1.75} aria-hidden />
+                    </button>
+                  </span>
                 </header>
-                <div className={styles.columnsMenuBody}>
-                  {columns.map((c) => {
+                {/* Rows in ON-GRID order (hidden ones in place), each draggable —
+                    dropping writes layout.order, the same order the header drag
+                    writes. Checkbox still toggles visibility. */}
+                <div className={styles.columnsDrawerBody}>
+                  {resolvedOrder.map((key) => {
+                    const c = columns.find((col) => col.key === key);
+                    if (!c) return null;
                     const isHidden = effectiveHidden.has(c.key);
+                    const dragging = columnsMenuDragKey === c.key;
+                    const isDropRow = columnsMenuOverKey === c.key
+                      && !!columnsMenuDragKey && columnsMenuDragKey !== c.key;
                     return (
-                      <label key={c.key} className={styles.columnsMenuItem}>
+                      <label
+                        key={c.key}
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.effectAllowed = 'move';
+                          setColumnsMenuDragKey(c.key);
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          if (columnsMenuOverKey !== c.key) setColumnsMenuOverKey(c.key);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const sourceKey = columnsMenuDragKey;
+                          setColumnsMenuDragKey(null);
+                          setColumnsMenuOverKey(null);
+                          if (!sourceKey || sourceKey === c.key) return;
+                          const order = [...resolvedOrder];
+                          const from = order.indexOf(sourceKey);
+                          const to = order.indexOf(c.key);
+                          if (from < 0 || to < 0) return;
+                          order.splice(from, 1);
+                          order.splice(to, 0, sourceKey);
+                          setLayout((l) => ({ ...l, order }));
+                        }}
+                        onDragEnd={() => {
+                          setColumnsMenuDragKey(null);
+                          setColumnsMenuOverKey(null);
+                        }}
+                        className={[
+                          styles.columnsMenuItem,
+                          dragging ? styles.columnsMenuItemDragging : '',
+                          isDropRow ? styles.columnsMenuItemDrop : '',
+                        ].filter(Boolean).join(' ')}
+                      >
+                        <span className={styles.columnsMenuGrip} title="Drag to reorder">
+                          <GripVertical size={13} strokeWidth={1.75} aria-hidden />
+                        </span>
                         <input
                           type="checkbox"
                           checked={!isHidden}

@@ -209,6 +209,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      - run: npm run check:test-focus
       - run: npm run typecheck
       - run: npm test
       # Zero-dependency node:test checks for the two gate scripts' own logic.
@@ -268,3 +269,32 @@ jobs:
       # the script for the rules + rationale). Cheap, and the thing that
       # actually keeps first paint fast.
       - run: node scripts/check-bundle-size.mjs --baseline /tmp/bundle-baseline.json
+      # Exercise the emitted service worker, including stale-chunk and offline
+      # shell behavior. This catches deploy-cache regressions without relying on
+      # flaky wall-clock or an external environment.
+      - run: npm run check:sw
+      - run: npm run test:smoke-script
+      # Non-skippable local Chromium proof for 10k list geometry/search state.
+      # This suite starts its own Vite lab and never depends on staging data,
+      # credentials, network timing, or optional environment variables.
+      - run: npm run typecheck:perf-local
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:perf-local
+
+  e2e-contract:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/e2e
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/e2e/package-lock.json
+      - run: npm ci
+      # The live staging suite remains post-deploy. PR CI still compiles and
+      # discovers every spec so a broken smoke contract cannot merge silently.
+      - run: npm run typecheck
+      - run: npm run test:list

@@ -74,6 +74,8 @@ import { useDebouncedValue } from "../vendor/scm/lib/hooks";
 import { activeOptions, maintPickerValues, restrictPricedToPool, restrictStringsToPool } from "../vendor/shared/maintenance-pools";
 import { missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../vendor/shared/so-variant-rule";
 import { lineIdentity } from "@2990s/shared";
+import { normalizePhone } from "../vendor/shared/phone";
+import { PhoneInput } from "../vendor/scm/components/PhoneInput";
 import "./mobile.css";
 
 /* ---------------------------------------------------------------------------
@@ -435,8 +437,8 @@ export async function createDraftFromPrefill(prefill: MobileScanPrefill, idempot
 
   // Phone shaping mirrors save(): the prefill carries national digits, the +60
   // prefix is re-attached here (the form's prefix box owns it interactively).
-  const phoneOut = prefill.phone.trim() ? "+60" + prefill.phone.replace(/\s+/g, "") : null;
-  const ecPhoneOut = prefill.emergencyPhone.trim() ? "+60" + prefill.emergencyPhone.replace(/\s+/g, "") : null;
+  const phoneOut = normalizePhone(prefill.phone);
+  const ecPhoneOut = normalizePhone(prefill.emergencyPhone);
 
   const body: Record<string, unknown> = {
     customerName: prefill.name.trim(),
@@ -587,7 +589,9 @@ export function MobileNewSO({
      the desktop PaymentsTable/SoLineCard — a resigned or other-company staff must
      not be pickable. A persisted collected_by name is displayed from the row's own
      collected_by_name (PaymentInfoBlock), so no full roster is needed here. */
-  const pickableStaffQ = usePickableStaff();
+  // Salesperson picker (owner 2026-07-22) — sales-only, mirrors desktop
+  // SalesOrderNew's narrowed dropdown.
+  const pickableStaffQ = usePickableStaff({ onlySales: true });
   const { staff: authStaff } = useAuth();
   /* FIX A — the app-level Houzs auth exposes the permission gate + the signed-in
      user (name/email/id), which the vendor auth bridge doesn't. Drives the
@@ -685,7 +689,7 @@ export function MobileNewSO({
   // Customer
   const [name, setName] = useState(scanPrefill?.name ?? "");
   const [custRef, setCustRef] = useState(scanPrefill?.custRef ?? "");
-  const [phone, setPhone] = useState(scanPrefill?.phone ?? "");
+  const [phone, setPhone] = useState(toE164(scanPrefill?.phone));
   const [email, setEmail] = useState("");
   /* Trust the value the SHARED reconciler produced — it already snapped the OCR
      match against the LIVE customer_type catalog (optionsOrFallback), the same
@@ -706,7 +710,7 @@ export function MobileNewSO({
   // Emergency contact
   const [ecName, setEcName] = useState("");
   const [ecRel, setEcRel] = useState("");
-  const [ecPhone, setEcPhone] = useState(scanPrefill?.emergencyPhone ?? "");
+  const [ecPhone, setEcPhone] = useState(toE164(scanPrefill?.emergencyPhone));
 
   // Delivery address
   const [addr1, setAddr1] = useState(scanPrefill?.address1 ?? "");
@@ -830,7 +834,13 @@ export function MobileNewSO({
   const [scanBaseline] = useState<ScanBaseline | null>(
     scanPrefill
       ? {
-          name: scanPrefill.name, custRef: scanPrefill.custRef, phone: scanPrefill.phone,
+          name: scanPrefill.name, custRef: scanPrefill.custRef,
+          // Coerced the SAME way the field is seeded. The field holds E.164
+          // now, so comparing it against the raw scan string would never match
+          // — the "scanned" badge would never light, and worse, the scan-review
+          // learning label would call an UNTOUCHED phone "changed" and feed the
+          // OCR loop a correction the operator never made.
+          phone: toE164(scanPrefill.phone),
           custType: custType, buildingType: buildingType,
           note: scanPrefill.note,
           procDate: scanPrefill.processingDate, delivDate: scanPrefill.deliveryDate,
@@ -867,7 +877,7 @@ export function MobileNewSO({
         const h = detail.salesOrder;
         setName(h.debtor_name ?? "");
         setCustRef(h.customer_so_no ?? h.ref ?? "");
-        setPhone(stripPrefix(h.phone));
+        setPhone(toE164(h.phone));
         setEmail(h.email ?? "");
         setCustType(h.customer_type ?? "");
         setBuildingType(h.building_type ?? "");
@@ -880,7 +890,7 @@ export function MobileNewSO({
         setNote(h.note ?? "");
         setEcName(h.emergency_contact_name ?? "");
         setEcRel(h.emergency_contact_relationship ?? "");
-        setEcPhone(stripPrefix(h.emergency_contact_phone));
+        setEcPhone(toE164(h.emergency_contact_phone));
         setAddr1(h.address1 ?? "");
         setAddr2(h.address2 ?? "");
         setState(h.customer_state ?? "");
@@ -897,7 +907,7 @@ export function MobileNewSO({
         originalHeaderPatchRef.current = soHeaderPatchFrom({
           name: h.debtor_name ?? "",
           custRef: h.customer_so_no ?? h.ref ?? "",
-          phone: stripPrefix(h.phone),
+          phone: toE164(h.phone),
           email: h.email ?? "",
           custType: h.customer_type ?? "",
           buildingType: h.building_type ?? "",
@@ -913,7 +923,7 @@ export function MobileNewSO({
           procDate: (h.internal_expected_dd ?? "").slice(0, 10),
           delivDate: (h.customer_delivery_date ?? "").slice(0, 10),
           ecName: h.emergency_contact_name ?? "",
-          ecPhone: stripPrefix(h.emergency_contact_phone),
+          ecPhone: toE164(h.emergency_contact_phone),
           ecRel: h.emergency_contact_relationship ?? "",
           salespersonId: null,
         });
@@ -1340,7 +1350,12 @@ export function MobileNewSO({
     let changed = false;
     const mark = (a: string, b: string) => { if (a !== b) changed = true; };
     mark(norm(name), norm(ai.customerName));
-    mark(digits(phone), aiFirstPhoneDigits.replace(/^60/, "").replace(/^0/, ""));
+    // Both sides are E.164 now, so compare them as-is. This used to strip a
+    // leading 60/0 from the AI value to meet a field that held national digits;
+    // once the field became E.164 that stripping made the two permanently
+    // unequal, labelling an UNTOUCHED phone as operator-corrected and feeding
+    // the OCR loop a correction nobody made.
+    mark(digits(phone), aiFirstPhoneDigits);
     mark(norm(addr1), norm(ai.addressLine1 ?? ai.address));
     mark(norm(state), norm(ai.addressStateMatch?.value));
     mark(norm(city), norm(ai.city));
@@ -1362,7 +1377,7 @@ export function MobileNewSO({
       city: city.trim() || null,
       postcode: postcode.trim() || null,
       addressStateMatch: optMatch(state),
-      phones: phone.trim() ? ["+60" + phone.replace(/\s+/g, "")] : ai.phones,
+      phones: phone.trim() ? [phone.trim()] : ai.phones,
       location: ai.location,
       deliveryDate: delivDate || ai.deliveryDate,
       processingDate: procDate || ai.processingDate,
@@ -2067,10 +2082,7 @@ export function MobileNewSO({
                 </Field>
                 <div style={{ display: "flex", gap: 9 }}>
                   <Field label="Phone *" style={{ flex: 1 }} error={touched && phoneErr} scanned={scanned("phone", phone)}>
-                    <span style={{ display: "flex", alignItems: "stretch" }}>
-                      <span style={prefixBox}>+60</span>
-                      <input className="fld-i" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="1X-XXX XXXX" style={{ borderRadius: "0 9px 9px 0" }} />
-                    </span>
+                    <PhoneInput className="fld-i" value={phone} onChange={setPhone} placeholder="1X-XXX XXXX" />
                   </Field>
                   <Field label="Email" style={{ flex: 1 }} error={touched && emailErr}>
                     <input className="fld-i" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Optional" />
@@ -2129,10 +2141,7 @@ export function MobileNewSO({
                   </select>
                 </Field>
                 <Field label="Phone">
-                  <span style={{ display: "flex", alignItems: "stretch" }}>
-                    <span style={prefixBox}>+60</span>
-                    <input className="fld-i" type="tel" value={ecPhone} onChange={(e) => setEcPhone(e.target.value)} placeholder="1X-XXX XXXX" style={{ borderRadius: "0 9px 9px 0" }} />
-                  </span>
+                  <PhoneInput className="fld-i" value={ecPhone} onChange={setEcPhone} placeholder="1X-XXX XXXX" />
                 </Field>
               </div>
             </div>
@@ -2626,13 +2635,20 @@ function mapPickerCat(c: LineCat | undefined): "" | "sofa" | "bedframe" {
   return c === "sofa" ? "sofa" : c === "bedframe" ? "bedframe" : "";
 }
 
-/* Prefill helper — the stored phone is "+60xxxxxxxx"; strip the +60 prefix. */
-function stripPrefix(p: string | null): string {
-  if (!p) return "";
-  let s = p.trim();
-  if (s.startsWith("+60")) s = s.slice(3);
-  else if (s.startsWith("60") && s.length > 9) s = s.slice(2);
-  return s.replace(/^0/, "");
+/* The phone fields hold the CANONICAL E.164 string ("+60123456789"), not the
+   national part. They used to hold national digits beside a hardcoded "+60"
+   box, which meant a Singapore or Indonesian customer simply could not be
+   entered on a phone — the country was a literal in the markup. PhoneInput
+   owns the country now (defaulting to Malaysia), and it emits E.164, so every
+   "+60" + digits concatenation this file used to perform is gone.
+
+   Coercing a STORED value: rows written before the API normalised hold the
+   local "0…" form (the 2026-07-22 audit found sales_orders.phone was 2916 of
+   2916 like that), so normalizePhone is applied on the way in. It returns null
+   for anything it cannot read, and the raw value is kept in that case rather
+   than blanked — an unreadable number is still the customer's number. */
+function toE164(p: string | null | undefined): string {
+  return normalizePhone(p) ?? (p ?? "").trim();
 }
 
 /** The raw form values the SO header fields are built from. Every transform
@@ -2657,7 +2673,7 @@ function soHeaderPatchFrom(v: SoHeaderPatchInput): Record<string, unknown> {
   return {
     debtorName: v.name.trim(),
     customerSoNo: v.custRef.trim() || null,
-    phone: "+60" + v.phone.replace(/\s+/g, ""),
+    phone: v.phone.trim(),
     email: v.email.trim() || null,
     customerType: v.custType || null,
     buildingType: v.buildingType || null,
@@ -2673,7 +2689,7 @@ function soHeaderPatchFrom(v: SoHeaderPatchInput): Record<string, unknown> {
     internalExpectedDd: v.procDate || null,
     customerDeliveryDate: v.delivDate || null,
     emergencyContactName: v.ecName.trim() || null,
-    emergencyContactPhone: v.ecPhone.trim() ? "+60" + v.ecPhone.replace(/\s+/g, "") : null,
+    emergencyContactPhone: v.ecPhone.trim() || null,
     emergencyContactRelationship: v.ecRel || null,
     salespersonId: v.salespersonId,
   };
@@ -3545,18 +3561,6 @@ function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Arra
 
 // ---- Shared inline styles ---------------------------------------------------
 
-const prefixBox: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  padding: "0 10px",
-  background: "#f4f6f3",
-  border: "1px solid rgba(34,31,32,.14)",
-  borderRight: "none",
-  borderRadius: "9px 0 0 9px",
-  fontSize: 12.5,
-  fontWeight: 700,
-  color: "#414539",
-};
 const roItemBox: React.CSSProperties = {
   border: "1px solid #eceee9",
   borderRadius: 10,

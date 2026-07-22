@@ -322,13 +322,20 @@ stockTakes.post('/', async (c) => {
 stockTakes.patch('/:id/lines', async (c) => {
   const sb = c.get('supabase');
   const id = c.req.param('id');
+  // Company scope (owner audit 2026-07-22): the header load was id-only, so
+  // a caller in A could patch B's stock-take lines by knowing the UUID. The
+  // sibling /cancel /reverse /post already do requireActiveCompanyId; align.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; }
   catch { return c.json({ error: 'invalid_json' }, 400); }
 
-  const { data: prev } = await sb.from('stock_takes')
-    .select('status, take_no, company_id').eq('id', id).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+  const { data: prev } = await scopeToCompanyId(
+    sb.from('stock_takes').select('status, take_no, company_id').eq('id', id),
+    co.companyId,
+  ).maybeSingle();
+  if (!prev) return c.json(NOT_THIS_COMPANY, 404);
   const head = prev as { status: string; take_no: string; company_id: number | null };
   if (head.status !== 'OPEN') return c.json({ error: 'not_open' }, 409);
 
@@ -581,9 +588,15 @@ stockTakes.patch('/:id/reverse', async (c) => {
 stockTakes.delete('/:id', async (c) => {
   const sb = c.get('supabase');
   const id = c.req.param('id');
-  const { data: prev } = await sb.from('stock_takes')
-    .select('status, take_no, warehouse_id, company_id').eq('id', id).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+  // Company scope (owner audit 2026-07-22): id-only load + delete let a
+  // caller in A wipe B's OPEN stock-take by knowing the UUID.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  const { data: prev } = await scopeToCompanyId(
+    sb.from('stock_takes').select('status, take_no, warehouse_id, company_id').eq('id', id),
+    co.companyId,
+  ).maybeSingle();
+  if (!prev) return c.json(NOT_THIS_COMPANY, 404);
   const doomed = prev as {
     status: string; take_no: string; warehouse_id: string | null; company_id: number | null;
   };
@@ -592,7 +605,10 @@ stockTakes.delete('/:id', async (c) => {
   const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'DELETE', companyId: doomed.company_id });
   if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
-  const { error } = await sb.from('stock_takes').delete().eq('id', id);
+  const { error } = await scopeToCompanyId(
+    sb.from('stock_takes').delete().eq('id', id),
+    co.companyId,
+  );
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
 
   /* The one action whose subject no longer exists once it is recorded — the

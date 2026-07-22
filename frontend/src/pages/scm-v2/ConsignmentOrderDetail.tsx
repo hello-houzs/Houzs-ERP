@@ -705,7 +705,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
   const notify = useNotify();
   const localities = useLocalities();
   const localityRows = useMemo(() => localities.data ?? [], [localities.data]);
-  const staffQ = usePickableStaff();
+  const staffQ = usePickableStaff({ onlySales: true });
   const staffList = (staffQ.data ?? []).filter((s) => s.active);
   const { can } = useHouzsAuth();
   const venuesQ = useVenues();

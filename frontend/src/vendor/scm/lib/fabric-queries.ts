@@ -72,12 +72,13 @@ export function useFabricTrackings(opts?: {
 }) {
   return useQuery({
     queryKey: ['fabric-tracking', opts?.category ?? 'all', opts?.search ?? ''],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const params = new URLSearchParams();
       if (opts?.category) params.set('category', opts.category);
       if (opts?.search) params.set('search', opts.search);
       const res = await authedFetch<{ fabrics: FabricTrackingRow[] }>(
         `/fabric-tracking${params.toString() ? `?${params.toString()}` : ''}`,
+        { signal },
       );
       return res.fabrics;
     },
@@ -268,8 +269,8 @@ export const useFabricColoursActive = () =>
   useQuery({
     queryKey: ['fabric-colours', 'active'],
     staleTime: 60_000,
-    queryFn: async (): Promise<FabricColourRow[]> => {
-      const res = await authedFetch<{ colours: FabricColourRow[] }>('/fabric-colours');
+    queryFn: async ({ signal }): Promise<FabricColourRow[]> => {
+      const res = await authedFetch<{ colours: FabricColourRow[] }>('/fabric-colours', { signal });
       return res.colours ?? [];
     },
   });
@@ -291,9 +292,10 @@ export const useFabricColoursSearch = (
     queryKey: ['fabric-colours', 'search', trimmed],
     staleTime: 60_000,
     enabled: (opts?.enabled ?? true) && trimmed.length >= 2,
-    queryFn: async (): Promise<FabricColourRow[]> => {
+    queryFn: async ({ signal }): Promise<FabricColourRow[]> => {
       const res = await authedFetch<{ colours: FabricColourRow[] }>(
         `/fabric-colours?q=${encodeURIComponent(trimmed)}&limit=50`,
+        { signal },
       );
       return res.colours ?? [];
     },

@@ -46,6 +46,11 @@
   flex-wrap: wrap;
 }
 .toolbarSpacer { flex: 1; }
+.searchGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
 .searchWrap {
   display: inline-flex;
   align-items: center;
@@ -55,6 +60,12 @@
   border-radius: var(--radius-md);
   padding: 4px 8px;
   min-width: 240px;
+}
+.searchScope {
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--fg-muted);
 }
 .searchInput {
   border: 0;
@@ -122,27 +133,10 @@
   background: rgba(255, 255, 255, 0.25);
   color: var(--c-paper);
 }
-.columnsMenuBackdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 39;
-  background: rgba(0, 0, 0, 0.08);
-}
-.columnsMenu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 40;
-  width: 220px;
-  max-height: 320px;
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-3, 0 8px 24px rgba(0, 0, 0, 0.16));
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
+/* (The old .columnsMenuBackdrop / .columnsMenu anchored-popover pair is gone —
+   the Columns surface is now the NON-MODAL .columnsDrawer below, so the grid
+   stays scrollable while it is open. The .columnsMenu* child classes survive
+   because the drawer reuses them for its header / rows.) */
 .columnsMenuHeader {
   display: flex;
   align-items: center;
@@ -196,6 +190,45 @@
   margin: 0;
   accent-color: var(--c-burnt);
   cursor: pointer;
+}
+.columnsMenuHeaderBtns {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Right-side columns DRAWER (owner 2026-07-22: right-side panel like the
+   DataTable one, but narrow). Fixed to the viewport edge so it never fights
+   the grid card's overflow; flex column so the list scrolls under the header. */
+.columnsDrawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  width: min(340px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--c-paper);
+  border-left: 1px solid var(--line);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.16);
+}
+.columnsDrawerBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+/* Drag-to-reorder rows in the Columns popover (unified column UX). */
+.columnsMenuGrip {
+  display: inline-flex;
+  align-items: center;
+  color: var(--c-muted, #767b6e);
+  cursor: grab;
+}
+.columnsMenuGrip:active { cursor: grabbing; }
+.columnsMenuItemDragging { opacity: 0.45; }
+.columnsMenuItemDrop {
+  background: var(--c-cream);
+  box-shadow: inset 0 2px 0 var(--c-burnt, #b0592f);
 }
 
 .tbarBtn {

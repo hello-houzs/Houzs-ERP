@@ -7,6 +7,7 @@ import { isSalesStaff, isDirectorUser, isSalesDirectorUser, canViewFairReport, h
 import { capability, capabilitiesUnresolved } from "./auth/capabilities";
 import { PageGuard } from "./auth/PageGuard";
 import { ROUTE_ALIASES } from "./lib/routeAliases";
+import { AliasRedirect } from "./routing/AliasRedirect";
 import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
 import { NotificationsProvider } from "./hooks/useNotifications";
@@ -716,7 +717,7 @@ export default function App() {
             grants no access of its own since the destination route's guard
             still runs. See lib/routeAliases.ts for why no path is renamed. */}
         {ROUTE_ALIASES.map((a) => (
-          <Route key={a.from} path={a.from} element={<Navigate to={a.to} replace />} />
+          <Route key={a.from} path={a.from} element={<AliasRedirect to={a.to} />} />
         ))}
         <Route path="*" element={<Forbidden kind="not-found" />} />
         </Routes>

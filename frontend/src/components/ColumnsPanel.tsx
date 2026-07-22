@@ -101,7 +101,9 @@ export function ColumnsPanel({
       onClose={onClose}
       title="Columns"
       subtitle="Show / hide, reorder, and manage custom fields"
-      width={460}
+      /* Owner 2026-07-22: keep the right-side drawer, but NARROW — 460 covered
+         too much of the working area. Matches the SCM DataGrid columns drawer. */
+      width={340}
     >
       {/* ── Columns list ───────────────────────────────────── */}
       <section className="mb-6">
@@ -118,10 +120,16 @@ export function ColumnsPanel({
             </button>
             <span className="text-ink-muted">·</span>
             <button
-              onClick={onResetOrder}
+              onClick={() => {
+                /* Unified with the SCM grid's Reset: order AND visibility back
+                   to defaults in one action. */
+                onResetOrder();
+                onResetVisibility();
+              }}
+              title="Reset order and visibility"
               className="text-ink-muted underline-offset-2 hover:text-accent hover:underline"
             >
-              Reset order
+              Reset
             </button>
           </div>
         </div>

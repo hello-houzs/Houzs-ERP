@@ -52,6 +52,7 @@ import {
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { DataTable, type Column } from "../../components/DataTable";
+import { DATA_TABLE_LAYOUT_FAMILIES } from "../../components/dataTableLayoutFamilies";
 import {
   DetailGrid,
   DetailMain,
@@ -1105,6 +1106,7 @@ export function DeliveryReturnDetailV2() {
             <Section title={`Returned items · ${items.length}`}>
               <DataTable<DrItem>
                 tableId={`dr-lines-${id}`}
+                layoutFamily={DATA_TABLE_LAYOUT_FAMILIES.deliveryReturnLines}
                 rows={items}
                 loading={false}
                 columns={lineColumns}

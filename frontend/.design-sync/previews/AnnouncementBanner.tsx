@@ -1,4 +1,9 @@
-import { AuthProvider, AnnouncementBanner } from "autocount-sync-frontend";
+import {
+  AuthProvider,
+  AnnouncementBanner,
+  QueryClientProvider,
+  queryClient,
+} from "autocount-sync-frontend";
 
 // AnnouncementBanner is a CONNECTED component: it takes no props, needs the
 // auth context and fetches /api/announcements/banner itself. This preview
@@ -86,12 +91,18 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   return realFetch(input as RequestInfo, init);
 };
 
+// QueryClientProvider added 2026-07-22: the banner now reads TanStack
+// useQuery (unread-badge / mobile-popup work, PR #959) and throws
+// "No QueryClient set" without the app's client. Same single-instance rule
+// as every other provider — import BOTH from the bundle, never from source.
 const Live = () => (
-  <AuthProvider>
-    <div className="w-[42rem]">
-      <AnnouncementBanner />
-    </div>
-  </AuthProvider>
+  <QueryClientProvider client={queryClient}>
+    <AuthProvider>
+      <div className="w-[42rem]">
+        <AnnouncementBanner />
+      </div>
+    </AuthProvider>
+  </QueryClientProvider>
 );
 
 export const Warning = () => <Live />;

@@ -58,6 +58,7 @@ export type MobileLang = (typeof MOBILE_LANGS)[number];
 const STORAGE_KEY = "houzs.mobile.lang";
 
 const listeners = new Set<() => void>();
+let volatileLang: MobileLang | null = null;
 function emit() {
   for (const fn of listeners) fn();
 }
@@ -67,16 +68,19 @@ function isMobileLang(v: unknown): v is MobileLang {
 }
 
 function readStoredLang(): MobileLang {
+  if (volatileLang !== null) return volatileLang;
   try {
     const v = localStorage.getItem(STORAGE_KEY);
     if (isMobileLang(v)) return v;
+    if (v !== null) localStorage.removeItem(STORAGE_KEY);
   } catch {
     /* private mode / storage disabled — fall through to English */
   }
-  return "en";
+  return volatileLang ?? "en";
 }
 
 export function setMobileLang(lang: MobileLang) {
+  volatileLang = lang;
   try {
     localStorage.setItem(STORAGE_KEY, lang);
   } catch {
@@ -99,6 +103,14 @@ export function useMobileLang(): MobileLang {
 /** One-shot read for non-React callers. */
 export function getMobileLang(): MobileLang {
   return readStoredLang();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== null && event.key !== STORAGE_KEY) return;
+    volatileLang = null;
+    emit();
+  });
 }
 
 // Display labels for the switcher itself — ALWAYS in each language's own

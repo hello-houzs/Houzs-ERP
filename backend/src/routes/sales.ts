@@ -1022,16 +1022,23 @@ export async function queueEntryChange(
 }
 
 // ── Submit (lock as ready for push) ─────────────────────────
+// Company scope (owner audit 2026-07-22): sibling PATCH/GET already scope by
+// company_id (see line 496, 507 pattern) — the four state-transition writes
+// (submit/unsubmit/void/DELETE) missed it, letting a caller in company A
+// submit/void/delete B's entry by knowing its id. Now match the sibling
+// pattern: SELECT + UPDATE both bounded by company_id when resolved.
 app.post("/entries/:id/submit", requirePageAccess("sales"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
+  const companyId = activeCompanyId(c);
 
   const current = await c.env.DB.prepare(
-    `SELECT id, created_by, status, customer_name FROM sales_entries WHERE id = ?`
+    `SELECT id, created_by, status, customer_name FROM sales_entries
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`
   )
-    .bind(id)
+    .bind(...(companyId != null ? [id, companyId] : [id]))
     .first<{ id: number; created_by: number; status: string; customer_name: string }>();
   if (!current) return c.json({ error: "Not found" }, 404);
   if (!canManage && current.created_by !== user?.id) {
@@ -1051,11 +1058,12 @@ app.post("/entries/:id/submit", requirePageAccess("sales"), async (c) => {
   }
 
   await c.env.DB.prepare(
-    `UPDATE sales_entries SET status = 'submitted', updated_at = datetime('now') WHERE id = ?`
+    `UPDATE sales_entries SET status = 'submitted', updated_at = datetime('now')
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`
   )
-    .bind(id)
+    .bind(...(companyId != null ? [id, companyId] : [id]))
     .run();
-  await logSalesActivity(c.env, id, user?.id, "submitted", null, activeCompanyId(c));
+  await logSalesActivity(c.env, id, user?.id, "submitted", null, companyId);
   return c.json({ ok: true });
 });
 
@@ -1064,13 +1072,14 @@ app.post("/entries/:id/unsubmit", requirePageAccess("sales", "full"), async (c) 
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
+  const companyId = activeCompanyId(c);
   await c.env.DB.prepare(
     `UPDATE sales_entries SET status = 'draft', updated_at = datetime('now')
-      WHERE id = ? AND status = 'submitted'`
+      WHERE id = ? AND status = 'submitted'${companyId != null ? " AND company_id = ?" : ""}`
   )
-    .bind(id)
+    .bind(...(companyId != null ? [id, companyId] : [id]))
     .run();
-  await logSalesActivity(c.env, id, user?.id, "unsubmitted", null, activeCompanyId(c));
+  await logSalesActivity(c.env, id, user?.id, "unsubmitted", null, companyId);
   return c.json({ ok: true });
 });
 
@@ -1079,18 +1088,22 @@ app.post("/entries/:id/void", requirePageAccess("sales", "full"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
+  const companyId = activeCompanyId(c);
   const before = await c.env.DB.prepare(
-    `SELECT project_id FROM sales_entries WHERE id = ?`
+    `SELECT project_id FROM sales_entries
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`
   )
-    .bind(id)
+    .bind(...(companyId != null ? [id, companyId] : [id]))
     .first<{ project_id: number | null }>();
+  if (!before) return c.json({ error: "Not found" }, 404);
   await c.env.DB.prepare(
-    `UPDATE sales_entries SET status = 'void', updated_at = datetime('now') WHERE id = ?`
+    `UPDATE sales_entries SET status = 'void', updated_at = datetime('now')
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`
   )
-    .bind(id)
+    .bind(...(companyId != null ? [id, companyId] : [id]))
     .run();
   await bumpProjectFinance(c.env, before?.project_id ?? null);
-  await logSalesActivity(c.env, id, user?.id, "voided", null, activeCompanyId(c));
+  await logSalesActivity(c.env, id, user?.id, "voided", null, companyId);
   return c.json({ ok: true });
 });
 
@@ -1100,11 +1113,13 @@ app.delete("/entries/:id", requirePageAccess("sales"), async (c) => {
   if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
+  const companyId = activeCompanyId(c);
 
   const row = await c.env.DB.prepare(
-    `SELECT created_by, status, project_id FROM sales_entries WHERE id = ?`
+    `SELECT created_by, status, project_id FROM sales_entries
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`
   )
-    .bind(id)
+    .bind(...(companyId != null ? [id, companyId] : [id]))
     .first<{ created_by: number; status: string; project_id: number | null }>();
   if (!row) return c.json({ error: "Not found" }, 404);
   if (!canManage) {
@@ -1114,9 +1129,10 @@ app.delete("/entries/:id", requirePageAccess("sales"), async (c) => {
   }
 
   await c.env.DB.prepare(
-    `UPDATE sales_entries SET archived_at = datetime('now') WHERE id = ?`
+    `UPDATE sales_entries SET archived_at = datetime('now')
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`
   )
-    .bind(id)
+    .bind(...(companyId != null ? [id, companyId] : [id]))
     .run();
   await bumpProjectFinance(c.env, row.project_id);
   return c.json({ ok: true });

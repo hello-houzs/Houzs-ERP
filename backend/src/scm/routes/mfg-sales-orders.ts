@@ -4452,6 +4452,33 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
       c,
     ));
 
+  /* Delivery-date requires an address (owner 2026-07-22 — "有 delivery date
+     就必须有地址，不然我们怎么知道送去哪里"). Owner-sighting: POS test SO
+     2990-SO-2607-019 had customerDeliveryDate set but no address1 / postcode
+     / customerState — the SLGR-warehouse-derived Location was empty and the
+     coordinator had no place to send the order. The Proceed gate already
+     requires address (meetsProceedGate), but CREATE was silently accepting
+     an incomplete-address SO whose only way forward was to bounce at Proceed.
+     Block it here so the operator has to either fill address OR unset
+     delivery_date at handover time. `customerDeliveryDate` empty (address-
+     later flow) still passes — nothing to route yet. */
+  {
+    const dd = (body.customerDeliveryDate as string | null | undefined) ?? null;
+    if (dd) {
+      const missing: string[] = [];
+      if (typeof body.address1 !== 'string' || !body.address1.trim()) missing.push('address line 1');
+      if (typeof body.postcode !== 'string' || !body.postcode.trim()) missing.push('postcode');
+      if (typeof body.customerState !== 'string' || !body.customerState.trim()) missing.push('state');
+      if (missing.length > 0) {
+        return c.json({
+          error: 'delivery_date_needs_address',
+          message: `A delivery date can't be set until the customer's address is filled — missing ${missing.join(', ')}. Either add the address or take off the delivery date.`,
+          missing,
+        }, 422);
+      }
+    }
+  }
+
   /* P1 (Owner 2026-06-03, migration 0143) — resolve the POS handover payment
      slip. The POS uploads the slip to R2 first (via /slips/init + confirm) and
      sends us the uploadSessionId; we look up its committed R2 key and attach it

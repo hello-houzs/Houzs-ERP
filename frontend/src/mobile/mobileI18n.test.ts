@@ -1,11 +1,62 @@
-import { describe, expect, it } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  getMobileLang,
   LANG_LABELS,
   LANG_SUBLABELS,
   MOBILE_LANGS,
   localizeAnnouncement,
+  setMobileLang,
   type MobileLang,
+  useMobileLang,
 } from "./mobileI18n";
+
+afterEach(() => {
+  localStorage.clear();
+  window.dispatchEvent(new StorageEvent("storage", { key: null, storageArea: localStorage }));
+  vi.restoreAllMocks();
+});
+
+describe("mobile language preference", () => {
+  it("updates live consumers when another tab changes or clears the language", () => {
+    const { result, unmount } = renderHook(() => useMobileLang());
+    act(() => setMobileLang("bn"));
+    expect(result.current).toBe("bn");
+
+    act(() => {
+      localStorage.setItem("houzs.mobile.lang", "zh");
+      window.dispatchEvent(new StorageEvent("storage", {
+        key: "houzs.mobile.lang",
+        oldValue: "bn",
+        newValue: "zh",
+        storageArea: localStorage,
+      }));
+    });
+    expect(result.current).toBe("zh");
+
+    act(() => {
+      localStorage.clear();
+      window.dispatchEvent(new StorageEvent("storage", { key: null, storageArea: localStorage }));
+    });
+    expect(result.current).toBe("en");
+    unmount();
+  });
+
+  it("keeps the live tab language when persistent storage is unavailable", () => {
+    localStorage.setItem("houzs.mobile.lang", "zh");
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("blocked", "QuotaExceededError");
+    });
+    setMobileLang("ms");
+    expect(getMobileLang()).toBe("ms");
+  });
+
+  it("removes unsupported stored values", () => {
+    localStorage.setItem("houzs.mobile.lang", "my");
+    expect(getMobileLang()).toBe("en");
+    expect(localStorage.getItem("houzs.mobile.lang")).toBeNull();
+  });
+});
 
 describe("MOBILE_LANGS", () => {
   it("is exactly English, Malay, Chinese, Bengali", () => {

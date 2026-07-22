@@ -82,7 +82,13 @@ export const PhoneInput = ({
         required={required}
         value={national}
         onChange={(e) => {
-          const n = e.target.value.replace(/\D+/g, '');
+          let n = e.target.value.replace(/\D+/g, '');
+          // Dedup a leading dial-code inside the national digits (owner
+          // sighting 2026-07-22: operator typed "601161556133" with MY +60
+          // selected → stored "+60601161556133", a double country code that
+          // makes the number invalid). splitE164 already applies the same
+          // strip on the read path; the write path was missing it.
+          if (dial && n.startsWith(dial)) n = n.slice(dial.length);
           setNational(n);
           emit(dial, n);
         }}
