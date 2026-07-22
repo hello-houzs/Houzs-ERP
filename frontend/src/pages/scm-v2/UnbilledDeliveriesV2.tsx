@@ -392,13 +392,25 @@ export function UnbilledDeliveriesV2() {
 
   const agePillOptions = AGE_TABS.map((t) => ({ value: t.value, label: `${t.label} · ${ageCounts[t.value]}` }));
 
+  /* Every tile below is a reduce over `filtered`, which is [] until the query
+     lands and stays [] when it fails. On this page that renders as "Not billed
+     RM 0.00" — read on a finance screen as "nobody is owed anything", which is
+     the opposite of what an unloaded list means. Unknown until it is known. */
+  const statsPending = isLoading || Boolean(error);
+
   return (
     <PullToRefresh onRefresh={onPullToRefresh}>
       <div className="mb-3 flex items-start justify-between gap-3 md:hidden">
         <div className="min-w-0">
           <h1 className="font-display text-[22px] font-extrabold leading-tight tracking-tight text-ink">Not Yet Billed</h1>
           <div className="mt-0.5 text-[12.5px] text-ink-muted">
-            {stats.count} deliver{stats.count === 1 ? "y" : "ies"} · {fmtRm(stats.unbilled)}
+            {statsPending ? (
+              "Loading…"
+            ) : (
+              <>
+                {stats.count} deliver{stats.count === 1 ? "y" : "ies"} · {fmtRm(stats.unbilled)}
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -420,12 +432,14 @@ export function UnbilledDeliveriesV2() {
           tone={stats.over365Value > 0 ? "error" : undefined}
           rail="bg-err"
           active
+          pending={statsPending}
         />
         <StatCard
           label="Not billed"
           value={fmtRm(stats.unbilled)}
           subtitle="Scoped to current filter"
           rail="bg-primary"
+          pending={statsPending}
         />
         <StatCard
           label="Partly billed"
@@ -433,12 +447,14 @@ export function UnbilledDeliveriesV2() {
           subtitle={`${stats.partlyCount.toLocaleString("en-MY")} part-invoiced deliveries`}
           tone={stats.partlyValue > 0 ? "warning" : undefined}
           rail="bg-accent-bright"
+          pending={statsPending}
         />
         <StatCard
           label="Oldest"
           value={stats.oldest > 0 ? `${stats.oldest.toLocaleString("en-MY")} days` : "—"}
           subtitle={data?.as_of ? `As at ${fmtDate(data.as_of)}` : "Scoped to current filter"}
           rail="bg-accent"
+          pending={statsPending}
         />
       </div>
 

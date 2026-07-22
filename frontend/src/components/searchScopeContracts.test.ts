@@ -91,6 +91,10 @@ describe("list search scope contracts", () => {
     // the first paint and on a failed fetch.
     "pages/scm-v2/DeliveryReturnsListV2.tsx",
     "pages/scm-v2/PurchaseReturnsListV2.tsx",
+    // Finance report, single fetch, no early return: an unloaded or failed
+    // response painted "Not billed RM 0.00" on a page whose whole purpose is to
+    // say how much is owed.
+    "pages/scm-v2/UnbilledDeliveriesV2.tsx",
   ])("declares the unknown state on every KPI tile of %s", (file) => {
     const contents = source(file);
     expect(contents).toContain("const statsPending =");
