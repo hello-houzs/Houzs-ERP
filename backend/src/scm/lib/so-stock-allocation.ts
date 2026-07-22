@@ -43,6 +43,13 @@ export type AllocationResult = {
   ordersAdvanced: number;
   ordersRegressed: number;
   reason?: string;
+  /* Doc numbers whose HEADER status could not be advanced/regressed this pass
+     because a human editor holds the SO's edit lease (or the header moved under
+     us). See the skip-and-continue note at the header-transition block: these
+     are NOT failures. The line-level projection for these orders is already
+     committed; only the derived header status is pending. The caller re-queues
+     the job so a later sweep finishes them. */
+  deferredDocNos?: string[];
 };
 
 /**
@@ -541,6 +548,7 @@ export async function recomputeSoStockAllocation(
     const touchedDocs = new Set<string>(scopeToDocNo ? [scopeToDocNo] : orders.map((order) => order.doc_no));
 
     let ordersAdvanced = 0, ordersRegressed = 0;
+    const deferredDocNos: string[] = [];
     for (const docNo of touchedDocs) {
       const order = orderByDoc.get(docNo);
       if (!order) continue;
@@ -581,13 +589,29 @@ export async function recomputeSoStockAllocation(
           note,
         });
       };
+      /* SKIP AND CONTINUE — do NOT throw (livelock fix, 2026-07-22).
+
+         advanceSoGeneration stands down while a human holds the SO's edit lease.
+         That lease is FIVE minutes and the retry cron is also FIVE minutes, so
+         throwing here meant: one order under active edit aborted the whole
+         global recompute, the queue row was marked failed, and the next sweep
+         five minutes later hit the same still-leased order. Two equal timers —
+         the projection could fail forever while looking like it was retrying,
+         and every order AFTER the leased one in this loop never got its header
+         evaluated at all.
+
+         A deferral is not an error. The line-level projection for this order is
+         already committed above; only the derived header status is outstanding,
+         and it is re-derived from scratch on every pass (this function is
+         idempotent). So record the doc number, keep going, and let the caller
+         re-queue. Progress is made on every other order in the batch. */
       if (r.isMainReady && (cur === 'CONFIRMED' || cur === 'IN_PRODUCTION')) {
         const advanced = await advanceSoGeneration(sb, docNo, { status: 'READY_TO_SHIP' }, { status: cur });
         if (advanced.applied) {
           ordersAdvanced += 1;
           await auditAutoStatus(cur, 'READY_TO_SHIP', 'Auto-advanced: every main product line is READY (stock allocation)');
         } else {
-          throw new Error(`allocation header advance deferred: ${docNo}:${advanced.reason}`);
+          deferredDocNos.push(`${docNo}:${advanced.reason}`);
         }
       } else if (!r.isMainReady && cur === 'READY_TO_SHIP') {
         const regressed = await advanceSoGeneration(sb, docNo, { status: 'CONFIRMED' }, { status: cur });
@@ -595,12 +619,15 @@ export async function recomputeSoStockAllocation(
           ordersRegressed += 1;
           await auditAutoStatus(cur, 'CONFIRMED', 'Auto-regressed: a main product line is no longer READY (stock re-allocated)');
         } else {
-          throw new Error(`allocation header regression deferred: ${docNo}:${regressed.reason}`);
+          deferredDocNos.push(`${docNo}:${regressed.reason}`);
         }
       }
     }
 
-    return { ok: true, linesFlipped, ordersAdvanced, ordersRegressed };
+    return {
+      ok: true, linesFlipped, ordersAdvanced, ordersRegressed,
+      ...(deferredDocNos.length > 0 ? { deferredDocNos } : {}),
+    };
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error('[so-allocation] recompute failed:', e);

@@ -392,7 +392,12 @@ export default {
       ctx.waitUntil(
         drainStockAllocationRecompute(env)
           .then((r) => {
-            if (r.processed || r.reason) console.log(`[cron so-allocation] ${JSON.stringify(r)}`);
+            /* A dead-lettered job is the one state that must NEVER read as
+               routine: allocation has stopped and stays stopped until a human
+               acts. Logged at error level on every sweep so it cannot hide in
+               the noise. */
+            if (r.deadLettered) console.error(`[cron so-allocation] DEAD LETTER ${JSON.stringify(r)}`);
+            else if (r.processed || r.reason) console.log(`[cron so-allocation] ${JSON.stringify(r)}`);
           })
           .catch((e) => console.error("[cron so-allocation]", e))
       );

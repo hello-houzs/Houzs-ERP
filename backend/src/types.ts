@@ -29,6 +29,14 @@ export type Env = {
    *  a separate key from FORM_INTAKE_KEY because the form-intake script
    *  lives in a different Google account than the HC Delivery sheet's. */
   SHEET_SYNC_KEY?: string;
+  /** ISO-8601 instant. While set AND in the future, a Sales Order mutation that
+   *  omits the concurrency `version` is accepted with the pre-CAS
+   *  last-writer-wins semantics instead of 428. This is the ROLLOUT grace for
+   *  browser tabs that were already open when mandatory CAS deployed; a STALE
+   *  version is still 409 either way. Unset = strict (the steady state). Set it
+   *  to deploy time + 30 minutes at cutover, then delete the variable.
+   *  See docs/IDEMPOTENCY-PHASE2-RUNBOOK.md. */
+  SO_CAS_GRACE_UNTIL?: string;
   POD_BUCKET: R2Bucket;
   // R2 buckets used by the ported SCM routes (SO item photos, public assets).
   // Typed required so the ported code compiles; bind in wrangler.toml before the

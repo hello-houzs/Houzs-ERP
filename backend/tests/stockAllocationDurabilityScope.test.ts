@@ -1,0 +1,94 @@
+import { describe, expect, test } from 'vitest';
+import consignmentLoaner from '../src/scm/lib/consignment-loaner.ts?raw';
+import consignmentNotes from '../src/scm/routes/consignment-notes.ts?raw';
+import consignmentReturns from '../src/scm/routes/consignment-returns.ts?raw';
+import deliveryOrdersMfg from '../src/scm/routes/delivery-orders-mfg.ts?raw';
+import deliveryReturns from '../src/scm/routes/delivery-returns.ts?raw';
+import grns from '../src/scm/routes/grns.ts?raw';
+import inventoryAdjustments from '../src/scm/routes/inventory-adjustments.ts?raw';
+import mfgSalesOrders from '../src/scm/routes/mfg-sales-orders.ts?raw';
+import purchaseConsignmentReceives from '../src/scm/routes/purchase-consignment-receives.ts?raw';
+import purchaseConsignmentReturns from '../src/scm/routes/purchase-consignment-returns.ts?raw';
+import purchaseReturns from '../src/scm/routes/purchase-returns.ts?raw';
+import soAmendments from '../src/scm/routes/so-amendments.ts?raw';
+import stockTakes from '../src/scm/routes/stock-takes.ts?raw';
+import stockTransfers from '../src/scm/routes/stock-transfers.ts?raw';
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   SCOPE LEDGER for the durable allocation queue (defect 1, 2026-07-22).
+
+   HONEST STATEMENT OF WHAT SHIPPED. The durable outbox introduced by this PR
+   covers FOUR of the THIRTY-EIGHT places that trigger an SO stock-allocation
+   recompute. The other thirty-four still call `recomputeSoStockAllocation`
+   inline, best-effort: if the Worker dies, the network drops, or the CPU limit
+   is hit between the source write and the recompute, the projection stays stale
+   until the next unrelated mutation happens to sweep it. Allocation is
+   therefore NOT durable in general, and nothing in this repo should be read as
+   claiming it is.
+
+   WHY THE REMAINING 34 WERE NOT CONVERTED HERE. `enqueueStockAllocationRecompute`
+   is only a durability guarantee when it commits in the SAME database
+   transaction as the source write. Only the four converted call sites run under
+   `runScmPgCommand`; the rest are ordinary PostgREST route bodies with no
+   transaction to join, so enqueuing there would produce a queue row that can
+   commit without its source write (or vice versa) — a WORSE lie than the honest
+   best-effort call that is there now. Converting them means first moving each
+   route onto the PG command transaction, which is a separate project per
+   module. Doing it inside this PR — already the largest concurrency change in
+   the batch, with no PostgreSQL CI coverage for the scm path — would not be
+   reviewable.
+
+   THIS TEST IS A RATCHET, NOT A TARGET. It pins the exact inventory. Converting
+   a call site (count moves from `inline` to `durable`) or adding a new one both
+   fail this test, which forces the follow-up PR to state which line it changed
+   instead of letting the numbers drift quietly. Follow-up work: convert by
+   module, highest count first (grns 6, mfg-sales-orders 8), each with its own
+   move to `runScmPgCommand`.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const INLINE = 'await recomputeSoStockAllocation(sb';
+const DURABLE = 'await scheduleStockAllocationAfterCommand(';
+
+const count = (source: string, needle: string) => source.split(needle).length - 1;
+
+/** Every module that triggers an allocation recompute, with its exact split. */
+const LEDGER: Array<{ module: string; source: string; inline: number; durable: number }> = [
+  { module: 'lib/consignment-loaner.ts', source: consignmentLoaner, inline: 2, durable: 0 },
+  { module: 'routes/consignment-notes.ts', source: consignmentNotes, inline: 1, durable: 0 },
+  { module: 'routes/consignment-returns.ts', source: consignmentReturns, inline: 1, durable: 0 },
+  { module: 'routes/delivery-orders-mfg.ts', source: deliveryOrdersMfg, inline: 3, durable: 0 },
+  { module: 'routes/delivery-returns.ts', source: deliveryReturns, inline: 3, durable: 0 },
+  { module: 'routes/grns.ts', source: grns, inline: 6, durable: 0 },
+  { module: 'routes/inventory-adjustments.ts', source: inventoryAdjustments, inline: 1, durable: 0 },
+  { module: 'routes/mfg-sales-orders.ts', source: mfgSalesOrders, inline: 8, durable: 3 },
+  { module: 'routes/purchase-consignment-receives.ts', source: purchaseConsignmentReceives, inline: 1, durable: 0 },
+  { module: 'routes/purchase-consignment-returns.ts', source: purchaseConsignmentReturns, inline: 1, durable: 0 },
+  { module: 'routes/purchase-returns.ts', source: purchaseReturns, inline: 3, durable: 0 },
+  { module: 'routes/so-amendments.ts', source: soAmendments, inline: 0, durable: 1 },
+  { module: 'routes/stock-takes.ts', source: stockTakes, inline: 2, durable: 0 },
+  { module: 'routes/stock-transfers.ts', source: stockTransfers, inline: 2, durable: 0 },
+];
+
+describe('durable allocation coverage is stated honestly', () => {
+  for (const entry of LEDGER) {
+    test(`${entry.module}: ${entry.durable} durable / ${entry.inline} inline`, () => {
+      expect(count(entry.source, INLINE), `${entry.module} inline recompute call count changed`)
+        .toBe(entry.inline);
+      expect(count(entry.source, DURABLE), `${entry.module} durable enqueue count changed`)
+        .toBe(entry.durable);
+    });
+  }
+
+  test('the totals match the documented scope: 4 durable of 38 triggers', () => {
+    const durable = LEDGER.reduce((sum, entry) => sum + entry.durable, 0);
+    const inline = LEDGER.reduce((sum, entry) => sum + entry.inline, 0);
+    expect(durable).toBe(4);
+    expect(inline).toBe(34);
+    expect(durable + inline).toBe(38);
+  });
+
+  test('the code says out loud that the other triggers are still best-effort', () => {
+    // The claim lives next to the implementation, not only in a PR description.
+    expect(mfgSalesOrders).toContain('recomputeSoStockAllocation');
+  });
+});

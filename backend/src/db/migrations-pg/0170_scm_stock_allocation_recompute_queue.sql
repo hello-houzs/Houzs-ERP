@@ -17,6 +17,30 @@ CREATE TABLE IF NOT EXISTS scm.stock_allocation_recompute_queue (
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 
+-- Terminal state + separated counters (2026-07-22).
+--   state / dead_lettered_at : after 10 consecutive HARD failures the job stops
+--     retrying and is parked for a human. Without this a permanently broken
+--     recompute spun every five minutes forever and never surfaced.
+--   deferrals / next_attempt_at : a SOFT deferral (an SO header held by a human
+--     editor, or another recompute already running) is NOT a failure and must
+--     never dead-letter a healthy queue. It gets its own counter and a jittered
+--     backoff, so the 5-minute edit lease and the 5-minute cron cannot beat
+--     against each other indefinitely.
+-- ADD COLUMN IF NOT EXISTS so a re-run over an already-created table is a no-op.
+ALTER TABLE scm.stock_allocation_recompute_queue
+  ADD COLUMN IF NOT EXISTS state            text NOT NULL DEFAULT 'PENDING',
+  ADD COLUMN IF NOT EXISTS dead_lettered_at timestamptz,
+  ADD COLUMN IF NOT EXISTS deferrals        integer NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS next_attempt_at  timestamptz;
+
+DO $$
+BEGIN
+  ALTER TABLE scm.stock_allocation_recompute_queue
+    ADD CONSTRAINT stock_allocation_recompute_queue_state_check
+    CHECK (state IN ('PENDING', 'DEAD'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
 ALTER TABLE scm.stock_allocation_recompute_queue ENABLE ROW LEVEL SECURITY;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE scm.stock_allocation_recompute_queue TO service_role;

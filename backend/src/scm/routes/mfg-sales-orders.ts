@@ -273,6 +273,42 @@ const soVersionConflict = (currentVersion: number) => ({
   currentVersion,
 });
 
+/* ── ROLLOUT GRACE WINDOW for mandatory CAS (2026-07-22) ───────────────────────
+   Making `version` mandatory is a BREAKING wire change for every browser tab
+   that is ALREADY OPEN when this deploys. Those tabs run the previous JS
+   bundle, which never sends a version, so without a grace path the first Save
+   after deploy 428s for every single person mid-edit, all at once, with no way
+   to recover except a reload they have not been told to do. A correctness fix
+   that interrupts the whole shop the moment it lands is not a fix yet.
+
+   MECHANISM: a bounded, opt-in, self-closing window driven by the
+   `SO_CAS_GRACE_UNTIL` Worker variable (an ISO-8601 instant).
+     • unset  → strict from the first request (the safe default, and the
+                permanent steady state; nothing to remember to turn off)
+     • set and in the FUTURE → a request that omits the version is accepted with
+                the PRE-CAS semantics (server-current version, last-writer-wins,
+                exactly today's production behaviour) and flagged `casGrace`
+     • set and in the PAST → strict again, automatically
+
+   A STALE version is ALWAYS a 409, in or out of the window: the grace only
+   covers clients that cannot speak the protocol at all, never a client that
+   spoke it and lost. Set it to deploy time + 30 minutes at rollout and delete
+   the variable afterwards — see docs/IDEMPOTENCY-PHASE2-RUNBOOK.md. */
+export type SoCasGraceWindow = { until?: string | null; now?: number };
+
+export function soCasGraceOpen(window?: SoCasGraceWindow): boolean {
+  const raw = window?.until;
+  if (!raw) return false;
+  const until = Date.parse(String(raw));
+  if (!Number.isFinite(until)) return false;
+  return (window?.now ?? Date.now()) < until;
+}
+
+/** Read the window off the Worker env. One place, so no route invents its own. */
+export const soCasGrace = (c: any): SoCasGraceWindow => ({
+  until: (c?.env?.SO_CAS_GRACE_UNTIL as string | undefined) ?? null,
+});
+
 const SO_EDIT_LEASE_CONFLICT = {
   error: 'so_edit_lease_conflict',
   message: 'This order is being saved on another screen. Your changes are still here; wait a moment and try again.',
@@ -5224,10 +5260,13 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
   const fromStatus = (prev as { status: string } | null)?.status ?? null;
   const fromNorm = fromStatus == null ? null : String(fromStatus).toUpperCase();
   const currentVersion = Number((prev as { version?: number | string }).version ?? 1);
-  const expectedVersion = Number(body.version);
-  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+  const expectedVersionRaw = Number(body.version);
+  const statusGrace = !Number.isInteger(expectedVersionRaw) || expectedVersionRaw < 1;
+  if (statusGrace && !soCasGraceOpen(soCasGrace(c))) {
     return c.json({ ...SO_VERSION_REQUIRED, currentVersion }, 428);
   }
+  // Rollout grace: a pre-CAS tab keeps the old last-writer-wins semantics.
+  const expectedVersion = statusGrace ? currentVersion : expectedVersionRaw;
   if (expectedVersion !== currentVersion
       || (body.expectedStatus && String(body.expectedStatus).toUpperCase() !== fromNorm)) {
     return c.json(soVersionConflict(currentVersion), 409);
@@ -5426,10 +5465,13 @@ mfgSalesOrders.delete('/:docNo', async (c) => {
     }, 409);
   }
   const currentVersion = Number((soRow as { version?: number | string }).version ?? 1);
-  const expectedVersion = Number(c.req.query('version'));
-  if (!Number.isInteger(expectedVersion) || expectedVersion < 1) {
+  const expectedVersionRaw = Number(c.req.query('version'));
+  const deleteGrace = !Number.isInteger(expectedVersionRaw) || expectedVersionRaw < 1;
+  if (deleteGrace && !soCasGraceOpen(soCasGrace(c))) {
     return c.json({ ...SO_VERSION_REQUIRED, currentVersion }, 428);
   }
+  // Rollout grace: a pre-CAS tab keeps the old last-writer-wins semantics.
+  const expectedVersion = deleteGrace ? currentVersion : expectedVersionRaw;
   if (expectedVersion !== currentVersion) return c.json(soVersionConflict(currentVersion), 409);
   if (activeSoEditLease(soRow as SoEditLeaseRow)) return c.json(SO_EDIT_LEASE_CONFLICT, 409);
 
@@ -5541,18 +5583,23 @@ mfgSalesOrders.get('/:docNo/price-overrides', async (c) => {
 mfgSalesOrders.post('/:docNo/items/:itemId/override', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId');
   const user = c.get('user');
-  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
-  if (leaseBlocked) return leaseBlocked;
   /* SO-SKU spec P4 (D4) — price overrides are admin-level only. Everyone else
      gets the SKU Master price (auto-filled in the UI, enforced by the server
      recompute on POST/PATCH); this audited side-door is the ONLY way to
-     deviate, so it carries the role gate. */
+     deviate, so it carries the role gate.
+
+     AUTHZ BEFORE CONCURRENCY (2026-07-22) — the role gate runs BEFORE the edit
+     lease. A non-admin used to get the 409 "This order is being saved on
+     another screen; wait a moment and try again", so they retried forever and
+     were never told that only an admin can override a price. */
   if (!(await isPriceOverrideCaller(c))) {
     return c.json({
       error: 'price_override_admin_only',
       message: 'Unit prices follow the SKU Master sell price. Only an admin can override a line price.',
     }, 403);
   }
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
   /* Owner 2026-06-12 — processing-date lock: no price overrides once the
      processing day has passed (the locked order is already PO'd). */
   {
@@ -6023,10 +6070,12 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
     return c.json({ ok: true, docNo, version: currentVersion, reserved: true, leaseToken: requestedLeaseToken });
   }
 
-  if (body.version === undefined) {
+  const headerGrace = body.version === undefined;
+  if (headerGrace && !soCasGraceOpen(soCasGrace(c))) {
     return c.json({ ...SO_VERSION_REQUIRED, currentVersion }, 428);
   }
-  const clientVersion = Number(body.version);
+  // Rollout grace: a pre-CAS tab keeps the old last-writer-wins semantics.
+  const clientVersion = headerGrace ? currentVersion : Number(body.version);
   if (!Number.isInteger(clientVersion) || clientVersion < 1) {
     return c.json({
       error: 'so_version_invalid',
@@ -6507,7 +6556,15 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
   if (releaseLeaseError) {
     return c.json({ error: 'so_edit_lease_release_failed', message: 'The order saved, but the edit lock could not be released. Wait five minutes before editing again.' }, 500);
   }
-  if (!releasedLease) return c.json(soVersionConflict(savedVersion), 409);
+  /* The header CAS ALREADY COMMITTED above. A 0-row lease release means our
+     lease was rotated/expired underneath us, NOT that the save lost a race —
+     reporting soVersionConflict here told the operator "someone else updated
+     this order" about a save that actually succeeded, and they re-sent it.
+     Report the truth: saved, lock not ours to clear (it expires on its own). */
+  if (!releasedLease) {
+    // eslint-disable-next-line no-console
+    console.warn('[mfg-so] header saved but edit lease was no longer ours to release:', docNo, savedVersion);
+  }
 
   return c.json({
     ok: true,
@@ -6776,8 +6833,6 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
-  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
-  if (leaseBlocked) return leaseBlocked;
   if (!it.itemCode) return c.json({ error: 'item_code_required' }, 400);
 
   /* Edge #4 — itemCode catalog guard. */
@@ -6793,6 +6848,13 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
+  /* AUTHZ BEFORE CONCURRENCY (2026-07-22) — the self-scope gate above now runs
+     BEFORE the edit lease. A caller who may not touch this order at all used to
+     be told "This order is being saved on another screen; wait a moment and try
+     Save again" — a permission refusal wearing a conflict's clothes, which
+     invites an endless retry and never surfaces the real reason. */
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
 
   /* Composition guard (Loo 2026-06-11) — the create-path MAIN-mix rule
      (sofa never shares a bill with bedframe / mattress, PR #519) now also
@@ -7306,8 +7368,6 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
   let it: Record<string, unknown>;
   try { it = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
-  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
-  if (leaseBlocked) return leaseBlocked;
 
   /* Edge #4 — itemCode catalog guard (only when caller is changing it). */
   if (it.itemCode !== undefined) {
@@ -7322,6 +7382,13 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
+  /* AUTHZ BEFORE CONCURRENCY (2026-07-22) — the self-scope gate above now runs
+     BEFORE the edit lease. A caller who may not touch this order at all used to
+     be told "This order is being saved on another screen; wait a moment and try
+     Save again" — a permission refusal wearing a conflict's clothes, which
+     invites an endless retry and never surfaces the real reason. */
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
 
   /* Owner 2026-06-12 — processing-date lock: no line EDIT once the processing
      day has passed (the locked order is already PO'd to the supplier). */
@@ -7719,8 +7786,6 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
 
 mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
-  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
-  if (leaseBlocked) return leaseBlocked;
 
   /* Tier 2 downstream-lock — line-delete is blocked once a DO / SI exists. */
   const childLock = await soHasDownstream(sb, docNo);
@@ -7729,6 +7794,13 @@ mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
+  /* AUTHZ BEFORE CONCURRENCY (2026-07-22) — the self-scope gate above now runs
+     BEFORE the edit lease. A caller who may not touch this order at all used to
+     be told "This order is being saved on another screen; wait a moment and try
+     Save again" — a permission refusal wearing a conflict's clothes, which
+     invites an endless retry and never surfaces the real reason. */
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
 
   /* Owner 2026-06-12 — processing-date lock: no line DELETE once the
      processing day has passed (the locked order is already PO'd). */
@@ -7863,8 +7935,6 @@ const throwAtomicCommandWrite = (sb: any, error: { message?: string } | null | u
 
 export async function tbcUpdateCommandHandler(c: any, sb: any): Promise<Response> {
   const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
-  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
-  if (leaseBlocked) return leaseBlocked;
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const patch = (body.variants ?? {}) as Record<string, unknown>;
@@ -7875,6 +7945,13 @@ export async function tbcUpdateCommandHandler(c: any, sb: any): Promise<Response
   const childLock = await soHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
+  /* AUTHZ BEFORE CONCURRENCY (2026-07-22) — the self-scope gate above now runs
+     BEFORE the edit lease. A caller who may not touch this order at all used to
+     be told "This order is being saved on another screen; wait a moment and try
+     Save again" — a permission refusal wearing a conflict's clothes, which
+     invites an endless retry and never surfaces the real reason. */
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
 
   /* Owner 2026-06-12 — processing-date lock: a TBC fill-in is still a line
      EDIT (it changes what we PO to the supplier), so it locks too. */
@@ -8086,8 +8163,6 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', (c) => {
    bill downward. The composition guard keeps sofa exclusive on the SO. */
 export async function tbcSwapCommandHandler(c: any, sb: any): Promise<Response> {
   const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
-  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
-  if (leaseBlocked) return leaseBlocked;
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const newCode = String(body.itemCode ?? '').trim();
@@ -8096,6 +8171,13 @@ export async function tbcSwapCommandHandler(c: any, sb: any): Promise<Response> 
   const childLock = await soHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
+  /* AUTHZ BEFORE CONCURRENCY (2026-07-22) — the self-scope gate above now runs
+     BEFORE the edit lease. A caller who may not touch this order at all used to
+     be told "This order is being saved on another screen; wait a moment and try
+     Save again" — a permission refusal wearing a conflict's clothes, which
+     invites an endless retry and never surfaces the real reason. */
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
 
   /* Owner 2026-06-12 — processing-date lock: a product swap is a line EDIT
      (it changes what we PO to the supplier), so it locks too. */
@@ -8664,8 +8746,6 @@ async function planSofaRewardRevert(
    PWP reward sofa builds stay coordinator-only (the reward is combo-bound). */
 export async function tbcSwapSofaCommandHandler(c: any, sb: any): Promise<Response> {
   const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
-  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
-  if (leaseBlocked) return leaseBlocked;
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const item = (body.item ?? null) as { itemCode?: unknown; qty?: unknown; unitPriceCenti?: unknown; description?: unknown; variants?: Record<string, unknown> | null } | null;
@@ -8679,6 +8759,13 @@ export async function tbcSwapSofaCommandHandler(c: any, sb: any): Promise<Respon
     if (procLock) return c.json(procLock, 409);
   }
   if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
+  /* AUTHZ BEFORE CONCURRENCY (2026-07-22) — the self-scope gate above now runs
+     BEFORE the edit lease. A caller who may not touch this order at all used to
+     be told "This order is being saved on another screen; wait a moment and try
+     Save again" — a permission refusal wearing a conflict's clothes, which
+     invites an endless retry and never surfaces the real reason. */
+  const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
+  if (leaseBlocked) return leaseBlocked;
 
   const { data: prevRow } = await sb.from('mfg_sales_order_items')
     .select('id, item_code, item_group, qty, discount_centi, total_centi, variants, cancelled, line_date, debtor_code, debtor_name, agent, venue, branding, line_delivery_date, line_delivery_date_overridden, warehouse_id, remark')
@@ -9331,10 +9418,15 @@ mfgSalesOrders.post('/:docNo/items/:itemId/photos', async (c) => {
   const docNo = c.req.param('docNo');
   const itemId = c.req.param('itemId');
   const user = c.get('user');
+  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
+  // AUTHZ BEFORE CONCURRENCY (2026-07-22): this gate now runs BEFORE the edit
+  // lease. A caller who may not touch this order at all was previously told
+  // "This order is being saved on another screen — wait a moment and try Save
+  // again", i.e. a permission refusal wearing a conflict's clothes, which
+  // invites an endless retry and never surfaces the real reason.
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
   const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
   if (leaseBlocked) return leaseBlocked;
-  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -9541,10 +9633,15 @@ mfgSalesOrders.delete('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
   const itemId = c.req.param('itemId');
   const photoKey = decodeURIComponent(c.req.param('photoKey'));
   const user = c.get('user');
+  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
+  // AUTHZ BEFORE CONCURRENCY (2026-07-22): this gate now runs BEFORE the edit
+  // lease. A caller who may not touch this order at all was previously told
+  // "This order is being saved on another screen — wait a moment and try Save
+  // again", i.e. a permission refusal wearing a conflict's clothes, which
+  // invites an endless retry and never surfaces the real reason.
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
   const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
   if (leaseBlocked) return leaseBlocked;
-  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -9935,13 +10032,18 @@ const paymentPatchSchema = z.object({
 });
 
 export type PaymentVersionGuard =
-  | { ok: true; version: number }
+  | { ok: true; version: number; grace?: true }
   | { ok: false; status: 409 | 428; body: { error: string; currentVersion: number } };
 
 /** Shared PATCH/DELETE payment CAS contract. Missing is 428, stale is 409. */
-export function paymentVersionGuard(candidate: unknown, currentVersion: number): PaymentVersionGuard {
+export function paymentVersionGuard(
+  candidate: unknown,
+  currentVersion: number,
+  grace?: SoCasGraceWindow,
+): PaymentVersionGuard {
   const version = Number(candidate);
   if (!Number.isInteger(version) || version < 1) {
+    if (soCasGraceOpen(grace)) return { ok: true, version: currentVersion, grace: true };
     return {
       ok: false,
       status: 428,
@@ -10014,7 +10116,7 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   const parsed = paymentPatchSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400);
   const p = parsed.data;
-  const versionCheck = paymentVersionGuard(p.version, Number(before.version ?? 1));
+  const versionCheck = paymentVersionGuard(p.version, Number(before.version ?? 1), soCasGrace(c));
   if (!versionCheck.ok) return c.json(versionCheck.body, versionCheck.status);
   const expectedPaymentVersion = versionCheck.version;
 
@@ -10172,7 +10274,7 @@ mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
   const rowTyped = row as { so_doc_no: string; paid_at: string; method: string; amount_centi: number; approval_code: string | null; version: number };
   if (rowTyped.so_doc_no !== docNo) return c.json({ error: 'payment_doc_mismatch' }, 400);
   const currentVersion = Number(rowTyped.version ?? 1);
-  const versionCheck = paymentVersionGuard(c.req.query('version'), currentVersion);
+  const versionCheck = paymentVersionGuard(c.req.query('version'), currentVersion, soCasGrace(c));
   if (!versionCheck.ok) return c.json(versionCheck.body, versionCheck.status);
   const expectedVersion = versionCheck.version;
 
@@ -10326,10 +10428,15 @@ mfgSalesOrders.patch('/:docNo/items/:itemId/stock-status', async (c) => {
   const docNo = c.req.param('docNo');
   const itemId = c.req.param('itemId');
   const user = c.get('user');
+  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
+  // AUTHZ BEFORE CONCURRENCY (2026-07-22): this gate now runs BEFORE the edit
+  // lease. A caller who may not touch this order at all was previously told
+  // "This order is being saved on another screen — wait a moment and try Save
+  // again", i.e. a permission refusal wearing a conflict's clothes, which
+  // invites an endless retry and never surfaces the real reason.
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
   const leaseBlocked = await requireSoLineWriteLease(sb, docNo, c);
   if (leaseBlocked) return leaseBlocked;
-  // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   let body: { status?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }

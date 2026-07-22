@@ -23,4 +23,18 @@ describe('SO concurrency domain migration', () => {
     expect(migration0170).toContain("VALUES ('GLOBAL')");
     expect(migration0170).toContain('ENABLE ROW LEVEL SECURITY');
   });
+
+  test('the queue carries a terminal state and a soft-deferral counter', () => {
+    // A permanently failing job must be able to STOP and become visible, and a
+    // soft deferral (a human holding an SO edit lease) must never count toward
+    // that terminal state. See stock-allocation-job.ts.
+    expect(migration0170).toContain("ADD COLUMN IF NOT EXISTS state            text NOT NULL DEFAULT 'PENDING'");
+    expect(migration0170).toContain('ADD COLUMN IF NOT EXISTS dead_lettered_at timestamptz');
+    expect(migration0170).toContain('ADD COLUMN IF NOT EXISTS deferrals        integer NOT NULL DEFAULT 0');
+    expect(migration0170).toContain('ADD COLUMN IF NOT EXISTS next_attempt_at  timestamptz');
+    expect(migration0170).toContain("CHECK (state IN ('PENDING', 'DEAD'))");
+    // Re-runnable: the whole file must be idempotent because a failed migration
+    // blocks every later one on the production deploy path.
+    expect(migration0170).toContain('EXCEPTION WHEN duplicate_object THEN NULL');
+  });
 });
