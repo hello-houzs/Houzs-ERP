@@ -20,6 +20,7 @@ import { supabaseAuth } from "../middleware/auth";
 import { requireHouzsPerm, hasHouzsPerm } from "../lib/houzs-perms";
 import { activeCompanyId, houzsCompanyId, mirrorCompanyId } from "../lib/companyScope";
 import { filterStaffToCompany } from "../lib/staffCompanyScope";
+import { isSalesUser } from "../../services/pmsAccess";
 import type { Env, Variables } from "../env";
 
 export const staff = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -237,6 +238,7 @@ staff.get("/by-ids", async (c) => {
 //     unknown active company must NEVER dump every company's salespeople.
 staff.get("/pickable", async (c) => {
   const supabase = c.get("supabase");
+  const onlySales = c.req.query("onlySales") === "1";
   const { data, error } = await supabase
     .from("staff")
     .select(STAFF_COLUMNS)
@@ -248,7 +250,63 @@ staff.get("/pickable", async (c) => {
   }
   const rows = (data ?? []) as Array<Record<string, unknown>>;
   const { scoped } = await scopeStaffRowsToActiveCompany(c, rows);
-  return c.json({ staff: scoped.map(toStaffRow) });
+
+  /* Owner 2026-07-22: the SO / SI / DR / consignment SALESPERSON dropdowns
+     were showing every ACTIVE staff row granted to the active company,
+     including office / admin / owner / test accounts. Narrow to SALES only
+     when the caller asks (onlySales=1) — mirrors pmsAccess.isSalesUser
+     (position "Sales …" OR department containing "sales"). Left OFF by
+     default so the PaymentsTable "Collected By" picker + any other
+     legitimate all-staff caller still gets the full active roster. */
+  if (!onlySales) {
+    return c.json({ staff: scoped.map(toStaffRow) });
+  }
+
+  const linkedIds = Array.from(
+    new Set(scoped.map(rowUserId).filter((n): n is number => n != null)),
+  );
+  if (linkedIds.length === 0) return c.json({ staff: [] });
+  let positionByUserId = new Map<number, { position_name: string | null; department_name: string | null }>();
+  try {
+    const placeholders = linkedIds.map(() => "?").join(",");
+    const res = await c.env.DB.prepare(
+      `SELECT u.id AS user_id,
+              COALESCE(p.name, '')  AS position_name,
+              COALESCE(d.name, pd.name, '') AS department_name
+         FROM users u
+         LEFT JOIN positions p    ON p.id = u.position_id
+         LEFT JOIN departments pd ON pd.id = p.department_id
+         LEFT JOIN departments d  ON d.id = u.department_id
+        WHERE u.id IN (${placeholders})`,
+    )
+      .bind(...linkedIds)
+      .all<{ user_id: number | string; position_name: string | null; department_name: string | null }>();
+    for (const row of res.results ?? []) {
+      const uid = Number(row.user_id);
+      if (!Number.isInteger(uid)) continue;
+      positionByUserId.set(uid, {
+        position_name: row.position_name ?? null,
+        department_name: row.department_name ?? null,
+      });
+    }
+  } catch {
+    // users / positions / departments absent (pre-migration / D1 test
+    // mirror) — degrade to no-filter rather than blanking the picker.
+    return c.json({ staff: scoped.map(toStaffRow) });
+  }
+
+  const salesOnly = scoped.filter((r) => {
+    const uid = rowUserId(r);
+    if (uid == null) return false; // UNLINKED rows can't be resolved as sales
+    const meta = positionByUserId.get(uid);
+    if (!meta) return false;
+    return isSalesUser({
+      position_name: meta.position_name,
+      department_name: meta.department_name,
+      permissions_set: null,
+    } as any);
+  });
+  return c.json({ staff: salesOnly.map(toStaffRow) });
 });
 
 /* ── SHOWROOM PARKING (owner 2026-07-19, migration 0148) ────────────────────

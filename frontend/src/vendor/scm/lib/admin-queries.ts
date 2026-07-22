@@ -56,12 +56,18 @@ export const useStaff = () =>
 // authed-fetch stamps the same id as the X-Company-Id header the backend scopes
 // on; when unset (single-company Houzs) the backend degrades to the full active
 // roster, so this is behaviourally unchanged there.
-export const usePickableStaff = () =>
-  useQuery({
-    queryKey: ['staff', 'pickable', getActiveCompanyId()],
+export const usePickableStaff = (opts?: { onlySales?: boolean }) => {
+  const onlySales = opts?.onlySales === true;
+  return useQuery({
+    // Include the flag in the cache key so a page that asks for
+    // sales-only doesn't share a cached list with one that asks for the
+    // full roster (Payments' "Collected By" picker).
+    queryKey: ['staff', 'pickable', getActiveCompanyId(), onlySales ? 'sales' : 'all'],
     queryFn: async (): Promise<StaffRow[]> => {
-      const res = await authedFetch<{ staff: StaffRow[] }>('/staff/pickable');
+      const qs = onlySales ? '?onlySales=1' : '';
+      const res = await authedFetch<{ staff: StaffRow[] }>(`/staff/pickable${qs}`);
       return res.staff ?? [];
     },
     staleTime: 10 * 60_000,
   });
+};
