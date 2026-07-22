@@ -1343,7 +1343,12 @@ export function MobileNewSO({
     let changed = false;
     const mark = (a: string, b: string) => { if (a !== b) changed = true; };
     mark(norm(name), norm(ai.customerName));
-    mark(digits(phone), aiFirstPhoneDigits.replace(/^60/, "").replace(/^0/, ""));
+    // Both sides are E.164 now, so compare them as-is. This used to strip a
+    // leading 60/0 from the AI value to meet a field that held national digits;
+    // once the field became E.164 that stripping made the two permanently
+    // unequal, labelling an UNTOUCHED phone as operator-corrected and feeding
+    // the OCR loop a correction nobody made.
+    mark(digits(phone), aiFirstPhoneDigits);
     mark(norm(addr1), norm(ai.addressLine1 ?? ai.address));
     mark(norm(state), norm(ai.addressStateMatch?.value));
     mark(norm(city), norm(ai.city));
