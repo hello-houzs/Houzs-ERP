@@ -56,6 +56,19 @@ export type Env = {
   // Optional KV cache for the hydrated session user (see services/sessionCache.ts).
   // Absent in tests/local — auth falls back to the DB path unchanged.
   SESSION_CACHE?: KVNamespace;
+  // Bounded DB-outage session-liveness fallback. "true" = during a DB read
+  // failure getUserBySession may re-serve a session the DB most recently
+  // confirmed active, for up to SESSION_FALLBACK_TTL_MS, instead of logging
+  // everyone out on a cold-start 503 / pooler blip. ABSENT OR ANYTHING ELSE =
+  // OFF (fail-closed default): the fallback code path is not entered at all and
+  // a DB read failure rejects the request. Parsed by
+  // services/sessionCache.isSessionFallbackEnabled.
+  SESSION_FALLBACK_ENABLED?: string;
+  // Milliseconds a DB-confirmed session may be re-served while the DB is down.
+  // Only read when SESSION_FALLBACK_ENABLED is "true". Default 60000, clamped
+  // to 1000..300000; anything non-numeric or out of range uses the default.
+  // Parsed by services/sessionCache.sessionFallbackTtlMs.
+  SESSION_FALLBACK_TTL_MS?: string;
   AUTOCOUNT_API_URL: string;
   AUTOCOUNT_API_KEY: string;
   // Inbound-sync kill switch. "true" = skip every AutoCount pull (cron + manual).

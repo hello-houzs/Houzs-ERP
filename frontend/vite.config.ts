@@ -187,25 +187,37 @@ export default defineConfig(({ mode }) => {
       },
       rollupOptions: {
         output: {
-          // Stable vendor chunks so app-code changes don't bust the
-          // cached framework bytes, and heavyweights (leaflet maps,
-          // lucide icon set) live outside the entry bundle. Path-based
-          // (not the object form) because the object form was leaking
-          // react-dom into the entry `index` chunk, pushing it past the
-          // bundle-size budget — matching by node_modules path reliably
-          // pulls the framework out of the entry.
-          manualChunks(id) {
-            if (!id.includes("node_modules")) return;
-            if (
-              /[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/.test(
-                id
-              ) ||
-              id.includes("@tanstack")
-            )
-              return "react-vendor";
-            if (id.includes("leaflet")) return "leaflet";
-            if (id.includes("lucide-react")) return "lucide";
-            // Everything else: let Rollup assign the chunk from what actually
+          // Stable vendor chunks keep framework bytes cacheable and move
+          // heavyweights (leaflet maps, lucide icons) outside the entry.
+          // Vite 8's Rolldown can additionally split modules shared by the
+          // shell and lazy routes into many tiny eager chunks. Grouping the
+          // `$initial` application graph removes that gzip/request overhead;
+          // the reachability tag guarantees lazy-only pages stay lazy.
+          codeSplitting: {
+            groups: [
+              {
+                name: "react-vendor",
+                test: /[\\/]node_modules[\\/](?:@tanstack[\\/]|react(?:-dom|-router|-router-dom)?[\\/]|scheduler[\\/])/,
+                priority: 30,
+              },
+              {
+                name: "leaflet",
+                test: /[\\/]node_modules[\\/]leaflet[\\/]/,
+                priority: 30,
+              },
+              {
+                name: "lucide",
+                test: /[\\/]node_modules[\\/]lucide-react[\\/]/,
+                priority: 30,
+              },
+              {
+                name: "initial-app",
+                test: (id) => !id.includes("node_modules"),
+                tags: ["$initial"],
+                priority: 10,
+              },
+            ],
+            // Everything else: let Rolldown assign the chunk from what actually
             // reaches the module.
             //
             // This used to be `return "vendor"`, which was a correctness bug,
@@ -224,8 +236,7 @@ export default defineConfig(({ mode }) => {
             //
             // Naming the transitive deps here instead would just re-arm the
             // same trap on the next dependency bump. Reachability is the thing
-            // we actually mean, and Rollup computes it for free.
-            return;
+            // we actually mean, and Rolldown computes it for free.
           },
         },
       },

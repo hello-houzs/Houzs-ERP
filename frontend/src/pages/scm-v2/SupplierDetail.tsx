@@ -1958,7 +1958,7 @@ function exportBindingsCsv(
  *  string cells — so an exported CSV that the operator edited and let Excel
  *  re-save as a workbook still imports. CSV stays on parseCsv below. */
 async function readXlsxGrid(file: File): Promise<string[][]> {
-  const XLSX = await import('xlsx');
+  const XLSX = await import('../../lib/xlsx-runtime');
   const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
   const first = wb.SheetNames[0];
   const sheet = first ? wb.Sheets[first] : undefined;

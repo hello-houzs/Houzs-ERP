@@ -113,6 +113,13 @@ triggers — Hookka had to move crons to GitHub Actions).
     activity feeds; replay-ready like Hookka's.
 15. **Idempotency keys + KV rate limiting** on login and the public
     POD/survey endpoints.
+16. **Measure the authoritative session-read budget before optimizing it:** the
+    hardened cache path deliberately performs two narrow indexed DB reads on
+    every authenticated request so revocation is next-request consistent. Add
+    per-query p50/p95/p99 latency, cache-hit ratio, and request-level auth time
+    to the slow-query telemetry; measure production load before considering a
+    single DB-maintained authz-revision stamp or another read reduction. Never
+    trade the measured latency away by returning to KV-TTL authorization.
 
 ## 5. Explicitly NOT copying
 
