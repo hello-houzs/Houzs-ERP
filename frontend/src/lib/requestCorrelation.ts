@@ -35,8 +35,32 @@ export function requestIdFromError(error: unknown): string | undefined {
   return errorRequestIds.get(error) ?? normalizeRequestId(attached);
 }
 
+/**
+ * Anything shaped like an error, which is NOT the same question as
+ * `instanceof Error`.
+ *
+ * A DOMException inherits from Error in every current browser, but NOT in
+ * jsdom 25 (webidl2js builds it as a standalone class). An `instanceof Error`
+ * guard therefore flattens `DOMException("Aborted", "AbortError")` into
+ * `new Error("AbortError: Aborted")` under test — the name is destroyed, and
+ * every caller that distinguishes a caller-initiated abort from a network
+ * failure by `e.name === "AbortError"` reads a superseded typeahead request as
+ * a real failure to retry and report. The behaviour differs between the test
+ * environment and the browser, which is the worst of both: the browser is fine
+ * and the suite cannot say so. Preserve identity for anything carrying a
+ * string name + message, which is exactly what the WeakMap path below exists
+ * for ("unlike wrapping, it preserves object identity, name, cause and
+ * instanceof").
+ */
+function isErrorLike(value: unknown): value is Error {
+  if (value instanceof Error) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { name?: unknown; message?: unknown };
+  return typeof candidate.name === "string" && typeof candidate.message === "string";
+}
+
 export function correlateError(error: unknown, requestId: unknown): Error {
-  const correlated = error instanceof Error ? error : new Error(String(error));
+  const correlated = isErrorLike(error) ? error : new Error(String(error));
   // The caller supplies the id of the physical attempt/response it is handling;
   // that is more authoritative than a stale but syntactically-valid property a
   // third-party error object may already carry.
