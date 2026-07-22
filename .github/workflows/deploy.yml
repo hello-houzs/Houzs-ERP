@@ -3,18 +3,19 @@ name: Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  # Detect which side actually changed so a frontend-only push doesn't rebuild +
-  # redeploy the backend Worker (and vice versa). This roughly halves Actions
-  # minutes on the common single-side push AND stops the needless Worker
-  # cold-start every unrelated deploy caused. A change to this workflow, or to
-  # either dir, triggers that side.
+  # Detect backend changes so a frontend-only push does not redeploy the Worker.
+  # Frontend release is intentionally unconditional: queued main runs can be
+  # collapsed during a merge burst, and a per-push path diff then cannot prove
+  # that the currently live Pages build contains the latest frontend SHA.
   changes:
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
@@ -34,7 +35,7 @@ jobs:
 
   backend:
     needs: changes
-    if: ${{ needs.changes.outputs.backend == 'true' }}
+    if: ${{ github.ref == 'refs/heads/main' && needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-latest
     environment: Production
     defaults:
@@ -90,7 +91,12 @@ jobs:
 
   frontend:
     needs: changes
-    if: ${{ needs.changes.outputs.frontend == 'true' }}
+    if: ${{ github.ref == 'refs/heads/main' }}
+    # Always publish the latest frontend for every completed main run. GitHub
+    # collapses queued runs during a burst of merges; a per-push path diff can
+    # therefore miss frontend files that existed only in an earlier cancelled
+    # run. Rebuilding the latest SHA is the correctness boundary and also makes
+    # workflow_dispatch a reliable one-click recovery path.
     runs-on: ubuntu-latest
     environment: Production
     defaults:
@@ -105,6 +111,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test
       - run: npm run build
         env:
           # Vite inlines this into the public JS bundle at build time.
@@ -112,9 +119,31 @@ jobs:
           # baked into client-side JS anyway. See plan file for
           # rationale.
           VITE_API_URL: ${{ vars.VITE_API_URL }}
+      # NOT `npm run check:bundle`. Since #918 that gate's verdict is a DELTA
+      # against the merge base, and a push to main has no merge base to measure
+      # — the script falls back to enforcing the absolute ceiling and exits 1.
+      # That is exactly the failure mode main just removed from PR CI (four
+      # innocent PRs in eight days), and here it would block a PRODUCTION
+      # DEPLOY rather than a PR. The gate belongs on the PR, where it already
+      # runs with a baseline.
+      - run: npm run check:sw
       - uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: frontend
           command: pages deploy ./dist --project-name=houzs-erp --commit-dirty=true
+      # The smoke asserts the LIVE entry chunk and sw VERSION equal the ones
+      # just built, so its retry budget has to cover Cloudflare Pages
+      # propagation. The script's defaults (8 x 2s = 16s) are too tight:
+      # measured on the 2026-07-22 recovery deploy, a fetch immediately after
+      # `pages deploy` reported success still returned the PREVIOUS entry
+      # chunk, and the new one appeared on a fetch ~2 minutes later. At 16s
+      # this step would have failed a release that was entirely correct — a
+      # red production deploy caused by the checker, not the deploy. 20 x 5s
+      # = 100s of tolerance, still bounded, and a genuine non-propagation
+      # (wrong project, failed upload) fails just as loudly, only later.
+      - run: npm run smoke -- "${{ vars.FRONTEND_SMOKE_URL || 'https://erp.houzscentury.com' }}"
+        env:
+          FRONTEND_SMOKE_ATTEMPTS: 20
+          FRONTEND_SMOKE_RETRY_MS: 5000
