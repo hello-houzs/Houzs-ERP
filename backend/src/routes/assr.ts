@@ -20,6 +20,7 @@ import {
   nextServicePONumber,
   setCaseCreditorManual,
   setItemRemark,
+  setItemSupplierRemark,
   setItemQty,
   setItemCartonQty,
 } from "../services/assr";
@@ -2839,13 +2840,13 @@ app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async 
   const id = parseInt(c.req.param("id"), 10);
   const itemId = parseInt(c.req.param("itemId"), 10);
   if (isNaN(id) || isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
-  const body = await c.req.json<{ remark?: string | null; qty?: number; qty_carton?: number }>();
+  const body = await c.req.json<{ remark?: string | null; supplier_remark?: string | null; qty?: number; qty_carton?: number }>();
   const userId = (c as any).get?.("userId") ?? null;
   const prevItem = await c.env.DB.prepare(
-    `SELECT item_code, remark, qty FROM assr_items WHERE id = ? AND assr_id = ?`
+    `SELECT item_code, remark, supplier_remark, qty FROM assr_items WHERE id = ? AND assr_id = ?`
   )
     .bind(itemId, id)
-    .first<{ item_code: string | null; remark: string | null; qty: number | null }>();
+    .first<{ item_code: string | null; remark: string | null; supplier_remark: string | null; qty: number | null }>();
   if (!prevItem) return c.json({ error: "Not found" }, 404);
   const code = prevItem.item_code ?? `#${itemId}`;
 
@@ -2894,6 +2895,27 @@ app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async 
           : `Product remark on ${code} cleared${prevItem.remark ? ` (was "${prevItem.remark}")` : ""}`,
         userId,
         { category: "service", source_channel: "app" }
+      );
+    }
+  }
+  // Supplier-copy remark — same append-only audit trail, supplier
+  // timeline bucket.
+  if (body.supplier_remark !== undefined) {
+    const remark = body.supplier_remark == null ? null : String(body.supplier_remark).trim() || null;
+    const ok = await setItemSupplierRemark(c.env, id, itemId, remark);
+    if (!ok) return c.json({ error: "Not found" }, 404);
+    if ((prevItem.supplier_remark ?? null) !== remark) {
+      await logActivity(
+        c.env,
+        id,
+        "item_supplier_remark",
+        prevItem.supplier_remark ?? null,
+        remark,
+        remark
+          ? `Supplier remark on ${code}: ${prevItem.supplier_remark ? `"${prevItem.supplier_remark}" → ` : ""}"${remark}"`
+          : `Supplier remark on ${code} cleared${prevItem.supplier_remark ? ` (was "${prevItem.supplier_remark}")` : ""}`,
+        userId,
+        { category: "supplier", source_channel: "app" }
       );
     }
   }

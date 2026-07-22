@@ -3528,6 +3528,19 @@ function DetailContent({
                     <ItemRemarkInput
                       caseId={id}
                       item={item}
+                      field="remark"
+                      label="Customer"
+                      placeholder="Customer remark — prints on the customer copy"
+                      disabled={c.stage === "completed" || !!c.archived_at}
+                      onSaved={() => detail.reload()}
+                      toast={toast}
+                    />
+                    <ItemRemarkInput
+                      caseId={id}
+                      item={item}
+                      field="supplier_remark"
+                      label="Supplier"
+                      placeholder="Supplier remark — prints on the supplier copy"
                       disabled={c.stage === "completed" || !!c.archived_at}
                       onSaved={() => detail.reload()}
                       toast={toast}
@@ -7765,27 +7778,34 @@ function ItemCartonStepper({ caseId, item, disabled, onSaved, toast }: {
   );
 }
 
-function ItemRemarkInput({ caseId, item, disabled, onSaved, toast }: {
+// Audience-split since Nick 2026-07-21 (remark 分别给客户和 Supplier):
+// field='remark' prints on the customer copy, 'supplier_remark' on the
+// Supplier Service Order. A tiny fixed-width label keeps the two rows
+// tellable-apart once both carry text.
+function ItemRemarkInput({ caseId, item, field, label, placeholder, disabled, onSaved, toast }: {
   caseId: number;
   item: any;
+  field: "remark" | "supplier_remark";
+  label: string;
+  placeholder: string;
   disabled?: boolean;
   onSaved: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
-  const current = String(item.remark ?? "");
+  const current = String(item[field] ?? "");
   const [draft, setDraft] = useState(current);
   useEffect(() => {
-    setDraft(String(item.remark ?? ""));
+    setDraft(String(item[field] ?? ""));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item.id, item.remark]);
+  }, [item.id, item[field]]);
 
   async function commit() {
     if (draft.trim() === current.trim()) return;
     try {
       await api.patch(`/api/assr/${caseId}/items/${item.id}`, {
-        remark: draft.trim() || null,
+        [field]: draft.trim() || null,
       });
-      toast.success("Remark saved");
+      toast.success(`${label} remark saved`);
       onSaved();
     } catch (e: any) {
       toast.error(e?.message || "Failed to save remark");
@@ -7794,15 +7814,20 @@ function ItemRemarkInput({ caseId, item, disabled, onSaved, toast }: {
 
   if (disabled && !current) return null;
   return (
-    <input
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-      disabled={disabled}
-      placeholder="Remark — prints on customer & supplier copies"
-      className="mt-1 w-full rounded bg-bg/60 px-2 py-1 text-[11.5px] text-ink outline-none placeholder:text-ink-muted/60 focus:ring-1 focus:ring-primary/30 disabled:opacity-60"
-    />
+    <div className="mt-1 flex items-center gap-1.5">
+      <span className="w-[52px] shrink-0 text-[8.5px] font-bold uppercase tracking-wider text-ink-muted">
+        {label}
+      </span>
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        disabled={disabled}
+        placeholder={placeholder}
+        className="w-full rounded bg-bg/60 px-2 py-1 text-[11.5px] text-ink outline-none placeholder:text-ink-muted/60 focus:ring-1 focus:ring-primary/30 disabled:opacity-60"
+      />
+    </div>
   );
 }
 

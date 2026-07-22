@@ -806,7 +806,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
           <span class="td code">${esc([it.item_code, it.item_description].filter(Boolean).join(" — "))}</span>
           <span class="td">${esc(it.qty ?? 1)}</span>
           <span class="td">${esc(it.qty_carton ?? 1)}</span>
-          <span class="td remark">${it.remark ? esc(it.remark) : i === 0 && cs.action_remark ? esc(cs.action_remark) : ""}</span>
+          <span class="td remark">${it.supplier_remark ? esc(it.supplier_remark) : i === 0 && cs.action_remark ? esc(cs.action_remark) : ""}</span>
         </div>`);
       const photos = inlinedImages.slice(0, 5).map((a, i) => `
         <div class="ph"><img src="${a.data_url}" alt="${esc(a.file_name || "")}" /><span class="tag">IMG_${String(i + 1).padStart(2, "0")}</span></div>`);

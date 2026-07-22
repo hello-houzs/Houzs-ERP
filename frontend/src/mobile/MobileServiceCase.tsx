@@ -1287,7 +1287,8 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                           ×
                         </button>
                       </div>
-                      <MobileItemRemark c={c} it={it} busy={busy} onChanged={refetch} notify={notify} />
+                      <MobileItemRemark c={c} it={it} busy={busy} onChanged={refetch} notify={notify} field="remark" placeholder="Customer remark — prints on customer copy" />
+                      <MobileItemRemark c={c} it={it} busy={busy} onChanged={refetch} notify={notify} field="supplier_remark" placeholder="Supplier remark — prints on supplier copy" />
                     </div>
                   )) : (
                     <div style={{ fontSize: 12, color: GREY, padding: "2px 0" }}>No items recorded.</div>
@@ -2803,19 +2804,22 @@ function MobileItemQty({ c, it, busy, onChanged, notify }: { c: Any; it: Any; bu
   );
 }
 
-function MobileItemRemark({ c, it, busy, onChanged, notify }: { c: Any; it: Any; busy: boolean; onChanged: () => void; notify: ReturnType<typeof useNotify> }) {
+// Audience-split (Nick 2026-07-21): field='remark' prints on the
+// customer copy, 'supplier_remark' on the Supplier Service Order.
+function MobileItemRemark({ c, it, busy, onChanged, notify, field, placeholder }: { c: Any; it: Any; busy: boolean; onChanged: () => void; notify: ReturnType<typeof useNotify>; field: "remark" | "supplier_remark"; placeholder: string }) {
   const caseId = Number(get(c, "id"));
   const itemId = Number(get(it, "id"));
-  const current = String(get(it, "remark") ?? "");
+  const camel = field === "supplier_remark" ? "supplierRemark" : "remark";
+  const current = String(get(it, camel, field) ?? "");
   const [draft, setDraft] = useState(current);
   useEffect(() => {
-    setDraft(String(get(it, "remark") ?? ""));
+    setDraft(String(get(it, camel, field) ?? ""));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [itemId]);
+  }, [itemId, field]);
   const commit = async () => {
     if (draft.trim() === current.trim()) return;
     try {
-      await api.patch(`/api/assr/${caseId}/items/${itemId}`, { remark: draft.trim() || null });
+      await api.patch(`/api/assr/${caseId}/items/${itemId}`, { [field]: draft.trim() || null });
       onChanged();
     } catch (e: any) {
       await notify({ title: "Couldn't save remark", body: e?.message || "Please try again.", tone: "error" });
@@ -2827,7 +2831,7 @@ function MobileItemRemark({ c, it, busy, onChanged, notify }: { c: Any; it: Any;
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       disabled={busy}
-      placeholder="Remark — prints on customer & supplier copies"
+      placeholder={placeholder}
       className="fld-i"
       style={{ width: "100%", boxSizing: "border-box", marginTop: 8, fontSize: 11.5 }}
     />
