@@ -25,6 +25,8 @@ const EXPECTED_FILENAMES = [
   "0031_consignment.sql",
   "0032_mrp_lead_times.sql",
   "0033_products_maintenance.sql",
+  "0077_multicompany_company_id.sql",
+  "0078_multicompany_views.sql",
 ];
 
 // Expanded by Vite before this suite enters workerd (node:fs is unavailable
@@ -32,9 +34,9 @@ const EXPECTED_FILENAMES = [
 const LIVE_MIGRATIONS = import.meta.glob("../src/db/migrations-pg/*", { eager: false });
 
 describe("reviewed migration retirements", () => {
-  it("pins the exact 17 filenames with immutable checksum + Git provenance", () => {
+  it("pins the exact 19 filenames with immutable checksum + Git provenance", () => {
     expect(RETIRED_MIGRATION_FILENAMES).toEqual(EXPECTED_FILENAMES);
-    expect(new Set(RETIRED_MIGRATION_FILENAMES).size).toBe(17);
+    expect(new Set(RETIRED_MIGRATION_FILENAMES).size).toBe(19);
     for (const entry of RETIRED_MIGRATIONS) {
       expect(entry.archivedChecksum).toMatch(/^sha256:[0-9a-f]{64}$/);
       expect(entry.gitBlob).toMatch(/^[0-9a-f]{40}$/);
@@ -50,7 +52,7 @@ describe("reviewed migration retirements", () => {
       .toEqual([]);
   });
 
-  it("accepts the exact 17 legacy tracker rows without deleting history", () => {
+  it("accepts the exact 19 legacy tracker rows without deleting history", () => {
     const trackerRows = RETIRED_MIGRATIONS.map((entry: { filename: string }) => ({
       filename: entry.filename,
       checksum: null,
@@ -74,7 +76,7 @@ describe("reviewed migration retirements", () => {
     const result = planMigrationChecksums([], trackerRows, {
       retiredMigrations: RETIRED_MIGRATIONS,
     });
-    expect(result.retired).toHaveLength(17);
+    expect(result.retired).toHaveLength(19);
     expect(result.drift).toEqual([
       expect.objectContaining({
         filename: "0099_unreviewed_deleted.sql",

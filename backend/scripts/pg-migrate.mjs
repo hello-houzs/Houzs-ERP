@@ -17,7 +17,9 @@ import path from "node:path";
 import postgres from "postgres";
 import { splitSqlStatements } from "./lib/split-sql.mjs";
 import {
+  ADOPTED_LEGACY_CHECKSUM,
   checksumMigrationSql,
+  isGenesisTracker,
   planMigrationChecksums,
 } from "./lib/migration-checksum.mjs";
 import { loadAppliedMigrationRows } from "./lib/migration-tracker.mjs";
@@ -67,17 +69,49 @@ const files = await Promise.all(
   }),
 );
 
-const { pending, backfill, drift, retired } = planMigrationChecksums(
-  files,
-  appliedRows,
-  { retiredMigrations: RETIRED_MIGRATIONS },
-);
+// Genesis = this tracker has never been through the checksum runner, so the
+// rows already in it carry no checksum and nothing can verify them. That trust
+// happens exactly once, and everything it trusts is printed below.
+const genesis = isGenesisTracker(appliedRows);
+
+const { pending, backfill, drift, retired, renamed, adopted } =
+  planMigrationChecksums(files, appliedRows, {
+    retiredMigrations: RETIRED_MIGRATIONS,
+    genesis,
+  });
+
+const newlyAdopted = adopted.filter((entry) => !entry.alreadyAdopted);
 
 console.log(
   `${files.length} migration(s), ${appliedRows.length} applied, ` +
     `${pending.length} pending, ${backfill.length} checksum(s) to backfill, ` +
-    `${retired.length} reviewed retirement(s)`,
+    `${retired.length} reviewed retirement(s), ${renamed.length} rename(s), ` +
+    `${newlyAdopted.length} legacy row(s) to adopt` +
+    (genesis ? " [GENESIS: first run of the checksum tracker]" : ""),
 );
+
+if (genesis && appliedRows.length > 0) {
+  // The complete trust-on-first-use manifest, in the deploy log, every row.
+  // This is what a production _pg_migrations dump would have told us, produced
+  // by the runner itself at the moment it matters.
+  console.log(
+    `  TOFU    trusting ${appliedRows.length} pre-existing tracker row(s) without verification ` +
+      "(the old runner stored no checksums; there is nothing to verify against):",
+  );
+  for (const row of appliedRows) console.log(`  TOFU    ${row.filename}`);
+}
+
+for (const entry of newlyAdopted) {
+  console.log(
+    `  ADOPT   ${entry.filename}: tracker row with no checksum and no file in the tree; ` +
+      (READ_ONLY
+        ? "would be adopted and stamped by a normal apply run"
+        : "adopting once and stamping it immutable") +
+      (entry.suspectedRenumberOf
+        ? ` (looks like it was renumbered to ${entry.suspectedRenumberOf})`
+        : ""),
+  );
+}
 
 if (drift.length > 0) {
   console.error("Migration drift detected. Applied migration history is immutable:");
@@ -94,7 +128,25 @@ if (drift.length > 0) {
     } else if (item.reason === "legacy_file_deleted_unverifiable") {
       console.error(
         `  DRIFT   ${item.filename}: legacy tracker row has no checksum and ` +
-          "the migration file is missing; applied history cannot be verified",
+          "the migration file is missing; applied history cannot be verified. " +
+          "This tracker is past genesis, so the row was inserted by hand or by " +
+          "an older runner after the fact — investigate before unblocking." +
+          (item.suspectedRenumberOf
+            ? ` It may be a renumber of ${item.suspectedRenumberOf}.`
+            : ""),
+      );
+    } else if (item.reason === "probable_renumber") {
+      console.error(
+        `  DRIFT   ${item.filename}: gone from the tree, but ${item.suspectedRenumberOf} ` +
+          "has the same name after the number — this looks like a RENUMBER whose " +
+          "content also changed, so it cannot be proven to be the same migration.",
+      );
+      console.error(
+        `          If it is the same migration and the SQL already ran, repoint the row:\n` +
+          `            UPDATE _pg_migrations SET filename = '${item.suspectedRenumberOf}', checksum = NULL\n` +
+          `             WHERE filename = '${item.filename}';\n` +
+          `          The next run backfills the new checksum without re-running the SQL.\n` +
+          `          If it is NOT the same migration, an applied file was edited — add a new one instead.`,
       );
     } else if (item.reason === "file_deleted") {
       console.error(
@@ -112,6 +164,14 @@ if (drift.length > 0) {
   process.exit(1);
 }
 
+for (const item of renamed) {
+  console.log(
+    `  RENAMED ${item.from} -> ${item.to}: identical checksum ${item.checksum}, ` +
+      "so the SQL has already been applied under the old name and will NOT be re-run" +
+      (READ_ONLY ? " (read-only run; the tracker row is not repointed here)" : ""),
+  );
+}
+
 if (DRY) {
   for (const item of retired) console.log(`  RETIRED ${item.filename}`);
   for (const file of backfill) console.log(`  BACKFILL ${file.filename}`);
@@ -123,8 +183,15 @@ if (DRY) {
 if (VERIFY_ONLY) {
   for (const item of retired) console.log(`  RETIRED ${item.filename}`);
   for (const file of backfill) console.error(`  UNVERIFIED ${file.filename}: checksum backfill required`);
+  for (const entry of newlyAdopted) console.error(`  UNADOPTED ${entry.filename}: legacy row not yet adopted`);
+  for (const item of renamed) console.error(`  UNREPOINTED ${item.from} -> ${item.to}`);
   for (const file of pending) console.error(`  PENDING ${file.filename}`);
-  if (backfill.length > 0 || pending.length > 0) {
+  if (
+    backfill.length > 0 ||
+    pending.length > 0 ||
+    newlyAdopted.length > 0 ||
+    renamed.length > 0
+  ) {
     console.error(
       "Schema verification failed: apply migrations normally before deploying this Worker.",
     );
@@ -136,9 +203,48 @@ if (VERIFY_ONLY) {
   process.exit(0);
 }
 
-if (backfill.length > 0) {
+if (backfill.length > 0 || renamed.length > 0 || newlyAdopted.length > 0) {
   try {
     await pg.begin(async (tx) => {
+      for (const item of renamed) {
+        // Repoint, never re-run. The checksum proves byte-identical SQL, so the
+        // tracker row is simply carried over to the file's new number. The
+        // predicates keep this safe under a concurrent peer: if another runner
+        // already repointed the row, ours matches nothing and we stop.
+        const moved = await tx`
+          UPDATE _pg_migrations
+          SET filename = ${item.to}
+          WHERE filename = ${item.from}
+            AND checksum = ${item.checksum}
+            AND NOT EXISTS (
+              SELECT 1 FROM _pg_migrations existing WHERE existing.filename = ${item.to}
+            )
+          RETURNING filename
+        `;
+        if (moved.length !== 1) {
+          throw new Error(
+            `Migration drift detected while repointing ${item.from} to ${item.to}; ` +
+              "the tracker row changed under this runner",
+          );
+        }
+      }
+      for (const entry of newlyAdopted) {
+        // Stamp the unverifiable legacy row so it is adopted exactly once and
+        // any later reappearance of the same filename is content_changed drift.
+        const stamped = await tx`
+          UPDATE _pg_migrations
+          SET checksum = ${ADOPTED_LEGACY_CHECKSUM}
+          WHERE filename = ${entry.filename}
+            AND (checksum IS NULL OR checksum = ${ADOPTED_LEGACY_CHECKSUM})
+          RETURNING checksum
+        `;
+        if (stamped.length !== 1) {
+          throw new Error(
+            `Migration drift detected while adopting ${entry.filename}; ` +
+              "another runner stored a different checksum",
+          );
+        }
+      }
       for (const file of backfill) {
         // The second predicate makes concurrent first-rollout runners safe. A
         // peer may have backfilled the same checksum since our initial SELECT;
@@ -161,10 +267,16 @@ if (backfill.length > 0) {
     });
   } catch (e) {
     console.error(
-      `  FAILED  checksum backfill: ${String(e.message || e).slice(0, 240)}`,
+      `  FAILED  tracker reconciliation: ${String(e.message || e).slice(0, 240)}`,
     );
     await pg.end();
     process.exit(1);
+  }
+  for (const item of renamed) {
+    console.log(`  REPOINTED ${item.from} -> ${item.to} (${item.checksum})`);
+  }
+  for (const entry of newlyAdopted) {
+    console.log(`  ADOPTED ${entry.filename} (${ADOPTED_LEGACY_CHECKSUM})`);
   }
   for (const file of backfill) {
     console.log(`  BACKFILLED ${file.filename} (${file.checksum})`);

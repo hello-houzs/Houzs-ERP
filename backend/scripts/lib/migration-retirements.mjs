@@ -1,13 +1,32 @@
 /**
- * Exact historical migration files removed together by dfa1111a after they had
- * already reached at least one live tracker. The SQL remains recoverable from
- * Git by blob id; keeping it outside the live migration tree prevents a fresh
- * database from replaying this obsolete (and, for 0023, destructive) chain.
+ * Exact historical migration files that reached at least one live tracker and
+ * were later removed from the tree. The SQL remains recoverable from Git by
+ * blob id; keeping it outside the live migration tree prevents a fresh database
+ * from replaying this obsolete (and, for 0023, destructive) chain.
  *
  * A retirement is an immutable-history record, not a wildcard. The runner may
  * accept a missing tracker row only when its complete filename appears here and
  * its stored checksum is either legacy NULL or this archived SHA-256. The same
  * filename reappearing in the live migration directory always hard-fails.
+ *
+ * HOW THIS LIST WAS DERIVED (no production dump required). A tracker row can
+ * only exist for a filename that was present at some first-parent tip of main,
+ * because deploy.yml runs pg-migrate.mjs on push to main and nowhere else. The
+ * exact commands are in docs/MIGRATION-RETIREMENTS.md — walk
+ * `git rev-list --first-parent origin/main`, `git ls-tree` the migrations-pg
+ * directory at each commit, take the union of basenames, and subtract the
+ * basenames present on origin/main today.
+ *
+ * On 2026-07-22 that yields exactly the 19 filenames below. Re-run it whenever
+ * a migration is deleted. Files that only ever existed inside a feature branch
+ * (0093_branding_2990.sql, 0093_restore_timestamp_defaults.sql) are correctly
+ * excluded: they were renumbered before their branch's merge commit, so no
+ * deploy ever saw them. The same command against origin/staging yields the
+ * identical 19.
+ *
+ * The list being wrong is nevertheless not fatal: an unknown legacy row with no
+ * checksum is adopted by the one-time genesis pass in migration-checksum.mjs
+ * and printed in full, rather than blocking the deploy.
  */
 export const RETIRED_MIGRATIONS = Object.freeze([
   { filename: "0017_scm_suppliers.sql", archivedChecksum: "sha256:656633d7475c43679fcfad436c97e09379cbb6a856cfe3efc6726a0146623533", gitBlob: "a3b76665449b1fc102670670b7bb1e9d0d868d82" },
@@ -27,6 +46,13 @@ export const RETIRED_MIGRATIONS = Object.freeze([
   { filename: "0031_consignment.sql", archivedChecksum: "sha256:201ae13964abf13dc0cc3cedc66788d6ede38181602eb5124bdcd5b0939104d5", gitBlob: "e14d4f91fe5cc32113c6e8a0f94d55f42e72f114" },
   { filename: "0032_mrp_lead_times.sql", archivedChecksum: "sha256:61a616ead0fda0969ef62d32cee8bfa92d5f144f256f17f3f2adb1a505fd87ed", gitBlob: "f0a870445d562c69de63a09b55ec6b52e882acc5" },
   { filename: "0033_products_maintenance.sql", archivedChecksum: "sha256:89cc7f4f90e8085b6a4d1aa123e86b34cb9471ca90ea0082c7473ca7b8bd5dde", gitBlob: "8c1a7cdf0c05c1e0ad2ad438e751459e02c863f3" },
+  /* Added 2026-07-22 by the derivation above. 7368843b put these on main at
+     22:18 +0800 and d2378e5f removed them at 22:25 — seven minutes in which a
+     push-to-main deploy could (and most likely did) apply and track them. They
+     were NOT in the original 17, so the first fail-closed run would have called
+     them unverifiable drift and aborted the production deploy. */
+  { filename: "0077_multicompany_company_id.sql", archivedChecksum: "sha256:76b8589cb2b8a36a05d01f2a20c3376c2f62859d8c81ad1dd271159d839f0a9e", gitBlob: "be487b68379a16545b23e1cd587bd1273f8f1562" },
+  { filename: "0078_multicompany_views.sql", archivedChecksum: "sha256:ac2d9ce3ea54c269743073e6d16474967f7f412d4441634c7b3a41dc401ea8d1", gitBlob: "1e551f7c55e075a263d580a14b5c2f8c1db7078f" },
 ]);
 
 export const RETIRED_MIGRATION_FILENAMES = Object.freeze(
