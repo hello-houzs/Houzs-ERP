@@ -177,6 +177,58 @@ try {
   }
   notice("");
 
+  // ── § Doc-flow linkage (owner concern: outstanding overstates if SOs / POs
+  //   were imported without their downstream conversion links) ─────────────
+  notice("=== Doc-flow linkage integrity (per company) ===");
+  const soDoLink = await pg`
+    SELECT o.company_id,
+           count(*)::int                                                                  AS so_total,
+           count(*) FILTER (WHERE NOT EXISTS (
+             SELECT 1 FROM scm.mfg_delivery_orders d WHERE d.so_doc_no = o.doc_no
+           ))::int                                                                        AS so_no_do,
+           count(*) FILTER (WHERE NOT EXISTS (
+             SELECT 1 FROM scm.mfg_sales_invoices s WHERE s.so_doc_no = o.doc_no
+           ))::int                                                                        AS so_no_si
+      FROM scm.mfg_sales_orders o
+     WHERE o.company_id IN (${HOUZS}, ${CO2990})
+     GROUP BY o.company_id
+     ORDER BY o.company_id`;
+  for (const r of soDoLink) {
+    const co = r.company_id === HOUZS ? "HOUZS" : r.company_id === CO2990 ? "2990" : `co${r.company_id}`;
+    notice(`  SO->DO/SI [${co}]        : total=${r.so_total}  no_DO=${r.so_no_do}  no_SI=${r.so_no_si}  (open outstanding if no_DO high)`);
+  }
+  // Orphan DOs (imported without a matching SO on this company)
+  const doOrphan = await pg`
+    SELECT d.company_id, count(*)::int AS n
+      FROM scm.mfg_delivery_orders d
+     WHERE d.company_id IN (${HOUZS}, ${CO2990})
+       AND d.so_doc_no IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM scm.mfg_sales_orders o
+          WHERE o.doc_no = d.so_doc_no AND o.company_id = d.company_id
+       )
+     GROUP BY d.company_id
+     ORDER BY d.company_id`;
+  for (const r of doOrphan) {
+    const co = r.company_id === HOUZS ? "HOUZS" : r.company_id === CO2990 ? "2990" : `co${r.company_id}`;
+    notice(`  Orphan DOs [${co}]       : ${r.n} DOs pointing at a doc_no that doesn't exist in this company's SOs`);
+  }
+  // PO outstanding — remaining_qty > 0 rows per company
+  const poOut = await pg`
+    SELECT company_id,
+           count(*)::int                                                                  AS po_total,
+           count(*) FILTER (WHERE remaining_qty IS NOT NULL AND remaining_qty > 0)::int  AS po_open,
+           COALESCE(SUM(remaining_qty) FILTER (WHERE remaining_qty > 0), 0)::int         AS open_qty_sum
+      FROM public.purchase_orders
+     WHERE company_id IN (${HOUZS}, ${CO2990})
+     GROUP BY company_id
+     ORDER BY company_id`;
+  for (const r of poOut) {
+    const co = r.company_id === HOUZS ? "HOUZS" : r.company_id === CO2990 ? "2990" : `co${r.company_id}`;
+    notice(`  PO outstanding [${co}]   : total=${r.po_total}  open=${r.po_open}  qty_sum=${r.open_qty_sum}`);
+  }
+  notice("");
+
   // ── § my_localities size (sanity) ─────────────────────────────────────
   notice("=== my_localities (canonical MY postcode dataset) ===");
   const ml = await countGlobal("scm.my_localities");
