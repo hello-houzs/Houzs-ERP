@@ -64,7 +64,7 @@ export const DeliveryReturnNew = () => {
      useCreateDeliveryReturn), so a re-press after a stalled submit books the
      goods back IN twice unless it replays. */
   const idemKey = useIdempotencyKey();
-  const staffQ = usePickableStaff();
+  const staffQ = usePickableStaff({ onlySales: true });
   const loc = useLocalities();
 
   // Prefill source — the DO this return is being issued from (if any).

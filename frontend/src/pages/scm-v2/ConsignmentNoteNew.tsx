@@ -77,7 +77,7 @@ export const ConsignmentNoteNew = () => {
   const idemKey = useIdempotencyKey();
   const create = useCreateConsignmentNote();
   const addPayment = useAddConsignmentNotePayment();
-  const staffQ = usePickableStaff();
+  const staffQ = usePickableStaff({ onlySales: true });
   const driversQ = useDrivers();
   const loc = useLocalities();
   const coDetail = useConsignmentOrderDetail(fromConsignmentOrder);

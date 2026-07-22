@@ -80,7 +80,7 @@ export const SalesInvoiceNew = () => {
      so they don't double either. */
   const idemKey = useIdempotencyKey();
   const addPayment = useAddSalesInvoicePayment();
-  const staffQ = usePickableStaff();
+  const staffQ = usePickableStaff({ onlySales: true });
   const loc = useLocalities();
 
   // Prefill source — the DO this invoice is being raised from (if any).

@@ -585,7 +585,9 @@ export function MobileNewSO({
      the desktop PaymentsTable/SoLineCard — a resigned or other-company staff must
      not be pickable. A persisted collected_by name is displayed from the row's own
      collected_by_name (PaymentInfoBlock), so no full roster is needed here. */
-  const pickableStaffQ = usePickableStaff();
+  // Salesperson picker (owner 2026-07-22) — sales-only, mirrors desktop
+  // SalesOrderNew's narrowed dropdown.
+  const pickableStaffQ = usePickableStaff({ onlySales: true });
   const { staff: authStaff } = useAuth();
   /* FIX A — the app-level Houzs auth exposes the permission gate + the signed-in
      user (name/email/id), which the vendor auth bridge doesn't. Drives the

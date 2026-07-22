@@ -84,7 +84,7 @@ export const ConsignmentOrderNew = () => {
   const create     = useCreateConsignmentOrder();
   const addPayment = useAddConsignmentOrderPayment();
   const uploadPhoto = useUploadConsignmentItemPhoto();
-  const staffQ   = usePickableStaff();
+  const staffQ   = usePickableStaff({ onlySales: true });
   const venuesQ  = useVenues();
   const loc      = useLocalities();
   const { staff: currentStaff } = useAuth();

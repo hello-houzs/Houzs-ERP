@@ -70,7 +70,7 @@ export const ConsignmentReturnNew = () => {
      stalled submit, fresh on remount. */
   const idemKey = useIdempotencyKey();
   const create = useCreateConsignmentReturn();
-  const staffQ = usePickableStaff();
+  const staffQ = usePickableStaff({ onlySales: true });
   const loc = useLocalities();
   const cnDetail = useConsignmentNoteDetail(fromConsignmentNote);
 
