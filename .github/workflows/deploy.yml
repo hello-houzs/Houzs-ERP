@@ -69,7 +69,12 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: backend
-          command: deploy
+          # --var GIT_SHA stamps the Worker with the exact commit it was built
+          # from (surfaced at GET /health). The deploy-watchdog workflow compares
+          # that stamp against main every 15 min and auto-redeploys when a bare
+          # `wrangler deploy` from a stale clone overwrites prod (4th incident
+          # 2026-07-22) — a rogue deploy has no stamp, so it's always caught.
+          command: deploy --var GIT_SHA:${{ github.sha }}
           # Worker secrets pushed on every deploy (idempotent). FORM_INTAKE_KEY
           # guards the Google Form intake webhook (/api/assr-form-intake).
           secrets: |
