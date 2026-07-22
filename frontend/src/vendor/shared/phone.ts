@@ -233,3 +233,30 @@ export function isValidMalaysianPhone(stored: string | null | undefined): boolea
   if (!local.startsWith('1')) return false;
   return local.length === 9 || local.length === 10;
 }
+
+/**
+ * Canonicalise a phone value that may NOT be a single number.
+ *
+ * normalizePhone strips every non-digit, which is correct for a field that
+ * holds one number and catastrophic for one that does not. The company
+ * branding phone is free text and has historically held a list
+ * ("03-1234 5678 / 019-876 5432") or an extension — running normalizePhone
+ * over that concatenates two numbers into one nonsense string, and that string
+ * is printed on every invoice and delivery order.
+ *
+ * So this canonicalises only a value that is unambiguously ONE number, and
+ * returns anything else untouched. Refusing is always safe: the worst case is
+ * a value that keeps the format a human typed.
+ */
+export function canonicalizeSinglePhone(raw: string | null | undefined): string {
+  const trimmed = String(raw ?? '').trim();
+  if (trimmed === '') return '';
+  // A separator that implies a LIST, or an extension marker. Either way this is
+  // not one number and must not be collapsed into one.
+  if (/[/,;&]|\bext\.?\b|\bx\d/i.test(trimmed)) return trimmed;
+  const digits = trimmed.replace(/\D+/g, '');
+  // E.164 allows at most 15 digits; below 7 is not a phone. Outside that range
+  // the value is something else (two numbers run together, an account number).
+  if (digits.length < 7 || digits.length > 15) return trimmed;
+  return normalizePhone(trimmed) ?? trimmed;
+}
