@@ -1,5 +1,78 @@
 # Idempotency Phase 2 deployment gate
 
+## MERGE GATE — run this before pressing merge, not after
+
+Merging this PR **is** the deployment. `deploy.yml` runs `pg-migrate.mjs` on
+every push to `main`, and a migration that raises aborts the whole run, so
+every later migration on main stays unapplied until someone hand-fixes it.
+The soak gate below is deliberately fail-closed: if the soak is not complete,
+**merging is the failure mode**, not a no-op.
+
+Run against **production** (read-only, safe to run at any time):
+
+```sql
+WITH marker AS (
+  SELECT (updated_at::timestamp AT TIME ZONE 'UTC') AS live_at
+  FROM public.app_settings
+  WHERE key = 'rollout.idempotency_phase1_worker_live'
+), phase1 AS (
+  SELECT applied_at
+  FROM public._pg_migrations
+  WHERE filename = '0163_idempotency_principal_company_hash.sql'
+)
+SELECT
+  (SELECT applied_at FROM phase1)              AS phase1_applied_at,
+  (SELECT live_at    FROM marker)              AS worker_marker_utc,
+  now() - (SELECT live_at FROM marker)         AS soak_age,
+  (SELECT count(*) FROM public.idempotency_keys
+    WHERE (user_id IS NULL OR tenant_scope IS NULL OR request_hash IS NULL)
+      AND created_at >= now() - interval '24 hours') AS recent_null_claims,
+  (
+    (SELECT applied_at FROM phase1) IS NOT NULL
+    AND (SELECT live_at FROM marker) IS NOT NULL
+    AND (SELECT live_at FROM marker) >= (SELECT applied_at FROM phase1)
+    AND (SELECT live_at FROM marker) <= now() - interval '24 hours'
+    AND (SELECT count(*) FROM public.idempotency_keys
+          WHERE (user_id IS NULL OR tenant_scope IS NULL OR request_hash IS NULL)
+            AND created_at >= now() - interval '24 hours') = 0
+  ) AS gate_will_pass;
+```
+
+The query always returns exactly one row. Merge **only** when
+`gate_will_pass` is `t` — it evaluates the same three conditions the migration
+itself evaluates. Every other outcome is a do-not-merge:
+
+| Result | Meaning | Action |
+| --- | --- | --- |
+| `gate_will_pass = t` | Gate will pass. | Merge. |
+| `worker_marker_utc` set, `soak_age < 24:00:00` | Marker exists but has not soaked. | Wait until `soak_age > 24:00:00`, re-run, then merge. |
+| `worker_marker_utc` NULL | The marker was never written. | Do **not** merge — see below. |
+| `phase1_applied_at` NULL | Phase 1 is not in this database's tracker (wrong DB, or Phase 1 was renumbered again). | Do **not** merge; re-check the filename the gate names. |
+| `recent_null_claims > 0` | An old Worker (or another writer) is still writing legacy NULL claims. | Do **not** merge; find that writer and restart the soak. |
+
+A missing marker is not a timing problem. The row is written by the Phase-1
+Worker itself (`markPhaseOneWorkerLive` in `src/middleware/idempotency.ts`),
+on the **first successful keyed claim**, with `ON CONFLICT(key) DO NOTHING` so
+the timestamp is immutable once set. It therefore requires real production
+traffic through an `Idempotency-Key`-carrying mutation *after* the Phase-1
+Worker was deployed. If the row is absent, either that traffic has not
+happened yet or the insert is failing (the middleware swallows the error and
+only `console.warn`s, so check the Worker logs for
+`[idempotency] phase-one rollout marker failed`). Do not hand-insert the row
+to unblock the merge: its timestamp is the entire safety argument.
+
+If the gate raises after merge, the deploy log shows
+`idempotency phase 2 blocked: …` and **every** migration merged after this one
+stops applying. Recovery is to revert this file from `main` (or, if the soak
+genuinely completed in the meantime, re-run the deploy workflow) — not to edit
+the marker.
+
+The one-hour `rollout.idempotency_phase2_offline_bootstrap` escape hatch below
+exists for a fresh/offline environment where no old Worker can be running. It
+is not a way to skip a production soak.
+
+---
+
 Phase 2 converts the additive Phase 1 columns into enforced database
 constraints. It is intentionally a separate release:
 
@@ -262,7 +335,6 @@ requires the equivalent table rebuild or point-in-time restore.
 Phase 2 intentionally deletes only incomplete legacy claims older than 24
 hours. Schema rollback does not recreate them; use the pre-deploy restore point
 if those expired bookkeeping rows are required for an investigation.
-
 ## Sales Order mandatory CAS — rollout grace window (PR #927)
 
 Making the concurrency `version` mandatory is a breaking wire change for every

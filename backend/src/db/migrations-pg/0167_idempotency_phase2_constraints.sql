@@ -1,9 +1,16 @@
 -- Phase 2: make idempotency ownership/payload binding structural (Postgres).
 --
 -- HARD DEPLOYMENT GATE: this file must not ship in the same migration run as
--- 0158. The durable Worker marker enforces a 24-hour soak, while the row check
--- proves no old Worker has written a legacy NULL claim during that window.
--- The deploy must keep running the Phase-1 Worker if either check fails.
+-- Phase 1 (0163_idempotency_principal_company_hash.sql). The durable Worker
+-- marker enforces a 24-hour soak, while the row check proves no old Worker has
+-- written a legacy NULL claim during that window. The deploy must keep running
+-- the Phase-1 Worker if either check fails.
+--
+-- RENUMBERING: the Phase-1 filename below is a hard-coded literal. If Phase 1
+-- is ever renumbered, this gate silently becomes a guaranteed RAISE and a
+-- failed migration aborts pg-migrate.mjs, blocking every later file. The test
+-- "the Phase-1 filename this migration gates on actually exists in the tree"
+-- in backend/tests/idempotencyPhase2Migration.test.ts is what catches that.
 
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '60s';
@@ -23,15 +30,20 @@ BEGIN
 
   IF phase1_applied_at IS NULL THEN
     RAISE EXCEPTION
-      'idempotency phase 2 blocked: migration 0158 is not tracked';
+      'idempotency phase 2 blocked: migration 0163_idempotency_principal_company_hash.sql is not tracked';
   END IF;
 
-  SELECT updated_at::timestamptz
+  -- app_settings.updated_at is TEXT (the D1-compat shim writes SQLite's
+  -- 'YYYY-MM-DD HH:MM:SS' in UTC — see src/db/d1-compat.ts). A bare
+  -- ::timestamptz cast would resolve that text in the SESSION time zone, so a
+  -- non-UTC session would read the marker as up to its UTC offset OLDER than
+  -- it is and let the soak pass early. Pin the source zone explicitly.
+  SELECT (updated_at::timestamp AT TIME ZONE 'UTC')
     INTO phase1_worker_live_at
     FROM public.app_settings
    WHERE key = 'rollout.idempotency_phase1_worker_live';
 
-  SELECT updated_at::timestamptz
+  SELECT (updated_at::timestamp AT TIME ZONE 'UTC')
     INTO offline_bootstrap_at
     FROM public.app_settings
    WHERE key = 'rollout.idempotency_phase2_offline_bootstrap'

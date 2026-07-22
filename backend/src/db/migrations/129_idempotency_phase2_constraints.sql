@@ -1,6 +1,8 @@
--- Phase 2: D1 / SQLite parity for PG migration 0159.
+-- Phase 2: D1 / SQLite parity for PG migration
+-- 0167_idempotency_phase2_constraints.sql.
 --
--- HARD DEPLOYMENT GATE: migration 127 must be tracked, the durable Phase-1
+-- HARD DEPLOYMENT GATE: 128_idempotency_principal_company_hash.sql (Phase 1 on
+-- D1) must be tracked, the durable Phase-1
 -- Worker marker must have soaked for 24 hours, and no legacy NULL claim may
 -- have appeared during that window. A fresh/offline environment can use the
 -- exact one-hour bootstrap marker documented in the runbook. Guard statements

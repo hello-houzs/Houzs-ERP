@@ -1,26 +1,61 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, test } from "vitest";
 
-const pgMigration = Object.values(
-  import.meta.glob("../src/db/migrations-pg/0167_idempotency_phase2_constraints.sql", {
-    eager: true,
-    query: "?raw",
-    import: "default",
-  }),
-)[0] as string;
+// Glob by SUFFIX, never by number. This migration is renumbered every time an
+// unrelated PR takes its slot on main (twice on 2026-07-22 alone), and a glob
+// pinned to the number resolves to nothing after a renumber, which makes the
+// whole suite fail on `undefined` instead of on the thing that is wrong.
+const pgMigrationSources = import.meta.glob(
+  "../src/db/migrations-pg/*_idempotency_phase2_constraints.sql",
+  { eager: true, query: "?raw", import: "default" },
+) as Record<string, string>;
 
-// Every Postgres migration filename in the live tree, for the cross-reference
-// assertion below.
+const pgMigrationPaths = Object.keys(pgMigrationSources);
+if (pgMigrationPaths.length !== 1) {
+  throw new Error(
+    `expected exactly one Postgres idempotency Phase-2 migration, found ${pgMigrationPaths.length}: ` +
+      `${pgMigrationPaths.join(", ") || "(none)"}`,
+  );
+}
+const pgMigrationName = pgMigrationPaths[0].split("/").pop() as string;
+const pgMigration = pgMigrationSources[pgMigrationPaths[0]];
+
+// The D1 parity file, read as raw text so comments survive (env.TEST_MIGRATIONS
+// exposes parsed statements only).
+const d1MigrationSources = import.meta.glob(
+  "../src/db/migrations/*_idempotency_phase2_constraints.sql",
+  { eager: true, query: "?raw", import: "default" },
+) as Record<string, string>;
+const d1MigrationPaths = Object.keys(d1MigrationSources);
+if (d1MigrationPaths.length !== 1) {
+  throw new Error(
+    `expected exactly one D1 idempotency Phase-2 migration, found ${d1MigrationPaths.length}: ` +
+      `${d1MigrationPaths.join(", ") || "(none)"}`,
+  );
+}
+const d1MigrationName = d1MigrationPaths[0].split("/").pop() as string;
+const d1MigrationSource = d1MigrationSources[d1MigrationPaths[0]];
+
+// Every migration filename in the live trees, for the cross-reference
+// assertions below. Lazy: only the KEYS are needed, and eagerly inlining ~300
+// SQL files into the workerd bundle to read their names would be wasteful.
 const pgMigrationNames = Object.keys(
-  import.meta.glob("../src/db/migrations-pg/*.sql", { eager: true, query: "?raw", import: "default" }),
+  import.meta.glob("../src/db/migrations-pg/*.sql", { eager: false }),
+).map((path) => path.split("/").pop() as string);
+const d1MigrationNames = Object.keys(
+  import.meta.glob("../src/db/migrations/*.sql", { eager: false }),
 ).map((path) => path.split("/").pop() as string);
 
 function phase2Migration() {
-  const migration = env.TEST_MIGRATIONS.find(
-    (candidate) => candidate.name === "129_idempotency_phase2_constraints.sql",
+  const matches = env.TEST_MIGRATIONS.filter((candidate) =>
+    candidate.name.endsWith("_idempotency_phase2_constraints.sql"),
   );
-  if (!migration) throw new Error("D1 idempotency Phase-2 migration is missing");
-  return migration;
+  if (matches.length !== 1) {
+    throw new Error(
+      `expected exactly one D1 idempotency Phase-2 migration, found ${matches.length}`,
+    );
+  }
+  return matches[0];
 }
 
 async function resetToPhase1(): Promise<void> {
@@ -204,9 +239,12 @@ describe("idempotency Phase-2 migration contract", () => {
     expect(pgMigration).toContain(
       "LOCK TABLE public.idempotency_keys IN ACCESS EXCLUSIVE MODE",
     );
-    expect(pgMigration).toContain("0163_idempotency_principal_company_hash.sql");
     expect(pgMigration).toContain("interval '24 hours'");
     expect(pgMigration).toContain("rollout.idempotency_phase1_worker_live");
+    // app_settings.updated_at is TEXT in UTC; a bare ::timestamptz cast would
+    // resolve it in the session time zone and could pass the soak early.
+    expect(pgMigration).toContain("AT TIME ZONE 'UTC'");
+    expect(pgMigration).not.toMatch(/updated_at::timestamptz/);
     expect(pgMigration).toContain("interval '24 hours'");
     expect(pgMigration).toContain("rollout.idempotency_phase2_offline_bootstrap");
     expect(pgMigration).toContain("interval '1 hour'");
@@ -235,5 +273,29 @@ describe("idempotency Phase-2 migration contract", () => {
     )?.[1];
     expect(referenced).toBeDefined();
     expect(pgMigrationNames).toContain(referenced);
+    // A gate that names itself would pass the check above and still be wrong:
+    // pg-migrate.mjs inserts the tracker row AFTER the file's statements, so a
+    // self-reference is guaranteed NULL and guaranteed to RAISE.
+    expect(referenced).not.toBe(pgMigrationName);
+  });
+
+  test("the D1 Phase-1 filename this migration gates on actually exists in the tree", () => {
+    // Same invariant on the D1 side, which had the identical defect against
+    // 127_ when Phase 1 landed as 128_.
+    const referenced = [
+      ...d1MigrationSource.matchAll(/name = '([^']+\.sql)'/g),
+    ].map((match) => match[1]);
+    expect(referenced.length).toBeGreaterThan(0);
+    for (const name of new Set(referenced)) {
+      expect(d1MigrationNames).toContain(name);
+      expect(name).not.toBe(d1MigrationName);
+    }
+  });
+
+  test("the D1 parity header names the Postgres file it actually mirrors", () => {
+    // The header said "PG migration 0159" long after the PG file had been
+    // renumbered twice, and nothing failed. A stale cross-tree pointer is how
+    // the last defect stayed invisible; pin it to the real filename.
+    expect(d1MigrationSource).toContain(pgMigrationName);
   });
 });

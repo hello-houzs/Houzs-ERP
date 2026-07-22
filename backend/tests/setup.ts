@@ -41,13 +41,22 @@ beforeAll(async () => {
       applied_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
   ).run();
+  // Resolved by suffix, never by number: migration numbers here are assigned at
+  // merge time against whatever main looks like that minute, so a literal goes
+  // stale without anything failing.
+  const phase1Name = env.TEST_MIGRATIONS.map((m) => m.name).find((name) =>
+    name.endsWith("_idempotency_principal_company_hash.sql"),
+  );
+  if (!phase1Name) throw new Error("D1 idempotency Phase-1 migration is missing");
   await env.DB.prepare(
     `INSERT OR REPLACE INTO _migrations (name, applied_at)
-     VALUES ('128_idempotency_principal_company_hash.sql', datetime('now', '-26 hours'))`,
-  ).run();
+     VALUES (?, datetime('now', '-26 hours'))`,
+  )
+    .bind(phase1Name)
+    .run();
   // Per-query loop so we can tolerate baseline overlaps mid-file.
   for (const mig of env.TEST_MIGRATIONS) {
-    if (mig.name === "129_idempotency_phase2_constraints.sql") {
+    if (mig.name.endsWith("_idempotency_phase2_constraints.sql")) {
       await env.DB.prepare(
         `INSERT OR REPLACE INTO app_settings (key, value, updated_at)
          VALUES ('rollout.idempotency_phase1_worker_live', '{"deployed":true}', datetime('now', '-25 hours'))`,

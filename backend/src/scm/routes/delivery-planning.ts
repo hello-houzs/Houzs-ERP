@@ -1948,11 +1948,51 @@ export function tripFieldsFor(wiring: TripWiring): {
   }
 }
 
+/* The stop type the SO/DO path writes. A named constant ONLY because the sweep
+   below has to filter on the same value the insert stamps: two independent
+   'DELIVERY' literals could drift apart in a rename, and the failure mode of that
+   drift is a delete whose stop_type arm silently matches nothing — the stranding
+   bug back, with the fix still visibly in the file. */
+const SO_DO_STOP_TYPE = 'DELIVERY';
+
+/* WHICH ROWS A RE-SCHEDULE MAY DELETE — the dangerous half of the fix, made pure
+   so it can be asserted without a database. Exported for the same reason
+   `tripFieldsFor` is: this is exactly where the bug lives.
+
+   A SO/DO stop is identified by the uuid the insert below puts on it — `do_id`
+   for a DO, `so_id` for an SO. That is NOT the ASSR path's shape: an ASSR stop
+   keys on `assr_case_id` (mig 0166) because a service case has no scm uuid at
+   all. Do not read the two as mirrors.
+
+   The NO_KEY arm is load-bearing, not defensive filler. On a `type: 'so'`
+   schedule `soId` is hard-set to null — scm.mfg_sales_orders has a TEXT PK
+   (doc_no) and no `id` column, so there is no uuid to write and the insert below
+   is skipped entirely by its own `(doId || soId)` guard. With no key there is
+   nothing to sweep, and a sweep attempted anyway would send
+   `.eq('do_id', null)` to PostgREST — a filter that constrains nothing the way a
+   reader expects. Refusing is the only safe answer. */
+export type StaleStopSweep =
+  | { state: 'SWEEP'; column: 'do_id' | 'so_id'; value: string; stopType: string }
+  | { state: 'NO_KEY'; reason: string };
+
+export function staleStopSweepFor(doId: string | null, soId: string | null): StaleStopSweep {
+  /* Same precedence as the de-dup select and the insert below (`doId ? … : …`),
+     deliberately: the sweep must key on the SAME column the stop was written by,
+     or it looks for the row under a name nothing ever stored it under. */
+  if (doId) return { state: 'SWEEP', column: 'do_id', value: doId, stopType: SO_DO_STOP_TYPE };
+  if (soId) return { state: 'SWEEP', column: 'so_id', value: soId, stopType: SO_DO_STOP_TYPE };
+  return {
+    state: 'NO_KEY',
+    reason: 'the order has no do_id/so_id uuid, so no stop was written for it and none can be stranded',
+  };
+}
+
 /* ──────────────────────────────────────────────────────────────────────────
    scheduleOntoTrip — the trip integration. Find-or-create the trip and append a
    DELIVERY trip_stop for this order (revenue from the DO/SO local_total_centi).
    Idempotent on re-schedule: an existing stop for the same (trip, do_id|so_id)
-   is reused, not duplicated.
+   is reused, not duplicated, and the order's stops on every OTHER trip are
+   dropped so a re-point cannot leave one behind.
 
    STILL best-effort, and deliberately so: the header schedule has ALREADY
    COMMITTED by the time this runs, so throwing here would report "your schedule
@@ -2096,7 +2136,7 @@ async function scheduleOntoTrip(
         company_id:    activeCompanyId(c),
         trip_id:       tripIdStr,
         stop_no:       nextStopNo,
-        stop_type:     'DELIVERY',
+        stop_type:     SO_DO_STOP_TYPE,
         do_id:         doId,
         so_id:         soId,
         customer_name: customerName,
@@ -2104,6 +2144,46 @@ async function scheduleOntoTrip(
         revenue_centi: revenueCenti,
         dp_no:         dpNo,
       });
+    }
+
+    /* ONE ORDER = ONE STOP. The de-dup above is scoped to a SINGLE trip, so it
+       only catches a re-press of the same lorry on the same date. A real
+       re-schedule — a different lorry, or the same lorry on another day —
+       resolves to a DIFFERENT trip, and the stop written for the previous one
+       simply stays behind. The order then sits on two trips at once and
+       lorry-capacity counts it against BOTH: two deliveries, and its revenue
+       added twice (lorry-capacity.ts sums revenue_centi per DELIVERY stop).
+       That inflates the fleet numbers this feature exists to make honest, and it
+       puts the job on a driver's route who was re-pointed off it.
+
+       Drop the order's stops on every other trip so the newest assignment is the
+       only one. The filter is keyed on the order's OWN uuid plus the stop type,
+       which is what keeps it surgical: another document's stops carry a
+       different uuid; an ASSR stop carries assr_case_id with do_id/so_id NULL, so
+       a null can never match a concrete uuid; a manual DP job (dp-orders.ts)
+       writes do_id/so_id NULL for the same reason; and this order's stops of any
+       OTHER type are excluded by stop_type. When there is no uuid to key on the
+       sweep is REFUSED rather than widened — see staleStopSweepFor.
+
+       Consequence, accepted deliberately: a stop for this order placed by hand on
+       a second trip (POST /trips/:id/stops) is also cleared. Splitting one
+       document across two lorries is precisely the shape that double-counts, and
+       the board's schedule is the single dispatcher of record. Same call #947
+       made for ASSR legs. */
+    const sweep = staleStopSweepFor(doId, soId);
+    if (sweep.state === 'SWEEP') {
+      const { error: staleErr } = await sb.from('trip_stops').delete()
+        .eq(sweep.column, sweep.value).eq('stop_type', sweep.stopType).neq('trip_id', tripIdStr);
+      /* REPORTED, never swallowed. The new stop is written, so the operator sees
+         a scheduled job — while the old one is still on another lorry's sheet and
+         still in its capacity. That is the exact silence this whole function was
+         rewritten to stop; the state is worth naming out loud. */
+      if (staleErr) {
+        return {
+          state: 'FAILED',
+          reason: `the order was placed on the new trip but the previous one could not be cleared — it may be counted twice: ${String((staleErr as { message?: string }).message ?? staleErr).slice(0, 120)}`,
+        };
+      }
     }
 
     /* (removed) delivery_leg trip-linking — the leg feature was removed; the

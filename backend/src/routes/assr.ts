@@ -1182,18 +1182,36 @@ app.get("/search-so", requireServiceCaseAccess(), async (c) => {
   if (q.length < 2) return c.json({ results: [] });
   const pattern = `%${q.toLowerCase()}%`;
 
-  // (1) Houzs AutoCount mirror — legacy source, unchanged.
-  const acRows = await c.env.DB.prepare(
-    `SELECT doc_no, ref, debtor_name, phone, doc_date, sales_agent, 'HOUZS' AS company_code
-       FROM sales_orders
-      WHERE LOWER(doc_no) LIKE ?
-         OR LOWER(COALESCE(ref, '')) LIKE ?
-         OR LOWER(COALESCE(debtor_name, '')) LIKE ?
-      ORDER BY doc_date DESC
-      LIMIT 20`
-  )
-    .bind(pattern, pattern, pattern)
-    .all();
+  // (1) Houzs AutoCount mirror — legacy source. This table is HOUZS-only
+  // (`'HOUZS' AS company_code` hardcoded below), so a caller whose allowed
+  // company set does NOT include HOUZS must NOT see any rows from it.
+  // Before this guard, a 2990-only rep (like a rank-and-file POS salesperson
+  // opening a Service Case) could search "125" and see every matching HOUZS
+  // AutoCount SO — bare `SO-XXXXXX` numbers with no `2990-` prefix — leaked
+  // straight across the company boundary. (owner sighting 2026-07-22:
+  // Scarlett Chong Kar Yin, sales_executive on co_2 only, saw HOUZS SOs.)
+  // Aligned to the SCM-side scoping the block below already applies.
+  //
+  // `allowed === undefined` = company context unresolved (pre-migration /
+  // legacy single-company); fall through to the existing behaviour so nothing
+  // breaks in that mode. Empty set (RESTRICTED-TO-NOTHING) also skips.
+  const houzsId = houzsCompanyId(c);
+  const allowed = assrCompanyIds(c);
+  const includesHouzs = allowed === undefined
+    || (houzsId != null && allowed.includes(houzsId));
+  const acRows = includesHouzs
+    ? await c.env.DB.prepare(
+        `SELECT doc_no, ref, debtor_name, phone, doc_date, sales_agent, 'HOUZS' AS company_code
+           FROM sales_orders
+          WHERE LOWER(doc_no) LIKE ?
+             OR LOWER(COALESCE(ref, '')) LIKE ?
+             OR LOWER(COALESCE(debtor_name, '')) LIKE ?
+          ORDER BY doc_date DESC
+          LIMIT 20`
+      )
+        .bind(pattern, pattern, pattern)
+        .all()
+    : { results: [] as Array<Record<string, unknown>> };
 
   // (2) SCM-native SOs. assrCompanySql pins rank-and-file SALES to HOUZS
   // (inlining the validated int id, or "" when unresolved -> degrades to all
