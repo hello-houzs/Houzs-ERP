@@ -119,12 +119,17 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
       - run: npm run build
         env:
           VITE_API_URL: https://autocount-sync-api-staging.houzs-erp.workers.dev
+      # See deploy.yml: the bundle gate needs a merge base and has none here.
+      - run: npm run check:sw
       - uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: frontend
           command: pages deploy ./dist --project-name=houzs-erp-staging --commit-dirty=true
+      - run: npm run smoke -- "${{ vars.STAGING_FRONTEND_SMOKE_URL || 'https://houzs-erp-staging.pages.dev' }}"
