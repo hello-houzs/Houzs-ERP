@@ -217,7 +217,12 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
               {...handlers}
               className={cn(
                 "flex flex-wrap items-center gap-2 px-3 py-2 transition-colors",
-                !active && "opacity-50",
+                // Owner 2026-07-23: 50% opacity on hidden rows made the
+                // 3-dots button look disabled — nobody could tell they could
+                // re-show the row. Softer fade (75% opacity) keeps the
+                // "not-in-picker" visual cue while leaving controls clearly
+                // clickable.
+                !active && "opacity-75",
                 isDragging && "opacity-40",
                 isDropTarget && "bg-accent-soft/40",
               )}
@@ -295,10 +300,14 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
               <RowActionsMenu
                 indicator={!active}
                 items={[
+                  // Owner 2026-07-23: hidden rows were 50% opacity + a "Hidden"
+                  // label that read as status, not an action — nobody could tell
+                  // the row could be re-shown. Label swapped to action verbs
+                  // ("Hide" / "Show in picker") so the menu reads as buttons.
                   {
                     type: "toggle",
                     icon: active ? Eye : EyeOff,
-                    label: active ? "Active" : "Hidden",
+                    label: active ? "Hide from picker" : "Show in picker",
                     active,
                     onClick: () => patch(row, { active: active ? 0 : 1 } as any),
                   },
