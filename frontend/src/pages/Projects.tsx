@@ -9221,8 +9221,12 @@ function LogisticsCrewSection({
     /\bbd\b/.test(_role);
   const readOnly = !canEditLogistics;
   // Schedule reference is TIGHTER than the rest of the section (owner
-  // 2026-07-23): only BD + weisiang (Lim, weisiang329@gmail.com) may edit it.
-  const canEditSchedule = /\bbd\b/.test(_role) || _email === "weisiang329@gmail.com";
+  // 2026-07-23): only BD + weisiang (Lim, weisiang329@gmail.com) may edit it —
+  // plus the Owner / admins (wildcard "*"), who can edit everything.
+  const canEditSchedule =
+    !!user?.permissions?.includes("*") ||
+    /\bbd\b/.test(_role) ||
+    _email === "weisiang329@gmail.com";
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [lorryOptions, setLorryOptions] = useState<string[]>([]);
   // A failed reference read must not render as an empty list. `.catch(() => {})`
