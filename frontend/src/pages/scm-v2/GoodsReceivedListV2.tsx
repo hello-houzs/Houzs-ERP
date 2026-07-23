@@ -181,6 +181,8 @@ function CardsGrid({ rows, onOpen }: { rows: GrnRow[]; onOpen: (r: GrnRow) => vo
               <Badge tone={st.tone} size="xs">{st.label}</Badge>
             </div>
             <div className="mt-2 truncate text-[15px] font-semibold text-ink">{supplierNameOf(r)}</div>
+            {/* Owner 2026-07-23: supplier code on its own line. */}
+            <div className="truncate font-mono text-[11px] text-ink-muted">{supplierCodeOf(r)}</div>
             <div className="mt-1 flex items-center gap-2">
               <span className="text-[11.5px] text-ink-muted">{fmtDate(r.received_at)}</span>
               {r.delivery_note_ref && (
