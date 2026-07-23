@@ -837,10 +837,9 @@ const SkuMasterTab = () => {
 
   return (
     <>
-      {/* Shared datalist for the per-row inline Branding edit (Mattress view). */}
-      <datalist id="branding-pool-sku-master">
-        {sortByText(brandingPool.pool).map((b) => <option key={b} value={b} />)}
-      </datalist>
+      {/* Branding now uses a hard <select> on each Mattress row (2026-07-23
+          owner rule — no free-text). The datalist that used to render here
+          became dead weight the moment BrandingInput stopped being an input. */}
       <div className="flex flex-wrap items-center justify-between gap-5">
         <div className="flex gap-2">
           {CATEGORIES.map((c) => (
@@ -1089,6 +1088,7 @@ const SkuMasterTab = () => {
                 onToggleSelected={toggleRow}
                 patch={pendingEdits[row.id]}
                 onStage={stageEdit}
+                brandingPool={brandingPool.pool}
               />
             ))}
             {canVirtualize && vEnd < rows.length && (
@@ -1147,7 +1147,7 @@ const SkuMasterTab = () => {
 
 const ProductRow = memo(({
   row, editMode, isSofaView, isMattressView, sofaSizes, tier, onOpenSuppliers,
-  selected, onToggleSelected, patch, onStage,
+  selected, onToggleSelected, patch, onStage, brandingPool,
 }: {
   row: MfgProductRow;
   editMode: boolean;
@@ -1156,6 +1156,9 @@ const ProductRow = memo(({
   sofaSizes: string[];
   tier: Tier;
   onOpenSuppliers?: (row: MfgProductRow) => void;
+  /** Canonical branding pool (Project Maintenance -> Brands). Drives the
+      Mattress-row Branding <select>. Owner 2026-07-23 rule: no free-text. */
+  brandingPool: string[];
   /** PR #82 — multi-select state lives on SkuMasterTab; row just renders
       the checkbox + reports clicks. */
   selected:         boolean;
@@ -1298,7 +1301,7 @@ const ProductRow = memo(({
             {editMode ? (
               <BrandingInput
                 value={brandingVal}
-                listId="branding-pool-sku-master"
+                pool={brandingPool}
                 onCommit={(v) => onStage(row.id, { branding: v })}
               />
             ) : (
@@ -1352,44 +1355,57 @@ const ProductRow = memo(({
 });
 ProductRow.displayName = 'ProductRow';
 
-/* Free-text branding input for Mattress rows. Commits on blur or Enter.
-   `listId` points at the shared branding-pool <datalist> (rendered once in
-   SkuMasterTab) so the pool suggests values without blocking free text. */
+/* Dropdown-only branding picker for Mattress rows. Commits on change.
+   Owner 2026-07-23: "根据我们维护那边 dropdown 去做选择的那一个" — no more
+   free-text entry. New brand names have to be added centrally in Project
+   Maintenance -> Brands (which then flows into `useBrandingPool()` and
+   surfaces here on the next fetch). A stored value that isn't in the current
+   pool (legacy) still renders as a selectable option so the row remains
+   editable while the operator picks a proper canonical brand. */
 const BrandingInput = ({
   value,
+  pool,
   onCommit,
-  listId,
 }: {
   value: string;
+  pool: string[];
   onCommit: (v: string | null) => void;
-  listId?: string;
 }) => {
-  const [local, setLocal] = useState<string>(value);
-  const commit = () => {
-    const t = local.trim();
-    if (t === value.trim()) return;
-    onCommit(t.length ? t : null);
-  };
+  const current = value.trim();
+  const inPool = current && pool.some((b) => b.toUpperCase() === current.toUpperCase());
+  const options = useMemo(() => {
+    const sorted = [...pool].sort((a, b) => a.localeCompare(b));
+    return current && !inPool ? [current, ...sorted] : sorted;
+  }, [pool, current, inPool]);
   return (
-    <input
-      type="text"
-      list={listId}
-      value={local}
-      onChange={(e) => setLocal(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-      placeholder="e.g. Sealy"
+    <select
+      value={current}
+      onChange={(e) => {
+        const v = e.target.value.trim();
+        if (v === current) return;
+        onCommit(v.length ? v : null);
+      }}
+      title={inPool || !current
+        ? undefined
+        : `"${current}" is not in the current branding pool. Add it in Project Maintenance -> Brands.`}
       style={{
-        width: 140,
+        width: 160,
         fontFamily: 'var(--font-sans)',
         fontSize: 'var(--fs-13)',
-        background: '#f4f6f3',
-        border: '1px solid #16695f',
+        background: inPool || !current ? '#f4f6f3' : '#fef3c7',
+        border: `1px solid ${inPool || !current ? '#16695f' : '#b45309'}`,
         borderRadius: 'var(--radius-sm)',
         padding: '3px 8px',
         outline: 'none',
       }}
-    />
+    >
+      <option value="">—</option>
+      {options.map((b) => (
+        <option key={b} value={b}>
+          {b}{current && !inPool && b === current ? ' (legacy)' : ''}
+        </option>
+      ))}
+    </select>
   );
 };
 
