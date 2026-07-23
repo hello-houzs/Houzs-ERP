@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
+import { secureHeaders } from "hono/secure-headers";
 import type { Env } from "./types";
 import { auth, requirePermission, requireAnyPermission, requireScmAccess } from "./middleware/auth";
 import { TRANSIENT_CONN_RE } from "./db/d1-compat";
@@ -130,6 +131,30 @@ const inboxBustAfterWrite: MiddlewareHandler<{ Bindings: Env }> = async (c, next
 app.use("*", requestLog);
 
 app.use("*", cors({ origin: "*", exposeHeaders: ["X-Request-Id"] }));
+
+// Baseline security headers on every Worker response. Deliberately conservative:
+// the cross-origin isolation family (CORP/COOP/COEP) is DISABLED because the API
+// serves images consumed cross-origin (public image proxies, the POS surface) and
+// CORP:same-origin would break those loads. HSTS omits includeSubDomains/preload so
+// it cannot affect sibling subdomains. No Content-Security-Policy here yet — CSP is
+// breakage-prone and must ship report-only first (tracked separately). The load-
+// bearing one is X-Content-Type-Options: nosniff, which blunts MIME-sniff XSS on the
+// file-proxy routes.
+app.use(
+  "*",
+  secureHeaders({
+    strictTransportSecurity: "max-age=15552000",
+    xFrameOptions: "SAMEORIGIN",
+    xContentTypeOptions: "nosniff",
+    referrerPolicy: "strict-origin-when-cross-origin",
+    crossOriginResourcePolicy: false,
+    crossOriginOpenerPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    xPermittedCrossDomainPolicies: false,
+    xDnsPrefetchControl: false,
+    xDownloadOptions: false,
+  }),
+);
 
 // D1 -> Supabase cutover: swap env.DB for the Postgres-backed shim on every
 // request, before auth + routes. Remove once all paths use Drizzle/postgres.js.

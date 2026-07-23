@@ -6,6 +6,7 @@ import {
   ACTIVE_COMPANY_TAB_KEY,
   adoptActiveCompanyForUser,
   companyHeader,
+  consumeCompanyUrlSeed,
   getActiveCompanyId,
   releaseActiveCompanyBinding,
   setActiveCompanyId,
@@ -100,10 +101,12 @@ describe("active company persistence", () => {
     expect(companyHeader()).toEqual({});
   });
 
-  it("claims a pick this tab made before it knew the user id", () => {
+  it("claims a pick this tab made before it knew the user id — without moving the durable default", () => {
     setActiveCompanyId(5);
     expect(adoptActiveCompanyForUser(42)).toBe(5);
-    expect(JSON.parse(localStorage.getItem(ACTIVE_COMPANY_BY_USER_KEY)!)).toEqual({ u42: 5 });
+    // The ?company= window seed lands here as an ownerless pick: claiming it
+    // must not rewrite the default every future window boots into.
+    expect(localStorage.getItem(ACTIVE_COMPANY_BY_USER_KEY)).toBeNull();
   });
 
   it("ignores a durable change made by a DIFFERENT user in another tab", () => {
@@ -126,7 +129,10 @@ describe("active company persistence", () => {
     unsubscribe();
   });
 
-  it("follows the SAME user switching company in another tab", () => {
+  it("KEEPS this window's company when the same user switches in another window", () => {
+    // Multi-window (owner ask 2026-07-23): Houzs stays open in this window
+    // while another window switches itself to 2990. The durable default moves;
+    // this window must not follow it — and must not reload.
     adoptActiveCompanyForUser(1);
     setActiveCompanyId(7);
     const listener = vi.fn();
@@ -138,9 +144,22 @@ describe("active company persistence", () => {
       storageArea: localStorage,
     }));
 
-    expect(listener).toHaveBeenCalledWith("storage");
-    expect(getActiveCompanyId()).toBe(4);
+    expect(listener).not.toHaveBeenCalled();
+    expect(getActiveCompanyId()).toBe(7);
     unsubscribe();
+  });
+
+  it("a reload keeps this window's pick without stealing the durable default back", () => {
+    // Window A picked Houzs (7), window B later switched the durable default
+    // to 2990 (4). Window A reloading must stay on 7 AND leave the default 4 —
+    // otherwise every reload of an open window would re-point what a NEW
+    // window boots into.
+    sessionStorage.setItem(ACTIVE_COMPANY_TAB_KEY, JSON.stringify({ user: 1, company: 7 }));
+    localStorage.setItem(ACTIVE_COMPANY_BY_USER_KEY, JSON.stringify({ u1: 4 }));
+
+    expect(adoptActiveCompanyForUser(1)).toBe(7);
+    expect(getActiveCompanyId()).toBe(7);
+    expect(JSON.parse(localStorage.getItem(ACTIVE_COMPANY_BY_USER_KEY)!)).toEqual({ u1: 4 });
   });
 
   it("clearing the selection removes the durable record too", () => {
@@ -159,5 +178,53 @@ describe("active company persistence", () => {
     localStorage.setItem(ACTIVE_COMPANY_BY_USER_KEY, '{"u42":"seven","u1":-3,"nope":9}');
     expect(adoptActiveCompanyForUser(42)).toBeNull();
     expect(companyHeader()).toEqual({});
+  });
+});
+
+describe("?company= window seed", () => {
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("seeds this tab's pick, scrubs the URL, and is claimable on adopt", () => {
+    window.history.replaceState(null, "", "/?company=4");
+    consumeCompanyUrlSeed();
+
+    // The header is right BEFORE /auth/me resolves — the seed exists so the
+    // very first authed request of the new window is already scoped.
+    expect(getActiveCompanyId()).toBe(4);
+    expect(companyHeader()).toEqual({ "X-Company-Id": "4" });
+    expect(window.location.search).toBe("");
+
+    // …and claiming it must not move the durable default for new windows.
+    expect(adoptActiveCompanyForUser(42)).toBe(4);
+    expect(localStorage.getItem(ACTIVE_COMPANY_BY_USER_KEY)).toBeNull();
+  });
+
+  it("preserves the rest of the URL while scrubbing only the seed", () => {
+    window.history.replaceState(null, "", "/orders?company=2&q=sofa#row-9");
+    consumeCompanyUrlSeed();
+
+    expect(getActiveCompanyId()).toBe(2);
+    expect(window.location.pathname).toBe("/orders");
+    expect(window.location.search).toBe("?q=sofa");
+    expect(window.location.hash).toBe("#row-9");
+  });
+
+  it("scrubs but ignores a junk id rather than sending a junk tenant header", () => {
+    for (const junk of ["abc", "-3", "0", "1e3", "2.5", ""]) {
+      sessionStorage.clear();
+      window.history.replaceState(null, "", `/?company=${junk}`);
+      consumeCompanyUrlSeed();
+      expect(getActiveCompanyId()).toBeNull();
+      expect(window.location.search).toBe("");
+    }
+  });
+
+  it("is a no-op without the parameter", () => {
+    window.history.replaceState(null, "", "/orders?q=sofa");
+    consumeCompanyUrlSeed();
+    expect(getActiveCompanyId()).toBeNull();
+    expect(window.location.search).toBe("?q=sofa");
   });
 });

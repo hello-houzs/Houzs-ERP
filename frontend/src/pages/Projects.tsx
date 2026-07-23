@@ -107,6 +107,7 @@ import { ACCESS_RANK } from "../types";
 import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery, humanHttpMessage, tokenStore } from "../api/client";
+import { formatPhone } from "../vendor/shared/phone";
 import { companyHeader } from "../lib/activeCompany";
 import {
   consumeCorrelated,
@@ -5444,7 +5445,7 @@ function ProjectTeamSection({
             </select>
             {p.pic_phone && (
               <div className="mt-1 flex items-center gap-1 text-[11px] text-ink-secondary">
-                <Phone size={11} /> {p.pic_phone}
+                <Phone size={11} /> {formatPhone(p.pic_phone)}
               </div>
             )}
             {picUsers.length === 0 && !picUsersLoading && (
@@ -5460,7 +5461,7 @@ function ProjectTeamSection({
             </div>
             {p.pic_phone && (
               <div className="mt-0.5 flex items-center gap-1 text-[11px] text-ink-secondary">
-                <Phone size={11} /> {p.pic_phone}
+                <Phone size={11} /> {formatPhone(p.pic_phone)}
               </div>
             )}
           </>
@@ -5488,7 +5489,7 @@ function ProjectTeamSection({
                 </span>
                 {a.rep_phone && (
                   <span className="font-mono text-[9px] text-ink-muted">
-                    {a.rep_phone}
+                    {formatPhone(a.rep_phone)}
                   </span>
                 )}
                 {a.rep_code && (
@@ -5557,7 +5558,7 @@ function ProjectTeamSection({
                         <span className="truncate text-ink">{r.name}</span>
                         {r.phone && (
                           <span className="ml-auto shrink-0 font-mono text-[9.5px] text-ink-muted">
-                            {r.phone}
+                            {formatPhone(r.phone)}
                           </span>
                         )}
                       </label>
@@ -9073,22 +9074,27 @@ function PhaseCrewEditor({
                 </button>
               )}
             </div>
-            {/* Provider (owner 2026-07-23): if this trip isn't an internal lorry,
-                pick Grab or Lalamove instead of a plate. */}
-            <div className="flex items-center gap-1">
-              <Truck size={12} className="shrink-0 opacity-0" />
-              <span className="w-11 shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-muted">Via</span>
-              <select
-                value={lorry.provider ?? ""}
-                onChange={(e) => updateLorry(li, { provider: e.target.value })}
-                disabled={readOnly}
-                className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px] disabled:bg-bg/40 disabled:opacity-70"
-              >
-                <option value="">Internal lorry</option>
-                <option value="Grab">Grab</option>
-                <option value="Lalamove">Lalamove</option>
-              </select>
-            </div>
+            {/* 3rd-party transport (owner 2026-07-23): a trip not done by an
+                internal lorry (the plate above) is via Grab or Lalamove. Blank
+                = internal lorry. SERVICE / EXCHANGE ONLY — setup & dismantle
+                always run on internal lorries, so the dropdown is hidden there
+                (owner 2026-07-23). */}
+            {field === "service_crew" && (
+              <div className="flex items-center gap-1">
+                <Truck size={12} className="shrink-0 opacity-0" />
+                <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-muted">3rd-party</span>
+                <select
+                  value={lorry.provider ?? ""}
+                  onChange={(e) => updateLorry(li, { provider: e.target.value })}
+                  disabled={readOnly}
+                  className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px] disabled:bg-bg/40 disabled:opacity-70"
+                >
+                  <option value="">—</option>
+                  <option value="Grab">Grab</option>
+                  <option value="Lalamove">Lalamove</option>
+                </select>
+              </div>
+            )}
             <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={lorry.drivers[0]} onChange={(s) => setLorrySlot(li, "drivers", 0, s)} readOnly={readOnly} />
             <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={lorry.drivers[1]} onChange={(s) => setLorrySlot(li, "drivers", 1, s)} readOnly={readOnly} />
             <CrewSlotRow label="Helper 1" color="text-warning-text" options={helpers} slot={lorry.helpers[0]} onChange={(s) => setLorrySlot(li, "helpers", 0, s)} readOnly={readOnly} />
@@ -9121,7 +9127,7 @@ function PhaseCrewEditor({
                 <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
                   <Truck size={11} />
                   {o.name}
-                  {o.phone ? ` · ${o.phone}` : ""}
+                  {o.phone ? ` · ${formatPhone(o.phone)}` : ""}
                   {o.plate ? ` · ${o.plate}` : ""}
                   {!readOnly && (
                     <button
@@ -9202,12 +9208,29 @@ function LogisticsCrewSection({
   patch: (body: Record<string, any>) => Promise<void>;
 }) {
   const { user } = useAuth();
-  // Owner 2026-07: the logistics crew (Setup & Dismantle) is READ-ONLY for Sales
-  // — a Sales user (incl. Sales Director) may SEE the scheduled crew/lorries but
-  // not edit them. The reference reads below (fleet/staff + scm/lorries) are now
-  // permitted for Sales view-only, so the current values still display; the
-  // editor renders disabled and the backend PATCH strips the crew fields.
-  const readOnly = isSalesStaff(user);
+  // Owner 2026-07-23: EVERYONE may VIEW the logistics crew (Setup / Dismantle /
+  // Service + schedule reference), but only LOGISTIC + BD may EDIT it —
+  // plus Owner / Management / Super Admin (directors), who edit everything.
+  // Everyone else (Sales, ops, purchasing, storekeeper…) renders read-only.
+  const _pos = (user?.position_name ?? "").toLowerCase();
+  const _role = (user?.role_name ?? "").toLowerCase();
+  const _email = (user?.email ?? "").toLowerCase();
+  // Logistic = position "Logistic Admin" OR role "Logistic" — Syu / Syasya /
+  // Logistic Admin all carry both, so any of them matches (owner 2026-07-23).
+  const canEditLogistics =
+    isDirectorUser(user) ||
+    !!user?.permissions?.includes("*") ||
+    /logistic/.test(_pos) ||
+    /logistic/.test(_role) ||
+    /\bbd\b/.test(_role);
+  const readOnly = !canEditLogistics;
+  // Schedule reference is TIGHTER than the rest of the section (owner
+  // 2026-07-23): only BD + weisiang (Lim, weisiang329@gmail.com) may edit it —
+  // plus the Owner / admins (wildcard "*"), who can edit everything.
+  const canEditSchedule =
+    !!user?.permissions?.includes("*") ||
+    /\bbd\b/.test(_role) ||
+    _email === "weisiang329@gmail.com";
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [lorryOptions, setLorryOptions] = useState<string[]>([]);
   // A failed reference read must not render as an empty list. `.catch(() => {})`
@@ -9271,7 +9294,7 @@ function LogisticsCrewSection({
       {/* Schedule reference (owner 2026-07-23): the mall handbook's official
           event schedule screenshot, so logistics can read off setup/dismantle
           dates + times. Desktop-only (this whole page is the PC PMS). */}
-      <ScheduleRef projectId={project.id} readOnly={readOnly} />
+      <ScheduleRef projectId={project.id} readOnly={!canEditSchedule} />
       <div>
         <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} readOnly={readOnly} />
       </div>
@@ -9623,7 +9646,7 @@ function CrewInfoCard({ member }: { member: CrewMember }) {
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
         <InfoBit
           label="Phone"
-          value={member.phone}
+          value={formatPhone(member.phone)}
           href={member.phone ? `tel:${member.phone}` : undefined}
         />
       </div>
@@ -10876,7 +10899,7 @@ function ProjectSalesEntriesSection({
                           <div className="font-semibold text-ink">{e.customer_name}</div>
                           {e.customer_phone && (
                             <div className="font-mono text-[9.5px] text-ink-muted">
-                              {e.customer_phone}
+                              {formatPhone(e.customer_phone)}
                             </div>
                           )}
                         </>

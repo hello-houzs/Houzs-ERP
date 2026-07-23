@@ -36,7 +36,7 @@
 
 import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { MapPinned, Truck, Plus } from 'lucide-react';
+import { MapPinned, Truck, Plus, MessageSquare } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
 import { fmtCenti, fmtDateOrDash, fmtDateTime, buildVariantSummary } from '@2990s/shared';
@@ -45,6 +45,7 @@ import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataG
 import { DeliveryFieldsDrawer } from '../../vendor/scm/components/DeliveryFieldsDrawer';
 import { NewDpOrderDrawer } from '../../vendor/scm/components/NewDpOrderDrawer';
 import { ScheduleDpOrderDrawer } from '../../vendor/scm/components/ScheduleDpOrderDrawer';
+import { SendDeliveryMessageModal } from '../../vendor/scm/components/SendDeliveryMessageModal';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { badgeFor } from '../../vendor/scm/lib/category-badges';
@@ -54,6 +55,7 @@ import {
   useConvertSosToDo,
   useCancelDpOrder,
   useScheduleDelivery,
+  useDeliveryMessageStatuses,
   DELIVERY_STATES,
   DELIVERY_STATE_LABEL,
   dpJobTypeLabel,
@@ -773,6 +775,24 @@ export const DeliveryPlanning = () => {
     [allOrders, activeState],
   );
 
+  /* Latest WhatsApp (Seampify) send per SO — drives the "Message" column.
+     Doc list from the WHOLE region fetch (not the state tab) so switching tabs
+     never refires the statuses query. */
+  const soDocNos = useMemo(
+    () => allOrders.filter((o) => o.row_type === 'so').map((o) => o.so_doc_no).sort(),
+    [allOrders],
+  );
+  const { data: msgStatuses } = useDeliveryMessageStatuses(soDocNos);
+
+  /* The rows the Send-Message modal previews (open when non-null). SO-only,
+     like every bulk action on this board. */
+  const [sendingRows, setSendingRows] = useState<PlanningOrder[] | null>(null);
+  const openSendModal = () => {
+    const docs = new Set(selectedSoDocNos());
+    if (docs.size === 0) return;
+    setSendingRows(rows.filter((o) => o.row_type === 'so' && docs.has(o.so_doc_no)));
+  };
+
   const columns = useMemo<DataGridColumn<PlanningOrder>[]>(() => {
     /* The DEFAULT header order (owner 2026-07-22 header tidy): identity →
        status → dates → fleet → documents → money, with every default-hidden
@@ -782,7 +802,7 @@ export const DeliveryPlanning = () => {
        layouts actually show. A user's saved layout.order still wins. A key
        missing here falls to the end in definition order. */
     const DP_DEFAULT_ORDER = [
-      'row_type', 'so_doc_no', 'company_code', 'debtor_name', 'phone',
+      'row_type', 'so_doc_no', 'company_code', 'debtor_name', 'phone', 'wa_message',
       'region', 'delivery_state', 'delivery_substatus',
       'customer_delivery_date', 'amended_delivery_date', 'sched_date', 'days_left',
       'stock_remark', 'driver', 'lorry', 'do', 'do_date',
@@ -839,6 +859,26 @@ export const DeliveryPlanning = () => {
       key: 'phone', label: 'Phone', width: 150,
       accessor: (o) => formatPhone(o.phone) || '—',
       searchValue: (o) => o.phone ?? '',
+    },
+    {
+      /* Latest WhatsApp (Seampify) send for this SO, from scm.wa_message_log —
+         '—' until a send exists. SO-only (the send action is SO-only too). */
+      key: 'wa_message', label: 'Message', width: 110,
+      accessor: (o) => {
+        if (o.row_type !== 'so') return '—';
+        const s = msgStatuses?.[o.so_doc_no];
+        if (!s) return '—';
+        return (
+          <span style={{ fontWeight: 600, color: s.success ? '#2e7d32' : '#b3261e' }}>
+            {s.success ? `Sent ${String(s.created_at).slice(5, 10)}` : 'Failed'}
+          </span>
+        );
+      },
+      searchValue: () => '',
+      exportValue: (o) => {
+        const s = o.row_type === 'so' ? msgStatuses?.[o.so_doc_no] : undefined;
+        return s ? (s.success ? `Sent ${String(s.created_at).slice(0, 10)}` : 'Failed') : '';
+      },
     },
     {
       /* Default-hidden since the 2026-07-22 header tidy — product brand rarely
@@ -1144,7 +1184,7 @@ export const DeliveryPlanning = () => {
   // recompute the columns on region change. The editable Status/Date/Driver/Lorry
   // accessors close over `sched` + the driver/lorry option lists, so they join the
   // deps (a new driver/lorry list must re-render the pickers).
-  }, [activeRegion, sched, drivers, lorries]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeRegion, sched, drivers, lorries, msgStatuses]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-4">
@@ -1154,6 +1194,21 @@ export const DeliveryPlanning = () => {
         description={`Orders that need delivering · grouped by region (customer state) · ${counts.ALL} in ${activeRegionLabel}`}
         primaryAction={
           <span style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+            {/* Send Message — standing header button (owner picked design B,
+                2026-07-22): always visible, WhatsApp green, counts the selected
+                SO rows; disabled until something is ticked. */}
+            <Button
+              variant="primary"
+              style={{ background: '#1D9E75', borderColor: '#1D9E75' }}
+              disabled={selectedSoDocNos().length === 0}
+              title={selectedSoDocNos().length === 0
+                ? 'Tick the orders to message first'
+                : 'WhatsApp the delivery details to the selected customers (one message per phone)'}
+              onClick={openSendModal}
+            >
+              <MessageSquare size={16} strokeWidth={1.75} />
+              Send Message ({selectedSoDocNos().length})
+            </Button>
             {/* New DP Order — manual setup / dismantle / supplier-pickup jobs (and
                 any ad-hoc delivery), created straight onto the board. */}
             <Button variant="primary" onClick={() => setShowNewDp(true)}>
@@ -1381,6 +1436,7 @@ export const DeliveryPlanning = () => {
             ]
           : [
               { label: 'Edit HC fields…', onClick: () => setEditing(row) },
+              { label: 'Send WhatsApp…', onClick: () => setSendingRows([row]) },
               ...(canConvertToDo
                 ? [{ label: 'Convert to DO', onClick: () => convertOne(row) }]
                 : []),
@@ -1395,6 +1451,10 @@ export const DeliveryPlanning = () => {
 
       {schedulingDp && (
         <ScheduleDpOrderDrawer dpRow={schedulingDp} onClose={() => setSchedulingDp(null)} />
+      )}
+
+      {sendingRows && sendingRows.length > 0 && (
+        <SendDeliveryMessageModal rows={sendingRows} onClose={() => setSendingRows(null)} />
       )}
 
       {editing && (

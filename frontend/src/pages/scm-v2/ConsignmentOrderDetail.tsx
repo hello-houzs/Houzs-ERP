@@ -58,6 +58,7 @@ import {
   postcodesInCity,
   countryForState,
 } from '../../vendor/scm/lib/localities-queries';
+import { StatePicker } from '../../vendor/scm/components/StatePicker';
 import {
   useSoDropdownOptions, optionsOrFallback,
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
@@ -1124,17 +1125,14 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                 disabled={inputsDisabled}
                 onChange={(e) => set('address2', e.target.value)} />
             </label>
+            {/* Owner spec 2026-07-23 — StatePicker (MY-default, click Others for CN/SG, Search). Same shared component as Warehouse / Supplier / Venue / MobileNewSO / SalesOrderNew / SalesOrderDetail. No `(legacy)` sneak-through, no free-text fallback. */}
             <label className={styles.field}>
               <span className={styles.fieldLabel}>State</span>
-              <span className={styles.selectWrap}>
-                <select className={styles.fieldSelect} value={form.state}
-                  onChange={(e) => setForm((s) => ({ ...s, state: e.target.value, city: '', postcode: '' }))}
-                  disabled={inputsDisabled || localities.isLoading}>
-                  <option value="">{localities.isLoading ? 'Loading…' : 'Pick state'}</option>
-                  {sortByText(states).map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
-              </span>
+              <StatePicker
+                value={form.state}
+                onChange={(next) => setForm((s) => ({ ...s, state: next, city: '', postcode: '' }))}
+                disabled={inputsDisabled}
+              />
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>City</span>

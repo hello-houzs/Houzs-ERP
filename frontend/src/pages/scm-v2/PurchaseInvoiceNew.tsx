@@ -33,6 +33,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Save, Trash2, X, ChevronDown, ArrowRightLeft } from 'lucide-react';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { Button } from '@2990s/design-system';
+import { formatPhone } from '@2990s/shared/phone';
 import { activeOptions, buildVariantSummary, isServiceLine, maintPickerValues } from '@2990s/shared';
 import {
   useCreatePurchaseInvoice,
@@ -666,7 +667,7 @@ export const PurchaseInvoiceNew = () => {
               flexWrap: 'wrap',
             }}>
               {supplierDetail.contact_person && <span>Contact: <strong>{supplierDetail.contact_person}</strong></span>}
-              {supplierDetail.phone          && <span>Phone: <strong>{supplierDetail.phone}</strong></span>}
+              {supplierDetail.phone          && <span>Phone: <strong>{formatPhone(supplierDetail.phone)}</strong></span>}
               {supplierDetail.email          && <span>Email: <strong>{supplierDetail.email}</strong></span>}
               {supplierDetail.payment_terms  && <span>Terms: <strong>{supplierDetail.payment_terms}</strong></span>}
               <span>Currency: <strong>{supplierDetail.currency ?? currency}</strong></span>
