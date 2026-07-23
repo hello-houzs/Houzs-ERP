@@ -114,7 +114,7 @@ jobs:
       # crons=[]). Same Cloudflare account as prod, so the existing
       # CLOUDFLARE_API_TOKEN works — the token's scope (Workers:Edit,
       # Account:Read) already covers both env names.
-      - uses: cloudflare/wrangler-action@v4
+      - uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -150,7 +150,7 @@ jobs:
           VITE_API_URL: https://autocount-sync-api-staging.houzs-erp.workers.dev
       # See deploy.yml: the bundle gate needs a merge base and has none here.
       - run: npm run check:sw
-      - uses: cloudflare/wrangler-action@v4
+      - uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
