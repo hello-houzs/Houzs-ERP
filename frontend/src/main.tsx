@@ -16,6 +16,7 @@ import { PwaBanners } from "./components/PwaBanners";
 import { ChunkReloadBoundary } from "./components/RouteFallback";
 import { registerPwa } from "./pwa";
 import { installGlobalErrorReporting } from "./lib/errorReporter";
+import { consumeCompanyUrlSeed } from "./lib/activeCompany";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "./lib/queryClient";
 import { tokenStore } from "./api/client";
@@ -70,6 +71,15 @@ if (!canonicalTarget) registerPwa();
 // so even a first-render crash is captured. Prod builds only; reporting never
 // changes behaviour (see lib/errorReporter.ts).
 installGlobalErrorReporting();
+
+// Multi-window company hand-off (owner 2026-07-23): the company switcher's
+// "Open in new window" opens `/?company=<id>` so the new window boots straight
+// into that company — one window on Houzs, another on 2990, side by side.
+// Consumed BEFORE React mounts (the seed must exist before AuthProvider's
+// /auth/me fires the first authed requests) and BEFORE the SSO block below,
+// whose replaceState would discard the query string. Scrubs the parameter;
+// this tab's sessionStorage owns the answer from here.
+consumeCompanyUrlSeed();
 
 // View-as hand-off (owner 2026-07-17): the owner's local "Portal Viewer"
 // launcher opens this app with #login-as=<token> so they can hop between
