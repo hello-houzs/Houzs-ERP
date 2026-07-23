@@ -83,6 +83,7 @@ import {
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
 import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 import { clearPaymentRetryHandoff, completePaymentRetryDraft, consumePaymentRetryNavigationState, planPaymentDraftFlush, readPaymentRetryHandoff, readPaymentRetryNavigationState } from "../../lib/paymentRetryHandoff";
 
 // ─── Row shapes (subset — see SalesInvoiceDetail.tsx for the full 40-field
@@ -1286,7 +1287,7 @@ export function SalesInvoiceDetailV2() {
                 />
                 <Field
                   label="Phone"
-                  value={salesInvoice.phone || "Not provided"}
+                  value={formatPhone(salesInvoice.phone) || "Not provided"}
                   muted={!salesInvoice.phone}
                   mono={!!salesInvoice.phone}
                 />
@@ -1440,7 +1441,7 @@ export function SalesInvoiceDetailV2() {
                     {salesInvoice.emergency_contact_name || "Not provided"}
                   </div>
                   <div className="mt-1 font-mono text-[12.5px] text-ink-secondary">
-                    {salesInvoice.emergency_contact_phone || "—"}
+                    {formatPhone(salesInvoice.emergency_contact_phone) || "—"}
                   </div>
                   {salesInvoice.emergency_contact_relationship && (
                     <div className="mt-1 text-[12px] text-ink-muted">

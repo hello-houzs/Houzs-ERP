@@ -1098,10 +1098,25 @@ app.get("/attachments/:id", async (c) => {
   const obj = await c.env.POD_BUCKET.get(row.storage_path);
   if (!obj) return c.json({ error: "Not found" }, 404);
   const filename = safeFilename(row.filename ?? "file");
+  // Inbound email attachments carry a sender-controlled content-type. Serving an
+  // attacker-shaped text/html or image/svg+xml INLINE would execute script in the
+  // ERP origin (token theft). Preview only the known-safe raster/PDF types inline;
+  // force every other type to download as octet-stream. nosniff blocks MIME-sniffing
+  // of the octet-stream fallback back into html/svg.
+  const INLINE_SAFE = new Set([
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "application/pdf",
+  ]);
+  const storedType = (row.content_type ?? "").toLowerCase().split(";")[0].trim();
+  const inlineSafe = INLINE_SAFE.has(storedType);
   return new Response(obj.body as ReadableStream, {
     headers: {
-      "Content-Type": row.content_type || "application/octet-stream",
-      "Content-Disposition": `inline; filename="${filename}"`,
+      "Content-Type": inlineSafe ? storedType : "application/octet-stream",
+      "Content-Disposition": `${inlineSafe ? "inline" : "attachment"}; filename="${filename}"`,
+      "X-Content-Type-Options": "nosniff",
       "Cache-Control": "private, max-age=600",
     },
   });

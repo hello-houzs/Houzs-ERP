@@ -30,6 +30,7 @@
 // ----------------------------------------------------------------------------
 import type { Context } from 'hono';
 import type { Env } from '../../types';
+import { timingSafeEqualStr } from '../../services/auth';
 
 /** The 2990 company. Mirrored rows are stamped with it on every table. */
 export const C2990 = 2;
@@ -93,7 +94,12 @@ export type TableMap = {
  *  match for an absent secret. Five receivers repeating this by hand is five
  *  chances to write `===` against an undefined and open the route to the world. */
 export function mirrorAuthed(c: Context<{ Bindings: Env }>): boolean {
-  return Boolean(c.env.SYNC_SECRET) && c.req.header('x-sync-secret') === c.env.SYNC_SECRET;
+  const secret = c.env.SYNC_SECRET;
+  if (!secret) return false; // fail closed on unset — never match absent-vs-absent
+  // Constant-time compare: this is the one mirror auth that WRITES business data
+  // (SOs, customers, amendments), so match the other inbound integrations
+  // (mail-inbound, assrFormIntake) rather than leak a timing side-channel on `===`.
+  return timingSafeEqualStr(c.req.header('x-sync-secret') ?? '', secret);
 }
 
 /** A mapper bound to one receiver's table config, with its own dest-column

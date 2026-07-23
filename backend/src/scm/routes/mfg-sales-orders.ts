@@ -70,6 +70,7 @@ import { orderSofaModuleRowsWithinBuilds, sortSoLinesByGroupRank } from '../shar
 import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { warehouseLabel } from '../lib/warehouse-label';
 import { canonicalizeMyState } from '../lib/canonical-state';
+import { deriveLineBrandingFromProduct } from '../lib/derive-line-branding';
 import {
   scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   isMirroredDocNo, mintsIntoMirroredNamespace, houzsOwns2990,
@@ -5034,6 +5035,14 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
        first-class column (created_at is identical across one bulk insert,
        so it can never recover this order on read). */
     const rowsWithDoc = itemRows.map((r, lineNo) => ({ ...r, doc_no: docNo, line_no: lineNo }));
+    /* Owner 2026-07-23 — auto-derive line.branding from the product catalog
+       for any line the client did not stamp explicitly. The SO CREATE form
+       has never exposed a per-line branding field, so before this fix every
+       new SO shipped with branding=NULL on every line and the SO list
+       Branding column read "—" for the whole book (2990 CoE 2026-07-23).
+       Runs BEFORE stampCo so we can find the per-row company_id via the
+       active-user fallback; stampCo then adds it. */
+    await deriveLineBrandingFromProduct(sb, rowsWithDoc as unknown as Array<{ item_code?: string | null; branding?: string | null; company_id?: number | null }>, activeCompanyId(c) ?? null);
     const { error: iErr } = await sb.from('mfg_sales_order_items').insert(stampCo(rowsWithDoc));
     if (iErr) { await rollbackPwpClaims(); await sb.from('mfg_sales_orders').delete().eq('doc_no', docNo); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
     /* Commander 2026-05-29 — re-roll the header through recomputeTotals so a
@@ -7327,6 +7336,9 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
             : null,
         };
       });
+      /* Owner 2026-07-23 — auto-derive branding from product catalog on the
+         add-line path, same rule as SO CREATE (see createSalesOrderCore). */
+      await deriveLineBrandingFromProduct(sb, moduleRows as unknown as Array<{ item_code?: string | null; branding?: string | null; company_id?: number | null }>, activeCompanyId(c) ?? null);
       const { data: moduleData, error: moduleError } = await sb
         .from('mfg_sales_order_items')
         .insert(stampCompany(moduleRows, c))
@@ -7371,7 +7383,10 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
     /* Commander 2026-05-28 — "Description 2" auto-generated from variants. */
     description2: buildVariantSummary(String(it.itemGroup ?? ''), (it.variants as Record<string, unknown> | null) ?? null) || null,
   };
-  const { data, error } = await sb.from('mfg_sales_order_items').insert({ ...row, company_id: activeCompanyId(c) }).select('*').single();
+  /* Owner 2026-07-23 — auto-derive branding on the single-row add-line path. */
+  const rowWithCid = { ...row, company_id: activeCompanyId(c) };
+  await deriveLineBrandingFromProduct(sb, [rowWithCid] as unknown as Array<{ item_code?: string | null; branding?: string | null; company_id?: number | null }>, activeCompanyId(c) ?? null);
+  const { data, error } = await sb.from('mfg_sales_order_items').insert(rowWithCid).select('*').single();
   if (error) {
     /* Don't burn a PWP code on a failed insert — mirror create's rollbackPwpClaims. */
     if (addLinePwpClaimed) await rollbackSinglePwpClaim(sb, addLinePwpClaimed);

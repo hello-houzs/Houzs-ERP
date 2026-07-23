@@ -128,19 +128,30 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
     }
   }
 
-  async function remove(row: LookupRow) {
+  // Owner 2026-07-23: dropped the "Hide from picker" menu item entirely —
+  // the Active/Hidden toggle above already covers soft-hide, and having two
+  // controls that both marked active=0 was the confusion (owner thought
+  // Hide would delete). The remaining destructive control is a real
+  // DELETE. Existing records that referenced this value by name keep the
+  // text (columns like mfg_products.branding are free-text, not FK) — the
+  // BrandingInput surfaces it as "(legacy)" until an operator re-picks a
+  // canonical value.
+  async function removePermanently(row: LookupRow) {
     if (
       !(await dialog.confirm({
-        title: `Hide ${title.replace(/s$/, "").toLowerCase()}`,
-        message: `Hide "${row.name}" from the picker? Existing references keep this value.`,
+        title: `Permanently delete ${title.replace(/s$/, "").toLowerCase()}`,
+        message:
+          `Delete "${row.name}" from this list? This cannot be undone. ` +
+          `Existing records that reference "${row.name}" by name keep the text — ` +
+          `they'll appear marked "(legacy)" in the picker until re-selected.`,
         danger: true,
-        confirmLabel: "Hide",
+        confirmLabel: "Delete permanently",
       }))
     )
       return;
     try {
-      await api.del(`${apiPath}/${row.id}`);
-      toast.success("Hidden");
+      await api.del(`${apiPath}/${row.id}?hard=1`);
+      toast.success("Deleted");
       q.reload();
     } catch (e: any) {
       toast.error(e?.message || "Something went wrong. Please try again.");
@@ -206,7 +217,12 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
               {...handlers}
               className={cn(
                 "flex flex-wrap items-center gap-2 px-3 py-2 transition-colors",
-                !active && "opacity-50",
+                // Owner 2026-07-23: 50% opacity on hidden rows made the
+                // 3-dots button look disabled — nobody could tell they could
+                // re-show the row. Softer fade (75% opacity) keeps the
+                // "not-in-picker" visual cue while leaving controls clearly
+                // clickable.
+                !active && "opacity-75",
                 isDragging && "opacity-40",
                 isDropTarget && "bg-accent-soft/40",
               )}
@@ -284,19 +300,23 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
               <RowActionsMenu
                 indicator={!active}
                 items={[
+                  // Owner 2026-07-23: hidden rows were 50% opacity + a "Hidden"
+                  // label that read as status, not an action — nobody could tell
+                  // the row could be re-shown. Label swapped to action verbs
+                  // ("Hide" / "Show in picker") so the menu reads as buttons.
                   {
                     type: "toggle",
                     icon: active ? Eye : EyeOff,
-                    label: active ? "Active" : "Hidden",
+                    label: active ? "Hide from picker" : "Show in picker",
                     active,
                     onClick: () => patch(row, { active: active ? 0 : 1 } as any),
                   },
                   {
                     type: "action",
                     icon: Trash2,
-                    label: "Hide from picker",
+                    label: "Delete permanently",
                     danger: true,
-                    onClick: () => remove(row),
+                    onClick: () => removePermanently(row),
                   },
                 ]}
               />

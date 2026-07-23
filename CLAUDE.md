@@ -94,6 +94,14 @@ carries the shard index and changes whenever the shard count does.
 - **`docs/modules/<module>.md`** — everything needed to work in ONE module
   without reading the others. Read the guide for the module you are touching
   before touching it.
+- **`docs/generated/route-locator.md`** — every route's FILE and LINE. Before
+  changing an endpoint in a large router (`mfg-sales-orders.ts` and the other
+  multi-thousand-line files), grep this for the path and jump to the line. Do
+  NOT read a 10,000-line route file whole to find one handler — that is the
+  single biggest source of slow, token-heavy sessions here (see
+  `docs/AI-DEV-VELOCITY.md`). Pair it with `route-capability-matrix.csv` for the
+  full mount path + permission gates. Regenerate with
+  `npm --prefix backend run gen:route-locator`.
 
 **Where does a new fact go?** `docs/KNOWLEDGE-SYSTEM.md` answers that, and
 explains why these layers exist. One rule decides it: *a fact belongs in the
