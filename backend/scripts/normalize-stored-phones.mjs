@@ -236,13 +236,26 @@ async function revert(runId) {
     warn(`No backup rows for run ${runId} — nothing to revert.`);
     return;
   }
+  // Batched by (table, column, pk_column), same reason as the apply path — a
+  // row-by-row revert of thousands of rows would hang the same way the
+  // row-by-row apply did. Each group is one UPDATE..FROM.
   let n = 0;
+  const groups = new Map();
   for (const r of rows) {
+    const k = `${r.table_name} ${r.column_name} ${r.pk_column}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  for (const [k, grp] of groups) {
+    const [table, column, pkCol] = k.split(" ");
+    const pks = grp.map((r) => r.row_id);
+    const olds = grp.map((r) => r.old_value);
     await pg`
-      UPDATE ${pg(r.table_name)}
-      SET ${pg(r.column_name)} = ${r.old_value}
-      WHERE ${pg(r.pk_column)}::text = ${r.row_id}`;
-    n += 1;
+      UPDATE ${pg(table)} AS t
+      SET ${pg(column)} = b.old
+      FROM unnest(${pks}::text[], ${olds}::text[]) AS b(pk, old)
+      WHERE t.${pg(pkCol)}::text = b.pk`;
+    n += grp.length;
   }
   notice(`Reverted ${n} values from run ${runId}.`);
 }
@@ -346,16 +359,27 @@ async function processColumn({ table, column }) {
 
   if (!APPLY || changes.length === 0) return { table, column, would: changes.length, refused };
 
+  // BATCHED, not row-by-row. The previous version issued 2 awaits per row
+  // (INSERT backup + UPDATE), so 3775 rows = 7550 round-trips to a Singapore
+  // database from a GitHub runner. That never finished — every apply hung and
+  // was cancelled at the timeout with ZERO rows written (verified: phone-audit
+  // still reported the full 3788 afterwards). Here each column is two
+  // statements total: one INSERT..SELECT for the whole backup batch, one
+  // UPDATE..FROM for the whole change batch, both driven by unnest() arrays.
+  const pks = changes.map((c) => c.pk);
+  const olds = changes.map((c) => c.old);
+  const news = changes.map((c) => c.next);
   await pg.begin(async (tx) => {
-    for (const c of changes) {
-      await tx`
-        INSERT INTO phone_normalisation_backup
-          (run_id, table_name, column_name, pk_column, row_id, old_value, new_value)
-        VALUES (${RUN_ID}, ${table}, ${column}, ${pk}, ${c.pk}, ${c.old}, ${c.next})`;
-      await tx`
-        UPDATE ${tx(table)} SET ${tx(column)} = ${c.next}
-        WHERE ${tx(pk)}::text = ${c.pk}`;
-    }
+    await tx`
+      INSERT INTO phone_normalisation_backup
+        (run_id, table_name, column_name, pk_column, row_id, old_value, new_value)
+      SELECT ${RUN_ID}, ${table}, ${column}, ${pk}, pk, old, new
+      FROM unnest(${pks}::text[], ${olds}::text[], ${news}::text[]) AS b(pk, old, new)`;
+    await tx`
+      UPDATE ${tx(table)} AS t
+      SET ${tx(column)} = b.new
+      FROM unnest(${pks}::text[], ${news}::text[]) AS b(pk, new)
+      WHERE t.${tx(pk)}::text = b.pk`;
   });
 
   notice(`  APPLIED ${changes.length} to ${table}.${column}`);
