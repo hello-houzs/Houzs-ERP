@@ -19,6 +19,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { fmtCenti, lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 import {
   Plus,
   ChevronDown,
@@ -495,7 +496,7 @@ function DetailDrawer({
                     )}
                   </div>
                 </div>
-                <RowKV k="Phone" v={row.phone || "—"} />
+                <RowKV k="Phone" v={formatPhone(row.phone) || "—"} />
                 <RowKV k="Email" v={row.email || "—"} />
                 <RowKV
                   k="Address"
@@ -1137,7 +1138,7 @@ export function DeliveryReturnsListV2() {
       defaultHidden: true,
       getValue: (r) => r.phone ?? "",
       render: (r) => (
-        <span className="text-[12.5px] text-ink-secondary">{r.phone || "—"}</span>
+        <span className="text-[12.5px] text-ink-secondary">{formatPhone(r.phone) || "—"}</span>
       ),
     },
     {

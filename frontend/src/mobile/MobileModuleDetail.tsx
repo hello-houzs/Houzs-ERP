@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { visibleFields, canOperateDeliveryOrders, canOperateSalesInvoices } from "../auth/salesAccess";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { api } from "../api/client";
@@ -248,7 +249,7 @@ const DOC_MODULES: Record<string, DocMap> = {
     meta: (h) => [
       ["DO Date", dmy(h.do_date)],
       ["Delivery", dmy(h.customer_delivery_date ?? h.expected_delivery_at)],
-      ["Phone", firstOf(h.phone)],
+      ["Phone", formatPhone(firstOf(h.phone))],
       ["Location", firstOf(h.sales_location, h.customer_state, h.state)],
       ["Reference", firstOf(h.ref, h.po_doc_no)],
       ["Salesperson", firstOf(h.agent)],
@@ -282,7 +283,7 @@ const DOC_MODULES: Record<string, DocMap> = {
     meta: (h) => [
       ["Invoice Date", dmy(h.invoice_date)],
       ["Due Date", dmy(h.due_date)],
-      ["Phone", firstOf(h.phone)],
+      ["Phone", formatPhone(firstOf(h.phone))],
       ["Location", firstOf(h.sales_location, h.customer_state, h.state)],
       ["Reference", firstOf(h.ref, h.po_doc_no)],
       ["Salesperson", firstOf(h.agent)],

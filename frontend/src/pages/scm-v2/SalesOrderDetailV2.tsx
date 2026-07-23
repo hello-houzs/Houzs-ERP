@@ -53,6 +53,7 @@ import { DocumentRelationshipMapModal } from "../../components/scm-v2/DocumentRe
 import { useSoRelationshipMap } from "./so-relationship-map";
 import { cn } from "../../lib/utils";
 import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 import {
   isLocked as isSoLocked,
   amendmentEligible as soAmendmentEligible,
@@ -932,7 +933,7 @@ function SalesOrderDetailV2ReadOnly() {
                 />
                 <Field
                   label="Phone"
-                  value={salesOrder.phone || "Not provided"}
+                  value={formatPhone(salesOrder.phone) || "Not provided"}
                   muted={!salesOrder.phone}
                   mono={!!salesOrder.phone}
                 />
@@ -1065,7 +1066,7 @@ function SalesOrderDetailV2ReadOnly() {
                     Only if unreachable on delivery day
                   </div>
                   <div className="mt-2.5 text-[14px] font-semibold text-ink">
-                    {salesOrder.phone || "Not provided"}
+                    {formatPhone(salesOrder.phone) || "Not provided"}
                   </div>
                   <div className="mt-1 text-[12px] text-ink-muted">
                     Contact — relationship not set

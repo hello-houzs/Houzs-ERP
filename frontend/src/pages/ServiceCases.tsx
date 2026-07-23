@@ -80,6 +80,7 @@ import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesStaff } from "../auth/salesAccess";
 import { api, buildQuery } from "../api/client";
+import { formatPhone } from "../vendor/shared/phone";
 import { uploadAssrAttachment } from "../lib/assrAttachmentUpload";
 import { loadThumbFirst } from "../lib/imagePipeline";
 import { formatCurrency, formatDate, formatDateTime, cn } from "../lib/utils";
@@ -2200,7 +2201,7 @@ function SoNoSearchEdit({
                   <div className="text-[11px] text-ink-secondary">
                     {s.debtor_name ?? ""}
                     {s.debtor_name && s.phone ? " · " : ""}
-                    {s.phone ?? ""}
+                    {formatPhone(s.phone)}
                   </div>
                 )}
               </button>
@@ -2604,7 +2605,7 @@ function CreatePanel({
                   <div className="text-[11px] text-ink-secondary">
                     {s.debtor_name ?? ""}
                     {s.debtor_name && s.phone ? " · " : ""}
-                    {s.phone ?? ""}
+                    {formatPhone(s.phone)}
                   </div>
                 )}
               </button>
@@ -2619,7 +2620,7 @@ function CreatePanel({
             ) : customerInfo ? (
               <>
                 Customer: <span className="text-ink">{customerInfo.name ?? "—"}</span>
-                {customerInfo.phone ? <> · {customerInfo.phone}</> : null}
+                {customerInfo.phone ? <> · {formatPhone(customerInfo.phone)}</> : null}
               </>
             ) : null}
           </div>
@@ -4267,7 +4268,7 @@ function DetailContent({
               <div className="flex items-center justify-between gap-2 border-t border-border-subtle pt-2.5">
                 <div className="min-w-0">
                   <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">Phone</div>
-                  <div className="mt-1 font-mono text-[13.5px] font-semibold text-ink">{c.phone || "—"}</div>
+                  <div className="mt-1 font-mono text-[13.5px] font-semibold text-ink">{formatPhone(c.phone) || "—"}</div>
                 </div>
                 {c.phone && (
                   <a

@@ -4,6 +4,7 @@
 
 import { lazy, Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
 import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -537,7 +538,7 @@ function GoodsReceivedDetailV2ReadOnly() {
                 <Field label="Supplier" value={supplierNameOf(grn)} />
                 <Field label="Supplier code" value={supplierCodeOf(grn)} mono />
                 <Field label="Contact" value={grn.supplier?.contact_person || "—"} muted={!grn.supplier?.contact_person} />
-                <Field label="Phone" value={grn.supplier?.phone || "Not provided"} muted={!grn.supplier?.phone} mono={!!grn.supplier?.phone} />
+                <Field label="Phone" value={formatPhone(grn.supplier?.phone) || "Not provided"} muted={!grn.supplier?.phone} mono={!!grn.supplier?.phone} />
                 <Field label="Email" value={grn.supplier?.email || "Not provided"} muted={!grn.supplier?.email} />
                 <Field label="Address" value={grn.supplier?.address || "—"} muted={!grn.supplier?.address} />
               </div>
@@ -591,7 +592,7 @@ function GoodsReceivedDetailV2ReadOnly() {
               <AsideCard title="People">
                 <PersonRow initials={initialsOf(supplierNameOf(grn))} name={supplierNameOf(grn)} role={`Supplier · ${supplierCodeOf(grn)}`} tone="accent" />
                 {grn.supplier?.contact_person && (
-                  <PersonRow initials={initialsOf(grn.supplier.contact_person)} name={grn.supplier.contact_person} role={grn.supplier.phone || "Contact"} tone="neutral" />
+                  <PersonRow initials={initialsOf(grn.supplier.contact_person)} name={grn.supplier.contact_person} role={formatPhone(grn.supplier.phone) || "Contact"} tone="neutral" />
                 )}
               </AsideCard>
             </div>

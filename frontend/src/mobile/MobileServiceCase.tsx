@@ -3,6 +3,7 @@ import { formatDate, formatDateTime } from "../lib/utils";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { formatPhone } from "../vendor/shared/phone";
 import { uploadAssrAttachment } from "../lib/assrAttachmentUpload";
 import { loadThumbFirst } from "../lib/imagePipeline";
 import { useAuth } from "../auth/AuthContext";
@@ -1469,7 +1470,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 0 9px", borderBottom: "1px solid #f1f0ea", marginTop: 4 }}>
                         <div style={{ minWidth: 0 }}>
                           <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>Phone</div>
-                          <div className="money" style={{ fontSize: 13, fontWeight: 600, color: INK, marginTop: 3 }}>{String(get(c, "phone", "customerPhone", "customer_phone") ?? "—")}</div>
+                          <div className="money" style={{ fontSize: 13, fontWeight: 600, color: INK, marginTop: 3 }}>{formatPhone(get(c, "phone", "customerPhone", "customer_phone")) || "—"}</div>
                         </div>
                         {get(c, "phone", "customerPhone", "customer_phone") && (
                           <a
@@ -2018,7 +2019,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                             style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderTop: i ? "1px solid #eceee9" : "none", background: "#fff", padding: "9px 11px", cursor: "pointer" }}
                           >
                             <div className="money" style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(hit, "docNo", "doc_no"))}</div>
-                            <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(hit, "debtorName", "debtor_name") ?? "—")}{get(hit, "phone") ? ` · ${String(get(hit, "phone"))}` : ""}</div>
+                            <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(hit, "debtorName", "debtor_name") ?? "—")}{get(hit, "phone") ? ` · ${formatPhone(get(hit, "phone"))}` : ""}</div>
                           </button>
                         ))}
                       </div>
@@ -2377,7 +2378,7 @@ function SoSearchField({ value, onChange }: { value: string; onChange: (v: strin
               style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderTop: i ? "1px solid #eceee9" : "none", background: "#fff", padding: "9px 11px", cursor: "pointer" }}
             >
               <div className="money" style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(hit, "docNo", "doc_no"))}</div>
-              <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(hit, "debtorName", "debtor_name") ?? "—")}{get(hit, "phone") ? ` · ${String(get(hit, "phone"))}` : ""}</div>
+              <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(hit, "debtorName", "debtor_name") ?? "—")}{get(hit, "phone") ? ` · ${formatPhone(get(hit, "phone"))}` : ""}</div>
             </button>
           ))}
         </div>

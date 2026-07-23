@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { formatPhone } from "../vendor/shared/phone";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { MobileGantt } from "./MobileGantt";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
@@ -917,7 +918,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const canEditAttending = canAssignPeople;
   // PIC's phone from the project detail (backend populates pic_phone) — shown
   // on the mobile Team card for everyone, not just editors.
-  const picPhone = fmtPhone(p?.pic_phone);
+  const picPhone = formatPhone(p?.pic_phone);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -2152,18 +2153,7 @@ const parseCrewJson = (raw: string | null | undefined): PhaseCrew => {
   }
   return out;
 };
-// Normalise Malaysian phone numbers to a consistent "+60 NN-NNN NNNN" shape —
-// input is entered in mixed formats ("60-198426454", "+60 14-569 4569", "016…").
-const fmtPhone = (raw: string | null | undefined): string => {
-  if (!raw) return "";
-  let d = raw.replace(/[^\d+]/g, "");
-  if (d.startsWith("+")) d = d.slice(1);
-  if (d.startsWith("0")) d = "60" + d.slice(1);
-  if (!d.startsWith("60") || d.length < 10) return raw.trim();
-  const rest = d.slice(2);
-  return `+60 ${rest.slice(0, 2)}-${rest.slice(2, -4)} ${rest.slice(-4)}`;
-};
-const crewLabel = (p: CrewPerson): string => (p.phone ? `${p.name} (${fmtPhone(p.phone)})` : p.name);
+const crewLabel = (p: CrewPerson): string => (p.phone ? `${p.name} (${formatPhone(p.phone)})` : p.name);
 const crewIsEmpty = (c: PhaseCrew): boolean =>
   c.lorryCrew.length === 0 && c.outsourced.length === 0 && c.drivers.length === 0 && c.helpers.length === 0 && c.lorries.length === 0;
 // One crew member on its own line: fixed-width role label + name · formatted phone.
@@ -2173,7 +2163,7 @@ function CrewLine({ role, person }: { role: string; person: CrewPerson }) {
       <span style={{ flex: "none", width: 44, color: "#9aa093", fontWeight: 600 }}>{role}</span>
       <span style={{ flex: 1, minWidth: 0, color: "#414539" }}>
         {person.name}
-        {person.phone ? <span style={{ color: "#8a8f82" }}> · {fmtPhone(person.phone)}</span> : null}
+        {person.phone ? <span style={{ color: "#8a8f82" }}> · {formatPhone(person.phone)}</span> : null}
       </span>
     </div>
   );

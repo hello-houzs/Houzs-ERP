@@ -67,6 +67,7 @@ import {
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
 import { lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 import { useAuth } from "../../auth/AuthContext";
 import { canOperateDeliveryOrders } from "../../auth/salesAccess";
 
@@ -546,7 +547,7 @@ function DriverSubCard({ header }: { header: DoHeader }) {
         <Field label="IC number" value={header.driver_ic || "—"} mono={!!header.driver_ic} muted={!header.driver_ic} />
         <Field
           label="Phone"
-          value={header.driver_phone || "—"}
+          value={formatPhone(header.driver_phone) || "—"}
           mono={!!header.driver_phone}
           muted={!header.driver_phone}
         />
@@ -1198,7 +1199,7 @@ export function DeliveryOrderDetailV2() {
                 />
                 <Field
                   label="Phone"
-                  value={deliveryOrder.phone || "Not provided"}
+                  value={formatPhone(deliveryOrder.phone) || "Not provided"}
                   muted={!deliveryOrder.phone}
                   mono={!!deliveryOrder.phone}
                 />
@@ -1282,7 +1283,7 @@ export function DeliveryOrderDetailV2() {
                   </div>
                   {deliveryOrder.emergency_contact_phone && (
                     <div className="mt-1 font-mono text-[12.5px] text-ink-secondary">
-                      {deliveryOrder.emergency_contact_phone}
+                      {formatPhone(deliveryOrder.emergency_contact_phone)}
                     </div>
                   )}
                   {deliveryOrder.emergency_contact_relationship && (
