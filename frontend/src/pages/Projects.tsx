@@ -64,6 +64,7 @@ import { Pagination } from "../components/Pagination";
 import { Panel, PanelSection, FieldRow } from "../components/Panel";
 import { ProjectChat } from "../components/ProjectChat";
 import { ProjectGantt } from "../components/ProjectGantt";
+import { formatPhone } from "../vendor/shared/phone";
 import {
   DetailLayout,
   DetailGrid,
@@ -5537,7 +5538,7 @@ function ProjectTeamSection({
                         <span className="truncate text-ink">{r.name}</span>
                         {r.phone && (
                           <span className="ml-auto shrink-0 font-mono text-[9.5px] text-ink-muted">
-                            {r.phone}
+                            {r.phone ? formatPhone(r.phone) : ""}
                           </span>
                         )}
                       </label>
@@ -9012,7 +9013,7 @@ function PhaseCrewEditor({
                 <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
                   <Truck size={11} />
                   {o.name}
-                  {o.phone ? ` · ${o.phone}` : ""}
+                  {o.phone ? ` · ${formatPhone(o.phone)}` : ""}
                   {o.plate ? ` · ${o.plate}` : ""}
                   {!readOnly && (
                     <button

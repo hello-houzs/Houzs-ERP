@@ -31,6 +31,7 @@ import { RolesTab } from "./Roles";
 import { PositionsTab } from "./Positions";
 import { MailboxesTab } from "./MailboxesTab";
 import { PhoneInput } from "../vendor/scm/components/PhoneInput";
+import { formatPhone } from "../vendor/shared/phone";
 
 type TeamTabValue =
   | "hub"
@@ -1255,7 +1256,7 @@ function MembersTab({
             </div>
             <div className="truncate text-[11px] text-ink-muted">
               {u.email}
-              {u.phone ? ` · ${u.phone}` : ""}
+              {u.phone ? ` · ${formatPhone(u.phone)}` : ""}
             </div>
           </div>
         </div>
@@ -2244,7 +2245,7 @@ function MemberDetail({
             {user.phone && (
               <div className="flex items-center gap-2 text-[12px] text-ink-secondary">
                 <Phone size={12} className="shrink-0 text-ink-muted" />
-                <span className="truncate">{user.phone}</span>
+                <span className="truncate">{formatPhone(user.phone)}</span>
               </div>
             )}
             <div className="flex items-center gap-2 text-[12px] text-ink-secondary">
@@ -2527,7 +2528,7 @@ function MemberCard({
         {u.phone && (
           <div className="flex items-center gap-1.5 text-[11px] text-ink-secondary">
             <Phone size={11} className="shrink-0 text-ink-muted" />
-            <span className="truncate">{u.phone}</span>
+            <span className="truncate">{formatPhone(u.phone)}</span>
           </div>
         )}
         <div className="flex items-center gap-1.5 text-[11px] text-ink-secondary">

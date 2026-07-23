@@ -38,6 +38,7 @@ import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { cn } from "../../lib/utils";
 import { fmtCenti } from "../../vendor/shared/format";
 import { retryUnlessClientError } from '../../lib/retryPolicy';
+import { formatPhone } from "@2990s/shared/phone";
 
 // ─── Types — mirrors the endpoint's Row / buckets / totals ──────────────────
 
@@ -169,7 +170,7 @@ function CardsGrid({ rows, onOpen }: { rows: UnbilledRow[]; onOpen: (r: Unbilled
           {r.phone && (
             <div className="mt-1.5 flex items-center gap-1.5 text-[11.5px] text-ink-secondary">
               <Phone size={11} className="text-ink-muted" />
-              <span className="truncate">{r.phone}</span>
+              <span className="truncate">{r.phone ? formatPhone(r.phone) : "—"}</span>
             </div>
           )}
           <div className="mt-3.5 flex items-end justify-between border-t border-border-subtle pt-3">
@@ -327,7 +328,7 @@ export function UnbilledDeliveriesV2() {
         r.phone ? (
           <div className="flex items-center gap-1.5">
             <Phone size={11} className="shrink-0 text-ink-muted" />
-            <span className="truncate text-[12.5px] text-ink-secondary">{r.phone}</span>
+            <span className="truncate text-[12.5px] text-ink-secondary">{r.phone ? formatPhone(r.phone) : "—"}</span>
           </div>
         ) : (
           <span className="text-[12.5px] text-ink-muted">—</span>

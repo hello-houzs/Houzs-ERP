@@ -68,6 +68,7 @@ import { StatCard } from "../components/StatCard";
 import { useQuery } from "../hooks/useQuery";
 import { useSearchResultTransition } from "../hooks/useServerSearch";
 import { useToast } from "../hooks/useToast";
+import { formatPhone } from "../vendor/shared/phone";
 import { useDialog } from "../hooks/useDialog";
 import {
   booleanPreference,
@@ -2619,7 +2620,7 @@ function CreatePanel({
             ) : customerInfo ? (
               <>
                 Customer: <span className="text-ink">{customerInfo.name ?? "—"}</span>
-                {customerInfo.phone ? <> · {customerInfo.phone}</> : null}
+                {customerInfo.phone ? <> · {formatPhone(customerInfo.phone)}</> : null}
               </>
             ) : null}
           </div>
