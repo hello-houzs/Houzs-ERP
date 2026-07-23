@@ -58,6 +58,7 @@ import { ScanOrderModal } from "../../vendor/scm/components/ScanOrderModal";
 import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
+import { formatPhone } from "@2990s/shared/phone";
 import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
@@ -1410,7 +1411,7 @@ export function MfgSalesOrdersListV2() {
       disableSort: true,
       getValue: (r) => r.phone ?? "",
       render: (r) => (
-        <span className="text-[12.5px] text-ink-secondary">{r.phone || "—"}</span>
+        <span className="text-[12.5px] text-ink-secondary">{r.phone ? formatPhone(r.phone) : "—"}</span>
       ),
     },
     {

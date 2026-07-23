@@ -65,6 +65,7 @@ import {
   fmtCenti,
   fmtDate,
 } from '@2990s/shared';
+import { formatPhone } from "@2990s/shared/phone";
 import {
   useMfgProducts,
   useUpdateMfgProductPrices,
@@ -4445,7 +4446,7 @@ const ProductSuppliersDrawer = ({
                         {s.suppliers?.name ?? '—'}
                       </div>
                       <div style={{ fontSize: 'var(--fs-11)', color: '#767b6e' }}>
-                        {s.suppliers?.code ?? ''}{s.suppliers?.phone ? ` · ${s.suppliers.phone}` : ''}
+                        {s.suppliers?.code ?? ''}{s.suppliers?.phone ? ` · ${formatPhone(s.suppliers.phone)}` : ''}
                       </div>
                     </td>
                     <td>
