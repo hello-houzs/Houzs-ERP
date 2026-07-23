@@ -3,6 +3,7 @@ import { ShieldAlert } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TopNavbar } from "./TopNavbar";
+import { WorkspaceTabs } from "./WorkspaceTabs";
 import { MobileTabBar } from "./MobileTabBar";
 import { PullToRefresh, PullToRefreshGuardProvider } from "./PullToRefresh";
 import { RowActionsMenu, type MenuItem } from "./RowActionsMenu";
@@ -62,6 +63,12 @@ export function Layout({ children }: Props) {
 
         {/* Desktop top navbar — breadcrumb + search + bell + profile. */}
         <TopNavbar />
+
+        {/* Desktop workspace tab strip — one tab per open section, sticky
+            under the navbar (top-12, h-9). Every lg+ sticky below it parks at
+            top-[5.25rem]: PageHeader here, DetailLayout, the two SCM V2 doc
+            bars. Hidden below lg. */}
+        <WorkspaceTabs />
 
         {writesDisabled && <ReadOnlyBanner />}
 
@@ -249,12 +256,16 @@ export function PageHeader({
            8 px INSIDE the mobile app bar, and z-20 TIED with it — a tie the
            later-painted element wins, so the pinned page header covered the
            bottom edge of the app bar on every tablet/narrow-desktop page.
-           `top-14 lg:top-12` parks flush under whichever bar is actually there,
+           `top-14 lg:top-…` parks flush under whichever bar is actually there,
            and `z-10 lg:z-20` puts us definitively BELOW the app bar (z-20) while
            still sitting above page content, which carries no z-index. */
+        /* 2026-07-23 (workspace tabs) — the lg chrome is now TWO rows: TopNavbar
+           (h-12, 48 px) + the WorkspaceTabs strip (h-9, 36 px), so the lg park
+           moved from top-12 to top-[5.25rem] (84 px). Below lg the strip is
+           hidden and top-14 (MobileTopBar) is unchanged. */
         (dense
-          ? "sticky top-14 lg:top-12 z-10 lg:z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:flex-wrap md:items-end md:justify-between"
-          : "sticky top-14 lg:top-12 z-10 lg:z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:flex-wrap md:items-end md:justify-between")
+          ? "sticky top-14 lg:top-[5.25rem] z-10 lg:z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:flex-wrap md:items-end md:justify-between"
+          : "sticky top-14 lg:top-[5.25rem] z-10 lg:z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:flex-wrap md:items-end md:justify-between")
       }
       ref={hostRef}
     >
