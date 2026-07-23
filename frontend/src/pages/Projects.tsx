@@ -9202,12 +9202,18 @@ function LogisticsCrewSection({
   patch: (body: Record<string, any>) => Promise<void>;
 }) {
   const { user } = useAuth();
-  // Owner 2026-07: the logistics crew (Setup & Dismantle) is READ-ONLY for Sales
-  // — a Sales user (incl. Sales Director) may SEE the scheduled crew/lorries but
-  // not edit them. The reference reads below (fleet/staff + scm/lorries) are now
-  // permitted for Sales view-only, so the current values still display; the
-  // editor renders disabled and the backend PATCH strips the crew fields.
-  const readOnly = isSalesStaff(user);
+  // Owner 2026-07-23: EVERYONE may VIEW the logistics crew (Setup / Dismantle /
+  // Service + schedule reference), but only LOGISTIC + BD may EDIT it —
+  // plus Owner / Management / Super Admin (directors), who edit everything.
+  // Everyone else (Sales, ops, purchasing, storekeeper…) renders read-only.
+  const _pos = (user?.position_name ?? "").toLowerCase();
+  const _role = (user?.role_name ?? "").toLowerCase();
+  const canEditLogistics =
+    isDirectorUser(user) ||
+    !!user?.permissions?.includes("*") ||
+    /logistic/.test(_pos) ||
+    /\bbd\b/.test(_role);
+  const readOnly = !canEditLogistics;
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [lorryOptions, setLorryOptions] = useState<string[]>([]);
   // A failed reference read must not render as an empty list. `.catch(() => {})`
