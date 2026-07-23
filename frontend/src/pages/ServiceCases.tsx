@@ -108,7 +108,7 @@ const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "pending_review", label: "Review" },
   { value: "under_verification", label: "Verification" },
   { value: "pending_solution", label: "Solution" },
-  { value: "pending_supplier_pickup", label: "Supplier Pickup" },
+  { value: "pending_supplier_pickup", label: "Supplier Pickup / Return" },
   { value: "pending_item_ready", label: "Pending Item Ready" },
   { value: "pending_delivery_service", label: "Delivery / Service" },
   { value: "completed", label: "Completed" },
@@ -3235,7 +3235,9 @@ function DetailContent({
         c ? (
           <span className="text-[13.5px] text-ink-secondary">
             Customer <b className="font-semibold text-ink">{c.customer_name || "—"}</b>
-            {" · "}Stage <b className="font-semibold text-accent">{caseStageLabel(c.stage)}</b>
+            {/* Sub-status implies its stage (Nick 2026-07-23: supplier
+                pending return 应该出现在 stage) — show it when present. */}
+            {" · "}Stage <b className="font-semibold text-accent">{caseSubStatus(c)?.label ?? caseStageLabel(c.stage)}</b>
             {c.doc_no ? <> {" · "}<span className="font-mono text-[12.5px] text-ink-secondary">{c.doc_no}</span></> : null}
             {c.ref_no ? <> {" · "}Ref <span className="font-mono text-[12.5px]">{c.ref_no}</span></> : null}
           </span>
