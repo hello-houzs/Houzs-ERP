@@ -315,6 +315,28 @@ export function activateWorkspaceTab(id: string): string | null {
 }
 
 /**
+ * Move a tab to a new position in the strip (drag reorder, owner ask
+ * 2026-07-23: "可以自主拖拽前后"). Pure order change: the active pointer and
+ * every href are untouched, and the close-neighbour semantics simply follow
+ * the NEW order (that is the point of reordering). Index is clamped; a
+ * same-position move is a no-op so live drag-over calls stay cheap.
+ */
+export function moveWorkspaceTab(id: string, toIndex: number): void {
+  const s = ensureLoaded();
+  const from = s.tabs.findIndex((t) => t.id === id);
+  if (from === -1) return;
+  const to = Math.max(0, Math.min(s.tabs.length - 1, Math.floor(toIndex)));
+  if (to === from) return;
+  const tabs = [...s.tabs];
+  const [moved] = tabs.splice(from, 1);
+  tabs.splice(to, 0, moved);
+  state = { ...s, tabs };
+  persist();
+  refreshSnapshot();
+  emit();
+}
+
+/**
  * Close a tab. Returns where the caller should navigate: closing the ACTIVE
  * tab hands back its left neighbour's href (right when it was first, "/" when
  * it was the only one); closing a background tab navigates nowhere (null).
