@@ -27,7 +27,10 @@ export function Pagination({
   const end = Math.min(page * perPage, total);
 
   return (
-    <div className="mt-4 flex flex-col gap-2 text-[11px] font-medium text-ink-secondary sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+    // One left-aligned row (Nick 2026-07-23): the pager used to sit at the
+    // far right (justify-between), where the floating action buttons cover
+    // it — range, per-page selector and prev/next now flow together.
+    <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px] font-medium text-ink-secondary">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-1.5">
           <span className="font-mono text-ink">
@@ -59,7 +62,7 @@ export function Pagination({
           </div>
         )}
       </div>
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 sm:ml-1">
         <button
           disabled={page <= 1}
           onClick={() => onPageChange(page - 1)}
