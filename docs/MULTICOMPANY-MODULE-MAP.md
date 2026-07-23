@@ -38,8 +38,15 @@ company dimension decides audience/ownership).
 - **Agent Console + System Health** — unified.
 - **Delivery Planning + Service Case dashboards** — unified (both companies see the
   same content).
-- **Staff roster** (scm.staff), **chart of accounts**, **currencies**, so_settings,
-  mrp_category_lead_times, my_localities, series.
+- **Staff roster** (scm.staff), **currencies**, so_settings,
+  mrp_category_lead_times, my_localities.
+  - NOTE `series` is **per-company** (`company_id NOT NULL`, mig 0083) — each
+    company draws its own doc numbers; the prefix keeps the global unique safe.
+  - CORRECTION (2026-07-23): **chart of accounts is SEPARATE, not SHARED.**
+    `scm.accounts.company_id` is `NOT NULL` (mig 0083) and the `/accounts`,
+    `/journal-entries`, `/gl` routes all `scopeToCompany` — every company has its
+    own chart. 2990's 31 accounts were imported under `company_id=2`. See
+    `MULTICOMPANY-SCALING.md`.
 
 ## UNIFIED MODULE + PER-COMPANY TARGETING
 - **Team** — ONE unified interface (Members / Positions / Org Chart / Departments /
