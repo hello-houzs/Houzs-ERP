@@ -1043,6 +1043,19 @@ function CasesView({
 // that stage, click again to clear back to All. Counts come from the
 // shared `/api/assr/summary` aggregate (stage_funnel = archived-excluded
 // totals + breach counts); a wide window captures long-open cases.
+// One-line captions under the Stage-funnel filter cards (Nick
+// 2026-07-23: 每个 stage 下面加 description, e.g. Verification → QC
+// issue inspection). Same wording as the detail Workflow funnel.
+const STAGE_FUNNEL_DESC: Record<string, string> = {
+  pending_review: "Case intake & review",
+  under_verification: "QC issue inspection",
+  pending_solution: "Resolution & supplier",
+  pending_supplier_pickup: "Pickup, repair & return",
+  pending_item_ready: "QC after repair",
+  pending_delivery_service: "Deliver back to customer",
+  completed: "Case closed",
+};
+
 type StageFunnelRow = { stage: string; total: number; breached: number };
 type AssrSummary = {
   total?: number;
@@ -1143,10 +1156,11 @@ function StageStatStrip({
         </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           {[
-            { value: "ALL" as StageFilter, label: "All", total: allTotal, breached: 0 },
+            { value: "ALL" as StageFilter, label: "All", desc: "All stages", total: allTotal, breached: 0 },
             ...stages.map((s) => ({
               value: s.value as StageFilter,
               label: s.label,
+              desc: STAGE_FUNNEL_DESC[s.value] ?? "",
               total: byStage.get(s.value)?.total ?? 0,
               breached: byStage.get(s.value)?.breached ?? 0,
             })),
@@ -1199,6 +1213,11 @@ function StageStatStrip({
                 >
                   {s.label}
                 </span>
+                {s.desc && (
+                  <span className="mt-0.5 block text-[10px] leading-tight text-ink-muted">
+                    {s.desc}
+                  </span>
+                )}
               </button>
             );
           })}
