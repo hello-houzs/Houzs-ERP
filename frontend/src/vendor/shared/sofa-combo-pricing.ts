@@ -38,6 +38,8 @@
 // uses this — most combos are tier-specific).
 // ----------------------------------------------------------------------------
 
+import { todayMY } from './format';
+
 export type SofaPriceTier = 'PRICE_1' | 'PRICE_2' | 'PRICE_3';
 
 /** A combo's ordered slots. Each slot is an OR-set of module codes. */
@@ -340,7 +342,12 @@ export function matchComboSubset(
   return subset;
 }
 
-const todayIso = (): string => new Date().toISOString().slice(0, 10);
+// Malaysian "today" — matches the backend copy (scm/shared/sofa-combo-pricing.ts
+// uses todayMyt). Was `new Date().toISOString()` (UTC): before 08:00 MYT it
+// resolved effective-dated combo pricing against YESTERDAY, so the SPA priced a
+// sofa differently from the backend for eight hours every morning. Fixed to the
+// package's canonical MYT helper.
+const todayIso = (): string => todayMY();
 
 /** Result of a successful subset combo match. */
 export interface ComboMatch {
