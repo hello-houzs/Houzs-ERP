@@ -49,15 +49,24 @@ async function main() {
     return;
   }
   const wh = chosen[0];
-  const venue = (wh.venue_name ?? "").trim();
+  let venue = (wh.venue_name ?? "").trim();
+  // SET_VENUE (owner-provided) fills a BLANK showroom venue_name before
+  // backfilling — this is the owner naming the venue, not us guessing. Owner
+  // 2026-07-24: the 2990 showroom's venue is "2990s PJ".
+  const SET_VENUE = (process.env.SET_VENUE || "").trim();
+  if (!venue && SET_VENUE) {
+    if (APPLY) { await dst`UPDATE scm.warehouses SET venue_name=${SET_VENUE} WHERE id=${wh.id}`; log(`SET ${wh.name}.venue_name = "${SET_VENUE}"`); }
+    else log(`WOULD SET ${wh.name}.venue_name = "${SET_VENUE}" (then backfill SOs to it)`);
+    venue = SET_VENUE;
+  }
   if (!venue) {
     log("");
     log(`Showroom "${wh.name}" has NO venue_name. Per the venue rule we do NOT guess one.`);
-    log(`ACTION: set its Venue name in Stock -> Warehouses -> ${wh.name} -> Venue name, then re-run. Writing nothing.`);
+    log(`ACTION: pass SET_VENUE=<label> (owner names it) OR set it in Warehouses, then re-run. Writing nothing.`);
     return;
   }
   log("");
-  log(`Target venue: "${venue}" (from showroom ${wh.name})`);
+  log(`Target venue: "${venue}" (showroom ${wh.name})`);
 
   // Count company_2 SOs that would be filled (blank venue_name only — never
   // clobber a venue already resolved from PMS/exhibition or set manually).
