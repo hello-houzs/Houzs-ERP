@@ -736,7 +736,7 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
   let pendingTitle: string | undefined;
   let pendingLogistic = false;
   let pendingApprove: string[] | undefined;
-  let pendingDirector: { stock?: boolean; agreement?: boolean; sales_attending?: boolean } | undefined;
+  let pendingDirector: { stock?: boolean; agreement?: boolean; sales_attending?: boolean; sales_pic?: boolean } | undefined;
   let pendingSalesAttending = false;
   let pendingAgreement = false;
   if (c.req.query("my_pending") === "1" && user) {
@@ -776,10 +776,13 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
       pendingApprove = held;
       pendingAgreement = true;
     } else if (r.includes("sales director")) {
-      // Peter / Kingsley (owner 2026-07-21): approve the stock-out record once
-      // the purchaser submits it, and assign the Sales Attending reps. (They do
-      // NOT hold projects.approve, so they previously fell through to SALES PIC.)
-      pendingDirector = { stock: true, sales_attending: true };
+      // Peter / Kingsley (owner 2026-07-21, tightened 2026-07-23): exactly
+      // three duties — approve submitted stock-out records, set the Sales
+      // PIC, set the Sales Attending reps. The staffing lanes wait for the
+      // CONTRACT section to clear, so contract-stage projects stay out of
+      // their list. (They do NOT hold projects.approve, so they previously
+      // fell through to SALES PIC.)
+      pendingDirector = { stock: true, sales_attending: true, sales_pic: true };
     } else if (r === "purchaser") pendingLabel = "PURCHASER";
     else if (r === "logistic") pendingLogistic = true; // setup not arranged
     else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";

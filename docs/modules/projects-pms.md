@@ -219,6 +219,17 @@ Two things happen here that are easy to miss:
    2026-07-22, Syu). Mobile has no My Pending mode — its card keeps the chips
    below the meta line (crew callers). Directors / attending / approver lanes
    carry no titles and keep the section chip.
+4. **Sales Director "My Pending" is exactly three duties** (owner 2026-07-23):
+   approve submitted Stock Out Transfer Records (`STOCK_OUT_AWAITING_APPROVAL`),
+   set the Sales PIC (`SALES_PIC_EMPTY` — `pic_id` NULL, dangling, or the
+   HOUZS CENTURY house login id 1 that imports stamp as a placeholder), and set
+   the Sales Attending reps (`SALES_ATTENDING_EMPTY`). The two staffing lanes
+   are gated on `CONTRACT_CLEAR` — the project's CONTRACT section has no open
+   item — so contract-stage projects stay the BD's pending, not the directors'
+   (before the gate, every far-future imported event flooded their list; 110
+   rows on 2026-07-23). The same CONTRACT gate applies to the Sales PIC's own
+   attending lane. All in the `pendingOr` block, `services/projects.ts` around
+   `:1447`.
 
 ### The calendar handler
 

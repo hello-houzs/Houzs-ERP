@@ -1286,11 +1286,13 @@ export interface ListProjectsFilters {
    *  required_perm is one of these (e.g. Stock Approver → stock_transfer.approve).
    *  Used for directors/admins who only chase what they must approve. */
   pending_approve?: string[];
-  /** Sales Director staging (owner 2026-07-21). Their pending = whichever of
-   *  these apply, OR-combined: stock-out awaiting approval (Sim submitted it),
-   *  agreement/quotation still pending (agreement approvers only), and the
-   *  project's Sales Attending not yet assigned. */
-  pending_director?: { stock?: boolean; agreement?: boolean; sales_attending?: boolean };
+  /** Sales Director staging (owner 2026-07-21, tightened 2026-07-23). Their
+   *  pending = whichever of these apply, OR-combined: stock-out awaiting
+   *  approval (the purchaser submitted it), agreement/quotation still pending
+   *  (agreement approvers only), the project's Sales Attending not yet
+   *  assigned, and the Sales PIC not yet assigned. The staffing lanes
+   *  (attending + pic) only fire once the CONTRACT section is cleared. */
+  pending_director?: { stock?: boolean; agreement?: boolean; sales_attending?: boolean; sales_pic?: boolean };
   /** Sales-attending "pending" = the project has no sales attendees assigned
    *  yet (Sales PIC + directors). Standalone predicate (not a checklist item). */
   pending_sales_attending?: boolean;
@@ -1444,12 +1446,30 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   // ANY match, so the lanes below OR together (each caller sets only a few).
   const pendingOr: string[] = [];
   const pendingBinds: any[] = [];
+  // Staffing lanes only start once the CONTRACT section is cleared (owner
+  // 2026-07-23: "pending contract should not appear" — while contract docs are
+  // open the project is BD's pending, and far-future imports would otherwise
+  // flood the directors with 100+ rows). No CONTRACT section at all counts as
+  // cleared, so template variants without one still surface.
+  const CONTRACT_CLEAR = `NOT EXISTS (SELECT 1 FROM project_checklist cc
+        JOIN project_checklist_sections cs ON cs.id = cc.section_id
+        WHERE cc.project_id = p.id AND cs.name = 'CONTRACT'
+          AND cc.status NOT IN ('done', 'na'))`;
   // Sales Attending is a "pending" reminder only for events that HAVEN'T ended
-  // yet (upcoming or currently running) and have no reps assigned — otherwise it
-  // floods with the whole historical backlog. Timeline-gated per "pending follows
-  // the timeline". Binds one `?` (dueToday) each time it's used.
+  // yet (upcoming or currently running), are past CONTRACT, and have no reps
+  // assigned — otherwise it floods with the whole historical backlog.
+  // Timeline-gated per "pending follows the timeline". Binds one `?`
+  // (dueToday) each time it's used.
   const SALES_ATTENDING_EMPTY = `(substr(COALESCE(p.end_date, p.start_date), 1, 10) >= ?
+        AND ${CONTRACT_CLEAR}
         AND NOT EXISTS (SELECT 1 FROM project_sales_attendees sa WHERE sa.project_id = p.id))`;
+  // Sales PIC not assigned yet (directors' duty, owner 2026-07-23). "Not
+  // assigned" = pic_id NULL, a dangling id (deleted user), or the HOUZS
+  // CENTURY house login (id 1) that imports stamp as a placeholder. Same
+  // not-ended + past-CONTRACT gates as Sales Attending; one `?` (dueToday).
+  const SALES_PIC_EMPTY = `(substr(COALESCE(p.end_date, p.start_date), 1, 10) >= ?
+        AND ${CONTRACT_CLEAR}
+        AND NOT EXISTS (SELECT 1 FROM users pu WHERE pu.id = p.pic_id AND pu.id <> 1))`;
   // Stock-out record submitted by the purchaser, now awaiting director approval.
   const STOCK_OUT_AWAITING_APPROVAL = `EXISTS (SELECT 1 FROM project_checklist pc
                 WHERE pc.project_id = p.id AND pc.title = 'Stock Out Transfer Record'
@@ -1545,6 +1565,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     if (f.pending_director.stock) { pendingOr.push(STOCK_OUT_AWAITING_APPROVAL); pendingBinds.push(dueToday); }
     if (f.pending_director.agreement) { pendingOr.push(AGREEMENT_PENDING); pendingBinds.push(dueToday); }
     if (f.pending_director.sales_attending) { pendingOr.push(SALES_ATTENDING_EMPTY); pendingBinds.push(dueToday); }
+    if (f.pending_director.sales_pic) { pendingOr.push(SALES_PIC_EMPTY); pendingBinds.push(dueToday); }
   }
   // Sales Attending not yet assigned (Sales PIC).
   if (f.pending_sales_attending) { pendingOr.push(SALES_ATTENDING_EMPTY); pendingBinds.push(dueToday); }
