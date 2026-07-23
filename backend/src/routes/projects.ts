@@ -2448,7 +2448,7 @@ app.put("/:id/phase-photos/upload", async (c) => {
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
   const phase = (c.req.query("phase") || "").toLowerCase();
-  if (phase !== "setup" && phase !== "dismantle" && phase !== "service") {
+  if (phase !== "setup" && phase !== "dismantle" && phase !== "service" && phase !== "schedule") {
     return c.json({ error: "phase must be setup, dismantle or service" }, 400);
   }
 
@@ -2458,7 +2458,7 @@ app.put("/:id/phase-photos/upload", async (c) => {
     // Service / Exchange photos are office/logistics-managed (owner 2026-07-22);
     // there is no crew self-serve path (getUserPhasesOnProject only knows the
     // setup/dismantle crews), so a non-writer can't upload them.
-    if (phase === "service") return c.json({ error: "Not allowed" }, 403);
+    if (phase === "service" || phase === "schedule") return c.json({ error: "Not allowed" }, 403);
     const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0, user?.name);
     if (!phases.includes(phase as "setup" | "dismantle")) {
       return c.json({ error: "Not crewed on this phase" }, 403);
@@ -2497,13 +2497,13 @@ app.post("/:id/phase-photos", async (c) => {
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
   const body = await c.req.json<{
-    phase?: "setup" | "dismantle" | "service";
+    phase?: "setup" | "dismantle" | "service" | "schedule";
     r2_key?: string;
     content_type?: string;
     caption?: string | null;
   }>();
   const phase = body.phase;
-  if (phase !== "setup" && phase !== "dismantle" && phase !== "service") {
+  if (phase !== "setup" && phase !== "dismantle" && phase !== "service" && phase !== "schedule") {
     return c.json({ error: "Something went wrong. Please try again." }, 400);
   }
   if (!body.r2_key) return c.json({ error: "Something went wrong with the upload. Please try again." }, 400);
@@ -2511,7 +2511,7 @@ app.post("/:id/phase-photos", async (c) => {
   const granted = user?.permissions_set ?? user?.permissions;
   const canManage = !!user && hasPermission(granted, "projects.write");
   if (!canManage) {
-    if (phase === "service") return c.json({ error: "Not allowed" }, 403);
+    if (phase === "service" || phase === "schedule") return c.json({ error: "Not allowed" }, 403);
     const phases = await getUserPhasesOnProject(c.env, id, user?.id ?? 0, user?.name);
     if (!phases.includes(phase)) {
       return c.json({ error: "Not crewed on this phase" }, 403);
@@ -2568,7 +2568,7 @@ app.delete("/phase-photos/:photoId", async (c) => {
     `SELECT project_id, phase, uploaded_by, r2_key FROM project_phase_photos WHERE id = ?`
   )
     .bind(photoId)
-    .first<{ project_id: number; phase: "setup" | "dismantle" | "service"; uploaded_by: number | null; r2_key: string }>();
+    .first<{ project_id: number; phase: "setup" | "dismantle" | "service" | "schedule"; uploaded_by: number | null; r2_key: string }>();
   if (!row) return c.json({ error: "Not found" }, 404);
 
   const granted = user?.permissions_set ?? user?.permissions;
@@ -2579,7 +2579,7 @@ app.delete("/phase-photos/:photoId", async (c) => {
     // setup/dismantle photos of events they're crewed on — including
     // removing a wrong shot someone else on the crew uploaded. Service /
     // Exchange photos are office-managed, so crew can't delete those.
-    if (row.phase === "service") {
+    if (row.phase === "service" || row.phase === "schedule") {
       return c.json({ error: "You don't have permission to delete this photo." }, 403);
     }
     const phases = await getUserPhasesOnProject(c.env, row.project_id, user?.id ?? 0, user?.name);

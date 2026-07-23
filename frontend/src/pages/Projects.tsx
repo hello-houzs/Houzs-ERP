@@ -9268,6 +9268,10 @@ function LogisticsCrewSection({
           save until they load.
         </div>
       )}
+      {/* Schedule reference (owner 2026-07-23): the mall handbook's official
+          event schedule screenshot, so logistics can read off setup/dismantle
+          dates + times. Desktop-only (this whole page is the PC PMS). */}
+      <ScheduleRef projectId={project.id} readOnly={readOnly} />
       <div>
         <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} readOnly={readOnly} />
       </div>
@@ -9659,7 +9663,7 @@ function InfoBit({
 
 interface PhasePhoto {
   id: number;
-  phase: "setup" | "dismantle" | "service";
+  phase: "setup" | "dismantle" | "service" | "schedule";
   r2_key: string;
   content_type: string | null;
   caption: string | null;
@@ -9684,6 +9688,92 @@ function PhasePhotosSection({ projectId }: { projectId: number }) {
       <PhotoGroup label="Setup" photos={setup} onChange={() => photos.reload()} />
       <PhotoGroup label="Dismantle" photos={dismantle} onChange={() => photos.reload()} />
     </PanelSection>
+  );
+}
+
+// Schedule reference (owner 2026-07-23) — the mall handbook's official event
+// schedule screenshot, so logistics can read setup/dismantle dates + times off
+// it. Desktop-only (this page IS the PC PMS; mobile PMS never renders it).
+// Reuses the phase-photos machinery with phase="schedule".
+function ScheduleRef({ projectId, readOnly = false }: { projectId: number; readOnly?: boolean }) {
+  const toast = useToast();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const photos = useQuery<{ photos: PhasePhoto[] }>(
+    "/api/projects/:/phase-photos",
+    () => api.get(`/api/projects/${projectId}/phase-photos`),
+    [projectId],
+  );
+  const items = (photos.data?.photos ?? []).filter((p) => p.phase === "schedule");
+  const upload = async (file: File) => {
+    if (file.size > 50 * 1024 * 1024) {
+      toast?.error("That file is over 50MB.");
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      toast?.error("The file needs an extension.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const up = await api.putBinary<{ key: string; mime_type: string }>(
+        `/api/projects/${projectId}/phase-photos/upload?phase=schedule&ext=${encodeURIComponent(ext)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      await api.post(`/api/projects/${projectId}/phase-photos`, {
+        phase: "schedule",
+        r2_key: up.key,
+        content_type: up.mime_type,
+      });
+      photos.reload();
+    } catch (e) {
+      toast?.error(e instanceof Error ? e.message : "Upload failed. Please try again.");
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+  return (
+    <div className="mb-3 rounded-lg border border-dashed border-border bg-bg/30 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">
+          Schedule reference
+        </span>
+        <span className="rounded-full border border-border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider text-ink-muted">
+          Desktop only
+        </span>
+      </div>
+      {items.length > 0 ? (
+        <PhotoGroup label="Schedule" photos={items} onChange={() => photos.reload()} />
+      ) : (
+        <div className="text-[12px] text-ink-muted">No schedule screenshot uploaded yet.</div>
+      )}
+      {!readOnly && (
+        <>
+          <input
+            ref={fileRef}
+            type="file"
+            hidden
+            accept="image/*,application/pdf,.heic"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void upload(f);
+            }}
+          />
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+            className="mt-2 inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent disabled:opacity-50"
+          >
+            <Paperclip size={12} />{" "}
+            {busy ? "Uploading…" : items.length ? "Replace / add screenshot" : "Upload handbook schedule screenshot"}
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 
