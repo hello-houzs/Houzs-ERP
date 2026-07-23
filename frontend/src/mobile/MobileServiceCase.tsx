@@ -1435,6 +1435,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                     // SO re-matches customer info from the SO mirror
                     // server-side.
                     { key: "doc_no", label: "SO No", value: get(c, "docNo", "doc_no"), type: "so" },
+                    { key: "ref_no", label: "Ref No", value: get(c, "refNo", "ref_no"), type: "text" },
                     { key: "customer_name", label: "Customer", value: customer(c) === "—" ? "" : customer(c), type: "text" },
                     { key: "phone", label: "Phone", value: get(c, "phone", "customerPhone", "customer_phone"), type: "text" },
                     { key: "customer_email", label: "Email", value: get(c, "customerEmail", "customer_email"), type: "text" },
