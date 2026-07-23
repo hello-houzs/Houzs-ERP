@@ -68,23 +68,24 @@ async function main() {
   log("");
   log(`Target venue: "${venue}" (showroom ${wh.name})`);
 
-  // Count company_2 SOs that would be filled (blank venue_name only — never
-  // clobber a venue already resolved from PMS/exhibition or set manually).
+  // The SO's venue TEXT lives in mfg_sales_orders.venue (venue_name is a
+  // WAREHOUSE column, mig 0148 — the SO carries venue + venue_id + venue_source).
+  // Count blank-venue SOs only — never clobber a PMS/manual venue.
   const [{ n: blank }] = await dst`
     SELECT count(*)::int AS n FROM scm.mfg_sales_orders
-     WHERE company_id=${cid} AND (venue_name IS NULL OR btrim(venue_name)='')`;
+     WHERE company_id=${cid} AND (venue IS NULL OR btrim(venue)='')`;
   const [{ n: total }] = await dst`SELECT count(*)::int AS n FROM scm.mfg_sales_orders WHERE company_id=${cid}`;
   const [{ n: already }] = await dst`
     SELECT count(*)::int AS n FROM scm.mfg_sales_orders
-     WHERE company_id=${cid} AND venue_name=${venue}`;
+     WHERE company_id=${cid} AND venue=${venue}`;
   log(`company_2 SOs: ${total} total; ${blank} with blank venue (fillable); ${already} already at "${venue}".`);
 
-  if (!APPLY) { log(""); log(`DRY-RUN — would stamp venue/venue_name="${venue}", venue_source='SHOWROOM' on ${blank} SOs. Re-run APPLY=1 to write.`); return; }
+  if (!APPLY) { log(""); log(`DRY-RUN — would stamp venue="${venue}", venue_source='SHOWROOM' on ${blank} SOs. Re-run APPLY=1 to write.`); return; }
 
   const res = await dst`
     UPDATE scm.mfg_sales_orders
-       SET venue = ${venue}, venue_name = ${venue}, venue_source = 'SHOWROOM'
-     WHERE company_id=${cid} AND (venue_name IS NULL OR btrim(venue_name)='')`;
+       SET venue = ${venue}, venue_source = 'SHOWROOM'
+     WHERE company_id=${cid} AND (venue IS NULL OR btrim(venue)='')`;
   log(`APPLIED — ${res.count} SOs stamped to venue "${venue}" (source SHOWROOM).`);
 }
 main().then(() => dst.end()).catch(async (e) => {
