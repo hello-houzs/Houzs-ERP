@@ -8817,7 +8817,9 @@ function formatRoleLabel(label: string): string {
 // ── Setup & Dismantle crew editor (JSON: setup_crew / dismantle_crew) ──
 type CrewSlot = { name: string; phone: string };
 // Per-lorry crew (owner 2026-07-13): each lorry carries its OWN drivers + helpers.
-type LorryCrew = { plate: string; drivers: CrewSlot[]; helpers: CrewSlot[] };
+// provider (owner 2026-07-23): a trip that is NOT an internal lorry is done by
+// Grab or Lalamove — chosen per lorry card. "" = internal lorry (use plate).
+type LorryCrew = { plate: string; provider?: string; drivers: CrewSlot[]; helpers: CrewSlot[] };
 interface PhaseCrew {
   /** The editable per-lorry structure. */
   lorryCrew: LorryCrew[];
@@ -8829,8 +8831,12 @@ interface PhaseCrew {
   lorries: string[];
   outsourced: { enabled: boolean; entries: { name: string; phone: string; plate: string }[] };
   /** Free-text note — used by the Service / Exchange phase ("what service /
-   *  exchange"). Empty for setup/dismantle. Persisted inside the same JSON. */
+   *  exchange"). This one is the INTERNAL-LORRY remark. Empty for
+   *  setup/dismantle. Persisted inside the same JSON. */
   remark: string;
+  /** Second Service / Exchange note — for the OUTSOURCED (Grab/Lalamove) side,
+   *  kept separate from the lorry remark (owner 2026-07-23). */
+  outsourcedRemark: string;
 }
 function deriveFlatCrew(lorryCrew: LorryCrew[]): { drivers: CrewSlot[]; helpers: CrewSlot[]; lorries: string[] } {
   const named = (a: CrewSlot[]) => (Array.isArray(a) ? a : []).filter((x) => x && x.name && x.name.trim());
@@ -8841,7 +8847,7 @@ function deriveFlatCrew(lorryCrew: LorryCrew[]): { drivers: CrewSlot[]; helpers:
   };
 }
 function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
-  const empty: PhaseCrew = { lorryCrew: [], drivers: [], helpers: [], lorries: [], outsourced: { enabled: false, entries: [] }, remark: "" };
+  const empty: PhaseCrew = { lorryCrew: [], drivers: [], helpers: [], lorries: [], outsourced: { enabled: false, entries: [] }, remark: "", outsourcedRemark: "" };
   if (!s) return empty;
   try {
     const p = JSON.parse(s) || {};
@@ -8857,6 +8863,7 @@ function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
     if (Array.isArray(p.lorry_crew) && p.lorry_crew.length) {
       lorryCrew = p.lorry_crew.map((l: any) => ({
         plate: typeof l?.plate === "string" ? l.plate : "",
+        provider: typeof l?.provider === "string" ? l.provider : "",
         drivers: Array.isArray(l?.drivers) ? l.drivers : [],
         helpers: Array.isArray(l?.helpers) ? l.helpers : [],
       }));
@@ -8873,13 +8880,25 @@ function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
         lorryCrew = [];
       }
     }
-    return { lorryCrew, ...deriveFlatCrew(lorryCrew), outsourced, remark: typeof p.remark === "string" ? p.remark : "" };
+    return {
+      lorryCrew,
+      ...deriveFlatCrew(lorryCrew),
+      outsourced,
+      remark: typeof p.remark === "string" ? p.remark : "",
+      outsourcedRemark: typeof p.outsourced_remark === "string" ? p.outsourced_remark : "",
+    };
   } catch {
     return empty;
   }
 }
 function serializePhaseCrew(pc: PhaseCrew): string {
-  return JSON.stringify({ lorry_crew: pc.lorryCrew, ...deriveFlatCrew(pc.lorryCrew), outsourced: pc.outsourced, remark: pc.remark ?? "" });
+  return JSON.stringify({
+    lorry_crew: pc.lorryCrew,
+    ...deriveFlatCrew(pc.lorryCrew),
+    outsourced: pc.outsourced,
+    remark: pc.remark ?? "",
+    outsourced_remark: pc.outsourcedRemark ?? "",
+  });
 }
 
 function CrewSlotRow({
@@ -9001,9 +9020,11 @@ function PhaseCrewEditor({
     setPc(next);
     patch({ [field]: serializePhaseCrew(next) });
   }
-  // Remark saves on blur (not per keystroke) so a long note isn't a PATCH storm.
+  // Remarks save on blur (not per keystroke) so a long note isn't a PATCH storm.
   const [remarkDraft, setRemarkDraft] = useState(pc.remark);
   useEffect(() => setRemarkDraft(pc.remark), [pc.remark]);
+  const [outRemarkDraft, setOutRemarkDraft] = useState(pc.outsourcedRemark);
+  useEffect(() => setOutRemarkDraft(pc.outsourcedRemark), [pc.outsourcedRemark]);
   // Always show at least one lorry card so an empty project isn't blank —
   // the card is only persisted once the user actually fills something in.
   const lorries = pc.lorryCrew.length ? pc.lorryCrew : [{ plate: "", drivers: [], helpers: [] }];
@@ -9051,6 +9072,22 @@ function PhaseCrewEditor({
                   <X size={13} />
                 </button>
               )}
+            </div>
+            {/* Provider (owner 2026-07-23): if this trip isn't an internal lorry,
+                pick Grab or Lalamove instead of a plate. */}
+            <div className="flex items-center gap-1">
+              <Truck size={12} className="shrink-0 opacity-0" />
+              <span className="w-11 shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-muted">Via</span>
+              <select
+                value={lorry.provider ?? ""}
+                onChange={(e) => updateLorry(li, { provider: e.target.value })}
+                disabled={readOnly}
+                className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px] disabled:bg-bg/40 disabled:opacity-70"
+              >
+                <option value="">Internal lorry</option>
+                <option value="Grab">Grab</option>
+                <option value="Lalamove">Lalamove</option>
+              </select>
             </div>
             <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={lorry.drivers[0]} onChange={(s) => setLorrySlot(li, "drivers", 0, s)} readOnly={readOnly} />
             <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={lorry.drivers[1]} onChange={(s) => setLorrySlot(li, "drivers", 1, s)} readOnly={readOnly} />
@@ -9116,22 +9153,42 @@ function PhaseCrewEditor({
         </div>
       )}
       {showRemark && (
-        <label className="mt-1 block">
-          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">
-            {remarkLabel}
-          </span>
-          <textarea
-            value={remarkDraft}
-            disabled={readOnly}
-            rows={2}
-            onChange={(e) => setRemarkDraft(e.target.value)}
-            onBlur={() => {
-              if (remarkDraft !== pc.remark) save({ ...pc, remark: remarkDraft });
-            }}
-            placeholder="What service / exchange…"
-            className="w-full resize-y rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary/40 disabled:bg-bg/40"
-          />
-        </label>
+        <div className="mt-1 space-y-2">
+          {/* Two remarks (owner 2026-07-23): one for the internal lorry crew,
+              one for the outsourced (Grab/Lalamove) side. */}
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">
+              {remarkLabel} — lorry
+            </span>
+            <textarea
+              value={remarkDraft}
+              disabled={readOnly}
+              rows={2}
+              onChange={(e) => setRemarkDraft(e.target.value)}
+              onBlur={() => {
+                if (remarkDraft !== pc.remark) save({ ...pc, remark: remarkDraft });
+              }}
+              placeholder="What service / exchange — internal lorry…"
+              className="w-full resize-y rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary/40 disabled:bg-bg/40"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">
+              {remarkLabel} — outsource
+            </span>
+            <textarea
+              value={outRemarkDraft}
+              disabled={readOnly}
+              rows={2}
+              onChange={(e) => setOutRemarkDraft(e.target.value)}
+              onBlur={() => {
+                if (outRemarkDraft !== pc.outsourcedRemark) save({ ...pc, outsourcedRemark: outRemarkDraft });
+              }}
+              placeholder="What service / exchange — Grab / Lalamove…"
+              className="w-full resize-y rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary/40 disabled:bg-bg/40"
+            />
+          </label>
+        </div>
       )}
     </div>
   );
