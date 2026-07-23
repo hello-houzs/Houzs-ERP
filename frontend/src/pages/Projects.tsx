@@ -9076,21 +9076,25 @@ function PhaseCrewEditor({
             </div>
             {/* 3rd-party transport (owner 2026-07-23): a trip not done by an
                 internal lorry (the plate above) is via Grab or Lalamove. Blank
-                = internal lorry. "Internal lorry" option dropped as redundant. */}
-            <div className="flex items-center gap-1">
-              <Truck size={12} className="shrink-0 opacity-0" />
-              <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-muted">3rd-party</span>
-              <select
-                value={lorry.provider ?? ""}
-                onChange={(e) => updateLorry(li, { provider: e.target.value })}
-                disabled={readOnly}
-                className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px] disabled:bg-bg/40 disabled:opacity-70"
-              >
-                <option value="">—</option>
-                <option value="Grab">Grab</option>
-                <option value="Lalamove">Lalamove</option>
-              </select>
-            </div>
+                = internal lorry. SERVICE / EXCHANGE ONLY — setup & dismantle
+                always run on internal lorries, so the dropdown is hidden there
+                (owner 2026-07-23). */}
+            {field === "service_crew" && (
+              <div className="flex items-center gap-1">
+                <Truck size={12} className="shrink-0 opacity-0" />
+                <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-muted">3rd-party</span>
+                <select
+                  value={lorry.provider ?? ""}
+                  onChange={(e) => updateLorry(li, { provider: e.target.value })}
+                  disabled={readOnly}
+                  className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px] disabled:bg-bg/40 disabled:opacity-70"
+                >
+                  <option value="">—</option>
+                  <option value="Grab">Grab</option>
+                  <option value="Lalamove">Lalamove</option>
+                </select>
+              </div>
+            )}
             <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={lorry.drivers[0]} onChange={(s) => setLorrySlot(li, "drivers", 0, s)} readOnly={readOnly} />
             <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={lorry.drivers[1]} onChange={(s) => setLorrySlot(li, "drivers", 1, s)} readOnly={readOnly} />
             <CrewSlotRow label="Helper 1" color="text-warning-text" options={helpers} slot={lorry.helpers[0]} onChange={(s) => setLorrySlot(li, "helpers", 0, s)} readOnly={readOnly} />
