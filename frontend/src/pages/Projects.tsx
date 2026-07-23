@@ -217,6 +217,10 @@ interface ProjectDetail {
     // (setup_crew) and written by the Setup & Dismantle crew editor.
     setup_crew: string | null;
     dismantle_crew: string | null;
+    // service_crew (owner 2026-07-22): mid-fair Service / Exchange trip — same
+    // JSON as setup/dismantle plus a `remark` ("what service/exchange").
+    // Optional so existing project mocks/fixtures without it still typecheck.
+    service_crew?: string | null;
     banner_message: string | null;
     banner_tone: "info" | "warning" | "error" | null;
     // Payment workflow
@@ -8767,6 +8771,9 @@ interface PhaseCrew {
   helpers: CrewSlot[];
   lorries: string[];
   outsourced: { enabled: boolean; entries: { name: string; phone: string; plate: string }[] };
+  /** Free-text note — used by the Service / Exchange phase ("what service /
+   *  exchange"). Empty for setup/dismantle. Persisted inside the same JSON. */
+  remark: string;
 }
 function deriveFlatCrew(lorryCrew: LorryCrew[]): { drivers: CrewSlot[]; helpers: CrewSlot[]; lorries: string[] } {
   const named = (a: CrewSlot[]) => (Array.isArray(a) ? a : []).filter((x) => x && x.name && x.name.trim());
@@ -8777,7 +8784,7 @@ function deriveFlatCrew(lorryCrew: LorryCrew[]): { drivers: CrewSlot[]; helpers:
   };
 }
 function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
-  const empty: PhaseCrew = { lorryCrew: [], drivers: [], helpers: [], lorries: [], outsourced: { enabled: false, entries: [] } };
+  const empty: PhaseCrew = { lorryCrew: [], drivers: [], helpers: [], lorries: [], outsourced: { enabled: false, entries: [] }, remark: "" };
   if (!s) return empty;
   try {
     const p = JSON.parse(s) || {};
@@ -8809,13 +8816,13 @@ function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
         lorryCrew = [];
       }
     }
-    return { lorryCrew, ...deriveFlatCrew(lorryCrew), outsourced };
+    return { lorryCrew, ...deriveFlatCrew(lorryCrew), outsourced, remark: typeof p.remark === "string" ? p.remark : "" };
   } catch {
     return empty;
   }
 }
 function serializePhaseCrew(pc: PhaseCrew): string {
-  return JSON.stringify({ lorry_crew: pc.lorryCrew, ...deriveFlatCrew(pc.lorryCrew), outsourced: pc.outsourced });
+  return JSON.stringify({ lorry_crew: pc.lorryCrew, ...deriveFlatCrew(pc.lorryCrew), outsourced: pc.outsourced, remark: pc.remark ?? "" });
 }
 
 function CrewSlotRow({
@@ -8908,10 +8915,12 @@ function PhaseCrewEditor({
   patch,
   emptyHint,
   headerExtra,
+  showRemark = false,
+  remarkLabel = "Remark",
   readOnly = false,
 }: {
   title: string;
-  field: "setup_crew" | "dismantle_crew";
+  field: "setup_crew" | "dismantle_crew" | "service_crew";
   value: string | null | undefined;
   drivers: CrewMember[];
   helpers: CrewMember[];
@@ -8920,6 +8929,9 @@ function PhaseCrewEditor({
   emptyHint?: string;
   /** Rendered above the "{title} Drivers" heading (e.g. the Dismantle Time field). */
   headerExtra?: React.ReactNode;
+  /** Show a free-text remark box under the crew (Service / Exchange phase). */
+  showRemark?: boolean;
+  remarkLabel?: string;
   /** View-only for Sales (owner 2026-07): render current crew/plates but
    *  disable every control and suppress the add/remove/save actions. */
   readOnly?: boolean;
@@ -8932,6 +8944,9 @@ function PhaseCrewEditor({
     setPc(next);
     patch({ [field]: serializePhaseCrew(next) });
   }
+  // Remark saves on blur (not per keystroke) so a long note isn't a PATCH storm.
+  const [remarkDraft, setRemarkDraft] = useState(pc.remark);
+  useEffect(() => setRemarkDraft(pc.remark), [pc.remark]);
   // Always show at least one lorry card so an empty project isn't blank —
   // the card is only persisted once the user actually fills something in.
   const lorries = pc.lorryCrew.length ? pc.lorryCrew : [{ plate: "", drivers: [], helpers: [] }];
@@ -9043,6 +9058,24 @@ function PhaseCrewEditor({
           )}
         </div>
       )}
+      {showRemark && (
+        <label className="mt-1 block">
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">
+            {remarkLabel}
+          </span>
+          <textarea
+            value={remarkDraft}
+            disabled={readOnly}
+            rows={2}
+            onChange={(e) => setRemarkDraft(e.target.value)}
+            onBlur={() => {
+              if (remarkDraft !== pc.remark) save({ ...pc, remark: remarkDraft });
+            }}
+            placeholder="What service / exchange…"
+            className="w-full resize-y rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary/40 disabled:bg-bg/40"
+          />
+        </label>
+      )}
     </div>
   );
 }
@@ -9141,6 +9174,24 @@ function LogisticsCrewSection({
           <DateTimeField label="Dismantle Time" value={project.dismantle_start_at} onSave={(v) => patch({ dismantle_start_at: v })} readOnly={readOnly} />
         }
       />
+      <div className="my-3 border-t border-dashed border-border" />
+      {/* Service / Exchange (owner 2026-07-22): a mid-fair trip — same crew grid
+          + outsourced (Lalamove/Grab), plus a "what service/exchange" remark and
+          service photos. Stored in service_crew JSON + phase='service' photos. */}
+      <PhaseCrewEditor
+        title="Service / Exchange"
+        field="service_crew"
+        value={project.service_crew}
+        drivers={drivers}
+        helpers={helpers}
+        lorryOptions={lorryOptions}
+        patch={patch}
+        readOnly={readOnly}
+        emptyHint="During the fair — a service visit or part exchange"
+        showRemark
+        remarkLabel="Service / Exchange — what"
+      />
+      <ServicePhotos projectId={project.id} readOnly={readOnly} />
     </PanelSection>
   );
 }
@@ -9494,7 +9545,7 @@ function InfoBit({
 
 interface PhasePhoto {
   id: number;
-  phase: "setup" | "dismantle";
+  phase: "setup" | "dismantle" | "service";
   r2_key: string;
   content_type: string | null;
   caption: string | null;
@@ -9519,6 +9570,79 @@ function PhasePhotosSection({ projectId }: { projectId: number }) {
       <PhotoGroup label="Setup" photos={setup} onChange={() => photos.reload()} />
       <PhotoGroup label="Dismantle" photos={dismantle} onChange={() => photos.reload()} />
     </PanelSection>
+  );
+}
+
+// Service / Exchange photos (owner 2026-07-22) — office/logistics UPLOAD +
+// display, unlike the read-only Setup/Dismantle PhasePhotosSection (those come
+// from the Driver App). Uploads via the same phase-photos endpoints with
+// phase="service"; reuses PhotoGroup for the gallery + lightbox + delete.
+function ServicePhotos({ projectId, readOnly = false }: { projectId: number; readOnly?: boolean }) {
+  const toast = useToast();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const photos = useQuery<{ photos: PhasePhoto[] }>(
+    "/api/projects/:/phase-photos",
+    () => api.get(`/api/projects/${projectId}/phase-photos`),
+    [projectId],
+  );
+  const service = (photos.data?.photos ?? []).filter((p) => p.phase === "service");
+  const upload = async (file: File) => {
+    if (file.size > 50 * 1024 * 1024) {
+      toast?.error("That file is over 50MB.");
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      toast?.error("The file needs an extension.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const up = await api.putBinary<{ key: string; mime_type: string }>(
+        `/api/projects/${projectId}/phase-photos/upload?phase=service&ext=${encodeURIComponent(ext)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      await api.post(`/api/projects/${projectId}/phase-photos`, {
+        phase: "service",
+        r2_key: up.key,
+        content_type: up.mime_type,
+      });
+      photos.reload();
+    } catch (e) {
+      toast?.error(e instanceof Error ? e.message : "Upload failed. Please try again.");
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+  return (
+    <div className="mt-3">
+      {!readOnly && (
+        <div className="mb-1 flex items-center justify-end">
+          <input
+            ref={fileRef}
+            type="file"
+            hidden
+            accept="image/*,video/*,application/pdf,.heic"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void upload(f);
+            }}
+          />
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent disabled:opacity-50"
+          >
+            <Paperclip size={12} /> {busy ? "Uploading…" : "Add service photo"}
+          </button>
+        </div>
+      )}
+      <PhotoGroup label="Service" photos={service} onChange={() => photos.reload()} />
+    </div>
   );
 }
 

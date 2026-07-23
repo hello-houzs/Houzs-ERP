@@ -465,7 +465,9 @@ const PATCH_FIELDS = [
   "dismantle_helper_1_id", "dismantle_helper_2_id", "dismantle_helper_outsourced",
   // Phase crew editor (mig 0015) — JSON: drivers/helpers (name+phone),
   // lorries, outsourced (name/phone/plate).
-  "setup_crew", "dismantle_crew",
+  // service_crew (owner 2026-07-22): the mid-fair Service / Exchange trip —
+  // same JSON shape as setup/dismantle plus a `remark` ("what service/exchange").
+  "setup_crew", "dismantle_crew", "service_crew",
   // Banner
   "banner_message", "banner_tone",
 ] as const;
@@ -1132,6 +1134,8 @@ export function stripSetupDismantle<
         ...detail.project,
         setup_crew: null,
         dismantle_crew: null,
+        // service_crew (owner 2026-07-22) is the same hidden logistics panel.
+        service_crew: null,
         setup_start_at: null,
         dismantle_start_at: null,
       }
