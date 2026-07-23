@@ -38,14 +38,22 @@ export const sofaCompartmentPhotos = new Hono<{ Bindings: Env; Variables: Variab
 
 const PHOTO_MAX_BYTES = 2 * 1024 * 1024; // 2 MB — same as product-models
 
+// Raster types only. image/svg+xml is deliberately EXCLUDED: an SVG served back
+// from the public proxy as image/svg+xml executes embedded script when opened
+// directly, which is a stored-XSS vector on the ERP/POS origin. The sibling public
+// image routes (product-models, categories) restrict to raster for the same reason.
 const photoExtFromMime = (mime: string): string | null => {
   const m = mime.toLowerCase();
   if (m === 'image/jpeg' || m === 'image/jpg') return 'jpg';
   if (m === 'image/png')                       return 'png';
   if (m === 'image/webp')                      return 'webp';
-  if (m === 'image/svg+xml')                   return 'svg';
   return null;
 };
+
+// Content-types the public proxy is allowed to serve inline. Anything else
+// (e.g. a legacy SVG uploaded before svg was dropped above) is served as an
+// octet-stream download so it can never execute in the browser.
+const RASTER_INLINE = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
 /** Encode a compartment code for use in URL paths. Codes may contain
  *  parens / dashes ("1A(LHF)", "WC-45") — encodeURIComponent handles both. */
@@ -123,9 +131,16 @@ sofaCompartmentPhotos.get('/:code/photo/:key', async (c) => {
   const obj = await c.env.SO_ITEM_PHOTOS.get(key);
   if (!obj) return c.json({ error: 'photo_not_found_in_r2' }, 404);
 
+  // Clamp the served content-type to raster only. New uploads are already raster
+  // (photoExtFromMime drops svg), but a legacy SVG in R2 must not be served as
+  // image/svg+xml on this unauthenticated public route — that would execute script
+  // on the POS/ERP origin. Fall back to octet-stream so it downloads inertly.
+  const stored = (obj.httpMetadata?.contentType ?? '').toLowerCase().split(';')[0].trim();
+  const safeType = RASTER_INLINE.has(stored) ? stored : 'application/octet-stream';
   return new Response(obj.body, {
     headers: {
-      'content-type':  obj.httpMetadata?.contentType ?? 'application/octet-stream',
+      'content-type':  safeType,
+      'x-content-type-options': 'nosniff',
       // 1-hour browser cache — keys are immutable per upload (each upload
       // gets a fresh UUID), so this is safe.
       'cache-control': 'public, max-age=3600',
