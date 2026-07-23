@@ -133,8 +133,20 @@ function recoverableForeign(raw, dials) {
   if (digits.length < 7 || digits.length > 15) return null;
   const six = doubledLeadingSix(digits);
   if (six) return six;
+  // A "1" prefix is US/Canada (+1) OR the start of a Chinese mobile (+86 1[3-9]
+  // …, 11 digits). "13362748640" is a valid +1 336-274-8640 AND a valid +86 133
+  // 6274 8640, and nothing in the digits decides which. The creditors table
+  // holds exactly this shape (133/132/158/157 openings), almost certainly
+  // Chinese suppliers, but "almost certainly" is a population statistic, not
+  // evidence about the row. So an 11-digit string that fits a Chinese mobile is
+  // NOT auto-prefixed to +1 — it goes to the human pile until the owner says
+  // whether these are +86. (If the owner confirms, add "86" handling above the
+  // caller, not a guess here.)
+  const looksLikeCnMobile = digits.length === 11 && /^1[3-9]/.test(digits);
+
   for (const d of dials) {
     if (!digits.startsWith(d)) continue;
+    if (d === '1' && looksLikeCnMobile) return null; // undecidable US vs CN
     const national = digits.slice(d.length);
     // An E.164 national part never keeps the local trunk 0. If it does, the
     // dial-code match is probably an accident: "660196657356" reads as
