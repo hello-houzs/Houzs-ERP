@@ -402,6 +402,12 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
   const tickOnly = can("projects.checklist.tick") && !can("projects.write");
   const [assignedOnly, setAssignedOnly] = useState<boolean | null>(null);
   const showAssigned = tickOnly && (assignedOnly ?? true);
+  // Owner 2026-07-23: every role gets My Pending on mobile too — the same
+  // server-side role lanes as the desktop checkbox (my_pending=1). Rows come
+  // back timeline-ordered (soonest event first) with my_pending_titles chips
+  // saying WHY each row is the caller's; a completed/submitted task drops the
+  // row server-side.
+  const [myPendingOn, setMyPendingOn] = useState(false);
   // Owner 2026-07-21: field/sales roles (Sales Executive/Manager except Sales
   // Director, plus Driver/Helper/Storekeeper) get a slimmed filter bar — only
   // "My events", "Setup", "Dismantle" (no All / Draft / Live / Completed).
@@ -454,6 +460,7 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     }
     if (debouncedQ) p.set("search", debouncedQ);
     if (showAssigned) p.set("assigned_to_me", "1");
+    if (myPendingOn) p.set("my_pending", "1");
     return p.toString();
   };
   const {
@@ -463,7 +470,7 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     // `showAssigned` is read by buildParams, so it MUST be in the key (main) —
     // and the query's signal is forwarded so a superseded search is cancelled
     // rather than left racing (this branch).
-    queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ, showAssigned],
+    queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ, showAssigned, myPendingOn],
     queryFn: ({ pageParam, signal }) => api.get<ListResponse>(`/api/projects?${buildParams(pageParam)}`, { signal }),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
@@ -532,6 +539,12 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
         </div>
         <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={totalCount} term={q} className="mt-1 px-1" />
         <div className="chips" style={{ marginTop: 11 }}>
+          <button
+            onClick={() => setMyPendingOn(!myPendingOn)}
+            className={myPendingOn ? "chip on" : "chip"}
+          >
+            My pending
+          </button>
           {(tickOnly || restrictedCohort) && (
             <button
               onClick={() => { if (tickOnly) setAssignedOnly(!showAssigned); }}
@@ -551,7 +564,13 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
 
         {isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load projects. Pull to retry.</div>}
-        {!isLoading && !error && showAssigned && rows.length === 0 && (
+        {!isLoading && !error && myPendingOn && rows.length === 0 && (
+          <div style={{ textAlign: "center", padding: "26px 0" }}>
+            <div style={{ color: "#9aa093", fontSize: 12 }}>Nothing pending on your side.</div>
+            <button className="tinybtn" style={{ marginTop: 10 }} onClick={() => setMyPendingOn(false)}>Show all events</button>
+          </div>
+        )}
+        {!isLoading && !error && !myPendingOn && showAssigned && rows.length === 0 && (
           <div style={{ textAlign: "center", padding: "26px 0" }}>
             <div style={{ color: "#9aa093", fontSize: 12 }}>No events assigned to you{stageFilter !== "all" || debouncedQ ? " match these filters" : " yet"}.</div>
             <button className="tinybtn" style={{ marginTop: 10 }} onClick={() => setAssignedOnly(false)}>Show all events</button>

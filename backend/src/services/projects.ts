@@ -1687,13 +1687,19 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     .bind(...binds)
     .first<{ count: number }>();
 
-  // Build ORDER BY: explicit sort overrides the default; otherwise
-  // keep the "nulls last, newest start_date first" behaviour.
+  // Build ORDER BY: explicit sort overrides the default. My Pending is a
+  // work queue, so it follows the timeline — soonest event first (owner
+  // 2026-07-23: "all pending task appear follow by timeline"); everywhere
+  // else keeps the "nulls last, newest start_date first" dashboard default.
   const sortExpr = f.sort_by ? PROJECT_SORT_MAP[f.sort_by] : null;
   const sortDir = f.sort_dir === "asc" ? "ASC" : "DESC";
   const orderBy = sortExpr
     ? `ORDER BY ${sortExpr} ${sortDir}, p.id DESC`
-    : `ORDER BY
+    : pendingOr.length
+      ? `ORDER BY
+         CASE WHEN p.start_date IS NULL THEN 1 ELSE 0 END,
+         p.start_date ASC, p.id ASC`
+      : `ORDER BY
          CASE WHEN p.start_date IS NULL THEN 1 ELSE 0 END,
          p.start_date DESC, p.id DESC`;
 
