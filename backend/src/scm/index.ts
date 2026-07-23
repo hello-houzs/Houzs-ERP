@@ -69,6 +69,7 @@ import { deliveryPlanning } from "./routes/delivery-planning";
 import { deliveryPlanningRegions } from "./routes/delivery-planning-regions";
 import { trips } from "./routes/trips";
 import { dpOrders } from "./routes/dp-orders";
+import { deliveryMessages } from "./routes/delivery-messages";
 import { arReconciliation } from "./routes/ar-reconciliation";
 import { lorryCapacity } from "./routes/lorry-capacity";
 import { helpers } from "./routes/helpers";
@@ -452,6 +453,10 @@ scm.use("/trips/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/trips", trips);
 scm.use("/dp-orders/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/dp-orders", dpOrders);
+// WhatsApp (Seampify) sends from the Delivery Planning board — same area as
+// the board; env-gated (503 not_configured until the Seampify secrets are set).
+scm.use("/delivery-messages/*", scmAreaGuard("scm.transportation.drivers"));
+scm.route("/delivery-messages", deliveryMessages);
 // AR receivables reconciliation (read-only preview) — finance-side read, mounted
 // under the coarse scm.access gate like the other cross-area read helpers.
 scm.route("/ar", arReconciliation);

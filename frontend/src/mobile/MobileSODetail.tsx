@@ -20,6 +20,7 @@ import {
   type SoAuditFieldChange,
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
+import { formatPhone } from "../vendor/shared/phone";
 import { lineIdentity } from "@2990s/shared";
 import {
   CANCELLABLE_STATUSES,
@@ -863,7 +864,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             {/* Customer — locked .fld-ro fields (design layout VERBATIM) */}
             <div className="card"><div className="card-h"><span className="card-t">Customer</span></div><div className="card-b">
               <RoField label="Customer name" value={val(h.debtor_name)} />
-              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Phone" value={val(h.phone)} mono /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Email" value={val(h.email)} /></div></div>
+              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Phone" value={formatPhone(h.phone) || val(h.phone)} mono /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Email" value={val(h.email)} /></div></div>
               <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Customer type" value={val(h.customer_type)} /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Salesperson" value={val(salespersonName)} /></div></div>
               <RoField label="Customer SO ref" value={val(h.customer_so_no ?? h.ref)} mono />
               {/* Emergency contact — whole row HIDDEN when no phone on file
@@ -1201,7 +1202,7 @@ function RoField({ label, value, mono }: { label: string; value: string; mono?: 
    blank name still shows the phone; relationship is appended in parens if set. */
 function composeEmergency(h: SoHeader): string {
   const name = (h.emergency_contact_name ?? "").trim();
-  const phone = (h.emergency_contact_phone ?? "").trim();
+  const phone = formatPhone(h.emergency_contact_phone);
   const rel = (h.emergency_contact_relationship ?? "").trim();
   const head = [name, phone].filter((x) => x.length).join(" · ");
   return rel ? `${head} (${rel})` : head || "—";

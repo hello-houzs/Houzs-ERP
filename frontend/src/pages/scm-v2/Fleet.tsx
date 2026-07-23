@@ -28,6 +28,7 @@
 import { useMemo, useState } from 'react';
 import { Plus, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
+import { formatPhone } from '@2990s/shared/phone';
 import {
   useDrivers,
   useCreateDriver,
@@ -128,7 +129,7 @@ const DriversSection = () => {
       key: 'phone',
       label: 'Phone',
       width: 160,
-      accessor: (d) => d.phone,
+      accessor: (d) => formatPhone(d.phone),
     },
     {
       key: 'ic',

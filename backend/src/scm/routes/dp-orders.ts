@@ -28,6 +28,7 @@ import {
   snapshotFromProject, snapshotFromAssr, type DpJobType, type DpPartySnapshot,
 } from '../lib/dp-party';
 import { mintNextDpNo, plateForLorry } from '../lib/dp-no-mint';
+import { normalizePhone } from '../shared/phone';
 import {
   resolveDeliveryScope, scopeMatchesAssignment,
   type CrewAssignment, type DeliveryScope,
@@ -222,7 +223,12 @@ dpOrders.post('/', async (c) => {
     project_id: p.projectId ?? null,
     party_name: merged.party_name ?? null,
     contact_name: merged.contact_name ?? null,
-    contact_phone: merged.contact_phone ?? null,
+    // Defensive E.164 normalisation at the DB write chokepoint. contact_phone
+    // reaches here from a party snapshot (dp-party.ts copies phone/mobile raw)
+    // or a client-supplied override — neither is guaranteed normalised, unlike
+    // the SO/supplier/driver master columns. normalizePhone keeps an
+    // unparseable value untouched (?? fallback), so nothing is rejected.
+    contact_phone: normDpPhone(merged.contact_phone),
     address1: merged.address1 ?? null, address2: merged.address2 ?? null,
     address3: merged.address3 ?? null, address4: merged.address4 ?? null,
     city: merged.city ?? null, postcode: merged.postcode ?? null, state: merged.state ?? null,
@@ -284,6 +290,15 @@ const patchSchema = z.object({
   remark: z.string().nullable().optional(),
 });
 
+/* E.164 at the write boundary. A null/blank clears cleanly; an unparseable
+ * value is kept as typed (normalizePhone → null → ?? fallback) rather than
+ * rejected, matching the suppliers.ts / mfg-sales-orders.ts convention. */
+const normDpPhone = (v: unknown): string | null => {
+  const s = v == null ? '' : String(v).trim();
+  if (!s) return null;
+  return normalizePhone(s) ?? s;
+};
+
 const PATCH_COLS: Record<keyof z.infer<typeof patchSchema>, string> = {
   partyName: 'party_name', contactName: 'contact_name', contactPhone: 'contact_phone',
   address1: 'address1', address2: 'address2', address3: 'address3', address4: 'address4',
@@ -303,6 +318,9 @@ dpOrders.patch('/:id', async (c) => {
     const v = (parsed.data as Record<string, unknown>)[k];
     if (v !== undefined) updates[col] = v;
   }
+  // Same E.164 normalisation the create path applies — a PATCH carries a raw
+  // client value straight through PATCH_COLS otherwise.
+  if (updates.contact_phone !== undefined) updates.contact_phone = normDpPhone(updates.contact_phone);
   if (Object.keys(updates).length === 1) return c.json({ error: 'no_changes' }, 400);
 
   const sb = c.get('supabase');

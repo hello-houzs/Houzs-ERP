@@ -12,6 +12,7 @@
 import { Suspense, lazy, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 import {
   ArrowLeft,
   History,
@@ -850,7 +851,7 @@ function PurchaseOrderDetailV2ReadOnly() {
                 />
                 <Field
                   label="Phone"
-                  value={purchaseOrder.supplier?.phone || "Not provided"}
+                  value={formatPhone(purchaseOrder.supplier?.phone) || "Not provided"}
                   muted={!purchaseOrder.supplier?.phone}
                   mono={!!purchaseOrder.supplier?.phone}
                 />
@@ -961,7 +962,7 @@ function PurchaseOrderDetailV2ReadOnly() {
                   <PersonRow
                     initials={initialsOf(purchaseOrder.supplier.contact_person)}
                     name={purchaseOrder.supplier.contact_person}
-                    role={purchaseOrder.supplier.phone || "Contact"}
+                    role={formatPhone(purchaseOrder.supplier.phone) || "Contact"}
                     tone="neutral"
                   />
                 )}

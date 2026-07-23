@@ -42,17 +42,56 @@ import { canonicalizeSinglePhone } from "./lib/phone-normalise.mjs";
 const DIALS = ["673","855","856","880","886","852","971","966","995","60","65","62","66","84","63","95","86","91","92","94","61","64","81","82","44","1"]
   .sort((a, b) => b.length - a.length);
 
-// The columns the audit found, named explicitly rather than introspected: a
-// backfill must change exactly the set a human approved, not whatever a
-// pattern happens to match on the day it runs.
+// The columns to normalise, named explicitly rather than introspected: a
+// backfill must change exactly the set a human approved, not whatever a pattern
+// happens to match on the day it runs. Every entry is existence-checked at run
+// time (columnExists) and skipped-with-warning if absent, so listing a column a
+// given database doesn't have is safe.
+//
+// 2026-07-23 EXPANSION. The first backfill only listed `sales_orders`, but the
+// live SCM app writes customer phones to `mfg_sales_orders` (a DIFFERENT table)
+// and to the consignment / delivery / invoice / delivery-planning tables — none
+// of which were ever normalised. That is why SO phones still displayed unformatted
+// (e.g. "60123456789" with no "+") after the first run. The active tables below
+// are taken from the routes' own `.from('…')` targets.
 const TARGETS = [
-  { table: "sales_orders", column: "phone" },
-  { table: "assr_cases", column: "phone" },
+  // ── Customer / staff master ──
   { table: "users", column: "phone" },
   { table: "creditors", column: "phone1" },
   { table: "creditors", column: "mobile" },
   { table: "creditors", column: "phone2" },
+  { table: "creditors", column: "whatsapp_number" },
   { table: "sales_entries", column: "customer_phone" },
+  { table: "sales_entries", column: "customer_phone_2" },
+  { table: "assr_cases", column: "phone" },
+  { table: "drivers", column: "phone" },
+  { table: "helpers", column: "contact" },
+  // ── Legacy SO table (kept — may still hold rows) ──
+  { table: "sales_orders", column: "phone" },
+  // ── ACTIVE manufacturing sales orders (the table the app actually uses) ──
+  { table: "mfg_sales_orders", column: "phone" },
+  { table: "mfg_sales_orders", column: "emergency_contact_phone" },
+  // ── Delivery-planning orders (the raw write path fixed in this same PR) ──
+  { table: "dp_orders", column: "contact_phone" },
+  // ── Consignment ──
+  { table: "consignment_sales_orders", column: "phone" },
+  { table: "consignment_sales_orders", column: "emergency_contact_phone" },
+  { table: "consignment_delivery_orders", column: "phone" },
+  { table: "consignment_delivery_orders", column: "emergency_contact_phone" },
+  { table: "consignment_delivery_returns", column: "phone" },
+  { table: "consignment_delivery_returns", column: "emergency_contact_phone" },
+  // ── Delivery orders / returns (+ crew snapshot contacts) ──
+  { table: "delivery_orders", column: "phone" },
+  { table: "delivery_orders", column: "emergency_contact_phone" },
+  { table: "delivery_orders", column: "driver_1_contact" },
+  { table: "delivery_orders", column: "driver_2_contact" },
+  { table: "delivery_orders", column: "helper_1_contact" },
+  { table: "delivery_orders", column: "helper_2_contact" },
+  { table: "delivery_returns", column: "phone" },
+  { table: "delivery_returns", column: "emergency_contact_phone" },
+  // ── Sales invoices ──
+  { table: "sales_invoices", column: "phone" },
+  { table: "sales_invoices", column: "emergency_contact_phone" },
 ];
 
 /* WHICH STORED VALUES MAY BE ASSUMED MALAYSIAN.
@@ -269,7 +308,27 @@ async function primaryKeyColumn(pg, table) {
   return rows.length === 1 ? rows[0].col : null;
 }
 
+/* Does public.<table>.<column> actually exist?
+ *
+ * The active SO/delivery/consignment tables were added to TARGETS long after the
+ * first backfill (which only knew the legacy `sales_orders`, NOT the real
+ * `mfg_sales_orders` the app writes to — the reason SO phones stayed unnormalised
+ * after the first run). Staging and production can also drift. So every target is
+ * existence-checked and SKIPPED-with-warning when absent, rather than throwing
+ * mid-run and half-completing. */
+async function columnExists(pg, table, column) {
+  const rows = await pg`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = ${table} AND column_name = ${column}
+    LIMIT 1`;
+  return rows.length === 1;
+}
+
 async function processColumn({ table, column }) {
+  if (!(await columnExists(pg, table, column))) {
+    warn(`SKIPPED ${table}.${column} — no such column in this database (schema drift / renamed table). Not an error.`);
+    return { table, column, skipped: true };
+  }
   const pk = await primaryKeyColumn(pg, table);
   if (!pk) {
     warn(`SKIPPED ${table}.${column} — no single-column primary key, so a row cannot be identified for the backup. Fix by hand or extend this script deliberately.`);

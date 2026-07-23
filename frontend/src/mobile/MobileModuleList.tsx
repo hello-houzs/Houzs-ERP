@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 import { useAuth } from "../auth/AuthContext";
 import { visibleFields } from "../auth/salesAccess";
 import { formatDate } from "../lib/utils";
@@ -1081,14 +1082,14 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     endpoint: "/suppliers?limit=200",
     listKey: "suppliers",
     primary: (r) => r.name,
-    secondary: (r) => join(r.code, r.phone || r.mobile),
+    secondary: (r) => join(r.code, formatPhone(r.phone || r.mobile)),
     right: (r) => r.status ?? "",
     search: (r) => join(r.name, r.code, r.phone, r.contact_person, r.email),
     pill: (r) => pick(r, "derivedCategory", "derived_category", "category") ?? "",
     fields: [
       [(r) => pick(r, "code") ?? "—", "Code"],
       [(r) => pick(r, "contactPerson", "contact_person", "attention") ?? "—", "Contact"],
-      [(r) => pick(r, "phone", "mobile", "whatsappNumber", "whatsapp_number") ?? "—", "Phone"],
+      [(r) => formatPhone(pick(r, "phone", "mobile", "whatsappNumber", "whatsapp_number")) || "—", "Phone"],
     ],
     sorts: [{ key: "name", label: "Name", cmp: (a, b) => byStr(a.name, b.name) }],
     form: FORM_SUPPLIERS,
@@ -1369,7 +1370,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     endpoint: "/drivers",
     listKey: "drivers",
     primary: (r) => r.name,
-    secondary: (r) => join(r.driver_code, r.phone, r.vehicle),
+    secondary: (r) => join(r.driver_code, formatPhone(r.phone), r.vehicle),
     right: (r) => (r.in_house ? "In-house" : "Outsource"),
     search: (r) => join(r.name, r.driver_code, r.phone, r.vehicle),
     pill: (r) => (pick(r, "inHouse", "in_house") ? "In-house" : "Outsource"),
@@ -1378,9 +1379,9 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     // sub-line shows phone · code; badge keeps the In-house/Outsource fleet flag.
     variant: "person",
     avatar: (r) => r.name ?? "",
-    subline: (r) => join(pick(r, "phone"), pick(r, "driverCode", "driver_code")),
+    subline: (r) => join(formatPhone(pick(r, "phone")), pick(r, "driverCode", "driver_code")),
     fields: [
-      [(r) => pick(r, "phone") ?? "—", "Phone"],
+      [(r) => formatPhone(pick(r, "phone")) || "—", "Phone"],
       [(r) => pick(r, "driverCode", "driver_code") ?? "—", "Code"],
       [(r) => pick(r, "vehicle") ?? "—", "Vehicle"],
     ],
