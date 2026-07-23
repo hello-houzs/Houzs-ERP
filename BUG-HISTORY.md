@@ -1,3 +1,12 @@
+## 2026-07-24
+
+### [MEDIUM] Fabric Converter lost its Supplier Code — POs couldn't tell the supplier which fabric
+- **Symptom.** Owner desktop audit (2026-07-24): the Fabric Converter (Products -> Fabric Converter) showed only our internal code "BF-01", with no Supplier Code column and no way to enter one; SO/PO lines showed the bare "BF-01" instead of "BF-01 (PC151-01)". A PO carrying only "BF-01" is meaningless to the supplier, who knows the fabric as "PC151-01".
+- **Root cause (traced).** The feature was fully built (data model `scm.fabric_trackings.supplier_code`; backend GET/POST/CSV + `PATCH /:id/supplier-code` all serve it; PDFs already render the two-code form) then PARTIALLY REVERTED on 2026-06-22 under the assumption "supplier code IS our code": `FabricsTable.tsx` dropped the Supplier Code column, and `FabricTracking.tsx` NewFabricDialog hard-defaulted `supplierCode = fabricCode`. So every UI-created fabric got `supplier_code == fabric_code` (self-referential), and the real external codes seeded in mig 0022 stayed invisible + un-editable. The on-screen SO/PO line path (`buildVariantSummary` via `VariantDescription`) never enriched with supplier_code (only the PDF path did), and `loadFabricSupplierMap` returns an empty map when supplier_code is null, so even the PDFs fell back to the bare code.
+- **Fix.** (FE) Restored the editable Supplier Code column in `FabricsTable.tsx` (via the still-present `useUpdateFabricSupplierCode`) + a Supplier Code input in the New-Fabric dialog; stopped defaulting `supplier_code = fabric_code`. (Data) `backfill-fabric-supplier-code.mjs` + workflow restore the real codes from the 2990 backend into HOUZS `fabric_trackings`, non-clobbering (fills only NULL / blank / self-referential rows). On-screen line enrichment to "BF-01 (PC151-01)" lands in the follow-up PR.
+- **The class, for next time.** "X IS Y, drop the separate field" is safe only if X and Y are identical forever. BF-01 (ours) and PC151-01 (theirs) were always distinct; collapsing them defaulted real data to garbage and blinded every downstream reader. When removing a field on a "they're the same" assumption, verify it against real rows first — and prefer HIDING a column to defaulting it to self, which corrupts the data.
+- **Ref:** #<PR>.
+
 ## 2026-07-23
 
 ### [HIGH] Sales-venue showroom picker leaked HOUZS showrooms into the 2990 company
