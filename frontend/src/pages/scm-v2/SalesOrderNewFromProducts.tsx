@@ -58,6 +58,7 @@ import { fmtCenti } from "../../vendor/shared/format";
 import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../../vendor/scm/lib/so-form-validate";
 import { hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../../vendor/shared/so-variant-rule";
 import { todayMyt } from "../../vendor/scm/lib/dates";
+import { PhoneInput } from "../../vendor/scm/components/PhoneInput";
 
 // ── Types & constants ───────────────────────────────────────────────────────
 
@@ -883,16 +884,14 @@ function CustomerBlock({
             </div>
           )}
         </div>
-        <input
-          type="tel"
-          value={customer.phone}
-          onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
-          placeholder="Phone *"
-          className={cn(
+        <PhoneInput
+            value={customer.phone}
+            onChange={(v) => setCustomer({ ...customer, phone: v })}
+            className={cn(
             "block w-full rounded-md border bg-surface px-3 py-1.5 font-money text-[12.5px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20",
             phoneMissing ? "border-err" : "border-border",
-          )}
-        />
+            )}
+          />
         <input
           type="email"
           value={customer.email}

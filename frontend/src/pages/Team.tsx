@@ -30,6 +30,7 @@ import { Forbidden } from "./Forbidden";
 import { RolesTab } from "./Roles";
 import { PositionsTab } from "./Positions";
 import { MailboxesTab } from "./MailboxesTab";
+import { PhoneInput } from "../vendor/scm/components/PhoneInput";
 
 type TeamTabValue =
   | "hub"
@@ -2872,11 +2873,10 @@ function EditMemberPanel({
         </div>
         <div>
           <label className={labelCls}>Phone</label>
-          <input
-            type="tel"
+          <PhoneInput
             value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="e.g. 012-345 6789 (optional)"
+            onChange={setPhone}
+            placeholder="12-345 6789 (optional)"
             className={inputCls}
           />
         </div>
@@ -4964,11 +4964,10 @@ export function InvitePanel({
             <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Phone
             </label>
-            <input
-              type="tel"
+            <PhoneInput
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="e.g. 012-345 6789 (optional)"
+              onChange={setPhone}
+              placeholder="12-345 6789 (optional)"
               className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           </div>
