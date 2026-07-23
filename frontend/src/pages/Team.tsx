@@ -2835,13 +2835,19 @@ function EditMemberPanel({
       patch.password = password.trim();
     }
 
-    if (Object.keys(patch).length === 0) {
+    // Save if EITHER the user fields OR the showroom parking changed. The
+    // showroom lives in scm.staff (the separate call below), so an "only the
+    // showroom changed" edit has an EMPTY user patch — the old early-return here
+    // dropped it silently (owner: picked a venue, hit Save, nothing persisted).
+    if (Object.keys(patch).length === 0 && !showroomDirty) {
       onClose();
       return;
     }
     setBusy(true);
     try {
-      await api.patch(`/api/users/${user.id}`, patch);
+      if (Object.keys(patch).length > 0) {
+        await api.patch(`/api/users/${user.id}`, patch);
+      }
       /* Showroom parking lives in scm.staff, not on the user record, so it is a
          second call — made only when it actually changed, and AFTER the user
          patch succeeded. Its failure is surfaced separately rather than being
