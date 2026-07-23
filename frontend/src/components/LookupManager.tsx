@@ -128,30 +128,14 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
     }
   }
 
-  async function remove(row: LookupRow) {
-    if (
-      !(await dialog.confirm({
-        title: `Hide ${title.replace(/s$/, "").toLowerCase()}`,
-        message: `Hide "${row.name}" from the picker? Existing references keep this value.`,
-        danger: true,
-        confirmLabel: "Hide",
-      }))
-    )
-      return;
-    try {
-      await api.del(`${apiPath}/${row.id}`);
-      toast.success("Hidden");
-      q.reload();
-    } catch (e: any) {
-      toast.error(e?.message || "Something went wrong. Please try again.");
-    }
-  }
-
-  // Owner 2026-07-23: "Hide from picker" only marked active=0; the row still
-  // sat in the list. Hard-delete removes it entirely. Existing records that
-  // referenced this value by name keep the text (columns like
-  // mfg_products.branding are free-text, not FK) — the BrandingInput surfaces
-  // it as "(legacy)" until an operator re-picks a canonical value.
+  // Owner 2026-07-23: dropped the "Hide from picker" menu item entirely —
+  // the Active/Hidden toggle above already covers soft-hide, and having two
+  // controls that both marked active=0 was the confusion (owner thought
+  // Hide would delete). The remaining destructive control is a real
+  // DELETE. Existing records that referenced this value by name keep the
+  // text (columns like mfg_products.branding are free-text, not FK) — the
+  // BrandingInput surfaces it as "(legacy)" until an operator re-picks a
+  // canonical value.
   async function removePermanently(row: LookupRow) {
     if (
       !(await dialog.confirm({
@@ -317,13 +301,6 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
                     label: active ? "Active" : "Hidden",
                     active,
                     onClick: () => patch(row, { active: active ? 0 : 1 } as any),
-                  },
-                  {
-                    type: "action",
-                    icon: EyeOff,
-                    label: "Hide from picker",
-                    danger: true,
-                    onClick: () => remove(row),
                   },
                   {
                     type: "action",
