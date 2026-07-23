@@ -281,7 +281,10 @@ export function routeRegion(o: ACSalesOrder): "WEST" | "EAST" | "SG" | null {
   const addr = (o.InvAddr3 || "").toUpperCase();
   const loc = (o.SalesLocation || "").toUpperCase();
   if (addr.includes("SINGAPORE")) return "SG";
-  if (loc === "KL" || loc === "PG") return "WEST";
+  // HQ = the Balakong head office — 2023-era SOs carry it instead of a
+  // branch code (owner sighting 2026-07-23: SO-000186, Kedah address,
+  // rejected by the manual pull as "isn't a West/East-Malaysia/SG order").
+  if (loc === "KL" || loc === "PG" || loc === "HQ") return "WEST";
   if (loc === "SBH" || loc === "SRW") return "EAST";
   return null;
 }

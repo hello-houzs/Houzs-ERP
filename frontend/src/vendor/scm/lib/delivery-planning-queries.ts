@@ -365,6 +365,42 @@ export function useScheduleDpOrder() {
   });
 }
 
+/* ── WhatsApp (Seampify) sends — the board's "Send Message" action ────────────
+   One WhatsApp per CUSTOMER PHONE bundling all their selected orders (the
+   sheet-era BulkSend shape). The backend groups by phone; the caller just posts
+   the SO doc numbers. While the Seampify secrets are unset the endpoint answers
+   503 not_configured — surfaced to the operator via the thrown error message. */
+export type SendDeliveryMessagesResult = {
+  sent: Array<{ phone: string; docNos: string[]; httpCode: number }>;
+  failed: Array<{ phone: string; docNos: string[]; error: string }>;
+  skipped: Array<{ docNo: string; reason: string }>;
+};
+export function useSendDeliveryMessages() {
+  const qc = useQueryClient();
+  return useMutation<SendDeliveryMessagesResult, Error, { docNos: string[] }>({
+    mutationFn: (body) =>
+      authedFetch<SendDeliveryMessagesResult>(`/delivery-messages/send`, {
+        method: 'POST', body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['delivery-messages'] }),
+  });
+}
+
+/* Latest send status per SO doc — drives the board's "Message" column. POST
+   (not GET) because a full board is ~600 doc numbers, far past URL limits. */
+export type DeliveryMessageStatus = { success: boolean; http_code: number | null; created_at: string };
+export function useDeliveryMessageStatuses(docNos: string[]) {
+  return useQuery({
+    queryKey: ['delivery-messages', 'statuses', docNos.join(',')],
+    enabled: docNos.length > 0,
+    queryFn: () =>
+      authedFetch<{ statuses: Record<string, DeliveryMessageStatus> }>(`/delivery-messages/statuses`, {
+        method: 'POST', body: JSON.stringify({ docNos }),
+      }).then((r) => r.statuses),
+    staleTime: 30_000,
+  });
+}
+
 /* Set the concrete schedule date (+ optional manual delivery_state override,
    + optional driver / lorry trip-wiring) on an SO or DO. type = 'so' | 'do';
    id = SO doc_no or DO id.
