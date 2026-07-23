@@ -3,7 +3,7 @@
 // Outstanding-as-hero, but flipped — this is what WE owe to the supplier.
 
 import { lazy, Suspense, useMemo, type ReactNode } from "react";
-import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -438,7 +438,7 @@ function PurchaseInvoiceDetailV2ReadOnly() {
         const { primary, secondary } = lineIdentity({
           code: l.material_code || l.item_code,
           description: l.description,
-          variant: l.description2,
+          variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),
         });
         return (
           <div className="min-w-0">

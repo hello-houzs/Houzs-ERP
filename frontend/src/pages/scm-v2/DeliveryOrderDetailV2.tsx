@@ -66,7 +66,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, lineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import { useAuth } from "../../auth/AuthContext";
 import { canOperateDeliveryOrders } from "../../auth/salesAccess";
@@ -907,7 +907,7 @@ export function DeliveryOrderDetailV2() {
         const { primary, secondary } = lineIdentity({
           code: l.item_code,
           description: l.description,
-          variant: l.description2,
+          variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),
         });
         return (
           <div className="min-w-0">

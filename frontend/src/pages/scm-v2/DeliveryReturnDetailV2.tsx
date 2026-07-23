@@ -72,7 +72,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 
 // ─── Row shapes (subset — see DeliveryReturnDetail.tsx for full 40-field
@@ -154,6 +154,7 @@ type DrItem = {
   line_total_centi: number;
   cancelled?: boolean;
   item_group?: string;
+  variants?: Record<string, unknown> | null;
   warehouse_code?: string | null;
 };
 
@@ -642,7 +643,7 @@ export function DeliveryReturnDetailV2() {
         const { primary, secondary } = lineIdentity({
           code: l.item_code,
           description: l.description,
-          variant: l.description2,
+          variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),
         });
         return (
         <div className="min-w-0">
