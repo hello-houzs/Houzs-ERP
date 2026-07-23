@@ -160,6 +160,26 @@ function recoverableForeign(raw, dials) {
   return null;
 }
 
+/* Values a human has LOOKED AT and resolved, because the digits alone could
+ * not. Keyed by exact stored value so it can only ever touch the row it names.
+ *
+ * The four below are creditors whose 11-digit 1[3-9] phone is US-or-Chinese by
+ * shape (see #1051). The read-only lookup (who-are-ambiguous-phones.mjs) pulled
+ * their names and currency on 2026-07-23:
+ *   400-C005  创艺色智能科技(江苏)          CNY
+ *   400-J002  9513家具 (JIUWUYISAN)         CNY
+ *   405-N001  NANTONG YOURUI TEXTILE        CNY
+ *   400-N003  南通友瑞纺织品                 MYR
+ * All Jiangsu / Nantong Chinese suppliers — so +86, confirmed, not guessed. */
+const CONFIRMED = {
+  "creditors.phone1": {
+    "13262989777": "+8613262989777",
+    "15817803288": "+8615817803288",
+    "13362748640": "+8613362748640",
+    "15733777221": "+8615733777221",
+  },
+};
+
 const APPLY = process.argv.includes("--apply");
 const REVERT = process.argv.find((a) => a.startsWith("--revert="))?.slice(9);
 
@@ -267,13 +287,24 @@ async function processColumn({ table, column }) {
   const refusedRows = [];
   const ambiguous = [];
   const recoverable = [];
+  const confirmedMap = CONFIRMED[`${table}.${column}`] ?? {};
   for (const r of rows) {
+    // A human already resolved this exact value — highest priority.
+    const conf = confirmedMap[String(r.value).trim()];
+    if (conf) { changes.push({ pk: r.pk, old: r.value, next: conf }); continue; }
+
     if (!malaysianLocalShape(r.value)) {
-      // Not unambiguously Malaysian — could be a foreign number stored without
-      // its country code. Reported, never guessed at. See malaysianLocalShape.
+      // Not Malaysian-local. Foreign-but-recoverable ones (missing only a "+")
+      // are written too — the owner asked to fix these in the same pass, and
+      // adding "+" to a value that already carries a known dial code is not a
+      // guess. Truly unknowable values are still left for a human.
       const rec = recoverableForeign(r.value, DIALS);
-      if (rec) { recoverable.push({ pk: r.pk, old: r.value, next: rec }); }
-      else { ambiguous.push(r); }
+      if (rec) {
+        recoverable.push({ pk: r.pk, old: r.value, next: rec });
+        changes.push({ pk: r.pk, old: r.value, next: rec });
+      } else {
+        ambiguous.push(r);
+      }
       continue;
     }
     const next = canonicalizeSinglePhone(r.value);
@@ -287,9 +318,9 @@ async function processColumn({ table, column }) {
 
   notice(
     `${table}.${column}: ${rows.length} without a country code — ` +
-      `${changes.length} convertible, ${refused} unparseable, ` +
-      `${recoverable.length} foreign-but-recoverable (just missing "+"), ` +
-      `${ambiguous.length} UNKNOWABLE (a human must call)`,
+      `${changes.length} to write ` +
+      `(incl. ${recoverable.length} foreign recovered by adding "+"), ` +
+      `${refused} unparseable, ${ambiguous.length} UNKNOWABLE (a human must call)`,
   );
 
   // A count does not prove correctness. Show what would actually change, so a
