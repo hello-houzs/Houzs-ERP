@@ -258,7 +258,7 @@ const VIEW_HEADER: Record<
   },
   cases: {
     title: "Service Cases",
-    description: "After-sales service request workflow.",
+    description: "Warranty & service requests — managed end-to-end.",
   },
   metrics: {
     title: "Quality Metrics",
@@ -1047,13 +1047,13 @@ function CasesView({
 // 2026-07-23: 每个 stage 下面加 description, e.g. Verification → QC
 // issue inspection). Same wording as the detail Workflow funnel.
 const STAGE_FUNNEL_DESC: Record<string, string> = {
-  pending_review: "Case intake & review",
-  under_verification: "QC issue inspection",
-  pending_solution: "Resolution & supplier",
-  pending_supplier_pickup: "Pickup, repair & return",
-  pending_item_ready: "QC after repair",
-  pending_delivery_service: "Deliver back to customer",
-  completed: "Case closed",
+  pending_review: "New case — first review",
+  under_verification: "Inspect & verify the issue",
+  pending_solution: "Decide fix & assign supplier",
+  pending_supplier_pickup: "Item with supplier for repair",
+  pending_item_ready: "Repair done — QC check",
+  pending_delivery_service: "Schedule return delivery",
+  completed: "Closed & rated",
 };
 
 type StageFunnelRow = { stage: string; total: number; breached: number };
@@ -5128,13 +5128,13 @@ const VERIFICATION_OPTIONS = [
 // desc — one-line caption under each funnel dot (Nick 2026-07-23:
 // 在 stage funnel 每个 stage 加上 description).
 const DETAIL_STAGES: { id: AssrStage; short: string; long: string; desc: string }[] = [
-  { id: "pending_review",              short: "Review",       long: "Review",                  desc: "Case intake & review" },
-  { id: "under_verification",          short: "Verification", long: "Verification",            desc: "QC issue inspection" },
-  { id: "pending_solution",            short: "Solution",     long: "Solution",                desc: "Resolution & supplier" },
-  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup / Return", desc: "Pickup, repair & return" },
-  { id: "pending_item_ready",          short: "Pending Item Ready", long: "Pending Item Ready", desc: "QC after repair" },
-  { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service",      desc: "Deliver back to customer" },
-  { id: "completed",                   short: "Completed",    long: "Completed",               desc: "Case closed" },
+  { id: "pending_review",              short: "Review",       long: "Review",                  desc: "New case — first review" },
+  { id: "under_verification",          short: "Verification", long: "Verification",            desc: "Inspect & verify the issue" },
+  { id: "pending_solution",            short: "Solution",     long: "Solution",                desc: "Decide fix & assign supplier" },
+  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup / Return", desc: "Item with supplier for repair" },
+  { id: "pending_item_ready",          short: "Pending Item Ready", long: "Pending Item Ready", desc: "Repair done — QC check" },
+  { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service",      desc: "Schedule return delivery" },
+  { id: "completed",                   short: "Completed",    long: "Completed",               desc: "Closed & rated" },
 ];
 
 // `resolutionRoute` — which side of the flow a resolution method routes to —
