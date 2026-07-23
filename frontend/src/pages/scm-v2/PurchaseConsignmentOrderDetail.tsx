@@ -731,6 +731,14 @@ const SupplierCard = ({
             </div>
             <InfoCell label="Currency" value={po.currency || null} />
             <div />
+            <InfoCell label="Contact" value={supplier?.contact_person ?? supplier?.attention ?? null} />
+            <InfoCell label="Phone" value={formatPhone(supplier?.phone ?? supplier?.mobile) || null} />
+            <InfoCell label="Email" value={supplier?.email ?? null} />
+            <div />
+            <div style={{ gridColumn: 'span 2' }}>
+              <InfoCell label="Address"
+                value={[supplier?.address, supplier?.area, supplier?.postcode].filter(Boolean).join(', ') || null} />
+            </div>
             <InfoCell label="Date" value={po.po_date || null} />
             {/* HOUZS mig-0181: plain expected_at — no effectiveDelivery "revised"
                 display (Houzs lacks the supplier_delivery_date_2/3/4 columns). */}

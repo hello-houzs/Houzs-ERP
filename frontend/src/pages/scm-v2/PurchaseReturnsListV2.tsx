@@ -5,7 +5,7 @@
 // side where every other doc is money-out.
 
 import { useMemo, useState, type ReactNode } from "react";
-import { fmtCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -51,7 +51,7 @@ type PrRow = {
   reason?: string | null;
   notes?: string | null;
   currency?: string;
-  supplier?: { id: string; code: string; name: string; contact_person?: string | null; phone?: string | null; email?: string | null } | null;
+  supplier?: { id: string; code: string; name: string; contact_person?: string | null; phone?: string | null; email?: string | null; address?: string | null } | null;
   purchase_order?: { id: string; po_number: string } | null;
   grn?: { id: string; grn_number: string } | null;
   line_count?: number;
@@ -63,6 +63,8 @@ type PrItem = {
   item_code?: string | null;
   description?: string | null;
   description2?: string | null;
+  item_group?: string | null;
+  variants?: Record<string, unknown> | null;
   uom?: string;
   qty?: number;
   qty_returned?: number;
@@ -300,13 +302,15 @@ function DetailDrawer({
                 <RowKV k="Contact" v={row.supplier?.contact_person || "—"} />
                 <RowKV k="Phone" v={formatPhone(row.supplier?.phone) || "—"} />
                 <RowKV k="Email" v={row.supplier?.email || "—"} />
+                <RowKV k="Address" v={row.supplier?.address || "—"} />
               </div>
 
               <SectionHeading>Returned items</SectionHeading>
               <div className="overflow-hidden rounded-lg border border-border">
-                <div className="grid grid-cols-[1fr_52px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                <div className="grid grid-cols-[1fr_52px_82px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
                   <span>Item</span>
                   <span className="text-right">Qty</span>
+                  <span className="text-right">Unit</span>
                   <span className="text-right">Credit</span>
                 </div>
                 {detailQ.isLoading && (
@@ -315,21 +319,25 @@ function DetailDrawer({
                 {!detailQ.isLoading && items.length === 0 && (
                   <div className="px-4 py-8 text-center text-[12px] text-ink-muted">No lines</div>
                 )}
-                {items.map((l, i) => (
-                  <div key={l.id ?? i} className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0">
-                    {/* Description ONCE, code NOT displayed — the shared rule
-                        (vendor/shared/line-identity.ts). Swept on SHAPE, not
-                        vocabulary. The CONDITION badge shared the code's line,
-                        is not a duplicate, and survives — its row now renders
-                        only when there is a condition to show. Same treatment as
-                        the DR list drawer. The code still BINDS. */}
-                    <div>
-                      <div className="text-[13px] font-semibold text-ink">
-                        {lineIdentity({
-                          code: l.material_code || l.item_code,
-                          description: l.description,
-                        }).primary || "—"}
+                {items.map((l, i) => {
+                  const { primary, secondary } = lineIdentity({
+                    code: l.material_code || l.item_code,
+                    description: l.description,
+                    variant:
+                      buildVariantSummary(l.item_group ?? "others", l.variants ?? null) ||
+                      (l.description2 ?? ""),
+                  });
+                  return (
+                  <div key={l.id ?? i} className="grid grid-cols-[1fr_52px_82px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0">
+                    <div className="min-w-0">
+                      <div className="text-[12.5px] font-medium leading-snug text-ink">
+                        {primary || "—"}
                       </div>
+                      {secondary && (
+                        <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
+                          {secondary}
+                        </div>
+                      )}
                       {l.condition && (
                         <div className="mt-0.5 flex items-center gap-2">
                           <Badge tone="warning" variant="soft" size="xs">{l.condition}</Badge>
@@ -337,9 +345,11 @@ function DetailDrawer({
                       )}
                     </div>
                     <span className="text-right font-money text-[12.5px] text-ink-secondary">{l.qty_returned ?? l.qty ?? 0}</span>
+                    <span className="text-right font-money text-[12.5px] text-ink-secondary">{fmtRm(l.unit_price_centi ?? 0)}</span>
                     <span className="text-right font-money text-[12.5px] font-semibold text-synced">{fmtRm(l.line_total_centi ?? 0)}</span>
                   </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="mt-4 rounded-lg border-l-4 border-synced bg-primary-soft px-5 py-4">

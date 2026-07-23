@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { fmtCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import {
   Plus,
@@ -379,13 +379,15 @@ function DetailDrawer({
                 <RowKV k="Contact" v={row.supplier?.contact_person || "—"} />
                 <RowKV k="Phone" v={formatPhone(row.supplier?.phone) || "—"} />
                 <RowKV k="Email" v={row.supplier?.email || "—"} />
+                <RowKV k="Address" v={row.supplier?.address || "—"} />
               </div>
 
               <SectionHeading>Line items</SectionHeading>
               <div className="overflow-hidden rounded-lg border border-border">
-                <div className="grid grid-cols-[1fr_52px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                <div className="grid grid-cols-[1fr_52px_82px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
                   <span>Item</span>
                   <span className="text-right">Qty</span>
+                  <span className="text-right">Unit</span>
                   <span className="text-right">Amount</span>
                 </div>
                 {detailQ.isLoading && (
@@ -398,36 +400,41 @@ function DetailDrawer({
                     No lines
                   </div>
                 )}
-                {items.map((l) => (
+                {items.map((l) => {
+                  const { primary, secondary } = lineIdentity({
+                    code: l.material_code,
+                    description: l.description || l.material_name,
+                    variant:
+                      buildVariantSummary(l.item_group ?? "others", l.variants ?? null) ||
+                      (l.description2 ?? ""),
+                  });
+                  return (
                   <div
                     key={l.id}
-                    className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
+                    className="grid grid-cols-[1fr_52px_82px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
                   >
-                    {/* Description ONCE, code NOT displayed — the shared rule
-                        (vendor/shared/line-identity.ts). Same judgement as
-                        PurchaseOrderDetailV2: purchase vocabulary, swept because
-                        the SHAPE is identical to the four reports (bold
-                        description the operator reads, muted code echoing it
-                        beneath). This row had the sharpest version of it — with
-                        no description AND no material_name the two lines both
-                        printed material_code, the same string twice. The code
-                        still BINDS as this row's key and search value. */}
-                    <div>
-                      <div className="text-[13px] font-semibold text-ink">
-                        {lineIdentity({
-                          code: l.material_code,
-                          description: l.description || l.material_name,
-                        }).primary}
+                    <div className="min-w-0">
+                      <div className="text-[12.5px] font-medium leading-snug text-ink">
+                        {primary}
                       </div>
+                      {secondary && (
+                        <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
+                          {secondary}
+                        </div>
+                      )}
                     </div>
                     <span className="text-right font-money text-[12.5px] text-ink-secondary">
                       {l.qty}
+                    </span>
+                    <span className="text-right font-money text-[12.5px] text-ink-secondary">
+                      {fmtRm(l.unit_price_centi ?? 0)}
                     </span>
                     <span className="text-right font-money text-[12.5px] font-semibold text-ink">
                       {fmtRm(l.line_total_centi ?? 0)}
                     </span>
                   </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="mt-4 rounded-lg border border-border bg-surface px-5 py-4">

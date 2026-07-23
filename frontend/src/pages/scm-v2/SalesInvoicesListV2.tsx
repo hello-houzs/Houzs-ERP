@@ -55,7 +55,7 @@ import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
-import { fmtCenti } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -380,7 +380,11 @@ function DetailDrawer({
   const items: Array<{
     product_code?: string;
     product_name?: string;
+    item_code?: string;
     description?: string;
+    description2?: string;
+    item_group?: string;
+    variants?: Record<string, unknown> | null;
     qty?: number;
     unit_price_centi?: number;
     amount_centi?: number;
@@ -389,7 +393,11 @@ function DetailDrawer({
     ((detailQ.data as { items?: unknown[] } | undefined)?.items as Array<{
       product_code?: string;
       product_name?: string;
+      item_code?: string;
       description?: string;
+      description2?: string;
+      item_group?: string;
+      variants?: Record<string, unknown> | null;
       qty?: number;
       unit_price_centi?: number;
       amount_centi?: number;
@@ -508,9 +516,10 @@ function DetailDrawer({
 
               <SectionHeading>Line items</SectionHeading>
               <div className="overflow-hidden rounded-lg border border-border">
-                <div className="grid grid-cols-[1fr_52px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                <div className="grid grid-cols-[1fr_52px_82px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
                   <span>Item</span>
                   <span className="text-right">Qty</span>
+                  <span className="text-right">Unit</span>
                   <span className="text-right">Amount</span>
                 </div>
                 {detailQ.isLoading && (
@@ -528,23 +537,33 @@ function DetailDrawer({
                     l.amount_centi ??
                     l.total_centi ??
                     (l.qty ?? 0) * (l.unit_price_centi ?? 0);
+                  const { primary, secondary } = lineIdentity({
+                    code: l.item_code || l.product_code,
+                    description: l.description || l.product_name,
+                    variant:
+                      buildVariantSummary(l.item_group ?? "others", l.variants ?? null) ||
+                      (l.description2 ?? ""),
+                  });
                   return (
                     <div
                       key={i}
-                      className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
+                      className="grid grid-cols-[1fr_52px_82px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
                     >
-                      <div>
-                        <div className="text-[13px] font-semibold text-ink">
-                          {l.description || l.product_name || "—"}
+                      <div className="min-w-0">
+                        <div className="text-[12.5px] font-medium leading-snug text-ink">
+                          {primary || "—"}
                         </div>
-                        {l.product_code && (
-                          <div className="mt-0.5 font-mono text-[11px] text-ink-muted">
-                            {l.product_code}
+                        {secondary && (
+                          <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
+                            {secondary}
                           </div>
                         )}
                       </div>
                       <span className="text-right font-money text-[12.5px] text-ink-secondary">
                         {l.qty ?? 0}
+                      </span>
+                      <span className="text-right font-money text-[12.5px] text-ink-secondary">
+                        {fmtRm(l.unit_price_centi ?? 0)}
                       </span>
                       <span className="text-right font-money text-[12.5px] font-semibold text-ink">
                         {fmtRm(amt)}
