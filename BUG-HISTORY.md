@@ -7,6 +7,13 @@
 - **The class, for next time (repeated).** If a migration touches a column that isn't declared in a numbered ADD COLUMN in this tree, guard with `information_schema.columns EXISTS` before every reference. `to_regclass` is a table guard, not a column guard. The prior fix understood this in commentary but not in code coverage.
 - **Ref:** #1053. Prior: #1052.
 
+### [MEDIUM] Warehouse master had no structured address — free-text Location only
+- **Symptom.** Owner 2026-07-23: "warehouse 那边不是会去选它是在什么地方的吗? 它有这个 location, 所以它的 location 也是要换成我们的 address 模式". Warehouse Maintenance drawer offered a single free-text "Location" field ("Address / area"). No state, no postcode, no city — so any cross-report bucketing "which warehouses serve which state" had to string-match location, and warehouse pickers on delivery-planning couldn't filter by state.
+- **Root cause (traced).** Original scm.warehouses shipped with just `location text`. Mig 0148 added `is_showroom` + `venue_name`; mig 0177 added the `type` enum. Nobody added structured address. Every other address surface (customer, supplier, SO, DO, project venue) has state/postcode/city off scm.my_localities — warehouse was the outlier.
+- **Fix.** Mig 0180 adds `country`, `state`, `postcode`, `city` columns to `scm.warehouses`. Backfills `state` from code prefix (PG→Pulau Pinang, KL→Kuala Lumpur, SBH→Sabah, SRW→Sarawak, SLGR→Selangor, C&C/EM/PJ/Kelana/Sunway→Selangor, CHINA→Guangdong) and backfills `country` via my_localities. Backend POST/PATCH accept the four fields and canonicalize `state` at ingress via `canonicalizeMyState()`. Frontend `WarehouseFormDrawer` replaces the Location free-text with a Country → State → City → Postcode cascade off `useLocalities()` — SAME shape as the SO delivery-address form. Picking State back-derives Country. Warehouses list picks up Country + State columns. Localities-queries.ts gains `distinctCountries` + `statesInCountry` helpers.
+- **What this PR does NOT do.** No CHECK / FK to my_localities.state — canonicalize function is foreign-safe.
+- **Ref:** #1054.
+
 
 
 ### [CRITICAL] Mig 0175 referenced a non-existent `customers.country` column and blocked EVERY subsequent migration

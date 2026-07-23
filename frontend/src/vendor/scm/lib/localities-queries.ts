@@ -136,6 +136,31 @@ export const allPostcodes = (rows: LocalityRow[]): string[] => {
   return Array.from(s).sort();
 };
 
+/* ── COUNTRY cascade (2026-07-23) ────────────────────────────────────────
+   The Warehouse address form (and any address surface that needs to
+   support Malaysia + China + Singapore) picks Country FIRST, then filters
+   State by country. State→country back-derive already exists via
+   countryForState() above. */
+
+/* Distinct country list from the seeded my_localities data — read live so
+   it auto-picks up any country the SO Maintenance geo table adds. */
+export const distinctCountries = (rows: LocalityRow[]): string[] => {
+  const s = new Set<string>();
+  for (const r of rows) if (r.country) s.add(r.country);
+  return Array.from(s).sort();
+};
+
+/* States within a country — the pre-filter the address form uses before
+   showing the state dropdown. Case-insensitive on country to tolerate
+   'MY'/'Malaysia' inputs from older callers. */
+export const statesInCountry = (rows: LocalityRow[], country: string): string[] => {
+  if (!country) return distinctStates(rows);
+  const want = country.trim().toLowerCase();
+  const s = new Set<string>();
+  for (const r of rows) if ((r.country ?? '').toLowerCase() === want) s.add(r.state);
+  return Array.from(s).sort();
+};
+
 /* HOUZS VENDOR — SO Maintenance's Localities CRUD section. authedFetch-based in
    the source (→ /localities). Copied verbatim. */
 export const useCreateLocality = () => {

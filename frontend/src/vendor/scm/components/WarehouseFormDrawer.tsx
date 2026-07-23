@@ -8,7 +8,7 @@
 // so a caller that reads warehouses from a different query can refetch.
 // ----------------------------------------------------------------------------
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import {
@@ -17,6 +17,14 @@ import {
   type Warehouse,
   type WarehouseType,
 } from '../lib/inventory-queries';
+import {
+  useLocalities,
+  distinctCountries,
+  statesInCountry,
+  citiesInState,
+  postcodesInCity,
+  countryForState,
+} from '../lib/localities-queries';
 import { useNotify } from './NotifyDialog';
 import styles from '../../../pages/scm-v2/Suppliers.module.css';
 
@@ -52,11 +60,51 @@ export const WarehouseFormDrawer = ({
     code: editing?.code ?? '',
     name: editing?.name ?? '',
     location: editing?.location ?? '',
+    country: editing?.country ?? '',
+    state: editing?.state ?? '',
+    city: editing?.city ?? '',
+    postcode: editing?.postcode ?? '',
     isActive: editing?.is_active ?? true,
     isDefault: editing?.is_default ?? false,
     type: initialType,
     venueName: editing?.venue_name ?? '',
   });
+
+  /* Country / State / City / Postcode cascade off scm.my_localities — same
+     source the SO Maintenance geo table maintains. Country picked first
+     (defaults to Malaysia when unset); State picker is filtered by country;
+     picking State auto-derives Country if it was blank so the operator
+     doesn't have to reselect. Empty locality set (unseeded) → the state
+     dropdown gracefully renders empty free-text so nothing breaks. */
+  const localities = useLocalities();
+  const localityRows = localities.data ?? [];
+  const countries = useMemo(() => distinctCountries(localityRows), [localityRows]);
+  const states = useMemo(
+    () => statesInCountry(localityRows, form.country),
+    [localityRows, form.country],
+  );
+  const cities = useMemo(
+    () => (form.state ? citiesInState(localityRows, form.state) : []),
+    [localityRows, form.state],
+  );
+  const postcodes = useMemo(
+    () => (form.state && form.city ? postcodesInCity(localityRows, form.state, form.city) : []),
+    [localityRows, form.state, form.city],
+  );
+
+  /* When the operator picks a State, back-derive Country from my_localities
+     if the current Country is blank OR disagrees. This makes the linkage
+     the owner asked for: pick State, Country auto-fills. */
+  const pickState = (nextState: string) => {
+    const derived = countryForState(localityRows, nextState);
+    setForm((s) => ({
+      ...s,
+      state: nextState,
+      country: derived ?? s.country,
+      city: '',
+      postcode: '',
+    }));
+  };
 
   const done = () => { onSaved?.(); onClose(); };
 
@@ -85,6 +133,10 @@ export const WarehouseFormDrawer = ({
         code: form.code,
         name: form.name,
         location: form.location,
+        country: form.country || null,
+        state: form.state || null,
+        city: form.city || null,
+        postcode: form.postcode || null,
         isActive: form.isActive,
         isDefault: form.isDefault,
         type: form.type,
@@ -95,6 +147,10 @@ export const WarehouseFormDrawer = ({
         code: form.code,
         name: form.name,
         location: form.location || undefined,
+        country: form.country || null,
+        state: form.state || null,
+        city: form.city || null,
+        postcode: form.postcode || null,
         isDefault: form.isDefault,
         type: form.type,
         venueName: isShowroom ? form.venueName.trim() : null,
@@ -125,11 +181,98 @@ export const WarehouseFormDrawer = ({
               onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))} />
           </label>
           <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
-            <div className={styles.eyebrow}>Location</div>
+            <div className={styles.eyebrow}>Street / area</div>
             <input className={styles.searchInput} style={{ width: '100%' }}
-              value={form.location ?? ''} placeholder="Address / area"
+              value={form.location ?? ''} placeholder="e.g. No. 12, Jalan …"
               onChange={(e) => setForm((s) => ({ ...s, location: e.target.value }))} />
           </label>
+          {/* ── Structured address (mig 0180) ────────────────────────────
+              Country → State → City → Postcode cascade — canonical from
+              scm.my_localities (same source SO Maintenance's Geo table
+              maintains). Country picked first filters the state dropdown;
+              picking State also back-derives Country if it was blank so
+              the operator doesn't reselect. Locality dataset empty (cold-
+              start) → the pickers gracefully fall back to free-text. */}
+          <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
+            <div className={styles.eyebrow}>Country</div>
+            {countries.length > 0 ? (
+              <select className={styles.searchInput} style={{ width: '100%' }}
+                value={form.country ?? ''}
+                onChange={(e) => setForm((s) => ({ ...s, country: e.target.value, state: '', city: '', postcode: '' }))}
+              >
+                <option value="">— pick country —</option>
+                {form.country && !countries.includes(form.country) && (
+                  <option value={form.country}>{form.country} (legacy)</option>
+                )}
+                {countries.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            ) : (
+              <input className={styles.searchInput} style={{ width: '100%' }}
+                value={form.country ?? ''} placeholder="e.g. Malaysia"
+                onChange={(e) => setForm((s) => ({ ...s, country: e.target.value }))} />
+            )}
+          </label>
+          <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
+            <div className={styles.eyebrow}>State</div>
+            {states.length > 0 ? (
+              <select className={styles.searchInput} style={{ width: '100%' }}
+                value={form.state ?? ''}
+                onChange={(e) => pickState(e.target.value)}
+              >
+                <option value="">— pick state —</option>
+                {form.state && !states.includes(form.state) && (
+                  <option value={form.state}>{form.state} (legacy)</option>
+                )}
+                {states.map((st) => <option key={st} value={st}>{st}</option>)}
+              </select>
+            ) : (
+              <input className={styles.searchInput} style={{ width: '100%' }}
+                value={form.state ?? ''} placeholder="e.g. Kuala Lumpur"
+                onChange={(e) => setForm((s) => ({ ...s, state: e.target.value }))} />
+            )}
+          </label>
+          {form.state && (
+            <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
+              <div className={styles.eyebrow}>City</div>
+              {cities.length > 0 ? (
+                <select className={styles.searchInput} style={{ width: '100%' }}
+                  value={form.city ?? ''}
+                  onChange={(e) => setForm((s) => ({ ...s, city: e.target.value, postcode: '' }))}
+                >
+                  <option value="">— pick city —</option>
+                  {form.city && !cities.includes(form.city) && (
+                    <option value={form.city}>{form.city} (legacy)</option>
+                  )}
+                  {cities.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              ) : (
+                <input className={styles.searchInput} style={{ width: '100%' }}
+                  value={form.city ?? ''} placeholder="e.g. Cheras"
+                  onChange={(e) => setForm((s) => ({ ...s, city: e.target.value }))} />
+              )}
+            </label>
+          )}
+          {form.state && form.city && (
+            <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
+              <div className={styles.eyebrow}>Postcode</div>
+              {postcodes.length > 0 ? (
+                <select className={styles.searchInput} style={{ width: '100%' }}
+                  value={form.postcode ?? ''}
+                  onChange={(e) => setForm((s) => ({ ...s, postcode: e.target.value }))}
+                >
+                  <option value="">— pick postcode —</option>
+                  {form.postcode && !postcodes.includes(form.postcode) && (
+                    <option value={form.postcode}>{form.postcode} (legacy)</option>
+                  )}
+                  {postcodes.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              ) : (
+                <input className={styles.searchInput} style={{ width: '100%' }}
+                  value={form.postcode ?? ''} placeholder="e.g. 56000" inputMode="numeric"
+                  onChange={(e) => setForm((s) => ({ ...s, postcode: e.target.value }))} />
+              )}
+            </label>
+          )}
           {/* ── Type (mig 0171) ───────────────────────────────────────────
               5-bucket classification: warehouse / showroom / display / service
               / others. Owner 2026-07-22: SO reports and delivery routing bucket
