@@ -293,7 +293,6 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       warehouseLabel = null;
     }
   }
-  const generatedTs = fmtDateTime(new Date().toISOString());
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -378,7 +377,8 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     .doc-title { text-align: left; margin: 0 0 8mm 0; }
     .doc-title h1 { margin: 0; font-family: "IBM Plex Serif", "Georgia", serif; font-size: 22pt; font-weight: 700; letter-spacing: 0.2pt; line-height: 1.05; }
     .doc-title .subtitle { margin-top: 2mm; font-family: "Roboto Mono", monospace; font-size: 8.5pt; letter-spacing: 1.5pt; text-transform: uppercase; color: #555; }
-    .doc-title .ref { margin-top: 3mm; font-family: "Roboto Mono", monospace; font-size: 10pt; color: #333; }
+    .doc-title .ref { margin-top: 3mm; font-family: "Roboto Mono", monospace; font-size: 12pt; color: #333; }
+    .doc-title .ref b { font-size: 14pt; }
 
     /* Info strip with optional QR panel on the side */
     .info {
@@ -673,7 +673,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       <div>
         <h1>${esc(docTitle)}</h1>
         ${docSubtitle ? `<div class="subtitle">${esc(docSubtitle)}</div>` : ""}
-        <div class="ref">Report No. <b>${esc(cs.assr_no)}</b> · Generated ${generatedTs}</div>
+        <div class="ref">Report No. <b>${esc(cs.assr_no)}</b>${cs.ref_no ? ` · Ref No. <b>${esc(cs.ref_no)}</b>` : ""}</div>
       </div>
       ${!isSupplier ? `
       <div class="status-pills stacked">
