@@ -89,7 +89,10 @@ export function QuickActionsFAB() {
       key: "project",
       label: "New Project",
       icon: FolderPlus,
-      to: "/projects?new=1",
+      // Force the LIST view: the ?new=1 create-modal handler lives in
+      // ProjectsListView, so a bare /projects?new=1 falls through to the user's
+      // stored view (e.g. calendar) and the modal never opens (owner 2026-07-23).
+      to: "/projects?view=list&new=1",
       tone: "secondary",
     });
   }

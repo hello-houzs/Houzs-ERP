@@ -8145,7 +8145,7 @@ function ChecklistRow({
               "inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 hover:text-accent",
               expanded ? "text-accent" : "text-ink-muted"
             )}
-            title="Show per-file remarks"
+            title="Remark"
           >
             <MessageSquare size={13} />
             <span className="text-[9px] font-semibold tracking-wide leading-none">
@@ -8207,10 +8207,51 @@ function ChecklistRow({
           </div>
         )}
 
-      {/* Owner 2026-07-22: the item-level "Note" thread (Add a note… + Note —
-          entries) was removed — it duplicated the per-file remark that now sits
-          under each attachment (TaskAttachmentRow showRemark). Review decisions
-          still surface via the Rejected banner + the approve/reject controls. */}
+      {/* Owner 2026-07-22: the item-level "Note" thread duplicated the per-file
+          remark under each attachment, so it's hidden for tasks that carry
+          files (use the per-file remark there). A file-LESS task — e.g. Weekend
+          Activity, "remark only, no file needed" — has no per-file remark, so it
+          keeps this simple remark box. Falls away the moment a file is added. */}
+      {expanded && (!attachments || attachments.length === 0) && (
+        <div className="mt-2 border-t border-border pt-2">
+          {comments.filter((c) => c.kind !== "submit" && c.body).length > 0 && (
+            <div className="mb-2 space-y-1">
+              {comments
+                .filter((c) => c.kind !== "submit" && c.body)
+                .map((c) => (
+                  <div key={c.id} className="rounded bg-bg/60 px-2 py-1 text-[10.5px]">
+                    <span className={cn("font-semibold", commentKindColor(c.kind))}>
+                      {commentKindLabel(c.kind)}
+                    </span>
+                    {c.body && <span className="ml-1 text-ink-secondary">— {c.body}</span>}
+                    <span className="ml-2 text-ink-muted">
+                      {c.user_name || "—"} · {formatDate(c.created_at)}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          )}
+          <div className="flex items-center gap-1.5">
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Add a remark…"
+              className="flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] outline-none focus:border-primary"
+            />
+            <button
+              onClick={async () => {
+                if (!note.trim()) return;
+                await onReview("comment", { note: note.trim() });
+                setNote("");
+              }}
+              disabled={!note.trim()}
+              className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent disabled:opacity-40"
+            >
+              Post
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
