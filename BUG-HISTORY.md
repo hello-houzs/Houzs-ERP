@@ -1,5 +1,12 @@
 ## 2026-07-23
 
+### [LOW] Deleted dead `scm/lib/roles.ts` — an orphaned duplicate that misled every grep
+- **Symptom.** Fragmentation audit finding #10. `backend/src/scm/lib/roles.ts` exported `canViewAllSales`, `isSelfScopedSales`, `isPinLoginRole`, `ALL_SALES_VIEWER_ROLES`, `PIN_LOGIN_ROLES` and read as authoritative ("keep this list in lockstep with the POS predicate"), but **nothing imported the file**. The live `canViewAllSales` (different signature — takes a caller-source shim) is in `scm/lib/houzs-perms.ts`, and `mfg-sales-orders.ts:84` already noted the role functions "were removed — replaced by flat permission". The dead copy still cost every reader/agent a wrong turn: grep `canViewAllSales` → two definitions, one of them a trap.
+- **Root cause (traced).** Leftover from the role→flat-permission migration; the file was orphaned but never removed.
+- **Fix.** Deleted `scm/lib/roles.ts`. Proven safe: `tsc --noEmit` resolves every import and passes after deletion (nothing imported it); no test references it; the only `roles` imports in the tree are `./routes/roles` (an unrelated route module).
+- **The class, for next time.** When a migration replaces a helper, delete the old file in the same PR — an orphaned "single source" is worse than none, because the next grep can't tell the live one from the dead one.
+- **Ref:** #<PR>. Fragmentation audit finding #10 (zero-risk cleanup).
+
 ### [HIGH] Sofa combo pricing drifted between SPA and backend for 8 hours every morning (UTC vs MYT date)
 - **Symptom.** Found during the 2026-07-23 fragmentation audit. `sofa-combo-pricing.ts` exists in TWO copies (backend `scm/shared/`, frontend `vendor/shared/` — the vendored 2990 shared package). The backend copy had been fixed to resolve the "as-of" date via `todayMyt()`; the frontend copy still used `new Date().toISOString().slice(0,10)`, which is UTC regardless of the browser timezone. Malaysia is UTC+8, so **before 08:00 MYT every day the SPA resolved effective-dated combo pricing against YESTERDAY's date while the backend used today's** — the two priced the same sofa build differently for eight hours each morning. Silent; a salesperson quoting off the screen before 8am could quote a superseded effective-dated price.
 - **Root cause (traced).** Classic half-finished consolidation: the `todayMyt` fix was applied to one copy of the shared pricing file and the sibling copy drifted. `git diff` of the two `sofa-combo-pricing.ts` showed the single differing line (`todayIso`).
