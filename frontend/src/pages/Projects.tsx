@@ -1632,7 +1632,21 @@ function ProjectsListView() {
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-[11px] font-bold text-accent">{r.code}</span>
-                      {done ? (
+                      {/* My Pending mode tags the card with the CALLER's own
+                          pending work (owner 2026-07-22, Syu report) — the
+                          project's section chip reads as someone else's stage
+                          (e.g. CONTRACT for a logistic caller) so it yields
+                          when the row carries my_pending_titles. */}
+                      {myPending && (r as any).my_pending_titles ? (
+                        String((r as any).my_pending_titles).split("|").map((t: string) => (
+                          <span
+                            key={t}
+                            className="inline-flex items-center gap-1 rounded-full border border-warning-text/30 bg-warning-bg px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-warning-text"
+                          >
+                            <Circle size={9} /> {t}
+                          </span>
+                        ))
+                      ) : done ? (
                         <span className="inline-flex items-center gap-1 rounded-full border border-synced bg-synced/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-synced">
                           <CheckCircle2 size={10} /> Complete
                         </span>
@@ -1651,9 +1665,11 @@ function ProjectsListView() {
                       {r.name}
                     </div>
                     {meta && <div className="mt-0.5 truncate text-[11.5px] text-ink-muted">{meta}</div>}
-                    {/* Crew cards: the caller's own due pending tasks — attached
-                        server-side (my_pending_titles) for crew callers only. */}
-                    {!!(r as any).my_pending_titles && (
+                    {/* Crew cards outside My Pending mode: the caller's own due
+                        pending tasks below the meta line (my_pending_titles is
+                        attached server-side; promoted to the tag row above when
+                        the My Pending filter is on). */}
+                    {!myPending && !!(r as any).my_pending_titles && (
                       <div className="mt-1.5 flex flex-wrap gap-1.5">
                         {String((r as any).my_pending_titles).split("|").map((t: string) => (
                           <span

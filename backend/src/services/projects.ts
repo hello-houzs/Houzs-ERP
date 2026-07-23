@@ -1310,8 +1310,13 @@ export interface ListProjectsFilters {
   /** Owner 2026-07-21: attach each row's OPEN role-badged tasks (due-gated,
    *  '|'-joined titles) as `my_pending_titles`, so the crew "My events" cards
    *  can show what's pending on their side. Set by the route for crew callers
-   *  (label 'DRIVER'); whitelist-validated before interpolation. */
+   *  (label 'DRIVER'), and in My Pending mode for every role-label lane
+   *  (owner 2026-07-22); whitelist-validated before interpolation. */
   pending_titles_label?: string;
+  /** Logistic pending is derived from the project row (stock-out state +
+   *  setup/dismantle time+crew), not a checklist item — when set,
+   *  my_pending_titles carries the matching arrangement step instead. */
+  pending_titles_logistic?: boolean;
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -1686,7 +1691,22 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                 AND c3.status NOT IN ('done', 'na')
                 AND c3.role_label = '${ptl}'
                 AND substr(COALESCE(c3.due_date, p.start_date), 1, 10) <= '${dueToday}') as my_pending_titles`
-    : "";
+    : f.pending_titles_logistic
+      ? `,
+            CASE
+              WHEN EXISTS (SELECT 1 FROM project_checklist sot
+                            WHERE sot.project_id = p.id
+                              AND sot.title = 'Stock Out Transfer Record'
+                              AND (sot.status = 'done' OR sot.review_status = 'approved'))
+                   AND p.setup_start_at IS NULL
+                   AND COALESCE(p.setup_crew, '') IN ('', '{}')
+                THEN 'Arrange Setup Time and Crew'
+              WHEN (p.setup_start_at IS NOT NULL OR COALESCE(p.setup_crew, '') NOT IN ('', '{}'))
+                   AND p.dismantle_start_at IS NULL
+                   AND COALESCE(p.dismantle_crew, '') IN ('', '{}')
+                THEN 'Arrange Dismantle Time and Crew'
+            END as my_pending_titles`
+      : "";
 
   const rows = await env.DB.prepare(
     `SELECT p.id, p.code, p.name, p.stage, p.status, p.brand,

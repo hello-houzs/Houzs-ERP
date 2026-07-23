@@ -839,10 +839,16 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     // Crew list cards show the caller's own due pending tasks (owner
     // 2026-07-21): drivers/helpers/storekeepers all work the DRIVER-badged
     // items, so every crew caller gets the DRIVER titles attached per row.
+    // Owner 2026-07-22 (Syu report): in My Pending mode EVERY role-lane
+    // caller gets their own titles — the cards tag the caller's pending
+    // work, not the project's section. pendingLabel is only set when
+    // my_pending=1; logistic pending isn't a checklist item, so it gets its
+    // own derived-title flag.
     pending_titles_label:
       isCrewScopedUser(user) || /^(driver|helper|storekeeper)$/i.test(user?.role_name ?? "")
         ? "DRIVER"
-        : undefined,
+        : pendingLabel,
+    pending_titles_logistic: pendingLogistic || undefined,
   });
   // Server-side finance strip (rule 3): the list SELECTs pf.rental /
   // total_sales / contractor_cost per row. Blank them for any non-director

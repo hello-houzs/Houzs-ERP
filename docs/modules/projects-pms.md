@@ -207,6 +207,18 @@ Two things happen here that are easy to miss:
    those three are blanked **before the response is written**
    (`:845-853`, via `financeHiddenForUser`). The money never reaches the client,
    rather than being hidden in the UI.
+3. **`my_pending_titles` — the caller's own pending work, per row.** Crew
+   callers always get their open DRIVER-badged task titles (`'|'`-joined)
+   attached to each row; with `my_pending=1` every role-label lane caller gets
+   their own label's titles, and a logistic caller gets a derived arrangement
+   step (`Arrange Setup Time and Crew` / `Arrange Dismantle Time and Crew`
+   from stock-out state + `setup_*`/`dismantle_*` fields — it is not a
+   checklist item). With the desktop My Pending checkbox on, the desktop card
+   tags the card with these titles INSTEAD of the project's section chip, so a
+   logistic caller is not shown someone else's `CONTRACT` stage (owner report
+   2026-07-22, Syu). Mobile has no My Pending mode — its card keeps the chips
+   below the meta line (crew callers). Directors / attending / approver lanes
+   carry no titles and keep the section chip.
 
 ### The calendar handler
 
