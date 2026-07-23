@@ -19,12 +19,21 @@ const dst = postgres(DST, { ssl: "require", prepare: false, max: 1 });
 // silently ignored new/renamed SKUs. Adding it AFTER the shared masters
 // (categories / product_models) and BEFORE anything that FK-refs item_code
 // (so mfg_sales_order_items / grn_items find their catalog row).
-const ORDER = ["staff","customers","suppliers","series","categories","products","product_models","product_fabrics","product_size_variants","mfg_products","warehouses","supplier_material_bindings","venues","mfg_sales_orders","mfg_sales_order_items","mfg_sales_order_payments","so_revisions","mfg_so_audit_log","mfg_so_status_changes","delivery_orders","delivery_order_items","sales_invoices","sales_invoice_items","sales_invoice_payments","delivery_returns","delivery_return_items","purchase_orders","purchase_order_items","grns","grn_items","purchase_invoices","purchase_invoice_items","purchase_returns","purchase_return_items","inventory_movements","inventory_lots","inventory_lot_consumptions","pwp_rules","pwp_codes","analysis_customer_targets","drivers","currencies","app_config","delivery_order_payments","pending_slip_uploads","pos_carts","sync_config"];
+// 2026-07-23 owner ask: "要搬,帮我处理" — import 2990's chart of accounts (GL).
+// check-2990-gl-collision.mjs confirmed NO COLLISION (all 31 2990 codes are free
+// on dest), so a plain import is safe: accounts.company_id (mig 0083) stamps the
+// rows company_2, the global UNIQUE(account_code) still holds, and the
+// payment_vouchers FK is unaffected. The chart is already per-company in the
+// code (accounts.company_id NOT NULL + /accounts route scopeToCompany), so these
+// rows surface ONLY under the 2990 company. Placed with the other config masters.
+const ORDER = ["staff","customers","suppliers","series","categories","products","product_models","product_fabrics","product_size_variants","mfg_products","warehouses","supplier_material_bindings","venues","mfg_sales_orders","mfg_sales_order_items","mfg_sales_order_payments","so_revisions","mfg_so_audit_log","mfg_so_status_changes","delivery_orders","delivery_order_items","sales_invoices","sales_invoice_items","sales_invoice_payments","delivery_returns","delivery_return_items","purchase_orders","purchase_order_items","grns","grn_items","purchase_invoices","purchase_invoice_items","purchase_returns","purchase_return_items","inventory_movements","inventory_lots","inventory_lot_consumptions","pwp_rules","pwp_codes","analysis_customer_targets","drivers","currencies","app_config","accounts","delivery_order_payments","pending_slip_uploads","pos_carts","sync_config"];
 // `lorries` deliberately NOT imported (owner ruling 2026-07-21): 2990's lorry
 // master is not carried over — Houzs fleet is managed on the Houzs side.
-// NOT in ORDER: `accounts` (GL) — scm.accounts.account_code is globally UNIQUE (+ FK'd by
-// payment_vouchers), so 2990's chart would silently collide with company_1's. Needs a
-// per-company constraint decision first. `sofa_personal_quick_picks` needs a shape
+// `accounts` (GL) is now IN ORDER (2026-07-23): check-2990-gl-collision proved 2990's 31
+// codes are all free on dest, so the global UNIQUE(account_code) holds and the
+// payment_vouchers FK is unaffected — company_id=2 stamping is enough. Before company 3/4/5
+// the constraint should become UNIQUE(company_id, account_code) (see the multi-company
+// audit), but that is not needed for the 2-company world. `sofa_personal_quick_picks` needs a shape
 // transform (staff_id uuid -> owner_user_id bigint) — handled by the custom pass below.
 // Earlier import generations REMAPPED some parent ids on PK collision (see mig 0092),
 // so verbatim-id child rows can point at parents that don't exist under company_2.
