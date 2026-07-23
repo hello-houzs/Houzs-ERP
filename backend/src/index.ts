@@ -130,7 +130,36 @@ const inboxBustAfterWrite: MiddlewareHandler<{ Bindings: Env }> = async (c, next
 // Outermost: one structured access-log line + X-Request-Id per request.
 app.use("*", requestLog);
 
-app.use("*", cors({ origin: "*", exposeHeaders: ["X-Request-Id"] }));
+// Allow-listed CORS origins (audit M3). The SPA calls the API SAME-ORIGIN, so it
+// needs no CORS at all; the only legitimate CROSS-origin BROWSER callers are the
+// company domains and the Pages hosts (prod / staging / preview) plus localhost
+// for dev. Everything else is refused instead of the previous wildcard `*`, so a
+// random attacker page can no longer read responses from the public/unauth
+// endpoints. Non-browser callers (native apps, pg_net, server-to-server) send no
+// Origin header and are unaffected.
+//
+// VERIFY BEFORE MERGE: confirm the POS surface's BROWSER origin is covered below
+// (expected to be erp.houzscentury.com or a *.houzs-erp*.pages.dev host). A
+// native/mobile POS sends no Origin and needs nothing here.
+function corsOriginAllowed(origin: string | undefined | null): string | undefined {
+  if (!origin) return undefined; // same-origin / non-browser: no ACAO needed
+  let host: string;
+  try {
+    host = new URL(origin).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+  const ok =
+    host === "houzscentury.com" ||
+    host.endsWith(".houzscentury.com") ||
+    host === "2990shome.com" ||
+    host.endsWith(".2990shome.com") ||
+    /^([a-z0-9-]+\.)?houzs-erp(-staging)?\.pages\.dev$/.test(host) ||
+    host === "localhost" ||
+    host === "127.0.0.1";
+  return ok ? origin : undefined;
+}
+app.use("*", cors({ origin: corsOriginAllowed, exposeHeaders: ["X-Request-Id"] }));
 
 // Baseline security headers on every Worker response. Deliberately conservative:
 // the cross-origin isolation family (CORP/COOP/COEP) is DISABLED because the API
@@ -359,9 +388,11 @@ app.onError((err, c) => {
   // pass, which is SKIPPED when a handler throws — so error responses would
   // otherwise reach the browser WITHOUT CORS headers and surface as an opaque
   // "Failed to fetch" instead of the real status/message. Re-add them here so
-  // every error is readable by the SPA. (Matches cors() default origin "*".)
+  // every error is readable by the SPA — but only for an allow-listed origin,
+  // matching the restricted cors() above (audit M3), never a blanket "*".
   const res = new Response(base.body, base);
-  res.headers.set("Access-Control-Allow-Origin", "*");
+  const allowedOrigin = corsOriginAllowed(c.req.header("Origin"));
+  if (allowedOrigin) res.headers.set("Access-Control-Allow-Origin", allowedOrigin);
   res.headers.set("Access-Control-Expose-Headers", "X-Request-Id");
 
   // Error tracking. INERT until the owner sets the SENTRY_DSN secret — with no
