@@ -258,7 +258,7 @@ const VIEW_HEADER: Record<
   },
   cases: {
     title: "Service Cases",
-    description: "Warranty & service requests — managed end-to-end.",
+    description: "Service & Warranty Requests — Managed end-to-end.",
   },
   metrics: {
     title: "Quality Metrics",
