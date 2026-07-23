@@ -91,7 +91,9 @@ export function DetailLayout({
       */}
       <div
         className={cn(
-          "sticky top-14 z-20 -mx-4 -mt-6 mb-4 border-b border-border sm:-mx-6 sm:-mt-8 lg:top-12 lg:-mx-10 lg:-mt-10 xl:-mx-12 2xl:-mx-16",
+          // lg:top-[5.25rem] = TopNavbar h-12 + WorkspaceTabs strip h-9 (see
+          // Layout.tsx PageHeader — the four lg stickies move together).
+          "sticky top-14 z-20 -mx-4 -mt-6 mb-4 border-b border-border sm:-mx-6 sm:-mt-8 lg:top-[5.25rem] lg:-mx-10 lg:-mt-10 xl:-mx-12 2xl:-mx-16",
           stickyTitle ? "bg-bg" : "bg-bg/85 backdrop-blur-md"
         )}
       >

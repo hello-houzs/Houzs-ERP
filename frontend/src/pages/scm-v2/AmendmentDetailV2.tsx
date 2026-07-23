@@ -784,7 +784,9 @@ export function AmendmentDetailV2() {
   return (
     <div className="pb-10">
       {/* ─── Desktop sticky header ──────────────────────────────────── */}
-      <div className="sticky top-12 z-20 -mx-4 border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6">
+      {/* lg:top-[5.25rem] = TopNavbar h-12 + WorkspaceTabs strip h-9 (see
+          Layout.tsx PageHeader — the lg stickies move together). */}
+      <div className="sticky top-12 lg:top-[5.25rem] z-20 -mx-4 border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">
             <button

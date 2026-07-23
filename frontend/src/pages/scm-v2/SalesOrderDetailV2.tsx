@@ -811,8 +811,10 @@ function SalesOrderDetailV2ReadOnly() {
           inside the SAME <main class="overflow-y-auto"> that scrolls this
           page — so a naive top-0 here parks the SO title BEHIND the top
           nav. Offset to top-12 (48 px = TopNavbar h-12) and bump z-20 to
-          stack above the section cards while staying below the top nav. */}
-      <div className="sticky top-12 z-20 -mx-4 hidden border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6 md:block">
+          stack above the section cards while staying below the top nav.
+          lg adds the WorkspaceTabs strip (h-9) under the navbar →
+          lg:top-[5.25rem]; at md (strip hidden, navbar-only) top-12 holds. */}
+      <div className="sticky top-12 lg:top-[5.25rem] z-20 -mx-4 hidden border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6 md:block">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">
             <button
