@@ -1,5 +1,21 @@
 ## 2026-07-23
 
+### [HIGH] SO list Branding column read blank for the entire 2990 book (68 orders) — no capture path in the SO CREATE form
+- **Symptom.** Owner 2026-07-23: "我的 sales order 的 branding 全部都不见掉完了" (screenshot of the SO list showing "—" in the Branding column for every 2990 SO). The Product Maintenance branding dropdown looked different from what the SO surfaces resolved to.
+- **Root cause (traced, not guessed).** Three overlapping gaps, all pre-existing:
+  1. **SO CREATE form has no branding field** at all — `SalesOrderNew.tsx` never exposed one, so every new SO landed with `mfg_sales_order_items.branding = NULL` on every line.
+  2. **2990 imported book** — the 68 SOs migrated from 2990's Supabase carried the same NULL because the source system had the same gap. Not an importer bug; a shape-mirror.
+  3. **Branding pool bootstrap** — `useBrandingPool()` sources canonical brand names from `project_brands` (company-scoped since mig 0093). HOUZS has that table populated; 2990's `project_brands` was empty, so the pool fell back to DISTINCT-across-own-SKUs — a chicken-and-egg where Product Maintenance can never offer a brand that isn't already used on a SKU.
+- **Fix (this PR).**
+  - New helper `backend/src/scm/lib/derive-line-branding.ts` batch-fetches `mfg_products.branding` and fills any row where the client did not stamp one, keyed by (`company_id`, `item_code`). Non-destructive — a caller-supplied value always wins.
+  - Wired into all 3 SO line INSERT paths in `mfg-sales-orders.ts`: `createSalesOrderCore` bulk insert, POST `/:docNo/items` sofa multi-module insert, and POST `/:docNo/items` single-row insert.
+  - `backend/scripts/seed-2990-project-brands.mjs` bootstraps `project_brands` for `company_id=2` from DISTINCT branding on 2990's own SKUs + models + SO lines. `useBrandingPool()` switches from the `distinct` fallback to `configPool` post-run, so Product Maintenance shows a truly maintainable list.
+  - `backend/scripts/backfill-so-line-branding.mjs` fills historical NULL rows on `mfg_sales_order_items` from `mfg_products` where the product has a brand. One-shot, idempotent.
+  - `.github/workflows/hydrate-2990-branding.yml` runs both scripts (staging OR prod, apply=0|1 dry-run gate, own concurrency group).
+  - Products.tsx SKU Master Branding cell converted from `<input list=…>` datalist to a real `<select>` sourced from `useBrandingPool().pool`. Legacy stored values that aren't in the current pool still render as a selectable "(legacy)" option with an amber border so the row remains editable while the operator picks a proper canonical brand.
+- **The class, for next time.** A column that is "free text with a suggestion datalist" AND has no dedicated form field is a column that will read blank on every import path — no client will ever stamp it. Either give it a form field or auto-derive on save; never both-none. Grep for other columns on `mfg_sales_order_items` with the same shape (`branding` was the loud one; check `venue`, `remark`, `line_delivery_date_overridden` — the last two probably need review).
+- **Ref:** #<PR>. Companion to the 2026-07-23 pending-tasks lane fix.
+
 ### [MEDIUM] Worker served every response with no security headers — the multiplier that turns any stored-blob route into XSS
 - **Symptom.** Security audit 2026-07-23: a live probe of `erp.houzscentury.com/api/*` returned no `X-Content-Type-Options`, `X-Frame-Options`, `Strict-Transport-Security`, or CSP. Grep confirmed `backend/src` set none. The file-proxy routes (mail-center attachments, sofa-compartment photos, announcement thumbs) stream stored, caller-influenced content-types back inline; with no `nosniff`, a browser MIME-sniffs an attacker-shaped blob and can execute it in the ERP origin (token theft). Missing headers are what upgrade those routes from "serves a file" to "runs a script".
 - **Root cause (traced).** `backend/src/index.ts` mounted `cors()` but never `secureHeaders()`; no `hono/secure-headers` import existed anywhere. The frontend Pages surface already carried `nosniff` + `referrer-policy`, but the Worker (which serves the risky proxies) carried nothing.
