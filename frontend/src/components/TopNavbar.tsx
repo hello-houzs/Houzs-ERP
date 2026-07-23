@@ -4,6 +4,7 @@ import {
   Check,
   ChevronRight,
   ChevronsUpDown,
+  ExternalLink,
   LogOut,
   UserRound,
   UserRoundCog,
@@ -243,27 +244,46 @@ function CompanySwitcher() {
           {companies.map((co) => {
             const isActive = co.id === activeId;
             return (
-              <button
-                key={co.id}
-                type="button"
-                role="option"
-                aria-selected={isActive}
-                onClick={() => pick(co.id)}
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-bg/60",
-                  isActive ? "font-semibold text-primary" : "text-ink-secondary",
-                )}
-              >
-                <Check
-                  size={13}
-                  strokeWidth={2.5}
-                  className={cn("shrink-0", isActive ? "text-primary" : "text-transparent")}
-                />
-                <span className="min-w-0 flex-1 truncate">{co.name}</span>
-                <span className="shrink-0 text-[9.5px] uppercase tracking-wide text-ink-muted">
-                  {co.code}
-                </span>
-              </button>
+              <div key={co.id} className="flex items-stretch">
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={isActive}
+                  onClick={() => pick(co.id)}
+                  className={cn(
+                    "flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 pr-1.5 text-left text-[12px] transition-colors hover:bg-bg/60",
+                    isActive ? "font-semibold text-primary" : "text-ink-secondary",
+                  )}
+                >
+                  <Check
+                    size={13}
+                    strokeWidth={2.5}
+                    className={cn("shrink-0", isActive ? "text-primary" : "text-transparent")}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{co.name}</span>
+                  <span className="shrink-0 text-[9.5px] uppercase tracking-wide text-ink-muted">
+                    {co.code}
+                  </span>
+                </button>
+                {/* Side-by-side windows (owner ask 2026-07-23): boot a fresh
+                    window straight into this company via the ?company= seed
+                    (see lib/activeCompany.ts). Each window keeps its own
+                    company for its whole lifetime, so this one is untouched —
+                    which is also why this button never needs pick()'s
+                    unsaved-changes confirm. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    window.open(`/?company=${co.id}`, "_blank", "noopener,noreferrer");
+                  }}
+                  title={`Open ${co.name} in a new window`}
+                  aria-label={`Open ${co.name} in a new window`}
+                  className="shrink-0 px-2.5 text-ink-muted/70 transition-colors hover:bg-bg/60 hover:text-accent"
+                >
+                  <ExternalLink size={12.5} strokeWidth={2} />
+                </button>
+              </div>
             );
           })}
         </div>

@@ -377,8 +377,8 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     .doc-title { text-align: left; margin: 0 0 8mm 0; }
     .doc-title h1 { margin: 0; font-family: "IBM Plex Serif", "Georgia", serif; font-size: 22pt; font-weight: 700; letter-spacing: 0.2pt; line-height: 1.05; }
     .doc-title .subtitle { margin-top: 2mm; font-family: "Roboto Mono", monospace; font-size: 8.5pt; letter-spacing: 1.5pt; text-transform: uppercase; color: #555; }
-    .doc-title .ref { margin-top: 3mm; font-family: "Roboto Mono", monospace; font-size: 12pt; color: #333; }
-    .doc-title .ref b { font-size: 14pt; }
+    .doc-title .ref { margin-top: 3mm; font-family: "Roboto Mono", monospace; font-size: 11pt; color: #333; white-space: nowrap; }
+    .doc-title .ref b { font-size: 12.5pt; }
 
     /* Info strip with optional QR panel on the side */
     .info {
@@ -538,6 +538,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     .mgrid { display: grid; border-left: 0.4pt solid #d5d5d5; }
     .mgrid.cols-6 { grid-template-columns: 27mm 1fr 27mm 1fr 27mm 1fr; }
     .mgrid.cols-4 { grid-template-columns: 27mm 1fr 27mm 1fr; }
+    .mgrid.cols-8 { grid-template-columns: 22mm 1fr 18mm 1fr 20mm 1fr 17mm 1fr; }
     .mgrid.rule-top { border-top: 1pt solid #141414; }
     .mgrid .lc {
       padding: 2.4mm 2.8mm; background: #f3f3f1;
@@ -673,7 +674,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       <div>
         <h1>${esc(docTitle)}</h1>
         ${docSubtitle ? `<div class="subtitle">${esc(docSubtitle)}</div>` : ""}
-        <div class="ref">Report No. <b>${esc(cs.assr_no)}</b>${cs.ref_no ? ` · Ref No. <b>${esc(cs.ref_no)}</b>` : ""}</div>
+        <div class="ref">ASSR No. <b>${esc(cs.assr_no)}</b>${cs.ref_no ? ` · Ref No. <b>${esc(cs.ref_no)}</b>` : ""}</div>
       </div>
       ${!isSupplier ? `
       <div class="status-pills stacked">
@@ -733,7 +734,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <div class="mgrid cols-6 rule-top">
       <div class="lc">Sales Agent</div><div class="vc">${esc(cs.sales_agent || "—")}</div>
       <div class="lc">Request Date</div><div class="vc mono">${fmtDate(cs.complained_date)}</div>
-      <div class="lc">ASSR No</div><div class="vc"><span class="chip">${esc(cs.assr_no)}</span></div>
+      <div class="lc">ASSR No</div><div class="vc mono" style="white-space: nowrap;">${esc(cs.assr_no)}</div>
       <div class="lc">Category</div><div class="vc">${cs.service_category || cs.issue_category ? `<span class="pill-cat">${esc(cs.service_category || cs.issue_category)}</span>` : `<span class="dim">—</span>`}</div>
       <div class="lc">Delivery Return</div><div class="vc dim">No · NA</div>
       <div class="lc">Purchase Return</div><div class="vc dim">No · NA</div>
@@ -755,7 +756,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <!-- items -->
     <div class="bar">Items</div>
     <div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;">
-      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">CTN</span><span class="th">REMARK (IF ANY)</span>
+      <span class="th">NO</span><span class="th">ITEM</span><span class="th">SET</span><span class="th">CTN</span><span class="th">REMARK (IF ANY)</span>
     </div>
     ${officeItems.join("")}
 
@@ -814,9 +815,10 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       const firstItem = (items as any[])[0];
       return `
     <!-- meta grid -->
-    <div class="mgrid cols-6 rule-top">
+    <div class="mgrid cols-8 rule-top">
       <div class="lc">Request Date</div><div class="vc mono">${fmtDate(cs.complained_date)}</div>
-      <div class="lc">ASSR No</div><div class="vc"><span class="chip">${esc(cs.assr_no)}</span></div>
+      <div class="lc">ASSR No</div><div class="vc mono" style="white-space: nowrap;">${esc(cs.assr_no)}</div>
+      <div class="lc">Reference</div><div class="vc mono">${esc(cs.ref_no || "—")}</div>
       <div class="lc">Category</div><div class="vc">${cs.service_category || cs.issue_category ? `<span class="pill-cat">${esc(cs.service_category || cs.issue_category)}</span>` : `<span class="dim">—</span>`}</div>
     </div>
 
@@ -850,7 +852,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <!-- items -->
     <div class="bar">Items</div>
     <div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;">
-      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">CTN</span><span class="th">REMARK (IF ANY)</span>
+      <span class="th">NO</span><span class="th">ITEM</span><span class="th">SET</span><span class="th">CTN</span><span class="th">REMARK (IF ANY)</span>
     </div>
     ${supItems.join("") || `<div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;"><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span></div>`}
 

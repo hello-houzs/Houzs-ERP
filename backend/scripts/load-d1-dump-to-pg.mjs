@@ -23,12 +23,29 @@ import Database from "better-sqlite3";
 import postgres from "postgres";
 import { sqliteDefaultToPg } from "./lib/sqlite-default-to-pg.mjs";
 
-const url = process.env.DATABASE_URL || readFileSync(".dev.vars", "utf8").match(/DATABASE_URL="([^"]+)"/)[1];
-// PROD GUARD (added after the 2026-06-17 incident where this wiped prod):
-// this script DROPs + reloads EVERY table. Refuse to run against the prod
-// project unless an operator explicitly acknowledges a real re-cutover.
-if (url.includes("anogrigyjbduyzclzjgn") && process.env.ACK_PROD_WIPE !== "yes") {
-  console.error("REFUSING: target DB is PROD (anogrigyjbduyzclzjgn). This script DROPs+reloads every table. If you truly mean to re-cutover prod, set ACK_PROD_WIPE=yes.");
+// Target MUST be explicit. The old `.dev.vars` fallback silently resolved to the
+// live prod DSN (that file holds the prod connection string by convention) and
+// is the mechanism behind the 2026-06-17 prod wipe — removed. See prod-wipe COE.
+const url = process.env.DATABASE_URL;
+if (!url) {
+  console.error("REFUSING: set DATABASE_URL explicitly. The silent .dev.vars fallback (which resolved to the prod DSN) was removed after the 2026-06-17 prod wipe.");
+  process.exit(1);
+}
+// PROD GUARD — FAIL CLOSED. This script DROPs + reloads EVERY table. A hardcoded
+// prod-ref substring check fails OPEN the moment prod moves projects (it has,
+// twice). So treat ANY non-loopback target as production and require an explicit
+// acknowledgement, regardless of which project it points at.
+const isLoopbackTarget = (() => {
+  try {
+    return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(
+      new URL(url).hostname.toLowerCase(),
+    );
+  } catch {
+    return false;
+  }
+})();
+if (!isLoopbackTarget && process.env.ACK_PROD_WIPE !== "yes") {
+  console.error("REFUSING: target is a non-local database and this script DROPs+reloads EVERY table. If you truly mean to re-cutover it, set ACK_PROD_WIPE=yes.");
   process.exit(1);
 }
 const pg = postgres(url, { ssl: "require", prepare: false, max: 1 });
