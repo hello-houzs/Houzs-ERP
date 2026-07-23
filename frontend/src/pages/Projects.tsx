@@ -8807,6 +8807,18 @@ type CrewSlot = { name: string; phone: string };
 // provider (owner 2026-07-23): a trip that is NOT an internal lorry is done by
 // Grab or Lalamove — chosen per lorry card. "" = internal lorry (use plate).
 type LorryCrew = { plate: string; provider?: string; drivers: CrewSlot[]; helpers: CrewSlot[] };
+// Outsourced trip (owner 2026-07-23): Setup & Dismantle offer three providers.
+// Outsource / Lalamove carry a manual name·phone·plate; Grab carries two staff
+// helpers (helper1/helper2) instead. `provider` absent = legacy Outsource entry.
+type OutsourcedProvider = "outsource" | "lalamove" | "grab";
+type OutsourcedEntry = {
+  provider?: OutsourcedProvider;
+  name?: string;
+  phone?: string;
+  plate?: string;
+  helper1?: string;
+  helper2?: string;
+};
 interface PhaseCrew {
   /** The editable per-lorry structure. */
   lorryCrew: LorryCrew[];
@@ -8816,9 +8828,7 @@ interface PhaseCrew {
   drivers: CrewSlot[];
   helpers: CrewSlot[];
   lorries: string[];
-  // provider (owner 2026-07-23): each outsourced entry is added via a Grab or
-  // Lalamove button, shown as "· BY GRAB / BY LALAMOVE". Optional for legacy rows.
-  outsourced: { enabled: boolean; entries: { name: string; phone: string; plate: string; provider?: string }[] };
+  outsourced: { enabled: boolean; entries: OutsourcedEntry[] };
   /** Free-text note — used by the Service / Exchange phase ("what service /
    *  exchange"). This one is the INTERNAL-LORRY remark. Empty for
    *  setup/dismantle. Persisted inside the same JSON. */
@@ -8948,35 +8958,109 @@ function CrewSlotRow({
 function OutsourcedBox({
   onAdd,
 }: {
-  onAdd: (o: { name: string; phone: string; plate: string; provider: string }) => void;
+  onAdd: (o: { name: string; phone: string; plate: string }) => void;
 }) {
   const [d, setD] = useState({ name: "", phone: "", plate: "" });
-  // Owner 2026-07-23: two add buttons — Grab and Lalamove — each files the same
-  // name/phone/plate entry tagged with that provider.
-  const add = (provider: string) => {
-    if (!d.name.trim() && !d.plate.trim()) return;
-    onAdd({ ...d, provider });
-    setD({ name: "", phone: "", plate: "" });
-  };
   return (
     <div className="space-y-2 rounded-md border border-dashed border-border bg-bg/40 p-2">
       <input value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} placeholder="Name…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
       <input value={d.phone} onChange={(e) => setD({ ...d, phone: e.target.value })} placeholder="Phone number…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
       <input value={d.plate} onChange={(e) => setD({ ...d, plate: e.target.value })} placeholder="Lorry plate…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
-      <div className="flex gap-2">
-        <button
-          onClick={() => add("Grab")}
-          className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
-        >
-          + Grab
-        </button>
-        <button
-          onClick={() => add("Lalamove")}
-          className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
-        >
-          + Lalamove
-        </button>
-      </div>
+      <button
+        onClick={() => {
+          if (!d.name.trim() && !d.plate.trim()) return;
+          onAdd(d);
+          setD({ name: "", phone: "", plate: "" });
+        }}
+        className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
+      >
+        + Add
+      </button>
+    </div>
+  );
+}
+
+// Grab trip (owner 2026-07-23): instead of a manual name/phone/plate, a Grab
+// trip is two staff helpers riding together, picked from the full helper list.
+function GrabHelperBox({
+  helpers,
+  onAdd,
+}: {
+  helpers: CrewMember[];
+  onAdd: (o: { helper1: string; helper2: string }) => void;
+}) {
+  const [h, setH] = useState({ helper1: "", helper2: "" });
+  const HelperSelect = ({ which, label }: { which: "helper1" | "helper2"; label: string }) => (
+    <select
+      value={h[which]}
+      onChange={(e) => setH({ ...h, [which]: e.target.value })}
+      className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
+    >
+      <option value="">{label}…</option>
+      {helpers.map((o) => (
+        <option key={o.id} value={o.name}>{o.name}</option>
+      ))}
+    </select>
+  );
+  return (
+    <div className="space-y-2 rounded-md border border-dashed border-border bg-bg/40 p-2">
+      <HelperSelect which="helper1" label="Helper 1" />
+      <HelperSelect which="helper2" label="Helper 2" />
+      <button
+        onClick={() => {
+          if (!h.helper1 && !h.helper2) return;
+          onAdd(h);
+          setH({ helper1: "", helper2: "" });
+        }}
+        className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
+      >
+        + Add
+      </button>
+    </div>
+  );
+}
+
+const OUTSOURCED_PROVIDER_LABEL: Record<OutsourcedProvider, string> = {
+  outsource: "Outsource",
+  lalamove: "Lalamove",
+  grab: "Grab",
+};
+
+// One chip per outsourced trip — Grab shows its two helpers, the others show
+// the manual name / phone / plate. Falls back to name/phone/plate for any
+// legacy Grab row that predates the helper picker. Shared by every phase.
+function OutsourcedEntryChips({
+  entries,
+  readOnly,
+  onRemove,
+}: {
+  entries: OutsourcedEntry[];
+  readOnly: boolean;
+  onRemove: (i: number) => void;
+}) {
+  if (!entries.length) return null;
+  const rawProvider = (o: OutsourcedEntry) => (o.provider ?? "outsource").toString().toLowerCase();
+  const providerKey = (o: OutsourcedEntry): OutsourcedProvider =>
+    rawProvider(o) === "grab" ? "grab" : rawProvider(o) === "lalamove" ? "lalamove" : "outsource";
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {entries.map((o, i) => {
+        const provider = providerKey(o);
+        const helperDetail = [o.helper1, o.helper2].filter(Boolean).join(" · ");
+        const manualDetail = [o.name, o.phone ? formatPhone(o.phone) : "", o.plate].filter(Boolean).join(" · ");
+        const detail = provider === "grab" && helperDetail ? helperDetail : manualDetail || helperDetail;
+        return (
+          <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
+            <span className="font-semibold text-ink-secondary">{OUTSOURCED_PROVIDER_LABEL[provider]}</span>
+            {detail && <span className="text-ink">· {detail}</span>}
+            {!readOnly && (
+              <button onClick={() => onRemove(i)} className="text-ink-muted hover:text-err">
+                <X size={11} />
+              </button>
+            )}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -9025,6 +9109,17 @@ function PhaseCrewEditor({
   useEffect(() => setRemarkDraft(pc.remark), [pc.remark]);
   const [outRemarkDraft, setOutRemarkDraft] = useState(pc.outsourcedRemark);
   useEffect(() => setOutRemarkDraft(pc.outsourcedRemark), [pc.outsourcedRemark]);
+  // Which provider's add-box is open in the Setup/Dismantle outsourced row.
+  const [openProvider, setOpenProvider] = useState<OutsourcedProvider | null>(null);
+  const addOutsourced = (entry: OutsourcedEntry) =>
+    save({ ...pc, outsourced: { enabled: true, entries: [...pc.outsourced.entries, entry] } });
+  const removeOutsourced = (i: number) => {
+    const entries = pc.outsourced.entries.filter((_, j) => j !== i);
+    save({ ...pc, outsourced: { enabled: entries.length > 0, entries } });
+  };
+  // Setup & Dismantle get the three-provider button row; Service / Exchange
+  // keeps the single Outsourced checkbox (it has its own per-lorry dropdown).
+  const isSetupDismantle = field === "setup_crew" || field === "dismantle_crew";
   // Always show at least one lorry card so an empty project isn't blank —
   // the card is only persisted once the user actually fills something in.
   const lorries = pc.lorryCrew.length ? pc.lorryCrew : [{ plate: "", drivers: [], helpers: [] }];
@@ -9109,54 +9204,69 @@ function PhaseCrewEditor({
           + Add lorry
         </button>
       )}
-      <label className="mt-1 flex items-center gap-2 text-[11px] font-semibold text-ink-secondary">
-        <input
-          type="checkbox"
-          checked={pc.outsourced.enabled}
-          disabled={readOnly}
-          onChange={(e) => save({ ...pc, outsourced: { ...pc.outsourced, enabled: e.target.checked } })}
-        />
-        Outsourced
-      </label>
-      {pc.outsourced.enabled && (
-        <div className="space-y-1.5">
-          {pc.outsourced.entries.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {pc.outsourced.entries.map((o, i) => (
-                <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
-                  <Truck size={11} />
-                  {o.name}
-                  {o.phone ? ` · ${formatPhone(o.phone)}` : ""}
-                  {o.plate ? ` · ${o.plate}` : ""}
-                  {o.provider ? ` · BY ${o.provider.toUpperCase()}` : ""}
-                  {!readOnly && (
-                    <button
-                      onClick={() =>
-                        save({
-                          ...pc,
-                          outsourced: {
-                            ...pc.outsourced,
-                            entries: pc.outsourced.entries.filter((_, j) => j !== i),
-                          },
-                        })
-                      }
-                      className="text-ink-muted hover:text-err"
-                    >
-                      <X size={11} />
-                    </button>
-                  )}
-                </span>
-              ))}
-            </div>
-          )}
+      {isSetupDismantle ? (
+        <div className="mt-1 space-y-1.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">Outsourced trips</div>
+          <OutsourcedEntryChips entries={pc.outsourced.entries} readOnly={readOnly} onRemove={removeOutsourced} />
           {!readOnly && (
-            <OutsourcedBox
-              onAdd={(o) =>
-                save({ ...pc, outsourced: { enabled: true, entries: [...pc.outsourced.entries, o] } })
-              }
-            />
+            <>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(["outsource", "lalamove", "grab"] as OutsourcedProvider[]).map((prov) => (
+                  <button
+                    key={prov}
+                    type="button"
+                    onClick={() => setOpenProvider(openProvider === prov ? null : prov)}
+                    className={cn(
+                      "rounded-md border px-3 py-1.5 text-[11px] font-semibold",
+                      openProvider === prov
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
+                    )}
+                  >
+                    {OUTSOURCED_PROVIDER_LABEL[prov]}
+                  </button>
+                ))}
+              </div>
+              {(openProvider === "outsource" || openProvider === "lalamove") && (
+                <OutsourcedBox
+                  onAdd={(o) => {
+                    addOutsourced({ provider: openProvider, ...o });
+                    setOpenProvider(null);
+                  }}
+                />
+              )}
+              {openProvider === "grab" && (
+                <GrabHelperBox
+                  helpers={helpers}
+                  onAdd={(o) => {
+                    addOutsourced({ provider: "grab", ...o });
+                    setOpenProvider(null);
+                  }}
+                />
+              )}
+            </>
           )}
         </div>
+      ) : (
+        <>
+          <label className="mt-1 flex items-center gap-2 text-[11px] font-semibold text-ink-secondary">
+            <input
+              type="checkbox"
+              checked={pc.outsourced.enabled}
+              disabled={readOnly}
+              onChange={(e) => save({ ...pc, outsourced: { ...pc.outsourced, enabled: e.target.checked } })}
+            />
+            Outsourced
+          </label>
+          {pc.outsourced.enabled && (
+            <div className="space-y-1.5">
+              <OutsourcedEntryChips entries={pc.outsourced.entries} readOnly={readOnly} onRemove={removeOutsourced} />
+              {!readOnly && (
+                <OutsourcedBox onAdd={(o) => addOutsourced({ provider: "outsource", ...o })} />
+              )}
+            </div>
+          )}
+        </>
       )}
       {showRemark && (
         <div className="mt-1 space-y-2">
