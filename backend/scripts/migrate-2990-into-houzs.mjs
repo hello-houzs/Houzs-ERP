@@ -13,7 +13,13 @@ const dst = postgres(DST, { ssl: "require", prepare: false, max: 1 });
 // mfg_so_audit_log + mfg_so_status_changes + pending_slip_uploads +
 // pos_carts + sync_config (5 tables previously omitted). accounts,
 // drivers, lorries stay EXCLUDED (deferred per owner rulings).
-const ORDER = ["staff","customers","suppliers","series","categories","products","product_models","product_fabrics","product_size_variants","warehouses","supplier_material_bindings","venues","mfg_sales_orders","mfg_sales_order_items","mfg_sales_order_payments","so_revisions","mfg_so_audit_log","mfg_so_status_changes","delivery_orders","delivery_order_items","sales_invoices","sales_invoice_items","sales_invoice_payments","delivery_returns","delivery_return_items","purchase_orders","purchase_order_items","grns","grn_items","purchase_invoices","purchase_invoice_items","purchase_returns","purchase_return_items","inventory_movements","inventory_lots","inventory_lot_consumptions","pwp_rules","pwp_codes","analysis_customer_targets","drivers","currencies","app_config","delivery_order_payments","pending_slip_uploads","pos_carts","sync_config"];
+// 2026-07-23 owner ask: gap-diag caught 9 CARRES SKUs on 2990 source with no
+// counterparts on dest — mfg_products was never in ORDER, so the SKU catalog
+// only landed via a manual one-shot back at cutover; every top-up since has
+// silently ignored new/renamed SKUs. Adding it AFTER the shared masters
+// (categories / product_models) and BEFORE anything that FK-refs item_code
+// (so mfg_sales_order_items / grn_items find their catalog row).
+const ORDER = ["staff","customers","suppliers","series","categories","products","product_models","product_fabrics","product_size_variants","mfg_products","warehouses","supplier_material_bindings","venues","mfg_sales_orders","mfg_sales_order_items","mfg_sales_order_payments","so_revisions","mfg_so_audit_log","mfg_so_status_changes","delivery_orders","delivery_order_items","sales_invoices","sales_invoice_items","sales_invoice_payments","delivery_returns","delivery_return_items","purchase_orders","purchase_order_items","grns","grn_items","purchase_invoices","purchase_invoice_items","purchase_returns","purchase_return_items","inventory_movements","inventory_lots","inventory_lot_consumptions","pwp_rules","pwp_codes","analysis_customer_targets","drivers","currencies","app_config","delivery_order_payments","pending_slip_uploads","pos_carts","sync_config"];
 // `lorries` deliberately NOT imported (owner ruling 2026-07-21): 2990's lorry
 // master is not carried over — Houzs fleet is managed on the Houzs side.
 // NOT in ORDER: `accounts` (GL) — scm.accounts.account_code is globally UNIQUE (+ FK'd by
