@@ -1705,14 +1705,50 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     f.pending_titles_label && /^[A-Z ]{2,20}$/.test(f.pending_titles_label)
       ? f.pending_titles_label
       : null;
+  // Director duties as title chips (owner 2026-07-23, Peter report): the
+  // section chip reads as someone else's stage, so director rows tag WHY the
+  // row is theirs. Each predicate mirrors its lane exactly (literal-date
+  // variants — the SELECT list is interpolated, not bound). Segments start
+  // with '|' so LTRIM(..., '|') strips the lead and keeps the separators;
+  // NULLIF collapses "no duty matched" to NULL so the frontend falls back.
+  const STOCK_DUTY_LIT = `EXISTS (SELECT 1 FROM project_checklist pc2
+              WHERE pc2.project_id = p.id AND pc2.title = 'Stock Out Transfer Record'
+                AND pc2.review_status IN ('pending_review', 'amended')
+                AND substr(COALESCE(pc2.due_date, p.start_date), 1, 10) <= '${dueToday}')`;
+  const ATTENDING_DUTY_LIT = `(substr(COALESCE(p.end_date, p.start_date), 1, 10) >= '${dueToday}'
+              AND ${CONTRACT_CLEAR}
+              AND NOT EXISTS (SELECT 1 FROM project_sales_attendees sa2 WHERE sa2.project_id = p.id))`;
+  const PIC_DUTY_LIT = `(substr(COALESCE(p.end_date, p.start_date), 1, 10) >= '${dueToday}'
+              AND ${CONTRACT_CLEAR}
+              AND NOT EXISTS (SELECT 1 FROM users pu2 WHERE pu2.id = p.pic_id AND pu2.id <> 1))`;
+  const AGREEMENT_DUTY_LIT = `EXISTS (SELECT 1 FROM project_checklist pc4
+              WHERE pc4.project_id = p.id AND pc4.title = 'Agreement / Quotation'
+                AND pc4.status = 'pending'
+                AND substr(COALESCE(pc4.due_date, p.start_date), 1, 10) <= '${dueToday}')`;
+  const directorDutySegs: string[] = [];
+  if (f.pending_director?.stock)
+    directorDutySegs.push(`CASE WHEN ${STOCK_DUTY_LIT} THEN '|Approve Stock Out Transfer' ELSE '' END`);
+  if (f.pending_director?.sales_pic)
+    directorDutySegs.push(`CASE WHEN ${PIC_DUTY_LIT} THEN '|Set Sales PIC' ELSE '' END`);
+  if (f.pending_director?.sales_attending)
+    directorDutySegs.push(`CASE WHEN ${ATTENDING_DUTY_LIT} THEN '|Set Sales Attending' ELSE '' END`);
+  if (f.pending_director?.agreement)
+    directorDutySegs.push(`CASE WHEN ${AGREEMENT_DUTY_LIT} THEN '|Approve Agreement / Quotation' ELSE '' END`);
   const pendingTitlesCol = ptl
     ? `,
-            (SELECT group_concat(c3.title, '|') FROM project_checklist c3
-              WHERE c3.project_id = p.id
-                AND c3.status NOT IN ('done', 'na')
-                AND c3.role_label = '${ptl}'
-                AND substr(COALESCE(c3.due_date, p.start_date), 1, 10) <= '${dueToday}') as my_pending_titles`
-    : f.pending_titles_logistic
+            NULLIF(LTRIM(
+              COALESCE((SELECT group_concat(c3.title, '|') FROM project_checklist c3
+                WHERE c3.project_id = p.id
+                  AND c3.status NOT IN ('done', 'na')
+                  AND c3.role_label = '${ptl}'
+                  AND substr(COALESCE(c3.due_date, p.start_date), 1, 10) <= '${dueToday}'), '')
+              || ${f.pending_sales_attending ? `CASE WHEN ${ATTENDING_DUTY_LIT} THEN '|Set Sales Attending' ELSE '' END` : `''`},
+            '|'), '') as my_pending_titles`
+    : directorDutySegs.length
+      ? `,
+            NULLIF(LTRIM(${directorDutySegs.join("\n              || ")},
+            '|'), '') as my_pending_titles`
+      : f.pending_titles_logistic
       ? `,
             CASE
               WHEN EXISTS (SELECT 1 FROM project_checklist sot
