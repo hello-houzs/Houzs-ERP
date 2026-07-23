@@ -20,6 +20,7 @@ import {
   fmtDocDate,
   safeName,
 } from './pdf-common';
+import { shipToBlock } from './pdf-party-blocks';
 import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
 
 type DoHeader = {
@@ -110,16 +111,13 @@ export async function renderDeliveryOrderInto(
   const statusText = header.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
   const volumeText = header.m3_total_milli ? `${(header.m3_total_milli / 1000).toFixed(3)} m³` : null;
   y = drawInfoColumns(doc, y,
-    {
-      title: 'DELIVER TO',
-      rows: [
-        ['Company', header.debtor_name],
-        ['Code', header.debtor_code],
-        ['Address', addressValue],
-        ['Tel', header.phone ? formatPhone(header.phone) : null],
-        ['Note', header.notes],
-      ],
-    },
+    shipToBlock({
+      name: header.debtor_name,
+      code: header.debtor_code,
+      address: addressValue,
+      phone: header.phone ? formatPhone(header.phone) : null,
+      note: header.notes,
+    }, { title: 'DELIVER TO' }),
     {
       title: 'DELIVERY DETAILS',
       rows: [

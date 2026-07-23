@@ -18,6 +18,7 @@ import {
   fmtRm,
   safeName,
 } from './pdf-common';
+import { billToBlock } from './pdf-party-blocks';
 import { loadFabricDescriptionMap, loadFabricSupplierMap } from './supplier-doc-data';
 import { composeSoLineDescription } from './so-line-description';
 import {
@@ -436,18 +437,18 @@ export async function renderSalesOrderInto(
   const emergencyPhone = s('emergencyContactPhone', 'emergency_contact_phone');
   const emergencyText = emergencyPhone ? formatPhone(emergencyPhone) : null;
   y = drawInfoColumns(doc, y,
-    {
-      title: 'BILL TO',
-      rows: [
-        ['Company', header.debtor_name],
-        ['Code', header.debtor_code],
-        ['Address', addressLines.join(', ')],
-        ['Tel', header.phone ? formatPhone(header.phone) : null],
-        ['Email', header.email],
-        ['Family', familyContact],
-        ['Note', header.note],
-      ],
-    },
+    billToBlock({
+      name: header.debtor_name,
+      code: header.debtor_code,
+      address: addressLines.join(', '),
+      phone: header.phone ? formatPhone(header.phone) : null,
+      email: header.email,
+      /* Family / second contact is SO-only (POS handover's Emergency phase);
+         slots into the party block via extras so the shared helper stays
+         narrow to the canonical bill-to shape. */
+      extras: [['Family', familyContact]],
+      note: header.note,
+    }),
     {
       title: 'ORDER DETAILS',
       rows: [
