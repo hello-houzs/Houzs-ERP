@@ -327,7 +327,10 @@ function CaseList({
   const { user, can } = useAuth();
   const [q, setQ] = useState("");
   const [chip, setChip] = useState("all");
-  const [sort, setSort] = useState<"sla" | "no">("sla");
+  // Default sort = newest case first (owner 2026-07-23: "Sorting by Case，
+  // 新 Case 到旧 Case，然后才有其他的辅助功能") — SLA ordering stays as the
+  // secondary option in the selector.
+  const [sort, setSort] = useState<"sla" | "no">("no");
   /* Debounced search term — the value keyed into (and sent to) the server so a
      keystroke doesn't fire a request per character. Mirrors MobileSalesOrders. */
   const [debouncedQ, setDebouncedQ] = useState("");
@@ -367,50 +370,63 @@ function CaseList({
       || Number(get(r, "assignedTo2", "assigned_to_2") ?? 0) === uid;
   };
 
-  // Design chips (ListA): All / SLA risk / Urgent / Mine, with counts.
-  //   · all    — no server filter.
-  //   · mine   — SERVER-SIDE: /api/assr?assigned_to=<me> (matches assigned_to
-  //              OR assigned_to_2, exactly like isMine), so it's correct across
-  //              every page.
-  //   · risk / urgent — the endpoint has no SLA-bucket or priority param, so
-  //              these two stay CLIENT-SIDE over the rows loaded so far (FLAG).
-  //              Infinite scroll keeps pulling pages as the (shorter) filtered
-  //              list leaves the sentinel in view, so matches accumulate as the
-  //              operator scrolls rather than being hard-capped at 200.
-  const CHIPS: { key: string; label: string; match: (r: Any) => boolean }[] = [
-    { key: "all", label: "All", match: () => true },
-    { key: "risk", label: "SLA risk", match: (r) => ["breach", "risk"].includes(slaStateOf(r).tone) },
-    { key: "urgent", label: "Urgent", match: (r) => priorityOf(r) === "urgent" },
-    { key: "mine", label: "Mine", match: isMine },
-    // Archived — SERVER-SIDE archived_only=1, a separate list rather than
-    // archived rows interleaved with live work (owner 2026-07-21, desktop
-    // #1023 parity). match is a no-op: the server already returns only
-    // archived rows while this chip is active.
-    { key: "archived", label: "Archived", match: () => true },
-  ];
+  // Role-aware chip row (owner 2026-07-23: "不同user show不同的chips") —
+  // three cuts derived from the SAME capability signals that gate the list
+  // (canViewCases below), so visibility and chip set can't drift apart:
+  //   · ops/service (service_cases.read) work the queue → work-state chips
+  //     plus the SLA risk / Urgent auxiliaries;
+  //   · sales (org.sales.staff) follow their own cases → Mine/Open/Completed,
+  //     no queue noise;
+  //   · directors/others get the overview cut with Archived.
+  // Chips with `params` filter SERVER-SIDE (cross-page correct): mine →
+  // assigned_to (matches assigned_to OR assigned_to_2, like isMine); open →
+  // exclude_stage=completed; completed → stage=completed; archived →
+  // archived_only=1, a separate list rather than archived rows interleaved
+  // with live work (desktop #1023 parity — its match is a no-op because the
+  // server already returns only archived rows). risk / urgent have no
+  // endpoint param, so they stay CLIENT-SIDE over the rows loaded so far;
+  // infinite scroll keeps pulling pages as the (shorter) filtered list
+  // leaves the sentinel in view, so matches accumulate as the operator
+  // scrolls rather than being hard-capped.
+  type ChipDef = { key: string; label: string; match: (r: Any) => boolean; params?: Record<string, string> };
+  const CHIP_DEFS: Record<string, ChipDef> = {
+    all: { key: "all", label: "All", match: () => true },
+    open: { key: "open", label: "Open", match: (r) => stageOf(r) !== "completed", params: { exclude_stage: "completed" } },
+    completed: { key: "completed", label: "Completed", match: (r) => stageOf(r) === "completed", params: { stage: "completed" } },
+    mine: { key: "mine", label: "Mine", match: isMine, params: { ...(user?.id ? { assigned_to: String(user.id) } : {}) } },
+    risk: { key: "risk", label: "SLA risk", match: (r) => ["breach", "risk"].includes(slaStateOf(r).tone) },
+    urgent: { key: "urgent", label: "Urgent", match: (r) => priorityOf(r) === "urgent" },
+    archived: { key: "archived", label: "Archived", match: () => true, params: { archived_only: "1" } },
+  };
+  const CHIPS: ChipDef[] = (
+    can("service_cases.read")
+      ? ["all", "open", "mine", "risk", "urgent", "archived"]
+      : capability(user, "org.sales.staff")
+        ? ["all", "mine", "open", "completed"]
+        : ["all", "open", "completed", "archived"]
+  ).map((k) => CHIP_DEFS[k]);
 
   /* Server-side search + sort + Mine + infinite scroll. `search` covers
      case no / SO doc / Ref / customer server-side (cross-page); the sort
-     selector maps to the endpoint's sort_by (sla → hours_to_deadline asc =
-     most-overdue first, nulls last; no → assr_no asc). Changing search / sort /
+     selector maps to the endpoint's sort_by (no → assr_no desc = newest case
+     first, the default; sla → hours_to_deadline asc = most-overdue first,
+     nulls last). Changing search / sort /
      Mine swaps the query key so the list restarts from page 1. per_page 30;
      default id-desc tiebreak → no skipped/dup rows.
      NOTE: the server `search` does NOT cover the complaint issue text or the
      item code/description that the old client search also matched — those two
      fields are no longer searchable (cross-page correctness is the trade). */
-  const mineParam = chip === "mine" ? user?.id ?? null : null;
-  // Archived chip → archived_only=1 (NOT include_archived, which would
-  // interleave archived rows into the active list — the pre-#1023 bug).
-  const archivedParam = chip === "archived" ? 1 : null;
+  const activeChip = CHIPS.find((c) => c.key === chip) ?? CHIPS[0];
   const buildParams = (page: number): string => {
     const p = new URLSearchParams();
     p.set("page", String(page));
     p.set("per_page", "30");
     if (debouncedQ) p.set("search", debouncedQ);
-    if (sort === "no") { p.set("sort_by", "assr_no"); p.set("sort_dir", "asc"); }
+    if (sort === "no") { p.set("sort_by", "assr_no"); p.set("sort_dir", "desc"); }
     else { p.set("sort_by", "hours_to_deadline"); p.set("sort_dir", "asc"); }
-    if (mineParam != null) p.set("assigned_to", String(mineParam));
-    if (archivedParam != null) p.set("archived_only", "1");
+    // The active chip's server-side filter (archived_only NOT
+    // include_archived, which would interleave — the pre-#1023 bug).
+    for (const [k, v] of Object.entries(activeChip.params ?? {})) p.set(k, v);
     return p.toString();
   };
   type AssrListPage = { data?: Any[]; total?: number; page?: number; per_page?: number };
@@ -418,7 +434,7 @@ function CaseList({
     data, isLoading, isFetching, isPlaceholderData, error,
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ["mobile-assr-list-paged", debouncedQ, sort, mineParam, archivedParam],
+    queryKey: ["mobile-assr-list-paged", debouncedQ, sort, activeChip.key, user?.id],
     queryFn: ({ pageParam, signal }) => api.get<AssrListPage>(`/api/assr?${buildParams(pageParam)}`, { signal }),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
@@ -503,8 +519,8 @@ function CaseList({
           </div>
           <SearchProgress active={searchTransition.isSearching} label="Searching…" />
           <select value={sort} onChange={(e) => setSort(e.target.value as "sla" | "no")} style={{ flex: "none", fontFamily: "inherit", fontSize: 12, color: "var(--mut)", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "0 8px", height: 38, appearance: "none", WebkitAppearance: "none" }}>
+            <option value="no">Sort: Newest</option>
             <option value="sla">Sort: SLA</option>
-            <option value="no">Sort: Case</option>
           </select>
         </div>
         <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={totalCount} term={q} className="mt-1 px-1" />
