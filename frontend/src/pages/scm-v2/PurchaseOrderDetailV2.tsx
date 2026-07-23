@@ -628,6 +628,33 @@ function PurchaseOrderDetailV2ReadOnly() {
       },
     },
     {
+      key: "eta",
+      label: "ETA",
+      width: "96px",
+      align: "right",
+      getValue: (l) => l.delivery_date ?? "",
+      render: (l) => (
+        <span className="font-mono text-[12px] text-ink-secondary">
+          {l.delivery_date ? fmtDate(l.delivery_date) : "—"}
+        </span>
+      ),
+    },
+    {
+      key: "transferTo",
+      label: "Transfer to",
+      width: "132px",
+      getValue: (l) => (l.warehouse_id ? warehouseNameById.get(l.warehouse_id) ?? "" : ""),
+      render: (l) => {
+        const label = l.warehouse_id ? warehouseNameById.get(l.warehouse_id) : null;
+        if (!label) return <span className="text-ink-muted">—</span>;
+        return (
+          <span className="inline-flex items-center gap-0.5 rounded bg-primary-soft px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-primary-ink">
+            {label}
+          </span>
+        );
+      },
+    },
+    {
       key: "unit",
       label: "Unit price",
       width: "108px",

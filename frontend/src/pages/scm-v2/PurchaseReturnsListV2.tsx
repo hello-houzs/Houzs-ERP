@@ -69,6 +69,9 @@ type PrItem = {
   qty?: number;
   qty_returned?: number;
   condition?: string | null;
+  /* Per-line reason (backend purchase_return_items.reason) — nullable; when
+     unset the header-level reason (shown as a callout above) is the fallback. */
+  reason?: string | null;
   unit_price_centi?: number;
   line_total_centi?: number;
 };
@@ -307,10 +310,10 @@ function DetailDrawer({
 
               <SectionHeading>Returned items</SectionHeading>
               <div className="overflow-hidden rounded-lg border border-border">
-                <div className="grid grid-cols-[1fr_52px_82px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                <div className="grid grid-cols-[1fr_52px_1fr_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
                   <span>Item</span>
                   <span className="text-right">Qty</span>
-                  <span className="text-right">Unit</span>
+                  <span>Reason</span>
                   <span className="text-right">Credit</span>
                 </div>
                 {detailQ.isLoading && (
@@ -328,7 +331,7 @@ function DetailDrawer({
                       (l.description2 ?? ""),
                   });
                   return (
-                  <div key={l.id ?? i} className="grid grid-cols-[1fr_52px_82px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0">
+                  <div key={l.id ?? i} className="grid grid-cols-[1fr_52px_1fr_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0">
                     <div className="min-w-0">
                       <div className="text-[12.5px] font-medium leading-snug text-ink">
                         {primary || "—"}
@@ -345,7 +348,9 @@ function DetailDrawer({
                       )}
                     </div>
                     <span className="text-right font-money text-[12.5px] text-ink-secondary">{l.qty_returned ?? l.qty ?? 0}</span>
-                    <span className="text-right font-money text-[12.5px] text-ink-secondary">{fmtRm(l.unit_price_centi ?? 0)}</span>
+                    <span className="truncate text-[12px] italic text-ink-secondary" title={l.reason ?? ''}>
+                      {l.reason ? l.reason : <span className="not-italic text-ink-muted">—</span>}
+                    </span>
                     <span className="text-right font-money text-[12.5px] font-semibold text-synced">{fmtRm(l.line_total_centi ?? 0)}</span>
                   </div>
                   );
