@@ -633,29 +633,37 @@ export const PurchaseConsignmentOrderDetail = () => {
                 <th className={styles.tableRight}>Total</th>
                 <th className={styles.tableRight}>Delivery</th>
                 <th>Received</th>
+                <th className={styles.tableRight}>Balance</th>
               </tr>
             </thead>
             <tbody>
-              {visibleItems.map((it) => (
-                <tr key={it.id}>
-                  <td>
-                    <div className={styles.codeCell}>{it.material_code}</div>
-                    {(() => {
-                      const summary = buildVariantSummary(it.item_group, it.variants as Record<string, unknown> | null)
-                        || it.description
-                        || it.material_name;
-                      return summary ? <div className={styles.muted} style={{ fontSize: 'var(--fs-11)' }}>{summary}</div> : null;
-                    })()}
-                  </td>
-                  <td className={styles.muted}>{it.item_group ?? it.material_kind}</td>
-                  <td className={styles.tableRight}>{it.qty}</td>
-                  <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, po.currency)}</td>
-                  <td className={styles.tableRight}>{(it.discount_centi ?? 0) > 0 ? fmtRm(it.discount_centi, po.currency) : '—'}</td>
-                  <td className={styles.priceCell}>{fmtRm(it.line_total_centi, po.currency)}</td>
-                  <td className={styles.tableRight}>{it.delivery_date ?? '—'}</td>
-                  <td>{renderReceived(it)}</td>
-                </tr>
-              ))}
+              {visibleItems.map((it) => {
+                const receivedRow = it as unknown as { received_qty?: number };
+                const balance = Math.max(0, (it.qty ?? 0) - (receivedRow.received_qty ?? 0));
+                return (
+                  <tr key={it.id}>
+                    <td>
+                      <div className={styles.codeCell}>{it.material_code}</div>
+                      {(() => {
+                        const summary = buildVariantSummary(it.item_group, it.variants as Record<string, unknown> | null)
+                          || it.description
+                          || it.material_name;
+                        return summary ? <div className={styles.muted} style={{ fontSize: 'var(--fs-11)' }}>{summary}</div> : null;
+                      })()}
+                    </td>
+                    <td className={styles.muted}>{it.item_group ?? it.material_kind}</td>
+                    <td className={styles.tableRight}>{it.qty}</td>
+                    <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, po.currency)}</td>
+                    <td className={styles.tableRight}>{(it.discount_centi ?? 0) > 0 ? fmtRm(it.discount_centi, po.currency) : '—'}</td>
+                    <td className={styles.priceCell}>{fmtRm(it.line_total_centi, po.currency)}</td>
+                    <td className={styles.tableRight}>{it.delivery_date ?? '—'}</td>
+                    <td>{renderReceived(it)}</td>
+                    <td className={styles.tableRight} style={{ fontWeight: balance > 0 ? 600 : 400, color: balance > 0 ? 'var(--c-festive-b, #B8331F)' : 'var(--fg-muted)' }}>
+                      {balance > 0 ? balance : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}

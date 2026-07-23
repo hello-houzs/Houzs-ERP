@@ -384,10 +384,11 @@ function DetailDrawer({
 
               <SectionHeading>Line items</SectionHeading>
               <div className="overflow-hidden rounded-lg border border-border">
-                <div className="grid grid-cols-[1fr_52px_82px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                <div className="grid grid-cols-[1fr_44px_44px_44px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
                   <span>Item</span>
-                  <span className="text-right">Qty</span>
-                  <span className="text-right">Unit</span>
+                  <span className="text-right">Ord</span>
+                  <span className="text-right">Rcv</span>
+                  <span className="text-right">Bal</span>
                   <span className="text-right">Amount</span>
                 </div>
                 {detailQ.isLoading && (
@@ -401,6 +402,9 @@ function DetailDrawer({
                   </div>
                 )}
                 {items.map((l) => {
+                  // #1110 (variant summary in the item cell) + #1108 (Ord/Rcv/Bal
+                  // fulfillment cols) merged: a PO drawer needs both the fabric/
+                  // colour line AND the received-vs-ordered progress.
                   const { primary, secondary } = lineIdentity({
                     code: l.material_code,
                     description: l.description || l.material_name,
@@ -408,31 +412,38 @@ function DetailDrawer({
                       buildVariantSummary(l.item_group ?? "others", l.variants ?? null) ||
                       (l.description2 ?? ""),
                   });
+                  const received = Number(l.received_qty ?? 0);
+                  const ordered = Number(l.qty ?? 0);
+                  const balance = Math.max(0, ordered - received);
+                  const fullyReceived = ordered > 0 && received >= ordered;
                   return (
-                  <div
-                    key={l.id}
-                    className="grid grid-cols-[1fr_52px_82px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-[12.5px] font-medium leading-snug text-ink">
-                        {primary}
-                      </div>
-                      {secondary && (
-                        <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
-                          {secondary}
+                    <div
+                      key={l.id}
+                      className="grid grid-cols-[1fr_44px_44px_44px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-[12.5px] font-medium leading-snug text-ink">
+                          {primary}
                         </div>
-                      )}
+                        {secondary && (
+                          <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
+                            {secondary}
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-right font-money text-[12.5px] text-ink-secondary">
+                        {ordered}
+                      </span>
+                      <span className={cn("text-right font-money text-[12.5px] font-semibold", fullyReceived ? "text-synced" : "text-ink-secondary")}>
+                        {received}
+                      </span>
+                      <span className={cn("text-right font-money text-[12.5px] font-semibold", balance > 0 ? "text-accent-bright" : "text-ink-muted")}>
+                        {balance > 0 ? balance : "—"}
+                      </span>
+                      <span className="text-right font-money text-[12.5px] font-semibold text-ink">
+                        {fmtRm(l.line_total_centi ?? 0)}
+                      </span>
                     </div>
-                    <span className="text-right font-money text-[12.5px] text-ink-secondary">
-                      {l.qty}
-                    </span>
-                    <span className="text-right font-money text-[12.5px] text-ink-secondary">
-                      {fmtRm(l.unit_price_centi ?? 0)}
-                    </span>
-                    <span className="text-right font-money text-[12.5px] font-semibold text-ink">
-                      {fmtRm(l.line_total_centi ?? 0)}
-                    </span>
-                  </div>
                   );
                 })}
               </div>

@@ -85,6 +85,9 @@ type GrnItem = {
   unit_price_centi?: number;
   line_total_centi?: number;
   warehouse_code?: string | null;
+  /* Per-line delivery date (mig 0101) — the ETA the supplier's shipment landed
+     under. Nullable; falls back to the header receive date when unset. */
+  delivery_date?: string | null;
   /* Landed-cost allocation (Phase 1-A) — freight (MYR sen) allocated to this line. */
   allocated_charge_centi?: number | null;
 };
@@ -392,6 +395,18 @@ function GoodsReceivedDetailV2ReadOnly() {
         const full = ordered > 0 && rec >= ordered;
         return <span className={cn("font-money text-[13px] font-semibold", full ? "text-synced" : "text-ink")}>{rec}</span>;
       },
+    },
+    {
+      key: "eta",
+      label: "ETA",
+      width: "96px",
+      align: "right",
+      getValue: (l) => l.delivery_date ?? "",
+      render: (l) => (
+        <span className="font-mono text-[12px] text-ink-secondary">
+          {l.delivery_date ? fmtDate(l.delivery_date) : "—"}
+        </span>
+      ),
     },
     {
       key: "unit",
