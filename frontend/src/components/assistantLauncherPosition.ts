@@ -32,10 +32,10 @@ export interface Offset {
   bottom: number;
 }
 
-// First-run anchor: bottom-right, one disc-width to the LEFT of the "+" FAB
-// (which lives at right-5 = 20px, width 56 → occupies out to 76px). 88px clears
-// it with a small gap; 24px bottom lines the two discs up on the same baseline.
-export const DEFAULT_OFFSET: Offset = { right: 88, bottom: 24 };
+// First-run anchor: bottom-right, one disc-width to the LEFT of the round
+// green "+" (right-5 = 20px, 48 wide → occupies out to 68px). 80px clears it
+// with a small gap; bottom 20 lines up with the "+"'s baseline.
+export const DEFAULT_OFFSET: Offset = { right: 80, bottom: 20 };
 
 // Pure so it's unit-testable without a DOM: the caller supplies the viewport
 // (window.innerWidth/Height at call time). Keeps the disc's right/bottom offsets
