@@ -56,6 +56,7 @@ import { fmtCenti } from "../../vendor/shared/format";
 import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../../vendor/scm/lib/so-form-validate";
 import { hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../../vendor/shared/so-variant-rule";
 import { todayMyt } from "../../vendor/scm/lib/dates";
+import { PhoneInput } from "../../vendor/scm/components/PhoneInput";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -598,11 +599,9 @@ function StepCustomer({
         </FieldLabel>
 
         <FieldLabel label="Phone" required invalid={phoneMissing}>
-          <input
-            type="tel"
+          <PhoneInput
             value={customer.phone}
-            onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
-            placeholder="012-345 6789"
+            onChange={(v) => setCustomer({ ...customer, phone: v })}
             className={cn(
               "block w-full rounded-md border bg-surface px-3 py-2 font-money text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20",
               phoneMissing ? "border-err" : "border-border",
