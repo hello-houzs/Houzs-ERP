@@ -1,19 +1,19 @@
 #!/usr/bin/env node
-// Backfill blank branding on company_2 (2990) SO LINES from the SKU
-// (mfg_products.branding by item_code) — the SAME source the write-path
-// auto-derive (deriveLineBrandingFromProduct) uses, applied to the imported SOs
-// whose lines never ran through it. Owner 2026-07-23: the SO list Branding pill
-// is blank for most 2990 SOs; fill it.
+// Fill blank branding on company_2 (2990) so the SO list Branding pill shows.
+// Owner 2026-07-23: most 2990 SOs read "—". The list derives the pill from the
+// first MAIN line's branding (mattress falls back to the SKU brand). The 68
+// imported SOs' sofa/bedframe lines are blank AND their SKUs are blank, so
+// nothing resolves.
 //
-// The SO-list pill (mfg-sales-orders.ts) reads the first MAIN line's branding
-// (mattress falls back to the SKU brand). So filling the LINE branding from the
-// SKU makes the pill show. Where the SKU ITSELF has no branding, we CANNOT fill
-// (no source, no guess) — the script REPORTS those, broken down by category +
-// with model-branding and product-name context, so the owner can see exactly
-// which SKUs still need a brand set in maintenance.
+// The dry-run proved every blank line is SOFA or BEDFRAME — and 2990 has EXACTLY
+// ONE sofa brand ("2990s Sofa") and ONE bedframe brand ("Bedframe") in its
+// dropdown. So this is DETERMINISTIC, not a guess: SOFA -> the sole sofa brand,
+// BEDFRAME -> the sole bedframe brand. MATTRESS is NOT filled here (three
+// brands = ambiguous) and anything else is left; both are reported.
 //
-// SAFE: fills only blank lines, only from a non-blank SKU brand. Idempotent.
-// DRY-RUN unless APPLY=1.
+// Fills the SKU (mfg_products.branding) AND the SO line
+// (mfg_sales_order_items.branding), so the source of truth is right and new
+// orders auto-derive correctly. Blank-only, idempotent. DRY-RUN unless APPLY=1.
 import postgres from "postgres";
 const DST = process.env.DATABASE_URL;
 if (!DST) { console.error("need DATABASE_URL"); process.exit(2); }
@@ -21,6 +21,7 @@ const APPLY = process.env.APPLY === "1";
 const dst = postgres(DST, { ssl: "require", prepare: false, max: 1 });
 const log = (m) => console.log(process.env.GITHUB_ACTIONS ? `::notice::${m}` : m);
 const blank = (v) => v == null || String(v).trim() === "";
+const norm = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 const normCat = (raw) => { const g = String(raw ?? "").trim().toUpperCase();
   if (g.includes("BEDFRAME")) return "BEDFRAME"; if (g.includes("SOFA")) return "SOFA";
   if (g.includes("MATTRESS")) return "MATTRESS"; if (g.includes("ACCESSOR")) return "ACCESSORY";
@@ -31,51 +32,66 @@ async function main() {
   const cid = Number(c.id);
   log(`2990 company_id=${cid}  mode=${APPLY ? "APPLY" : "DRY-RUN"}`);
 
-  // Catalog: code -> {branding, category, name} for company_2.
+  // Canonical brands: find the SINGLE sofa brand + SINGLE bedframe brand.
+  const brands = (await dst`SELECT name FROM project_brands WHERE company_id=${cid} AND active=1`).map((b) => b.name);
+  const sofaBrand = brands.find((b) => norm(b).includes("sofa")) ?? null;
+  const bedframeBrand = brands.find((b) => norm(b).includes("bedframe")) ?? null;
+  log(`canonical sofa brand="${sofaBrand}"  bedframe brand="${bedframeBrand}"`);
+  if (!sofaBrand || !bedframeBrand) { log("missing a sofa/bedframe canonical brand — refusing to run"); return; }
+
+  // Deterministic category -> brand for the single-brand categories. Returns the
+  // brand to write, or null to LEAVE (mattress = ambiguous, others = no brand).
+  const brandFor = (cat, skuBranding) => {
+    if (cat === "SOFA") return sofaBrand;
+    if (cat === "BEDFRAME") return bedframeBrand;
+    return blank(skuBranding) ? null : skuBranding.trim(); // mattress/other: only if SKU already has one
+  };
+
+  // Catalog: code -> {category, branding, name}.
   const prod = await dst`SELECT code, branding, category, name FROM scm.mfg_products WHERE company_id=${cid}`;
   const pBrand = new Map(), pCat = new Map(), pName = new Map();
   for (const p of prod) { if (!blank(p.branding)) pBrand.set(p.code, p.branding.trim()); pCat.set(p.code, normCat(p.category)); pName.set(p.code, p.name); }
 
-  // Blank-branding SO lines for company_2.
+  // 1) mfg_products: fill blank SOFA/BEDFRAME SKU branding (source of truth).
+  const prodUpd = new Map();
+  for (const p of prod) {
+    if (!blank(p.branding)) continue;
+    const cat = normCat(p.category);
+    const b = brandFor(cat, null);
+    if (b) prodUpd.set(p.code, b);
+  }
+  const prodByBrand = new Map();
+  for (const b of prodUpd.values()) prodByBrand.set(b, (prodByBrand.get(b) ?? 0) + 1);
+  log("");
+  log(`=== mfg_products: would fill ${prodUpd.size} blank SKU brandings ===`);
+  for (const [b, n] of prodByBrand) log(`  -> "${b}"  (${n} SKUs)`);
+
+  // 2) mfg_sales_order_items: fill blank line branding.
   const lines = await dst`
-    SELECT i.id, i.doc_no, i.item_code, i.item_group, i.branding
+    SELECT i.id, i.item_code, i.item_group
       FROM scm.mfg_sales_order_items i
       JOIN scm.mfg_sales_orders o ON o.doc_no = i.doc_no
      WHERE o.company_id=${cid} AND (i.branding IS NULL OR btrim(i.branding)='')`;
-  log(`blank-branding SO lines: ${lines.length}`);
-
-  const updates = new Map(); // id -> brand
-  const leaveByCat = new Map(); // cat -> count of lines left (SKU also blank)
-  const leaveExamples = [];
+  const lineUpd = new Map(); const leaveByCat = new Map();
   for (const ln of lines) {
     const cat = (ln.item_code && pCat.get(ln.item_code)) ?? normCat(ln.item_group);
-    const skuBrand = ln.item_code ? pBrand.get(ln.item_code) : undefined;
-    if (skuBrand) { updates.set(ln.id, skuBrand); }
-    else {
-      leaveByCat.set(cat, (leaveByCat.get(cat) ?? 0) + 1);
-      if (leaveExamples.length < 12) leaveExamples.push(`${ln.doc_no} [${cat}] code=${ln.item_code ?? "-"} name="${(ln.item_code && pName.get(ln.item_code)) || "?"}"`);
-    }
+    const sku = ln.item_code ? (prodUpd.get(ln.item_code) ?? pBrand.get(ln.item_code)) : undefined;
+    const b = brandFor(cat, sku);
+    if (b) lineUpd.set(ln.id, b);
+    else leaveByCat.set(cat, (leaveByCat.get(cat) ?? 0) + 1);
   }
-
-  // Fill breakdown by target brand.
-  const byBrand = new Map();
-  for (const b of updates.values()) byBrand.set(b, (byBrand.get(b) ?? 0) + 1);
+  const lineByBrand = new Map();
+  for (const b of lineUpd.values()) lineByBrand.set(b, (lineByBrand.get(b) ?? 0) + 1);
   log("");
-  log(`=== WOULD FILL ${updates.size} lines from SKU branding ===`);
-  for (const [b, n] of [...byBrand.entries()].sort((a, z) => z[1] - a[1])) log(`  -> "${b}"  (${n} lines)`);
-  log("");
-  log(`=== LEAVE ${lines.length - updates.size} lines — SKU itself has NO branding (needs a brand set in Product maintenance) ===`);
-  for (const [cat, n] of [...leaveByCat.entries()].sort((a, z) => z[1] - a[1])) log(`  ${cat}: ${n} lines`);
-  if (leaveExamples.length) { log("  examples:"); for (const e of leaveExamples) log(`    ${e}`); }
+  log(`=== SO lines: would fill ${lineUpd.size} of ${lines.length} blank lines ===`);
+  for (const [b, n] of lineByBrand) log(`  -> "${b}"  (${n} lines)`);
+  if (leaveByCat.size) { log("  LEAVE (ambiguous / no brand — report):"); for (const [cat, n] of leaveByCat) log(`    ${cat}: ${n} lines`); }
 
-  if (APPLY && updates.size) {
-    let done = 0;
-    for (const [id, b] of updates) { await dst`UPDATE scm.mfg_sales_order_items SET branding=${b} WHERE id=${id}`; done++; }
-    log("");
-    log(`APPLIED ${done} line-branding fills.`);
-  } else if (!APPLY) {
-    log("");
-    log("DRY-RUN — no writes. APPLY=1 to fill.");
-  }
+  if (!APPLY) { log(""); log("DRY-RUN — no writes. APPLY=1 to fill."); return; }
+  let a = 0, b2 = 0;
+  for (const [code, br] of prodUpd) { await dst`UPDATE scm.mfg_products SET branding=${br} WHERE company_id=${cid} AND code=${code} AND (branding IS NULL OR btrim(branding)='')`; a++; }
+  for (const [id, br] of lineUpd) { await dst`UPDATE scm.mfg_sales_order_items SET branding=${br} WHERE id=${id}`; b2++; }
+  log("");
+  log(`APPLIED: ${a} SKU brandings + ${b2} SO-line brandings.`);
 }
 main().then(() => dst.end()).catch(async (e) => { console.error("SO_BRANDING_FAIL", e.message); try { await dst.end(); } catch {} process.exit(1); });
