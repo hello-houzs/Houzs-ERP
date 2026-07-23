@@ -20,6 +20,13 @@ const ORDER = ["staff","customers","suppliers","series","categories","products",
 // so verbatim-id child rows can point at parents that don't exist under company_2.
 // GUARD drops such rows instead of inserting dangling garbage (FK checks are off).
 const DANGLING_GUARD = { product_size_variants: { parent: "size_library", col: "size_id" }, delivery_order_payments: { parent: "delivery_orders", col: "delivery_order_id" } };
+// Post-migration NOT NULL columns the SOURCE doesn't carry — set a safe
+// default at INSERT time. mig 0177 added `warehouses.type NOT NULL`; source
+// 2990 predates that so its rows have no `type` value and Postgres rejects
+// the insert with "null value in column type violates not-null constraint".
+// Default to 'warehouse' (the most common bucket); operators can retag via
+// the Warehouse Maintenance UI drawer if a row should be showroom/display.
+const COLUMN_DEFAULTS = { warehouses: { type: "warehouse" } };
 const DOCNO_COL = { mfg_sales_orders:"doc_no", delivery_orders:"do_number", sales_invoices:"invoice_number", purchase_orders:"po_number", grns:"grn_number", purchase_invoices:"invoice_number", delivery_returns:"dr_number", purchase_returns:"pr_number" };
 const prefixDoc = (v) => (v == null || String(v).startsWith("2990-") ? v : `2990-${v}`);
 // Houzs-only FK columns to null on import (source values point at masters we don't migrate)
@@ -46,7 +53,8 @@ async function main() {
     const dset=new Set(dcols), srcCols=Object.keys(rows[0]);
     const shared=srcCols.filter(c=>dset.has(c)&&c!=="company_id"), dropped=srcCols.filter(c=>!dset.has(c));
     totalSrc+=rows.length; const docCol=DOCNO_COL[table];
-    const shaped=rows.map(r=>{ const o=noCid?{}:{company_id:cid}; for(const c of shared)o[c]=r[c]; if(docCol&&o[docCol]!=null)o[docCol]=prefixDoc(o[docCol]); const refs=PREFIX_REF_COLS[table]; if(refs)for(const rc of refs)if(o[rc]!=null)o[rc]=prefixDoc(o[rc]); const nulls=NULL_COLS[table]; if(nulls)for(const nc of nulls)if(nc in o)o[nc]=null; if(noCid?.forceInactive&&dset.has("active"))o.active=false; return o; });
+    const defs=COLUMN_DEFAULTS[table];
+    const shaped=rows.map(r=>{ const o=noCid?{}:{company_id:cid}; for(const c of shared)o[c]=r[c]; if(docCol&&o[docCol]!=null)o[docCol]=prefixDoc(o[docCol]); const refs=PREFIX_REF_COLS[table]; if(refs)for(const rc of refs)if(o[rc]!=null)o[rc]=prefixDoc(o[rc]); const nulls=NULL_COLS[table]; if(nulls)for(const nc of nulls)if(nc in o)o[nc]=null; if(defs)for(const[k,v]of Object.entries(defs))if(dset.has(k)&&(o[k]==null))o[k]=v; if(noCid?.forceInactive&&dset.has("active"))o.active=false; return o; });
     console.log(`${table}: ${rows.length}`+(docCol?` (${docCol}->2990-)`:"")+(dropped.length?` [drop:${dropped.join(",")}]`:""));
     let toInsert=shaped;
     const guard=DANGLING_GUARD[table];
