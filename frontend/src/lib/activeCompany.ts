@@ -16,6 +16,21 @@
 // module so another signed-in tab cannot silently change this tab's tenant
 // header.
 //
+// ── EACH WINDOW OWNS ITS COMPANY (owner ask 2026-07-23) ────────────────────
+// The tab pick is authoritative for this tab's whole lifetime. An earlier
+// revision force-followed the durable record across tabs — switching company
+// in one window yanked (and hard-reloaded) every other window of the same
+// user into it — which made "Houzs in one window, 2990 in the other" need two
+// separate browsers. That follow behaviour is gone: the durable record is
+// ONLY the default a NEW tab (and the next login) boots into; it never steers
+// a tab that already resolved its company. Cross-company staleness is not a
+// concern: every request stamps this tab's own X-Company-Id, and the persist
+// layer buckets by (user, company) — two windows on two companies run two
+// fully separate scopes side by side. The `?company=<id>` boot seed
+// (consumeCompanyUrlSeed, called pre-React from main.tsx) is how the
+// switcher's "Open in new window" lands a fresh window directly on a chosen
+// company.
+//
 // ── WHY THE KEY IS SCOPED BY USER, NOT BY TOKEN ────────────────────────────
 // An earlier revision keyed the stored id on a hash of the bearer token. A
 // token changes on EVERY login, so the key changed on every login and the
@@ -25,7 +40,8 @@
 // keyed by the /auth/me user id, which is stable across re-logins:
 //
 //   localStorage   houzs.activeCompanyId.v2   {"u<userId>": <companyId>}
-//                  Durable, survives logout/login and browser restart.
+//                  Durable, survives logout/login and browser restart. The
+//                  DEFAULT for a new tab — never steers an existing one.
 //   sessionStorage houzs.activeCompanyId.tab  {"user":<id|null>,"company":<id>}
 //                  THIS TAB's answer. sessionStorage is per-tab and survives a
 //                  reload, so a second tab signed in as somebody else can never
@@ -129,29 +145,18 @@ function read(): number | null {
   return readTabPick()?.company ?? null;
 }
 
-export type ActiveCompanyChangeSource = "same-tab" | "storage";
-type ActiveCompanyListener = (source: ActiveCompanyChangeSource) => void;
+type ActiveCompanyListener = () => void;
 const listeners = new Set<ActiveCompanyListener>();
 
-function emit(source: ActiveCompanyChangeSource): void {
-  for (const fn of listeners) fn(source);
+function emit(): void {
+  for (const fn of listeners) fn();
 }
 
-// A `storage` event fires only in the OTHER tabs, and the durable map is shared
-// by every signed-in user on this browser. React ONLY when the entry for the
-// user this tab is signed in as actually changed — another account switching
-// company in its own tab must not reload this one.
-if (typeof window !== "undefined") {
-  window.addEventListener("storage", (event) => {
-    if (event.key !== null && event.key !== ACTIVE_COMPANY_BY_USER_KEY) return;
-    const pick = readTabPick();
-    if (pick?.user == null) return;
-    const durable = readByUser()[`u${pick.user}`] ?? null;
-    if (durable === null || durable === pick.company) return;
-    writeTabPick({ user: pick.user, company: durable });
-    emit("storage");
-  });
-}
+// There is deliberately NO `storage`-event listener here. The durable map
+// changing in another tab (the same user switching company there) must NOT
+// touch this tab's pick — per-window independence is the whole point (see the
+// header). Another USER's tab writing its own `u<id>` entry never concerned
+// this tab either way.
 
 /** Current active company id, or null when unset (→ no X-Company-Id header). */
 export function getActiveCompanyId(): number | null {
@@ -166,14 +171,15 @@ export function companyHeader(): Record<string, string> {
 }
 
 /** Set (or clear, with null) the active company and notify subscribers.
- *  Writes the durable per-user record too, so the pick survives the next login
- *  instead of dying with this token. */
+ *  An EXPLICIT switcher pick is the one thing that also updates the durable
+ *  per-user record — so it survives the next login and becomes the default
+ *  for the next new window, without reloads or URL seeds ever moving it. */
 export function setActiveCompanyId(id: number | null): void {
   const user = readTabPick()?.user ?? boundUserId;
   if (id === null) writeTabPick(null);
   else writeTabPick({ user, company: id });
   if (user !== null) writeByUser(user, id);
-  emit("same-tab");
+  emit();
 }
 
 /**
@@ -187,25 +193,25 @@ export function adoptActiveCompanyForUser(userId: number): number | null {
   const pick = readTabPick();
   const durable = readByUser()[`u${userId}`] ?? null;
 
-  // This tab already made a pick as this user (e.g. a reload) — keep it, and
-  // make sure the durable record agrees.
-  if (pick && pick.user === userId) {
-    if (durable !== pick.company) writeByUser(userId, pick.company);
-    return pick.company;
-  }
+  // This tab already made a pick as this user (e.g. a reload) — keep it. The
+  // durable record is deliberately NOT rewritten to match: it is the default
+  // for the NEXT window, not a mirror of this one, and a Houzs window merely
+  // reloading must not steal that default back from a later 2990 switch.
+  if (pick && pick.user === userId) return pick.company;
 
   // A pick with no owner can only have come from this same tab before the id
-  // was known, so it belongs to this user; claim it. A pick owned by SOMEBODY
-  // ELSE is discarded rather than inherited.
+  // was known (a `?company=` window seed, or a pre-auth switcher pick); claim
+  // it for this user — again WITHOUT touching the durable default, so opening
+  // a 2990 window doesn't make 2990 what every future window boots into. A
+  // pick owned by SOMEBODY ELSE is discarded rather than inherited.
   const claimed = pick && pick.user === null ? pick.company : durable;
   const before = pick?.company ?? null;
   if (claimed === null) {
     if (pick) writeTabPick(null);
   } else {
     writeTabPick({ user: userId, company: claimed });
-    writeByUser(userId, claimed);
   }
-  if (before !== claimed) emit("same-tab");
+  if (before !== claimed) emit();
   return claimed;
 }
 
@@ -231,4 +237,28 @@ export function hasStoredCompanySelection(): boolean {
 /** Stable snapshot for useSyncExternalStore. */
 export function getActiveCompanySnapshot(): number | null {
   return read();
+}
+
+/** Consume a `?company=<id>` boot parameter — the hand-off behind the company
+ *  switcher's "Open in new window". Writes THIS TAB's pick only (ownerless
+ *  until /auth/me claims it in adoptActiveCompanyForUser) so the very first
+ *  authed request already carries the right X-Company-Id header, then scrubs
+ *  the parameter from the URL — sessionStorage owns the answer from here, and
+ *  a copied/bookmarked URL must not pin a company forever. The id is only
+ *  format-checked; whether this USER may act in that company stays the
+ *  backend companyContext middleware's call, exactly as for a stored pick.
+ *  Called pre-React from main.tsx. */
+export function consumeCompanyUrlSeed(): void {
+  try {
+    const url = new URL(window.location.href);
+    const raw = url.searchParams.get("company");
+    if (raw === null) return;
+    url.searchParams.delete("company");
+    window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    if (!/^\d{1,9}$/.test(raw)) return;
+    const id = Number(raw);
+    if (validId(id)) writeTabPick({ user: null, company: id });
+  } catch {
+    // Malformed URL / storage disabled: boot exactly as an unseeded tab.
+  }
 }
