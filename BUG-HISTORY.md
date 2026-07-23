@@ -1,5 +1,16 @@
 ## 2026-07-23
 
+### [CRITICAL] Mig 0175 referenced a non-existent `customers.country` column and blocked EVERY subsequent migration
+- **Symptom.** After #1040 merged (state canonicalize) the next deploy failed with `FAILED 0175_scm_state_canonicalize.sql: column c.country does not exist`. pg-migrate stops on the first failing file, so mig 0176 (#1042 region seed + sales_location snapshot backfill) never ran either. Prod state → region for 2990 stayed at 0 rows even after the "fix" was merged. My subsequent completeness report to the owner said the region mapping still looked empty and I initially attributed it to timing; the owner asked "我们不是调整了吗" and the answer was NO — it never applied.
+- **Root cause (traced).** The original migration filtered the customer backfill by country to avoid touching foreign-country rows:
+  `WHERE (c.country IS NULL OR c.country = '' OR upper(c.country) = 'MALAYSIA' OR upper(c.country) = 'MY')`
+  `scm.customers` has no `country` column (checked against 0000_baseline + the whole migrations-pg tree; no ADD COLUMN customers.country anywhere). Postgres refused the statement, pg-migrate exited non-zero, the deploy job was red. I did not test the migration against a snapshot of the real schema — my `to_regclass` guard covers table absence but not column absence.
+- **Fix.** #1052 (this PR) — drop the country filter from both the customer and supplier backfill blocks. Redundant anyway: `scm.canonicalize_my_state()` returns its input UNCHANGED for any string outside the 16 canonical MY states + known aliases (Guangdong, Central, etc.), so a foreign state name is already foreign-safe without a caller-side filter. Editing 0175 in place is correct because pg-migrate never recorded it as applied; the next deploy will retry with the fixed SQL.
+- **The class, for next time.** A `to_regclass` guard is not a schema guard. When a migration references a column the code hasn't proven exists in every environment it might run against, either (a) add an `information_schema.columns` presence check before the UPDATE, or (b) drop the column reference. This is the same class as the mig 067/069 seed → 079 delete cycle recorded earlier: don't assume schema, verify it in the migration itself.
+- **Ref:** #1052 (hotfix). Original: #1040 mig 0175.
+
+
+
 ### [HIGH] Five migration-number collisions on one file in one day, and a whitelist used to hide the fifth
 - **Symptom.** `main` red on `migrationNumbers.test.ts`, three times. That test runs inside the DEPLOY's backend job, before `pg-migrate` — so each time the backend could not deploy at all, and the migrations waiting behind it could never apply. Production was untouched and every PR dashboard stayed green.
 - **The chain.** `0159 → 0165 → 0167 → 0171` on the idempotency phase-2 branch while it waited on a 24-hour soak; then #1039 merged its own `0171` (collision 4); #1044 renamed it to `0175`; #1040 merged its own `0175` (collision 5); `0176` was already taken by `0176_scm_region_and_snapshot_backfill.sql`; it finally landed as `0177`.

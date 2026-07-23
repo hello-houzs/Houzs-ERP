@@ -131,22 +131,27 @@ BEGIN
        AND v.state <> scm.canonicalize_my_state(v.state);
   END IF;
 
-  -- scm.suppliers — StateSelect writes canonical, but SCM's tolerant fallback
-  -- + historical 2990 import may have dropped in non-canonical values.
+  -- scm.suppliers / scm.customers — the country filter was defence-in-depth
+  -- against corrupting a foreign state name, but `canonicalize_my_state()`
+  -- already returns its input UNCHANGED when the value isn't a recognised MY
+  -- state (see the ELSE branch above). So the country filter is redundant —
+  -- and, critically, `scm.customers` HAS NO COUNTRY COLUMN. The original
+  -- version of this migration failed on `column c.country does not exist`,
+  -- which blocked pg-migrate for every subsequent file (mig 0176 region seed,
+  -- the sales-order concurrency migrations pending after that) — main went
+  -- red on 2026-07-22. Drop the filter; the function's own foreign-safe
+  -- ELSE branch is the actual protection.
   IF to_regclass('scm.suppliers') IS NOT NULL THEN
     UPDATE scm.suppliers s
        SET state = scm.canonicalize_my_state(s.state)
      WHERE s.state IS NOT NULL
-       AND (s.country IS NULL OR s.country = '' OR upper(s.country) = 'MALAYSIA' OR upper(s.country) = 'MY')
        AND s.state <> scm.canonicalize_my_state(s.state);
   END IF;
 
-  -- scm.customers — same story as suppliers (upsert path is tolerant).
   IF to_regclass('scm.customers') IS NOT NULL THEN
     UPDATE scm.customers c
        SET state = scm.canonicalize_my_state(c.state)
      WHERE c.state IS NOT NULL
-       AND (c.country IS NULL OR c.country = '' OR upper(c.country) = 'MALAYSIA' OR upper(c.country) = 'MY')
        AND c.state <> scm.canonicalize_my_state(c.state);
   END IF;
 
