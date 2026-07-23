@@ -538,6 +538,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     .mgrid { display: grid; border-left: 0.4pt solid #d5d5d5; }
     .mgrid.cols-6 { grid-template-columns: 27mm 1fr 27mm 1fr 27mm 1fr; }
     .mgrid.cols-4 { grid-template-columns: 27mm 1fr 27mm 1fr; }
+    .mgrid.cols-8 { grid-template-columns: 22mm 1fr 18mm 1fr 20mm 1fr 17mm 1fr; }
     .mgrid.rule-top { border-top: 1pt solid #141414; }
     .mgrid .lc {
       padding: 2.4mm 2.8mm; background: #f3f3f1;
@@ -814,9 +815,10 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       const firstItem = (items as any[])[0];
       return `
     <!-- meta grid -->
-    <div class="mgrid cols-6 rule-top">
+    <div class="mgrid cols-8 rule-top">
       <div class="lc">Request Date</div><div class="vc mono">${fmtDate(cs.complained_date)}</div>
       <div class="lc">ASSR No</div><div class="vc"><span class="chip">${esc(cs.assr_no)}</span></div>
+      <div class="lc">Reference</div><div class="vc mono">${esc(cs.ref_no || "—")}</div>
       <div class="lc">Category</div><div class="vc">${cs.service_category || cs.issue_category ? `<span class="pill-cat">${esc(cs.service_category || cs.issue_category)}</span>` : `<span class="dim">—</span>`}</div>
     </div>
 
