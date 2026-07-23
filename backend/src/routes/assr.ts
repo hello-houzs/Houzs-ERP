@@ -53,6 +53,25 @@ import { normalizePhone } from "../scm/shared/phone";
 type HandlerCtx = Context<{ Bindings: Env }, "/:id/cost-suggestion">;
 const app = new Hono<{ Bindings: Env }>();
 
+// AUDIT H5 — enforce case-level tenant + ownership scope on every MUTATING
+// /:id[...] route. The detail GET and its download sub-routes run their own
+// scope check; the write handlers historically did not, so a scoped user could
+// PATCH / reassign / rewrite / mint a survey token for ANY case by walking the
+// sequential id. Centralising the guard here means the read and write paths can
+// never drift again. GET is exempt (each GET handler self-checks). Routes whose
+// first path segment is not the numeric case id (/attachments/:attId,
+// /activity/:actId, /creditors/create, /resync-so/:docNo) are not matched by
+// these patterns and are tracked as a follow-up (they need a parent-case lookup).
+const enforceCaseScope: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  if (c.req.method === "GET") return next();
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id) || id <= 0) return next();
+  if (!(await caseInCallerScope(c, id))) return c.json({ error: "Not found" }, 404);
+  return next();
+};
+app.use("/:id{[0-9]+}", enforceCaseScope);
+app.use("/:id{[0-9]+}/*", enforceCaseScope);
+
 // ── Sales access to Service Cases (owner rule 8, 2026-07) ─────
 // Service Cases + My Case are granted to Sales WITHOUT relying on the
 // configurable permission matrix: a Sales-department / Sales-position user may
@@ -256,13 +275,26 @@ async function caseInCallerScope(
   caseId: number,
 ): Promise<boolean> {
   const visibleIds = await assrVisibleUserIds(c);
-  if (visibleIds === undefined) return true; // unrestricted tier
+  // Every caller passes a full Hono Context; the structural param type above is
+  // just the minimal shape this fn reads. assrCompanyIds wants the real Context.
+  const allowedCo = assrCompanyIds(c as Context<any>);
+  // Fully unrestricted on BOTH dimensions — no read needed.
+  if (visibleIds === undefined && allowedCo === undefined) return true;
   const row = await c.env.DB.prepare(
-    `SELECT created_by, assigned_to, assigned_to_2, sales_agent FROM assr_cases WHERE id = ?`,
+    `SELECT created_by, assigned_to, assigned_to_2, sales_agent, company_id FROM assr_cases WHERE id = ?`,
   )
     .bind(caseId)
-    .first<{ created_by: number | null; assigned_to: number | null; assigned_to_2: number | null; sales_agent: string | null }>();
+    .first<{ created_by: number | null; assigned_to: number | null; assigned_to_2: number | null; sales_agent: string | null; company_id: number | null }>();
   if (!row) return false;
+  // Company scope FIRST — mirrors the detail GET (see the /:id handler): when the
+  // caller's company set is resolved, the case's company must be inside it. This
+  // must precede the visibility early-return below, or a visibility-unrestricted
+  // director scoped to company A could still reach company B's case.
+  if (allowedCo) {
+    const caseCo = Number(row.company_id ?? NaN);
+    if (Number.isFinite(caseCo) && !allowedCo.includes(caseCo)) return false;
+  }
+  if (visibleIds === undefined) return true; // unrestricted visibility tier
   const createdBy = Number(row.created_by ?? NaN);
   const assignedTo = Number(row.assigned_to ?? NaN);
   // Co-assignee (assigned_to_2) — the LIST includes it (services/assr.ts), so a
