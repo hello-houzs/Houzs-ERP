@@ -24,6 +24,11 @@ on:
         required: false
         default: "0"
         type: string
+      only:
+        description: "Company code to limit to (e.g. 2990). Blank = all companies."
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: backfill-branding-${{ inputs.target }}
@@ -43,6 +48,7 @@ jobs:
       - run: node scripts/backfill-branding-to-canonical.mjs
         env:
           APPLY: ${{ inputs.apply }}
+          ONLY: ${{ inputs.only }}
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
 
   run-prod:
@@ -57,4 +63,5 @@ jobs:
       - run: node scripts/backfill-branding-to-canonical.mjs
         env:
           APPLY: ${{ inputs.apply }}
+          ONLY: ${{ inputs.only }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

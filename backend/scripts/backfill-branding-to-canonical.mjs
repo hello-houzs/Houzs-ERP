@@ -26,21 +26,33 @@ const normCat = (raw) => {
   if (g.includes("SOFA")) return "SOFA";
   if (g.includes("MATTRESS")) return "MATTRESS";
   if (g.includes("ACCESSOR")) return "ACCESSORY";
+  if (g.includes("SERVICE")) return "SERVICE";
   return "OTHER";
 };
 
 // EXACT (case fix) + confident MAP only. Returns the canonical string to write,
-// or null to LEAVE UNCHANGED (blank / no-match / already canonical-exact).
+// or null to LEAVE UNCHANGED (blank main-cat / no-match / already exact).
 function resolveCanonical(freeText, category, canonicalList) {
+  // Owner 2026-07-23: a PURE service / accessory item takes its CATEGORY as the
+  // brand ("如果是单纯 service、单纯 accessories，你就放 accessories 或者
+  // service as branding吧。就是category"). This fires even on BLANK rows — most
+  // service / accessory SKUs have no branding today. Only writes if the
+  // company's dropdown actually carries that brand (exact, case-insensitive);
+  // if it does not, leave the row alone so the owner adds the brand first
+  // rather than us inventing a value the picker cannot show.
+  if (category === "ACCESSORY" || category === "SERVICE") {
+    const want = category === "ACCESSORY" ? "accessories" : "service";
+    const canon = canonicalList.find((c) => norm(c) === want);
+    if (!canon) return null;
+    return canon === freeText ? null : canon;
+  }
   const ft = norm(freeText);
-  if (!ft) return null; // blank — leave for auto-derive / blank backfill
-  // Owner 2026-07-23: ONLY the main categories (sofa / mattress / bedframe) get
-  // a brand rewrite. accessory / other / service are LEFT BLANK ("放空") —
-  // the canonical dropdown has no accessory brand, so the earlier loose
-  // fallback wrongly mapped an accessory "2990s" to "2990s Sofa". Restricting
-  // to a category word kills that whole class of wrong guess.
+  if (!ft) return null; // blank main-category — leave for auto-derive / owner
+  // Main categories (sofa / mattress / bedframe): confident free-text -> the
+  // canonical dropdown value. A category word must be present so an accessory
+  // "2990s" can never map to "2990s Sofa" (the wrong-guess class from before).
   const catWord = category === "SOFA" ? "sofa" : category === "MATTRESS" ? "mattress" : category === "BEDFRAME" ? "bedframe" : null;
-  if (!catWord) return null; // accessory / other / service — leave untouched
+  if (!catWord) return null; // OTHER — leave untouched
   const exact = canonicalList.find((c) => norm(c) === ft);
   if (exact) return exact === freeText ? null : exact; // fix casing only if differs
   const catMatch = canonicalList.find((c) => {
@@ -56,6 +68,10 @@ async function backfillTable(cid, table, canonicalList) {
   log(`=== ${table} ===`);
   // Pull id + current branding + category. mfg_sales_order_items has no own
   // category; resolve it via the product catalog by item_code.
+  // Pull ALL rows (no branding filter): a blank service / accessory row must be
+  // fillable to its category brand. resolveCanonical returns null for a blank
+  // MAIN-category row, so pulling the blanks in costs a scan but writes nothing
+  // it should not.
   let rows;
   if (table === "mfg_sales_order_items") {
     rows = await dst.unsafe(`
@@ -63,11 +79,11 @@ async function backfillTable(cid, table, canonicalList) {
         FROM scm.mfg_sales_order_items i
         JOIN scm.mfg_sales_orders o ON o.doc_no = i.doc_no
         LEFT JOIN scm.mfg_products p ON p.code = i.item_code AND p.company_id = o.company_id
-       WHERE o.company_id=${cid} AND i.branding IS NOT NULL AND btrim(i.branding) <> ''`);
+       WHERE o.company_id=${cid}`);
   } else {
     rows = await dst.unsafe(`
       SELECT id, branding, category FROM scm.${table}
-       WHERE company_id=${cid} AND branding IS NOT NULL AND btrim(branding) <> ''`);
+       WHERE company_id=${cid}`);
   }
   let changed = 0, unchanged = 0;
   // Batch updates by target value to keep it simple + auditable.
@@ -100,26 +116,39 @@ async function backfillTable(cid, table, canonicalList) {
 }
 
 async function main() {
-  const [c2990] = await dst`SELECT id FROM companies WHERE code='2990'`;
-  const cid = Number(c2990.id);
-  log(`2990 company_id=${cid}  mode=${APPLY ? "APPLY" : "DRY-RUN"}`);
+  // Run for EVERY company that maintains a brand dropdown (owner 2026-07-23:
+  // "Houzs 也是一樣"). Each company maps against its OWN canonical list, so
+  // 2990 free-text resolves to 2990's brands and Houzs to Houzs's. ONLY=<code>
+  // narrows to one company for a surgical apply.
+  const only = (process.env.ONLY || "").trim();
+  const companies = await dst`SELECT id, code, name FROM companies ORDER BY id`;
+  log(`mode=${APPLY ? "APPLY" : "DRY-RUN"}${only ? `  ONLY=${only}` : "  (all companies)"}`);
 
-  const brands = await dst`SELECT name FROM project_brands WHERE company_id=${cid} AND active=1 ORDER BY sort_order, name`;
-  const canonicalList = brands.map((b) => b.name);
-  log(`canonical (ACTIVE project_brands): ${canonicalList.map((b) => `"${b}"`).join(", ")}`);
-  if (canonicalList.length === 0) {
-    log("no active canonical brands — refusing to run (owner must maintain the dropdown first)");
-    return;
+  let grand = 0;
+  for (const co of companies) {
+    if (only && String(co.code) !== only) continue;
+    const cid = Number(co.id);
+    const brands = await dst`SELECT name FROM project_brands WHERE company_id=${cid} AND active=1 ORDER BY sort_order, name`;
+    const canonicalList = brands.map((b) => b.name);
+    log("");
+    log(`########## COMPANY ${co.code} (id=${cid}) — ${co.name} ##########`);
+    if (canonicalList.length === 0) {
+      log("  no active canonical brands — skip (owner must maintain the dropdown first)");
+      continue;
+    }
+    log(`  canonical (ACTIVE project_brands): ${canonicalList.map((b) => `"${b}"`).join(", ")}`);
+
+    let total = 0;
+    total += await backfillTable(cid, "mfg_products", canonicalList);
+    total += await backfillTable(cid, "product_models", canonicalList);
+    total += await backfillTable(cid, "mfg_sales_order_items", canonicalList);
+    log(`  COMPANY ${co.code} subtotal ${APPLY ? "updated" : "would change"}: ${total}`);
+    grand += total;
   }
 
-  let total = 0;
-  total += await backfillTable(cid, "mfg_products", canonicalList);
-  total += await backfillTable(cid, "product_models", canonicalList);
-  total += await backfillTable(cid, "mfg_sales_order_items", canonicalList);
-
   log("");
-  log(`TOTAL rows ${APPLY ? "updated" : "that would change"}: ${total}`);
-  log("NO-MATCH + BLANK rows are left untouched by design — see diag-branding-match.");
+  log(`GRAND TOTAL rows ${APPLY ? "updated" : "that would change"}: ${grand}`);
+  log("Blank MAIN-category + no-match rows are left untouched by design — see diag-branding-match.");
 }
 main().then(() => dst.end()).catch(async (e) => {
   console.error("BACKFILL_FAIL", e.message);
