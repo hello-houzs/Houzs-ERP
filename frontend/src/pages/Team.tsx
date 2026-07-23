@@ -669,6 +669,7 @@ function MembersTab({
     });
   const [filterRole, setFilterRole] = useState<number | "">("");
   const [filterBrand, setFilterBrand] = useState<string>("");
+  const [filterCompany, setFilterCompany] = useState<number | "">("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   // Card grid (reference look) vs. dense table. Grid is the default.
@@ -944,6 +945,7 @@ function MembersTab({
         (filterStatus === "" || u.status === filterStatus) &&
         (filterRole === "" || u.role_id === filterRole) &&
         (filterBrand === "" || (u.brands ?? []).includes(filterBrand)) &&
+        (filterCompany === "" || (u.company_ids ?? []).includes(filterCompany as number)) &&
         segs.every((k) => segMatch(k, u)) &&
         (q === "" ||
           (u.name || "").toLowerCase().includes(q) ||
@@ -956,6 +958,7 @@ function MembersTab({
     filterStatus,
     filterRole,
     filterBrand,
+    filterCompany,
     quickFilters,
     onlineIds,
     searchQ,
@@ -994,6 +997,11 @@ function MembersTab({
     });
   if (filterBrand)
     activeFilters.push({ label: filterBrand, clear: () => setFilterBrand("") });
+  if (filterCompany !== "")
+    activeFilters.push({
+      label: companyOpts.find((co) => co.id === filterCompany)?.name ?? "Company",
+      clear: () => setFilterCompany(""),
+    });
   for (const key of quickFilters)
     activeFilters.push({
       label: QUICK_SEGMENTS.find(([k]) => k === key)?.[1] ?? "Segment",
@@ -1006,6 +1014,7 @@ function MembersTab({
     setFilterPos("");
     setFilterRole("");
     setFilterBrand("");
+    setFilterCompany("");
     setQuickFilters(new Set());
   }
 
@@ -1569,6 +1578,27 @@ function MembersTab({
                             {allBrands.map((b) => (
                               <option key={b} value={b}>
                                 {b}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      {companyOpts.length > 1 && (
+                        <div>
+                          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+                            Company
+                          </label>
+                          <select
+                            value={filterCompany}
+                            onChange={(e) =>
+                              setFilterCompany(e.target.value ? Number(e.target.value) : "")
+                            }
+                            className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-primary"
+                          >
+                            <option value="">All companies</option>
+                            {companyOpts.map((co) => (
+                              <option key={co.id} value={co.id}>
+                                {co.name}
                               </option>
                             ))}
                           </select>
