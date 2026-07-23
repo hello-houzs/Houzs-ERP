@@ -2589,10 +2589,12 @@ const SALES_DOC_TILES: ReadonlyArray<DocTile> = [
 // (setup/dismantle) moved to the Setup & Dismantle section's phase photos.
 // Decoration shows its remark AND its files (view remark + download).
 const CREW_DOC_TILES: ReadonlyArray<DocTile> = [
-  { label: "Stock Out Transfer Record", match: /^stock out/i, readOnly: true },
+  // Owner 2026-07-22: Stock Out Transfer Record + Blank Floorplan tiles
+  // removed from the crew card — the floorplan already lives in the
+  // Floor plans & layout card below, so the Event documents card carries
+  // just the permit + decoration brief.
   { label: "Permit", match: /permit/i, readOnly: true },
   { label: "Decoration", match: /^deco/i, readOnly: true, remarkWithFiles: true },
-  { label: "Blank Floorplan", match: /^blank floor/i, readOnly: true, fullWidth: true },
 ];
 
 function SalesDocsCard({
