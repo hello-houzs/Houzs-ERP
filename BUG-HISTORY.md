@@ -14,6 +14,16 @@
 - **What this PR does NOT do.** No CHECK / FK to my_localities.state — canonicalize function is foreign-safe.
 - **Ref:** #1054.
 
+### [MEDIUM] Supplier Maintenance postcode was free-text; Country was Malaysia-only
+- **Symptom.** Owner 2026-07-23: "我们维护的时候，是可以维护得到这些东西的". Supplier Detail had Country + State pickers (PR #47) but Postcode was a raw `<input>` — no cascade off `scm.my_localities`, no filter by state. Country dropdown was hard-coded `COUNTRIES=['Malaysia']`, so China / Singapore suppliers couldn't pick their country. And picking State didn't back-derive Country, so if the country was blank a state pick left it blank.
+- **Root cause (traced).** `SupplierDetail.tsx:4107` `CountrySelect` used the static `COUNTRIES` constant instead of `distinctCountries(my_localities)`. `StateSelect` at `:4119` special-cased `country === 'Malaysia'` and fell through to free-text for everything else. `EditField label="Postcode"` at `:2985` was free-text.
+- **Fix.** #1058 (this PR):
+  - `CountrySelect` reads `distinctCountries(useLocalities().data)` — falls back to the static list only when the locality dataset is empty (cold-start).
+  - `StateSelect` uses the new `statesInCountry(rows, country)` helper — dropdown for EVERY country in my_localities, free-text only when no states are seeded for that country.
+  - New `PostcodeSelect` — dropdown from `scm.my_localities` filtered by state (and optionally city). Preserves any legacy postcode as a `(legacy)` option.
+  - New `SupplierStateSelectWithDerive` wrapper — picking State runs `countryForState(rows, state)` and patches Country if it was blank or different. Same "State auto-fills Country" linkage the warehouse form got in #1054.
+- **Ref:** #1058.
+
 
 
 ### [CRITICAL] Mig 0175 referenced a non-existent `customers.country` column and blocked EVERY subsequent migration

@@ -60,6 +60,11 @@ import { useProductModels, type ProductModelRow } from '../../vendor/scm/lib/pro
 import {
   useLocalities,
   distinctStates,
+  distinctCountries,
+  statesInCountry,
+  citiesInState,
+  postcodesInCity,
+  countryForState,
   COUNTRIES,
   PAYMENT_TERMS_OPTIONS,
 } from '../../vendor/scm/lib/localities-queries';
@@ -2974,15 +2979,27 @@ const SupplierInfoCard = ({
                 NOT sorted). Flows to PO + PI pricing once set. */}
             <CurrencyEditSelect value={form.currency} onChange={(v) => setF('currency', v)} />
             <EditField label="Business Nature" value={form.businessNature} onChange={(v) => setF('businessNature', v)} />
-            {/* Address — PR #47: Country + State cascade */}
+            {/* Address — Country + State cascade (PR #47), plus Postcode
+                dropdown from scm.my_localities (2026-07-23). Picking State
+                back-derives Country the way the owner asked: pick State,
+                Country auto-fills. Postcode is filtered by State; Area
+                (industrial estate name etc.) stays free-text — it's a
+                supplier-specific concept, not the my_localities city. */}
             <CountrySelect value={form.country} onChange={(v) => {
               setF('country', v);
               // Reset state if country changes (states are country-specific)
-              if (v !== form.country) setF('state', '');
+              if (v !== form.country) { setF('state', ''); setF('postcode', ''); }
             }} />
-            <StateSelect country={form.country} value={form.state} onChange={(v) => setF('state', v)} />
+            <SupplierStateSelectWithDerive
+              country={form.country}
+              value={form.state}
+              onChange={(v, derivedCountry) => {
+                setF('state', v);
+                if (derivedCountry && derivedCountry !== form.country) setF('country', derivedCountry);
+              }}
+            />
             <EditField label="Area" value={form.area} onChange={(v) => setF('area', v)} />
-            <EditField label="Postcode" value={form.postcode} onChange={(v) => setF('postcode', v)} />
+            <PostcodeSelect state={form.state} city="" value={form.postcode} onChange={(v) => setF('postcode', v)} />
             <EditField label="Billing Address" value={form.address} onChange={(v) => setF('address', v)} multiline />
             <EditField label="Notes" value={form.notes} onChange={(v) => setF('notes', v)} multiline />
           </div>
@@ -4104,29 +4121,58 @@ const smallInputStyle: React.CSSProperties = {
    owner spec 2026-06-12.)
    ════════════════════════════════════════════════════════════════════════ */
 
-const CountrySelect = ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
-  <label className={styles.field}>
-    <span className={styles.fieldLabel}>Country</span>
-    <span className={styles.selectWrap}>
-      <select className={styles.fieldSelect} value={value || 'Malaysia'} onChange={(e) => onChange(e.target.value)}>
-        {sortByText(COUNTRIES).map((c) => <option key={c} value={c}>{c}</option>)}
-      </select>
-      <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
-    </span>
-  </label>
-);
+/* CountrySelect — dynamic from scm.my_localities so China + Singapore appear
+   as soon as the SO Maintenance geo table adds them. Falls back to the static
+   COUNTRIES constant (Malaysia only) when the locality dataset is empty. */
+const CountrySelect = ({ value, onChange }: { value: string; onChange: (v: string) => void }) => {
+  const localities = useLocalities();
+  const dynamic = useMemo(
+    () => (localities.data ? distinctCountries(localities.data) : []),
+    [localities.data],
+  );
+  const list = dynamic.length > 0 ? dynamic : ([...COUNTRIES] as string[]);
+  return (
+    <label className={styles.field}>
+      <span className={styles.fieldLabel}>Country</span>
+      <span className={styles.selectWrap}>
+        <select className={styles.fieldSelect} value={value || 'Malaysia'} onChange={(e) => onChange(e.target.value)}>
+          {sortByText(list).map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+      </span>
+    </label>
+  );
+};
 
+/* SupplierStateSelectWithDerive — the CountrySelect+StateSelect variant used
+   by SupplierDetail, which needs the owner's "pick State, Country auto-fills"
+   linkage. Wraps StateSelect and, on change, resolves the state's country
+   from my_localities so the caller can also patch the country field. */
+const SupplierStateSelectWithDerive = ({
+  country, value, onChange,
+}: { country: string; value: string; onChange: (state: string, derivedCountry: string | null) => void }) => {
+  const localities = useLocalities();
+  return (
+    <StateSelect country={country} value={value} onChange={(v) => {
+      const derived = localities.data ? countryForState(localities.data, v) : null;
+      onChange(v, derived);
+    }} />
+  );
+};
+
+/* StateSelect — dropdown for every country in my_localities (not just
+   Malaysia). Falls back to free-text for a country whose states aren't
+   seeded yet, and when the whole locality dataset is empty (cold-start). */
 const StateSelect = ({
   country, value, onChange,
 }: { country: string; value: string; onChange: (v: string) => void }) => {
   const localities = useLocalities();
-  // Only Malaysia has a locality dataset; other countries fall back to free text.
-  const malaysiaStates = useMemo(
-    () => (localities.data ? distinctStates(localities.data) : []),
-    [localities.data],
+  const states = useMemo(
+    () => (localities.data ? statesInCountry(localities.data, country) : []),
+    [localities.data, country],
   );
 
-  if (country === 'Malaysia') {
+  if (states.length > 0) {
     return (
       <label className={styles.field}>
         <span className={styles.fieldLabel}>State</span>
@@ -4134,18 +4180,65 @@ const StateSelect = ({
           <select className={styles.fieldSelect} value={value} onChange={(e) => onChange(e.target.value)}
             disabled={localities.isLoading}>
             <option value="">{localities.isLoading ? 'Loading…' : '— Pick state —'}</option>
-            {sortByText(malaysiaStates).map((s) => <option key={s} value={s}>{s}</option>)}
+            {value && !states.includes(value) && (
+              <option value={value}>{value} (legacy)</option>
+            )}
+            {sortByText(states).map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
         </span>
       </label>
     );
   }
-  // Other countries — free text fallback
+  // No states seeded for this country — free text fallback.
   return (
     <label className={styles.field}>
       <span className={styles.fieldLabel}>State / Province</span>
       <input className={styles.fieldInput} value={value} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  );
+};
+
+/* PostcodeSelect — dropdown from scm.my_localities filtered by state (and
+   city when supplied). Same cascade the SO delivery address uses. Falls
+   back to free-text when the locality dataset for that state is empty or
+   the state is on a country we don't have data for. */
+const PostcodeSelect = ({
+  state, city, value, onChange,
+}: { state: string; city: string; value: string; onChange: (v: string) => void }) => {
+  const localities = useLocalities();
+  const rows = localities.data ?? [];
+  const list = useMemo(() => {
+    if (!state) return [];
+    if (city) return postcodesInCity(rows, state, city);
+    // All postcodes across every city in this state (dedup).
+    const s = new Set<string>();
+    for (const r of rows) if (r.state === state) s.add(r.postcode);
+    return Array.from(s).sort();
+  }, [rows, state, city]);
+
+  if (list.length > 0) {
+    return (
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Postcode</span>
+        <span className={styles.selectWrap}>
+          <select className={styles.fieldSelect} value={value} onChange={(e) => onChange(e.target.value)}>
+            <option value="">— Pick postcode —</option>
+            {value && !list.includes(value) && (
+              <option value={value}>{value} (legacy)</option>
+            )}
+            {list.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+        </span>
+      </label>
+    );
+  }
+  return (
+    <label className={styles.field}>
+      <span className={styles.fieldLabel}>Postcode</span>
+      <input className={styles.fieldInput} value={value} inputMode="numeric"
+        onChange={(e) => onChange(e.target.value)} />
     </label>
   );
 };
