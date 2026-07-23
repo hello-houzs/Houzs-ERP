@@ -70,10 +70,22 @@ export const Warehouses = () => {
       sortFn: (a, b) => typeLabel(a).localeCompare(typeLabel(b)),
     },
     {
+      key: 'state',
+      label: 'State',
+      width: 130,
+      accessor: (w) => w.state ?? '—',
+      searchValue: (w) => w.state ?? '',
+      filterValue: (w) => w.state ?? '—',
+      sortFn: (a, b) => (a.state ?? '').localeCompare(b.state ?? ''),
+    },
+    {
       key: 'location',
-      label: 'Location',
+      label: 'Address',
       width: 220,
-      accessor: (w) => w.location ?? '—',
+      accessor: (w) => {
+        const line = [w.location, w.city, w.postcode].filter(Boolean).join(', ');
+        return line || '—';
+      },
     },
     {
       key: 'default',

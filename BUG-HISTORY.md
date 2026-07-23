@@ -1,5 +1,14 @@
 ## 2026-07-23
 
+### [MEDIUM] Warehouse master had no structured address — free-text Location only
+- **Symptom.** Owner 2026-07-23: "warehouse 那边不是会去选它是在什么地方的吗? 它有这个 location, 所以它的 location 也是要换成我们的 address 模式". Warehouse Maintenance drawer offered a single free-text "Location" field ("Address / area"). No state, no postcode, no city — so any cross-report bucketing "which warehouses serve which state" had to string-match location, and warehouse pickers on delivery-planning couldn't filter by state.
+- **Root cause (traced).** Original scm.warehouses shipped with just `location text`. Mig 0148 added `is_showroom` + `venue_name`; mig 0177 added the `type` enum. Nobody added structured address. Every other address surface (customer, supplier, SO, DO, project venue) has state/postcode/city off scm.my_localities — warehouse was the outlier.
+- **Fix.** Mig 0180 adds `state`, `postcode`, `city` columns to `scm.warehouses`. Backfills `state` from code prefix (PG→Pulau Pinang, KL→Kuala Lumpur, SBH→Sabah, SRW→Sarawak, SLGR→Selangor, C&C/EM/PJ/Kelana/Sunway→Selangor, CHINA→Guangdong). Backend POST/PATCH accept the three fields and canonicalize `state` at ingress via `canonicalizeMyState()` (same pattern as mig 0175's SO/project/venue write paths). Frontend `WarehouseFormDrawer` replaces the Location free-text with a state→city→postcode cascade off `useLocalities()` — SAME shape as the SO delivery-address form. Legacy `location` column renamed in UI to "Street / area" for the freeform line but retained on-disk (no data loss). Warehouses list picks up a State column.
+- **What this PR does NOT do.** No CHECK constraint or FK to my_localities.state — the canonicalize function is foreign-safe (returns input unchanged for non-MY values) so a CHINA WAREHOUSE with state='Guangdong' is a valid row.
+- **Ref:** PR pending (`feat/warehouse-address`).
+
+
+
 ### [CRITICAL] Mig 0175 referenced a non-existent `customers.country` column and blocked EVERY subsequent migration
 - **Symptom.** After #1040 merged (state canonicalize) the next deploy failed with `FAILED 0175_scm_state_canonicalize.sql: column c.country does not exist`. pg-migrate stops on the first failing file, so mig 0176 (#1042 region seed + sales_location snapshot backfill) never ran either. Prod state → region for 2990 stayed at 0 rows even after the "fix" was merged. My subsequent completeness report to the owner said the region mapping still looked empty and I initially attributed it to timing; the owner asked "我们不是调整了吗" and the answer was NO — it never applied.
 - **Root cause (traced).** The original migration filtered the customer backfill by country to avoid touching foreign-country rows:
