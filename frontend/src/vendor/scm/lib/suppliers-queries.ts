@@ -44,6 +44,10 @@ export type SupplierRow = {
   business_reg_no: string | null;
   postcode: string | null;
   area: string | null;
+  /* Mig 0131 — structured city (dropdown from scm.my_localities). Null on
+     the list endpoint (view predates the column) — the DETAIL /create /
+     patch handlers surface it via SUPPLIER_COLS. */
+  city: string | null;
   mobile: string | null;
   fax: string | null;
   website: string | null;

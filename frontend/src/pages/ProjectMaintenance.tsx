@@ -15,8 +15,9 @@ import { clearBrandLogoCache } from "../lib/branding";
 import {
   useLocalities,
   distinctCountries,
-  countryForState,
+  citiesInState,
 } from "../vendor/scm/lib/localities-queries";
+import { StatePicker } from "../vendor/scm/components/StatePicker";
 
 // ── Projects tab ─────────────────────────────────────────────
 // Lookup management for the project module: organizers, venues, and
@@ -33,9 +34,11 @@ interface VenueRow {
   id: number;
   name: string;
   state: string | null;
-  /* Mig 0178 — optional so pre-mig responses still parse. */
+  /* Mig 0178 — optional so pre-mig responses still parse.
+     Mig 0182 — city (optional same reason). */
   country?: string | null;
   postcode?: string | null;
+  city?: string | null;
   notes: string | null;
   active: number;
 }
@@ -308,32 +311,11 @@ function OrganizerManager() {
   );
 }
 
-// 13 negeri + 3 federal territories (Wilayah Persekutuan). ALL CAPS
-// so the picker can't introduce a casing variant that downstream
-// filters would miss. Cities (SEREMBAN, IPOH, KUANTAN…) are rolled
-// up to their state — they're not valid picks here.
-/* Canonical Malaysian states — aligned to `scm.my_localities` after mig 0172
-   (owner 2026-07-22). Was UPPERCASE short list; now matches SCM Title Case
-   spelling so cross-module Sales-by-state / delivery-region reports bucket
-   the same state under one label. */
-const MY_STATES = [
-  "Johor",
-  "Kedah",
-  "Kelantan",
-  "Kuala Lumpur",
-  "Labuan",
-  "Melaka",
-  "Negeri Sembilan",
-  "Pahang",
-  "Perak",
-  "Perlis",
-  "Pulau Pinang",
-  "Putrajaya",
-  "Sabah",
-  "Sarawak",
-  "Selangor",
-  "Terengganu",
-] as const;
+/* MY_STATES was the hard-coded fallback list read by VenueManager. Removed
+   2026-07-23 — VenueManager now uses <StatePicker> exclusively, which reads
+   from scm.my_localities. Any future state that needs to appear here (e.g.
+   the CN + SG rows seeded by mig 0181) is added via the Localities
+   Maintenance UI, not a code constant. */
 
 function VenueManager() {
   const toast = useToast();
@@ -343,23 +325,21 @@ function VenueManager() {
   const [stateField, setStateField] = useState("");
   /* Mig 0178 — Country + Postcode on venue. Country back-derives from state
      via scm.my_localities when the operator picks State first (owner:
-     "只需要填写 State 就会自动带出国家"). Postcode optional per owner. */
+     "只需要填写 State 就会自动带出国家"). Postcode optional per owner.
+     Mig 0182 — City added (same maintenance-only dropdown pattern). */
   const [countryField, setCountryField] = useState("");
+  const [cityField, setCityField] = useState("");
   const [postcodeField, setPostcodeField] = useState("");
   const [adding, setAdding] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
-  /* Country back-derive helper — when the operator picks a state, auto-fill
-     the country if it was blank/different. Uses the seeded my_localities
-     dataset; unknown states leave country untouched. */
   const localities = useLocalities();
   const localityRows = localities.data ?? [];
   const knownCountries = useMemo(() => distinctCountries(localityRows), [localityRows]);
-  const pickState = (next: string) => {
-    setStateField(next);
-    const derived = countryForState(localityRows, next);
-    if (derived && derived !== countryField) setCountryField(derived);
-  };
+  const cityOptions = useMemo(
+    () => (stateField ? citiesInState(localityRows, stateField) : []),
+    [localityRows, stateField],
+  );
 
   async function add() {
     const trimmed = name.trim();
@@ -370,11 +350,13 @@ function VenueManager() {
         name: trimmed,
         state: stateField.trim() || null,
         country: countryField.trim() || null,
+        city: cityField.trim() || null,
         postcode: postcodeField.trim() || null,
       });
       setName("");
       setStateField("");
       setCountryField("");
+      setCityField("");
       setPostcodeField("");
       q.reload();
       toast.success(`Added ${trimmed}`);
@@ -420,7 +402,15 @@ function VenueManager() {
       count={q.data?.data?.length}
       description="Picker values for the project Venue field. Optionally tag each venue with a state — picking it on a new project will pre-fill the state."
     >
-      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_140px_140px_110px_auto]">
+      {/* Owner spec 2026-07-23:
+          - StatePicker shows Malaysia states by default, click "Show Others"
+            for CN + SG, Search across all — no more hard-coded MY_STATES.
+          - No `(legacy)` fallback options — a value not in my_localities
+            must be added via the Localities Maintenance UI first.
+          - Country auto-fills from State via StatePicker's derivedCountry
+            callback. City + Postcode are optional and scoped to the picked
+            state. */}
+      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_180px_140px_130px_110px_auto]">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -428,31 +418,39 @@ function VenueManager() {
           placeholder="Venue name…"
           className="h-9 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         />
-        <select
+        <StatePicker
           value={stateField}
-          onChange={(e) => pickState(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && add()}
-          className="h-9 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-        >
-          <option value="">— state —</option>
-          {MY_STATES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-        {/* Country auto-fills when State is picked; can be overridden manually. */}
+          onChange={(next, derivedCountry) => {
+            setStateField(next);
+            if (derivedCountry && derivedCountry !== countryField) setCountryField(derivedCountry);
+            setCityField("");
+          }}
+        />
         <select
           value={countryField}
           onChange={(e) => setCountryField(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
+          disabled={knownCountries.length === 0}
           className="h-9 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         >
-          <option value="">— country —</option>
-          {countryField && !knownCountries.includes(countryField) && (
-            <option value={countryField}>{countryField} (legacy)</option>
-          )}
+          <option value="">
+            {knownCountries.length === 0 ? "no countries" : "— country —"}
+          </option>
           {knownCountries.map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
+        <select
+          value={cityField}
+          onChange={(e) => setCityField(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+          disabled={!stateField || cityOptions.length === 0}
+          className="h-9 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+        >
+          <option value="">
+            {!stateField ? "pick state first" : cityOptions.length === 0 ? "no cities" : "— city —"}
+          </option>
+          {cityOptions.map((c) => (
             <option key={c} value={c}>{c}</option>
           ))}
         </select>
@@ -496,28 +494,21 @@ function VenueManager() {
                   — the state <select> to the right already shows it; owner
                   flagged the double-render as clutter. */}
             </div>
-            <select
-              value={v.state || ""}
-              onChange={(e) => {
-                const next = e.target.value;
-                if (next !== (v.state || "")) {
-                  patch(v.id, { state: next || null });
-                }
-              }}
-              className="h-7 w-32 rounded-md border border-border bg-surface px-1.5 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-            >
-              <option value="">— state —</option>
-              {/* Preserve any legacy value not in the canonical list so
-                  it keeps showing until an admin re-picks. */}
-              {v.state && !(MY_STATES as readonly string[]).includes(v.state) && (
-                <option value={v.state}>{v.state} (legacy)</option>
-              )}
-              {MY_STATES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+            {/* Inline state re-pick — same maintenance-only source
+                (my_localities) as the Add form's StatePicker. No `(legacy)`
+                fallback: a value not in the seeded set shows blank, forcing
+                the operator to pick a legit state or add it via the
+                Localities Maintenance UI first. */}
+            <div className="w-56">
+              <StatePicker
+                value={v.state || ""}
+                onChange={(next) => {
+                  if (next !== (v.state || "")) {
+                    patch(v.id, { state: next || null });
+                  }
+                }}
+              />
+            </div>
             <RowActionsMenu
               items={[
                 {
