@@ -1,5 +1,14 @@
 ## 2026-07-23
 
+### [CRITICAL] Mig 0175 hotfix #1052 still failed — customer_state column missing on one of the doc tables
+- **Symptom.** #1052 fixed the customers.country reference; next deploy at 01:06 UTC still failed pg-migrate with `FAILED 0175_scm_state_canonicalize.sql: column "customer_state" does not exist`. Same class of bug, different column — one of the tables in the FOREACH loop over `scm.consignment_notes` / `scm.delivery_returns` / `scm.mfg_so_amendments` etc. doesn't carry `customer_state`, and `to_regclass` protects table absence, not column absence.
+- **Root cause (traced).** My own class-of-bug callout on the earlier fix said: "A `to_regclass` guard is not a schema guard. When a migration references a column, either add an `information_schema.columns` presence check or drop the reference." I fixed the customers.country case by dropping the reference, but left the FOREACH-loop with only a table guard. Predictably the next unknown-column bit us.
+- **Fix.** #1053 (this PR): add `information_schema.columns` presence check per-column inside the FOREACH loop, and add the same check on the two `dp_orders` updates (state + customer_state) so a missing column on either falls through cleanly rather than aborting the entire migration + every one after it.
+- **The class, for next time (repeated).** If a migration touches a column that isn't declared in a numbered ADD COLUMN in this tree, guard with `information_schema.columns EXISTS` before every reference. `to_regclass` is a table guard, not a column guard. The prior fix understood this in commentary but not in code coverage.
+- **Ref:** #1053. Prior: #1052.
+
+
+
 ### [CRITICAL] Mig 0175 referenced a non-existent `customers.country` column and blocked EVERY subsequent migration
 - **Symptom.** After #1040 merged (state canonicalize) the next deploy failed with `FAILED 0175_scm_state_canonicalize.sql: column c.country does not exist`. pg-migrate stops on the first failing file, so mig 0176 (#1042 region seed + sales_location snapshot backfill) never ran either. Prod state → region for 2990 stayed at 0 rows even after the "fix" was merged. My subsequent completeness report to the owner said the region mapping still looked empty and I initially attributed it to timing; the owner asked "我们不是调整了吗" and the answer was NO — it never applied.
 - **Root cause (traced).** The original migration filtered the customer backfill by country to avoid touching foreign-country rows:

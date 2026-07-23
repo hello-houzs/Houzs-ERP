@@ -156,9 +156,19 @@ BEGIN
   END IF;
 
   -- Every document that carries a customer_state snapshot: SO / DO / SI / CO /
-  -- CN / CR / DR. Loop by name so a missing table is a no-op.
+  -- CN / CR / DR. Loop by name so a missing table is a no-op. ALSO guard on
+  -- the customer_state column existing per-table — some of the historical
+  -- doc-tables (consignment_notes / delivery_returns / mfg_so_amendments)
+  -- may not have that column even though the table itself exists. The
+  -- deploy on 2026-07-23 00:47 UTC failed on exactly this class:
+  --   `FAILED 0175: column "customer_state" does not exist`
+  -- Same fix pattern as the earlier customers.country hotfix — `to_regclass`
+  -- protects against a missing TABLE; `information_schema.columns` is what
+  -- protects against a missing COLUMN.
   DECLARE
     t text;
+    schema_part text;
+    table_part text;
   BEGIN
     FOREACH t IN ARRAY ARRAY[
       'scm.mfg_sales_orders',
@@ -171,27 +181,46 @@ BEGIN
       'scm.mfg_so_amendments'
     ]
     LOOP
-      IF to_regclass(t) IS NOT NULL THEN
-        EXECUTE format(
-          $upd$
-            UPDATE %s
-               SET customer_state = scm.canonicalize_my_state(customer_state)
-             WHERE customer_state IS NOT NULL
-               AND customer_state <> scm.canonicalize_my_state(customer_state)
-          $upd$, t);
-      END IF;
+      IF to_regclass(t) IS NULL THEN CONTINUE; END IF;
+      schema_part := split_part(t, '.', 1);
+      table_part  := split_part(t, '.', 2);
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = schema_part
+           AND table_name   = table_part
+           AND column_name  = 'customer_state'
+      ) THEN CONTINUE; END IF;
+      EXECUTE format(
+        $upd$
+          UPDATE %s
+             SET customer_state = scm.canonicalize_my_state(customer_state)
+           WHERE customer_state IS NOT NULL
+             AND customer_state <> scm.canonicalize_my_state(customer_state)
+        $upd$, t);
     END LOOP;
   END;
 
   -- Delivery-planning orders (0129) carry both `state` and `customer_state`.
+  -- Same per-column presence check — dp_orders may exist without one of them
+  -- in a partial-migration environment.
   IF to_regclass('scm.dp_orders') IS NOT NULL THEN
-    UPDATE scm.dp_orders
-       SET state = scm.canonicalize_my_state(state)
-     WHERE state IS NOT NULL
-       AND state <> scm.canonicalize_my_state(state);
-    UPDATE scm.dp_orders
-       SET customer_state = scm.canonicalize_my_state(customer_state)
-     WHERE customer_state IS NOT NULL
-       AND customer_state <> scm.canonicalize_my_state(customer_state);
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_schema='scm' AND table_name='dp_orders' AND column_name='state'
+    ) THEN
+      UPDATE scm.dp_orders
+         SET state = scm.canonicalize_my_state(state)
+       WHERE state IS NOT NULL
+         AND state <> scm.canonicalize_my_state(state);
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_schema='scm' AND table_name='dp_orders' AND column_name='customer_state'
+    ) THEN
+      UPDATE scm.dp_orders
+         SET customer_state = scm.canonicalize_my_state(customer_state)
+       WHERE customer_state IS NOT NULL
+         AND customer_state <> scm.canonicalize_my_state(customer_state);
+    END IF;
   END IF;
 END $$;
