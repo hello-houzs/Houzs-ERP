@@ -216,8 +216,10 @@ Two things happen here that are easy to miss:
    checklist item). With the desktop My Pending checkbox on, the desktop card
    tags the card with these titles INSTEAD of the project's section chip, so a
    logistic caller is not shown someone else's `CONTRACT` stage (owner report
-   2026-07-22, Syu). Mobile has no My Pending mode — its card keeps the chips
-   below the meta line (crew callers). Director rows tag their duties the same
+   2026-07-22, Syu). Mobile has its own My Pending mode since 2026-07-23: a
+   "My pending" chip on the MobilePMS list (every role) wires the same
+   `my_pending=1` lanes, and the card keeps the title chips below the meta
+   line. Director rows tag their duties the same
    way (`Approve Stock Out Transfer` / `Set Sales PIC` / `Set Sales Attending`,
    owner report 2026-07-23, Peter — each chip's predicate mirrors its lane
    exactly), and a SALES PIC caller's attending-lane rows append
@@ -235,6 +237,12 @@ Two things happen here that are easy to miss:
    rows on 2026-07-23). The same CONTRACT gate applies to the Sales PIC's own
    attending lane. All in the `pendingOr` block, `services/projects.ts` around
    `:1447`.
+5. **My Pending follows the timeline** (owner 2026-07-23): when any pending
+   lane is active and no explicit `sort_by` is given, the list orders
+   soonest event first (`start_date ASC`, nulls last) instead of the
+   newest-first dashboard default — it is a work queue. A completed,
+   N/A'd, or submitted-for-review task drops its row server-side the
+   moment it changes state; nothing "done" ever lingers in My Pending.
 
 ### The calendar handler
 
