@@ -3,7 +3,6 @@ import { ShieldAlert } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TopNavbar } from "./TopNavbar";
-import { WorkspaceTabs } from "./WorkspaceTabs";
 import { MobileTabBar } from "./MobileTabBar";
 import { PullToRefresh, PullToRefreshGuardProvider } from "./PullToRefresh";
 import { RowActionsMenu, type MenuItem } from "./RowActionsMenu";
@@ -61,14 +60,11 @@ export function Layout({ children }: Props) {
         {/* Mobile top bar — brand + topbar chrome only. Hidden on lg+. */}
         <MobileTopBar />
 
-        {/* Desktop top navbar — breadcrumb + search + bell + profile. */}
+        {/* Desktop top chrome — ONE 52px bar (2b): workspace tabs inline +
+            search / company / bell / avatar. No breadcrumb, no second row.
+            Every lg+ sticky below parks at top-[52px]: PageHeader here,
+            DetailLayout, the two SCM V2 doc bars. Hidden below lg. */}
         <TopNavbar />
-
-        {/* Desktop workspace tab strip — one tab per open section, sticky
-            under the navbar (top-12, h-9). Every lg+ sticky below it parks at
-            top-[5.25rem]: PageHeader here, DetailLayout, the two SCM V2 doc
-            bars. Hidden below lg. */}
-        <WorkspaceTabs />
 
         {writesDisabled && <ReadOnlyBanner />}
 
@@ -81,7 +77,10 @@ export function Layout({ children }: Props) {
             pages with unsaved Panel state can call
             `usePullToRefreshBlock(true)` to block accidental F5. */}
         <PullToRefreshGuardProvider>
-          <PullToRefresh className="w-full px-3 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-4 sm:pt-8 lg:px-4 lg:py-10 animate-rise">
+          {/* lg:pt-2 (was lg:py-10) is the 2b "dead band" fix — the tall empty
+              gap between the chrome and the PageHeader is gone; the header's
+              own pt supplies the breathing room. Bottom padding unchanged. */}
+          <PullToRefresh className="w-full px-3 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-4 sm:pt-8 lg:px-4 lg:pt-2 lg:pb-10 animate-rise">
             {children}
           </PullToRefresh>
         </PullToRefreshGuardProvider>
@@ -162,6 +161,10 @@ interface PageHeaderProps {
   secondaryActions?: MenuItem[];
   /** Optional small label rendered above the title — e.g. section name. */
   eyebrow?: string;
+  /** Optional metadata rendered after the eyebrow with a · separator — the 2b
+   *  record count ("128 orders"). Mono like the eyebrow, muted so the brass
+   *  label keeps the emphasis. Ignored when `eyebrow` is unset. */
+  eyebrowMeta?: ReactNode;
   /** Tightens the header's bottom margin/padding for dense pages (e.g. the
    *  Calendar, where the grid should sit high). Default keeps the roomy
    *  spacing every other page uses. NOTE: `dense` is SPACING ONLY — it does
@@ -186,6 +189,7 @@ export function PageHeader({
   primaryAction,
   secondaryActions,
   eyebrow,
+  eyebrowMeta,
   dense,
   titleSize = "default",
 }: PageHeaderProps) {
@@ -259,13 +263,12 @@ export function PageHeader({
            `top-14 lg:top-…` parks flush under whichever bar is actually there,
            and `z-10 lg:z-20` puts us definitively BELOW the app bar (z-20) while
            still sitting above page content, which carries no z-index. */
-        /* 2026-07-23 (workspace tabs) — the lg chrome is now TWO rows: TopNavbar
-           (h-12, 48 px) + the WorkspaceTabs strip (h-9, 36 px), so the lg park
-           moved from top-12 to top-[5.25rem] (84 px). Below lg the strip is
-           hidden and top-14 (MobileTopBar) is unchanged. */
+        /* 2026-07-23 (top-chrome 2b) — the lg chrome is ONE 52px bar
+           (TopNavbar hosting the tab strip inline), so the lg park is
+           top-[52px]. Below lg top-14 (MobileTopBar) is unchanged. */
         (dense
-          ? "sticky top-14 lg:top-[5.25rem] z-10 lg:z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:flex-wrap md:items-end md:justify-between"
-          : "sticky top-14 lg:top-[5.25rem] z-10 lg:z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:flex-wrap md:items-end md:justify-between")
+          ? "sticky top-14 lg:top-[52px] z-10 lg:z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:flex-wrap md:items-end md:justify-between"
+          : "sticky top-14 lg:top-[52px] z-10 lg:z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:flex-wrap md:items-end md:justify-between")
       }
       ref={hostRef}
     >
@@ -276,9 +279,17 @@ export function PageHeader({
         {eyebrow && (
           <div className="mb-1.5 flex items-center gap-2 sm:mb-2">
             <span className="h-px w-5 bg-accent sm:w-6" />
-            <span className="text-[10.5px] font-semibold uppercase tracking-brand text-accent sm:text-[10px]">
+            <span className="font-mono text-[10.5px] font-semibold uppercase tracking-brand text-accent sm:text-[10px]">
               {eyebrow}
             </span>
+            {eyebrowMeta != null && (
+              <>
+                <span aria-hidden className="text-[11px] leading-none text-ink-muted">
+                  ·
+                </span>
+                <span className="font-mono text-[11px] text-ink-muted">{eyebrowMeta}</span>
+              </>
+            )}
           </div>
         )}
         {/* Two literal class strings, not an interpolated one — Tailwind only

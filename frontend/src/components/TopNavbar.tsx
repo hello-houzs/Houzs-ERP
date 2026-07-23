@@ -1,8 +1,7 @@
-import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Check,
-  ChevronRight,
   ChevronsUpDown,
   ExternalLink,
   LogOut,
@@ -10,10 +9,10 @@ import {
   UserRoundCog,
 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { useBreadcrumbs } from "../hooks/useBreadcrumbs";
+import { usePresence } from "../hooks/usePresence";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
-import { PresenceIndicator } from "./PresenceIndicator";
+import { WorkspaceTabs } from "./WorkspaceTabs";
 import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 import { api } from "../api/client";
@@ -25,79 +24,40 @@ import {
   subscribeActiveCompany,
 } from "../lib/activeCompany";
 import { clearAllScmHandoffs } from "../lib/scmHandoffStorage";
-import { labelForPath } from "../lib/routeLabels";
 
 /**
- * Desktop-only sticky top navbar. Hosts breadcrumb (left), search +
- * notifications + profile avatar (right). Hidden below lg; the mobile
- * top bar in Layout owns its own reduced chrome.
+ * Desktop-only sticky top chrome — ONE 52px bar (top-chrome redesign 2b,
+ * owner handoff 2026-07-23). Left: the WorkspaceTabs strip inline. Right:
+ * search (Ctrl+K) · company switcher icon · notification bell (red dot) ·
+ * divider · avatar + name/role with the online state as a green corner dot.
  *
- * Breadcrumb source of truth: BreadcrumbContext. DetailLayout pushes
- * its crumbs via useSetBreadcrumbs; for plain list pages we fall back
- * to a route-derived single crumb.
+ * The breadcrumb row is GONE — the page name lives once, in the PageHeader
+ * title right under this bar (no dead band). DetailLayout still publishes
+ * crumbs to BreadcrumbContext; nothing renders them here today.
+ * Hidden below lg; the mobile chrome is untouched.
+ *
+ * Every lg sticky below parks at top-[52px]: Layout PageHeader, DetailLayout,
+ * the two SCM V2 doc bars — change this bar's height, change them all.
  */
 export function TopNavbar() {
   const { user } = useAuth();
-  const { crumbs } = useBreadcrumbs();
-  const location = useLocation();
-
-  // When the active page hasn't set its own breadcrumb, build a
-  // single-crumb label from the current route so the navbar never
-  // looks empty.
-  const shown =
-    crumbs.length > 0 ? crumbs : [{ label: labelForPath(location.pathname) }];
 
   return (
-    <header className="sticky top-0 z-30 hidden h-12 items-center gap-3 border-b border-border bg-surface/95 px-5 backdrop-blur-sm lg:flex">
-      {/* ── Breadcrumb ───────────────────────────────────────── */}
-      <nav
-        aria-label="Breadcrumb"
-        className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-[12px]"
-      >
-        {shown.map((item, i) => {
-          const isLast = i === shown.length - 1;
-          return (
-            <Fragment key={`${item.label}-${i}`}>
-              {i > 0 && (
-                <ChevronRight
-                  size={12}
-                  strokeWidth={2}
-                  className="shrink-0 text-ink-muted/50"
-                />
-              )}
-              {item.to && !isLast ? (
-                <Link
-                  to={item.to}
-                  className="shrink-0 truncate rounded px-1 py-0.5 font-medium text-ink-secondary transition-colors hover:bg-bg/60 hover:text-accent"
-                >
-                  {item.label}
-                </Link>
-              ) : (
-                <span
-                  className={cn(
-                    "min-w-0 truncate px-1 py-0.5",
-                    // Current page reads petrol — matches the design's
-                    // breadcrumb (last crumb #16695f/600).
-                    isLast ? "font-semibold text-primary" : "text-ink-secondary"
-                  )}
-                  aria-current={isLast ? "page" : undefined}
-                >
-                  {item.label}
-                </span>
-              )}
-            </Fragment>
-          );
-        })}
-      </nav>
+    <header className="sticky top-0 z-30 hidden h-[52px] items-center border-b border-border bg-surface pl-3.5 pr-2 lg:flex">
+      {/* Workspace tabs (left; scrolls in place on overflow). */}
+      <WorkspaceTabs />
 
-      {/* ── Right rail: company · search · online · bell · profile ───── */}
-      <div className="flex shrink-0 items-center gap-2">
+      {/* Utility cluster (right): company / search / bell / profile — the
+          company pill leads, as it always has (owner screenshot 2026-07-23). */}
+      <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-4">
         <CompanySwitcher />
-        <GlobalSearchTrigger collapsed={false} />
+        <div className="w-[220px]">
+          <GlobalSearchTrigger tone="inset" />
+        </div>
         {user && (
           <>
-            <PresenceIndicator />
-            <NotificationBell collapsed direction="down" align="end" />
+            <NotificationBell collapsed direction="down" align="end" tone="navbar" unread="dot" />
+            <span aria-hidden className="mx-0.5 h-6 w-px bg-border-subtle" />
             <ProfileMenu />
           </>
         )}
@@ -218,10 +178,14 @@ function CompanySwitcher() {
 
   return (
     <div ref={wrapRef} className="relative">
+      {/* Owner 2026-07-23 (on the 2b handoff): KEEP the labelled pill, not the
+          icon-only compression the mock drew — with one window per company,
+          the visible company NAME in the bar is load-bearing context. Height
+          tuned to the 34px cluster; everything else is the pre-2b trigger. */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 rounded-md border border-border bg-bg/40 px-2 py-1 text-[11.5px] font-medium text-ink-secondary transition-colors hover:bg-bg/60 hover:text-accent"
+        className="flex h-[34px] items-center gap-1.5 rounded-md border border-border bg-bg/40 px-2.5 text-[11.5px] font-medium text-ink-secondary transition-colors hover:bg-bg/60 hover:text-accent"
         aria-haspopup="listbox"
         aria-expanded={open}
         title={active ? "Switch company" : "No company selected — choose one"}
@@ -306,6 +270,11 @@ function ProfileMenu() {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const activeRoute = location.pathname === "/profile";
+  // 2b: the separate "N online" presence cluster is gone — the online state
+  // rides on the avatar as a green corner dot, and the live count surfaces
+  // through the trigger's title/aria-label.
+  const { members } = usePresence();
+  const onlineCount = members.length;
 
   useEffect(() => {
     if (!open) return;
@@ -350,28 +319,40 @@ function ProfileMenu() {
           "group flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-bg/60",
           (open || activeRoute) && "bg-bg/60",
         )}
-        title={`${user.name || user.email}`}
+        title={
+          onlineCount > 0
+            ? `${user.name || user.email} · ${onlineCount} online`
+            : `${user.name || user.email}`
+        }
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Account menu"
       >
-        <Avatar
-          userId={user.id}
-          hasImage={user.profile_pic_r2_key}
-          name={user.name}
-          email={user.email}
-          size={28}
-        />
-        <div className="hidden min-w-0 xl:block">
+        <span className="relative shrink-0">
+          <Avatar
+            userId={user.id}
+            hasImage={user.profile_pic_r2_key}
+            name={user.name}
+            email={user.email}
+            size={30}
+          />
+          {/* Online state as an avatar badge (2b) — you are online whenever
+              this chrome is rendered; the ring keeps it legible over photos. */}
+          <span
+            aria-hidden
+            className="absolute -bottom-px -right-px h-[9px] w-[9px] rounded-full bg-synced ring-[1.5px] ring-surface"
+          />
+        </span>
+        <div className="min-w-0 max-w-[140px]">
           <div
             className={cn(
-              "truncate text-[11.5px] font-semibold text-ink",
+              "truncate text-[12px] font-semibold leading-tight text-ink",
               !open && "group-hover:text-primary",
             )}
           >
             {user.name || user.email.split("@")[0]}
           </div>
-          <div className="truncate text-[9.5px] text-ink-muted">
+          <div className="truncate text-[10px] leading-tight text-ink-muted">
             {user.role_name}
           </div>
         </div>
