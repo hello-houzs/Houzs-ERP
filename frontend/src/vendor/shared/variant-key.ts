@@ -153,8 +153,14 @@ const VARIANT_LABELS: Record<string, string> = {
 
 /**
  * Turn a canonical variant key into a readable label for the UI, e.g.
- * "fabriccode=bf-16|gap=16|legheight=2" -> "Fabric BF-16 · Gap 16 · Leg 2".
- * Empty / unclassified -> '' (caller decides how to show it, e.g. "Standard").
+ * "fabriccode=bf-16|gap=16|legheight=2" -> "BF-16 / GAP 16 / LEG 2".
+ *
+ * Owner 2026-07-23: unify with the SO/PO/GRN/PI/DR variant summary style
+ * (buildVariantSummary — terse " / " separator, bare fabric code, UPPERCASE
+ * bedframe/sofa labels). Empty / unclassified -> '' (caller decides how to
+ * show it, e.g. "Standard").
+ *
+ * Was: "Fabric BF-16 · Gap 16 · Leg 2" (labelled + " · ") — retired.
  */
 export function formatVariantKey(key: string | null | undefined): string {
   if (!key) return '';
@@ -165,8 +171,11 @@ export function formatVariantKey(key: string | null | undefined): string {
       if (eq < 0) return part;
       const slug = part.slice(0, eq);
       const value = part.slice(eq + 1);
-      const label = VARIANT_LABELS[slug] ?? slug;
-      return `${label} ${slug === 'fabriccode' ? value.toUpperCase() : value}`;
+      // Fabric code is bare (no "Fabric" prefix — matches buildVariantSummary);
+      // everything else upper-cases the slug label to read like the SO summary.
+      if (slug === 'fabriccode') return value.toUpperCase();
+      const label = (VARIANT_LABELS[slug] ?? slug).toUpperCase();
+      return `${label} ${value}`;
     })
-    .join(' · ');
+    .join(' / ');
 }
