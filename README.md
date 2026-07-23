@@ -137,7 +137,8 @@ Create the first owner account with `wrangler d1 execute …` or the bootstrap r
 | `npm run deploy:frontend` | Builds (`vite build`) + deploys the SPA to Cloudflare Pages |
 | `npm run deploy:all` | Both, in order |
 | `npm run db:migrate` | Applies every `backend/src/db/migrations/*.sql` to remote D1 (idempotent — tracks applied files in `d1_migrations`) |
-| `npm run db:reset` | Re-applies `schema.sql` to remote (**destructive — prod data loss**) |
+| `npm run db:reset` | Disabled guard — prints why and exits 1 (it used to wipe the remote D1 cold-backup with no confirmation) |
+| `npm run db:reset:remote:DANGER` | Re-applies `schema.sql` to the **remote** D1 (**destructive — prod data loss**). Explicit name on purpose |
 | `npm run db:reset:local` | Same but against the local D1 sandbox |
 | `npm run install:all` | `npm install` in `backend/` + `frontend/` |
 

@@ -12,6 +12,7 @@
     "deploy:frontend": "npm --prefix frontend run deploy",
     "deploy:all": "npm run deploy:frontend && npm run deploy:backend",
     "db:reset": "npm --prefix backend run db:reset",
+    "db:reset:remote:DANGER": "npm --prefix backend run db:reset:remote:DANGER",
     "db:reset:local": "npm --prefix backend run db:reset:local",
     "db:migrate": "npm --prefix backend run db:migrate",
     "install:all": "npm --prefix backend install && npm --prefix frontend install"
