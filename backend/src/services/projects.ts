@@ -1474,9 +1474,14 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   const STOCK_OUT_AWAITING_APPROVAL = `EXISTS (SELECT 1 FROM project_checklist pc
                 WHERE pc.project_id = p.id AND pc.title = 'Stock Out Transfer Record'
                   AND pc.review_status IN ('pending_review', 'amended') AND ${DUE_GATE})`;
+  // The Agreement / Quotation is the APPROVER's pending only once it has been
+  // SUBMITTED for review (owner 2026-07-23, weisiang report): before BD uploads
+  // it, it sits on BD's own lane, not the approver's. Mirror STOCK_OUT above —
+  // gate on review_status, NOT a bare status='pending' (which showed every
+  // not-yet-uploaded agreement on the Super Admin's My Pending).
   const AGREEMENT_PENDING = `EXISTS (SELECT 1 FROM project_checklist pc
                 WHERE pc.project_id = p.id AND pc.title = 'Agreement / Quotation'
-                  AND pc.status = 'pending' AND ${DUE_GATE})`;
+                  AND pc.review_status IN ('pending_review', 'amended') AND ${DUE_GATE})`;
   // A submitted doc is the APPROVER's pending, not the submitter's (owner
   // 2026-07-21, Sim/Purchaser report): while it awaits review
   // ('pending_review', or 'amended' after a rejection round) the role/title
@@ -1526,12 +1531,16 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     pendingBinds.push(f.pending_title, dueToday);
   }
   if (f.pending_approve && f.pending_approve.length) {
-    // Approver lane: projects with a DUE, still-pending item whose required_perm
-    // is one the caller holds — i.e. things they must approve, once due.
+    // Approver lane: projects with a DUE item whose required_perm is one the
+    // caller holds AND which has actually been SUBMITTED for review (owner
+    // 2026-07-23, weisiang report). Gate on review_status, not a bare
+    // status='pending' — an item nobody has uploaded yet is the submitter's
+    // pending, not the approver's; it only reaches the approver on submit.
     const ph = f.pending_approve.map(() => "?").join(",");
     pendingOr.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
-                WHERE pc.project_id = p.id AND pc.status = 'pending'
+                WHERE pc.project_id = p.id
+                  AND pc.review_status IN ('pending_review', 'amended')
                   AND pc.required_perm IN (${ph}) AND ${DUE_GATE})`
     );
     pendingBinds.push(...f.pending_approve, dueToday);
