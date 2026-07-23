@@ -24,6 +24,12 @@
   - New `SupplierStateSelectWithDerive` wrapper — picking State runs `countryForState(rows, state)` and patches Country if it was blank or different. Same "State auto-fills Country" linkage the warehouse form got in #1054.
 - **Ref:** #1058.
 
+### [MEDIUM] PMS Venue Maintenance had no Country / Postcode
+- **Symptom.** Owner 2026-07-23: "PMS 那边的 Venue 地址，只需要填写 State 就会自动带出国家，不需要填写 Postcode(当然, Postcode 也可以选填)". VenueManager only carried State — no Country column, no Postcode. Any downstream that keys on venue country (delivery routing across borders, sales-by-country) had to derive it every read.
+- **Root cause (traced).** `public.project_venues` shipped with `state text` only. Mig 0175 canonicalised the state value but nobody added country / postcode. VenueManager's Add form (`ProjectMaintenance.tsx:388`) offered name + state, no more.
+- **Fix.** Mig 0178 adds `country`, `postcode` to `public.project_venues`. Backfills `country` from state via `scm.my_localities` (nullable — rows with an unrecognised state stay NULL, operator fills). Backend `POST /api/scm/venues` and `PATCH /:id` accept both new fields; POST also canonicalises `state` (mig 0175 already applied on write). Frontend VenueManager Add form now has State → Country (auto-derived) → optional Postcode. Same "pick State, Country auto-fills" linkage as the warehouse (#1054) and supplier (#1058) forms.
+- **Ref:** #1059 (this PR).
+
 
 
 ### [CRITICAL] Mig 0175 referenced a non-existent `customers.country` column and blocked EVERY subsequent migration
