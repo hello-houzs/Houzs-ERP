@@ -48,6 +48,8 @@ type VenueRow = {
   /* Mig 0178 — Country + Postcode. Optional so older callers still parse. */
   country: string | null;
   postcode: string | null;
+  /* Mig 0182 — City. Optional so older callers still parse. */
+  city: string | null;
   active: boolean;
   created_at: string;
 };
@@ -63,9 +65,10 @@ function mapVenue(r: Record<string, unknown>): VenueRow {
     name: String(r.name ?? ""),
     address: (r.notes as string | null) ?? null,
     state: (r.state as string | null) ?? null,
-    /* Mig 0178 — Country + Postcode. */
+    /* Mig 0178 — Country + Postcode. Mig 0182 — City. */
     country: (r.country as string | null) ?? null,
     postcode: (r.postcode as string | null) ?? null,
+    city: (r.city as string | null) ?? null,
     active: activeVal === 1 || activeVal === true,
     created_at: (r.created_at as string | null) ?? "",
   };
@@ -88,7 +91,7 @@ venues.get("/", async (c) => {
     : `WHERE active = 1${companyPred}`;
   try {
     const rows = await c.env.DB.prepare(
-      `SELECT id, name, state, country, postcode, notes, active, created_at FROM project_venues
+      `SELECT id, name, state, country, postcode, city, notes, active, created_at FROM project_venues
         ${where} ORDER BY name`,
     ).all<Record<string, unknown>>();
     const list = (rows.results ?? []).map(mapVenue);
@@ -122,32 +125,36 @@ venues.post("/", async (c) => {
      'PENANG' / 'KL' while SCM stores 'Pulau Pinang' / 'Kuala Lumpur'. */
   const state = canonicalizeMyState((body.state as string | null | undefined) ?? null);
   /* Mig 0178 — structured address on venue. Country is optional and
-     back-derives from state via frontend cascade; postcode is optional too. */
+     back-derives from state via frontend cascade; postcode is optional too.
+     Mig 0182 — City (dropdown from my_localities filtered by state). */
   const country = typeof body.country === 'string' && body.country.trim()
     ? body.country.trim() : null;
   const postcode = typeof body.postcode === 'string' && body.postcode.trim()
     ? body.postcode.trim() : null;
+  const city = typeof body.city === 'string' && body.city.trim()
+    ? body.city.trim() : null;
 
   const companyPred = activeCompanySql(c);
   const existing = await c.env.DB.prepare(
-    `SELECT id, name, state, country, postcode, notes, active, created_at FROM project_venues
+    `SELECT id, name, state, country, postcode, city, notes, active, created_at FROM project_venues
       WHERE LOWER(name) = LOWER(?)${companyPred} LIMIT 1`,
   )
     .bind(name)
     .first<Record<string, unknown>>();
 
   if (existing) {
-    // Reactivate + fill state/country/postcode/notes when supplied (COALESCE keeps existing).
+    // Reactivate + fill state/country/postcode/city/notes when supplied (COALESCE keeps existing).
     await c.env.DB.prepare(
       `UPDATE project_venues
           SET active   = 1,
               state    = COALESCE(?, state),
               country  = COALESCE(?, country),
               postcode = COALESCE(?, postcode),
+              city     = COALESCE(?, city),
               notes    = COALESCE(?, notes)
         WHERE id = ?`,
     )
-      .bind(state, country, postcode, notes, existing.id as number)
+      .bind(state, country, postcode, city, notes, existing.id as number)
       .run();
     const v = mapVenue({
       ...existing,
@@ -155,6 +162,7 @@ venues.post("/", async (c) => {
       state: state ?? existing.state,
       country: country ?? existing.country,
       postcode: postcode ?? existing.postcode,
+      city: city ?? existing.city,
       notes: notes ?? existing.notes,
     });
     return c.json({ venue: v, id: v.id, name: v.name, state: v.state }, 200);
@@ -165,14 +173,14 @@ venues.post("/", async (c) => {
   const companyId = activeCompanyId(c) ?? null; // else the column DEFAULT (HOUZS) applies
   const r = await c.env.DB.prepare(
     companyId != null
-      ? `INSERT INTO project_venues (name, state, country, postcode, notes, created_by, company_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      : `INSERT INTO project_venues (name, state, country, postcode, notes, created_by)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+      ? `INSERT INTO project_venues (name, state, country, postcode, city, notes, created_by, company_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      : `INSERT INTO project_venues (name, state, country, postcode, city, notes, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(...(companyId != null
-      ? [name, state, country, postcode, notes, createdBy, companyId]
-      : [name, state, country, postcode, notes, createdBy]))
+      ? [name, state, country, postcode, city, notes, createdBy, companyId]
+      : [name, state, country, postcode, city, notes, createdBy]))
     .run();
   const newId = r.meta.last_row_id;
   const v = mapVenue({
@@ -220,7 +228,8 @@ venues.patch("/:id", async (c) => {
     /* Mig 0175 — canonicalize on PATCH too. */
     binds.push(canonicalizeMyState((body.state as string | null | undefined) ?? null));
   }
-  /* Mig 0178 — country + postcode. Trim empty to NULL so clearing works. */
+  /* Mig 0178 — country + postcode. Trim empty to NULL so clearing works.
+     Mig 0182 — city (same clear-on-empty rule). */
   if ("country" in body) {
     const cv = typeof body.country === 'string' ? body.country.trim() : '';
     sets.push("country = ?");
@@ -230,6 +239,11 @@ venues.patch("/:id", async (c) => {
     const pv = typeof body.postcode === 'string' ? body.postcode.trim() : '';
     sets.push("postcode = ?");
     binds.push(pv || null);
+  }
+  if ("city" in body) {
+    const cy = typeof body.city === 'string' ? body.city.trim() : '';
+    sets.push("city = ?");
+    binds.push(cy || null);
   }
   if ("active" in body) {
     sets.push("active = ?");
