@@ -988,7 +988,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     { label: "Exchange List", match: /^exchange list/i, readOnly: !canBdEdit },
     { label: "Event Complete Image", match: /^event complete image/i, readOnly: !canBdEdit },
     { label: "Dismantle Image", match: /^dismantle image/i, readOnly: !canBdEdit },
-    { label: "Stock In Transfer Record", match: /^stock in transfer/i, readOnly: !canBdEdit },
+    // Owner 2026-07-23: full-width ("make it big") — the odd 7th tile was
+    // dangling half-width at the bottom of the grid.
+    { label: "Stock In Transfer Record", match: /^stock in transfer/i, readOnly: !canBdEdit, fullWidth: true, mediaH: 108 },
   ];
   // Owner 2026-07-18: PIC assignment AND Sales-Attending assignment are open to
   // EVERYONE holding projects.write EXCEPT the Sales Director — same single
@@ -1273,6 +1275,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 /* Crew manage the setup/dismantle photos (owner 2026-07-21);
                    the backend re-gates on being crewed on the phase. */
                 canPhoto={(isDriverCrew || isStorekeeper) && !archived}
+                /* Schedule reference (owner 2026-07-23): owner/BD/logistic
+                   upload the handbook schedule screenshot from mobile too. */
+                canScheduleEdit={(isOwnerAdmin || isBD || isLogistic) && !archived}
                 busy={busy}
                 setBusy={setBusy}
                 patchProject={patchProject}
@@ -2382,7 +2387,7 @@ const isoTimePart = (iso: string | null | undefined): string => {
 // PUT /:id/phase-photos/upload → POST /:id/phase-photos). Schedule/driver/
 // lorry all persist via PATCH /:id.
 function SetupDismantle({
-  projectId, project, photos, drivers, lorries, canWrite, canPhoto, busy, setBusy, patchProject, notify, reloadPhotos, confirm,
+  projectId, project, photos, drivers, lorries, canWrite, canPhoto, canScheduleEdit, busy, setBusy, patchProject, notify, reloadPhotos, confirm,
 }: {
   projectId: number;
   project: ProjectDetail["project"];
@@ -2394,6 +2399,10 @@ function SetupDismantle({
    *  photos (upload / replace / remove / view) without canWrite — the
    *  backend gates on being crewed on that phase. */
   canPhoto?: boolean;
+  /** Owner 2026-07-23: the mall-handbook Schedule reference block (desktop's
+   *  ScheduleRef, phase="schedule") now renders on mobile too — view for
+   *  every section viewer, upload/remove for owner/BD/logistic. */
+  canScheduleEdit?: boolean;
   busy: boolean;
   setBusy: SetBusy;
   patchProject: (body: Record<string, unknown>) => Promise<boolean>;
@@ -2403,6 +2412,47 @@ function SetupDismantle({
 }) {
   const setupPhoto = photos.find((ph) => ph.phase === "setup");
   const dismantlePhoto = photos.find((ph) => ph.phase === "dismantle");
+  // r2_key is nullable on PhasePhoto (legacy rows) — only keyed shots render.
+  const scheduleShots = photos.filter((ph): ph is PhasePhoto & { r2_key: string } => ph.phase === "schedule" && !!ph.r2_key);
+  const schedRef = useRef<HTMLInputElement | null>(null);
+  const [schedView, setSchedView] = useState<{ items: MediaItem[]; idx: number } | null>(null);
+  const uploadSchedule = async (file: File) => {
+    if (file.size > 50 * 1024 * 1024) {
+      await notify({ title: "File too large", body: "Max 50MB.", tone: "error" });
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      await notify({ title: "Missing extension", body: "The file needs an extension.", tone: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const up = await api.putBinary<{ key: string; mime_type: string }>(
+        `/api/projects/${projectId}/phase-photos/upload?phase=schedule&ext=${encodeURIComponent(ext)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      await api.post(`/api/projects/${projectId}/phase-photos`, { phase: "schedule", r2_key: up.key, content_type: up.mime_type });
+      reloadPhotos();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (schedRef.current) schedRef.current.value = "";
+    }
+  };
+  const removeSchedule = async (ph: PhasePhoto) => {
+    if (!(await confirm({ title: "Remove this schedule screenshot?", confirmLabel: "Remove", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/projects/phase-photos/${ph.id}`);
+      reloadPhotos();
+    } catch (e) {
+      await notify({ title: "Remove failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally { setBusy(false); }
+  };
 
   const anyData =
     project.setup_start_at || project.dismantle_start_at ||
@@ -2419,6 +2469,60 @@ function SetupDismantle({
       </summary>
       <div className="pbody">
         {!anyData && !canWrite && <div style={{ fontSize: 12, color: "#9aa093", marginBottom: 12 }}>No setup or dismantle logistics assigned yet.</div>}
+
+        {/* Schedule reference (owner 2026-07-23, mobile port of the desktop
+            block): the mall handbook's official schedule screenshot. */}
+        <div style={{ border: "1px dashed #d6d9d2", borderRadius: 10, padding: "9px 11px", marginBottom: 14 }}>
+          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#767b6e", marginBottom: 6 }}>Schedule reference</div>
+          {scheduleShots.length === 0 && <div style={{ fontSize: 12, color: "#9aa093", marginBottom: canScheduleEdit ? 8 : 0 }}>No schedule screenshot uploaded yet.</div>}
+          {scheduleShots.length > 0 && (
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: canScheduleEdit ? 8 : 0 }}>
+              {scheduleShots.map((ph, i) => (
+                <div key={ph.id} style={{ position: "relative" }}>
+                  <div
+                    role="button"
+                    onClick={() => setSchedView({
+                      items: scheduleShots.map((s): MediaItem => ({ r2_key: s.r2_key, content_type: mimeFromKey(s.r2_key), caption: s.caption ?? "Schedule reference" })),
+                      idx: i,
+                    })}
+                    style={{ borderRadius: 8, overflow: "hidden", border: "1px solid #e3e6e0", cursor: "pointer" }}
+                  >
+                    <R2Thumb r2Key={ph.r2_key} style={{ width: 84, height: 64 }} />
+                  </div>
+                  {canScheduleEdit && (
+                    <button
+                      aria-label="Remove schedule screenshot"
+                      disabled={busy}
+                      onClick={() => void removeSchedule(ph)}
+                      style={{ position: "absolute", top: -6, right: -6, width: 20, height: 20, borderRadius: "50%", border: "1px solid #d6d9d2", background: "#fff", color: "#a13a34", fontSize: 12, lineHeight: 1, cursor: "pointer" }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {canScheduleEdit && (
+            <>
+              <button className="tinybtn" style={{ width: "100%" }} disabled={busy} onClick={() => schedRef.current?.click()}>
+                {scheduleShots.length ? "+ Add / replace screenshot" : "Upload handbook schedule screenshot"}
+              </button>
+              <input ref={schedRef} type="file" accept="image/*,application/pdf,.heic" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadSchedule(f); }} />
+            </>
+          )}
+          {schedView && (
+            <MediaLightbox
+              items={schedView.items}
+              index={schedView.idx}
+              onChange={(i) => setSchedView((v) => (v ? { ...v, idx: i } : v))}
+              onClose={() => setSchedView(null)}
+              baseUrl="/api/projects/attachments"
+              badge="Schedule"
+            />
+          )}
+        </div>
+
         <PhaseBlock
           kind="Setup"
           projectId={projectId}
