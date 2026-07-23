@@ -34,22 +34,20 @@ const normCat = (raw) => {
 function resolveCanonical(freeText, category, canonicalList) {
   const ft = norm(freeText);
   if (!ft) return null; // blank — leave for auto-derive / blank backfill
+  // Owner 2026-07-23: ONLY the main categories (sofa / mattress / bedframe) get
+  // a brand rewrite. accessory / other / service are LEFT BLANK ("放空") —
+  // the canonical dropdown has no accessory brand, so the earlier loose
+  // fallback wrongly mapped an accessory "2990s" to "2990s Sofa". Restricting
+  // to a category word kills that whole class of wrong guess.
+  const catWord = category === "SOFA" ? "sofa" : category === "MATTRESS" ? "mattress" : category === "BEDFRAME" ? "bedframe" : null;
+  if (!catWord) return null; // accessory / other / service — leave untouched
   const exact = canonicalList.find((c) => norm(c) === ft);
   if (exact) return exact === freeText ? null : exact; // fix casing only if differs
-  const catWord = category === "SOFA" ? "sofa" : category === "MATTRESS" ? "mattress" : category === "BEDFRAME" ? "bedframe" : null;
-  if (catWord) {
-    const catMatch = canonicalList.find((c) => {
-      const nc = norm(c);
-      return nc.includes(catWord) && (nc.includes(ft) || ft.includes(nc.replace(` ${catWord}`, "")));
-    });
-    if (catMatch) return catMatch;
-  }
-  const loose = canonicalList.find((c) => {
+  const catMatch = canonicalList.find((c) => {
     const nc = norm(c);
-    return nc.startsWith(ft) || ft.startsWith(nc) || nc.includes(ft) || ft.includes(nc);
+    return nc.includes(catWord) && (nc.includes(ft) || ft.includes(nc.replace(` ${catWord}`, "")));
   });
-  if (loose) return loose;
-  return null; // NO-MATCH — leave alone, owner decides
+  return catMatch ?? null; // no confident category match -> leave alone
 }
 
 // Rewrite one table. `catExpr` resolves the row's category for the mapping.
