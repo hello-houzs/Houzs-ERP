@@ -24,6 +24,7 @@ import { prepareImageForUpload } from "../lib/imagePipeline";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesDirectorUser } from "../auth/salesAccess";
 import { relativeTime, cn } from "../lib/utils";
+import { formatPhone } from "../vendor/shared/phone";
 import type { TeamMember, Invitation, Role, Department, Position } from "../types";
 import { MemberOrgPerformance } from "./team/MemberOrgPerformance";
 import { Forbidden } from "./Forbidden";
@@ -1255,7 +1256,7 @@ function MembersTab({
             </div>
             <div className="truncate text-[11px] text-ink-muted">
               {u.email}
-              {u.phone ? ` · ${u.phone}` : ""}
+              {u.phone ? ` · ${formatPhone(u.phone)}` : ""}
             </div>
           </div>
         </div>
@@ -2244,7 +2245,7 @@ function MemberDetail({
             {user.phone && (
               <div className="flex items-center gap-2 text-[12px] text-ink-secondary">
                 <Phone size={12} className="shrink-0 text-ink-muted" />
-                <span className="truncate">{user.phone}</span>
+                <span className="truncate">{formatPhone(user.phone)}</span>
               </div>
             )}
             <div className="flex items-center gap-2 text-[12px] text-ink-secondary">
@@ -2527,7 +2528,7 @@ function MemberCard({
         {u.phone && (
           <div className="flex items-center gap-1.5 text-[11px] text-ink-secondary">
             <Phone size={11} className="shrink-0 text-ink-muted" />
-            <span className="truncate">{u.phone}</span>
+            <span className="truncate">{formatPhone(u.phone)}</span>
           </div>
         )}
         <div className="flex items-center gap-1.5 text-[11px] text-ink-secondary">
