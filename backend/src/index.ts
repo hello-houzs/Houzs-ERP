@@ -155,6 +155,12 @@ function corsOriginAllowed(origin: string | undefined | null): string | undefine
     host === "2990shome.com" ||
     host.endsWith(".2990shome.com") ||
     /^([a-z0-9-]+\.)?houzs-erp(-staging)?\.pages\.dev$/.test(host) ||
+    // 2990 POS is a BROWSER SPA on Cloudflare Pages at 2990s-pos.pages.dev
+    // calling this backend cross-origin (post-cutover it targets the Houzs
+    // Worker). The M3 allowlist that replaced `cors *` omitted it, which
+    // CORS-blocked every POS request (pin-login, catalog, cart) — the POS could
+    // not open. The `<hash>.` prefix covers Pages preview deploys.
+    /^([a-z0-9-]+\.)?2990s-pos\.pages\.dev$/.test(host) ||
     host === "localhost" ||
     host === "127.0.0.1";
   return ok ? origin : undefined;
