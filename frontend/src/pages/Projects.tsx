@@ -8830,7 +8830,9 @@ interface PhaseCrew {
   drivers: CrewSlot[];
   helpers: CrewSlot[];
   lorries: string[];
-  outsourced: { enabled: boolean; entries: { name: string; phone: string; plate: string }[] };
+  // provider (owner 2026-07-23): each outsourced entry is added via a Grab or
+  // Lalamove button, shown as "· BY GRAB / BY LALAMOVE". Optional for legacy rows.
+  outsourced: { enabled: boolean; entries: { name: string; phone: string; plate: string; provider?: string }[] };
   /** Free-text note — used by the Service / Exchange phase ("what service /
    *  exchange"). This one is the INTERNAL-LORRY remark. Empty for
    *  setup/dismantle. Persisted inside the same JSON. */
@@ -8960,24 +8962,35 @@ function CrewSlotRow({
 function OutsourcedBox({
   onAdd,
 }: {
-  onAdd: (o: { name: string; phone: string; plate: string }) => void;
+  onAdd: (o: { name: string; phone: string; plate: string; provider: string }) => void;
 }) {
   const [d, setD] = useState({ name: "", phone: "", plate: "" });
+  // Owner 2026-07-23: two add buttons — Grab and Lalamove — each files the same
+  // name/phone/plate entry tagged with that provider.
+  const add = (provider: string) => {
+    if (!d.name.trim() && !d.plate.trim()) return;
+    onAdd({ ...d, provider });
+    setD({ name: "", phone: "", plate: "" });
+  };
   return (
     <div className="space-y-2 rounded-md border border-dashed border-border bg-bg/40 p-2">
       <input value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} placeholder="Name…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
       <input value={d.phone} onChange={(e) => setD({ ...d, phone: e.target.value })} placeholder="Phone number…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
       <input value={d.plate} onChange={(e) => setD({ ...d, plate: e.target.value })} placeholder="Lorry plate…" className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]" />
-      <button
-        onClick={() => {
-          if (!d.name.trim() && !d.plate.trim()) return;
-          onAdd(d);
-          setD({ name: "", phone: "", plate: "" });
-        }}
-        className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
-      >
-        + Add
-      </button>
+      <div className="flex gap-2">
+        <button
+          onClick={() => add("Grab")}
+          className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
+        >
+          + Grab
+        </button>
+        <button
+          onClick={() => add("Lalamove")}
+          className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
+        >
+          + Lalamove
+        </button>
+      </div>
     </div>
   );
 }
@@ -9129,6 +9142,7 @@ function PhaseCrewEditor({
                   {o.name}
                   {o.phone ? ` · ${formatPhone(o.phone)}` : ""}
                   {o.plate ? ` · ${o.plate}` : ""}
+                  {o.provider ? ` · BY ${o.provider.toUpperCase()}` : ""}
                   {!readOnly && (
                     <button
                       onClick={() =>
