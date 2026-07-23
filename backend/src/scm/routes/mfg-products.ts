@@ -26,7 +26,8 @@ import { moduleCodeFromSku, normalizeSofaTier, parseDefaultFreeGifts } from '../
 import { canWriteScmConfig, canViewScmProductCost } from '../lib/houzs-perms';
 import { PRODUCT_FINANCE_KEYS, stripProductPriceHistory } from '../lib/finance-keys';
 import { scopeToCompany, activeCompanyId,
-  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY,
+  detailMissResponse } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const mfgProducts = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -491,7 +492,12 @@ mfgProducts.get('/:id', async (c) => {
     .maybeSingle();
 
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  if (!data) return c.json({ error: 'not_found' }, 404);
+  if (!data) {
+    // Same cross-company honesty as the supplier detail: a product that lives in
+    // another company the caller may see gets "switch to view", not the alarming
+    // "could no longer be found" (owner ask 2026-07-24; detailMissResponse).
+    return c.json(await detailMissResponse(c, supabase.from('mfg_products').select('company_id').eq('id', id), 'product'), 404);
+  }
 
   /* select('*') hands back every column this table grows, so the cost strip
      is what stands between a new cost column and every products reader —
