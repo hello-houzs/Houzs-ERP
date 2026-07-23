@@ -382,6 +382,11 @@ function CaseList({
     { key: "risk", label: "SLA risk", match: (r) => ["breach", "risk"].includes(slaStateOf(r).tone) },
     { key: "urgent", label: "Urgent", match: (r) => priorityOf(r) === "urgent" },
     { key: "mine", label: "Mine", match: isMine },
+    // Archived — SERVER-SIDE archived_only=1, a separate list rather than
+    // archived rows interleaved with live work (owner 2026-07-21, desktop
+    // #1023 parity). match is a no-op: the server already returns only
+    // archived rows while this chip is active.
+    { key: "archived", label: "Archived", match: () => true },
   ];
 
   /* Server-side search + sort + Mine + infinite scroll. `search` covers
@@ -394,6 +399,9 @@ function CaseList({
      item code/description that the old client search also matched — those two
      fields are no longer searchable (cross-page correctness is the trade). */
   const mineParam = chip === "mine" ? user?.id ?? null : null;
+  // Archived chip → archived_only=1 (NOT include_archived, which would
+  // interleave archived rows into the active list — the pre-#1023 bug).
+  const archivedParam = chip === "archived" ? 1 : null;
   const buildParams = (page: number): string => {
     const p = new URLSearchParams();
     p.set("page", String(page));
@@ -402,6 +410,7 @@ function CaseList({
     if (sort === "no") { p.set("sort_by", "assr_no"); p.set("sort_dir", "asc"); }
     else { p.set("sort_by", "hours_to_deadline"); p.set("sort_dir", "asc"); }
     if (mineParam != null) p.set("assigned_to", String(mineParam));
+    if (archivedParam != null) p.set("archived_only", "1");
     return p.toString();
   };
   type AssrListPage = { data?: Any[]; total?: number; page?: number; per_page?: number };
@@ -409,7 +418,7 @@ function CaseList({
     data, isLoading, isFetching, isPlaceholderData, error,
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ["mobile-assr-list-paged", debouncedQ, sort, mineParam],
+    queryKey: ["mobile-assr-list-paged", debouncedQ, sort, mineParam, archivedParam],
     queryFn: ({ pageParam, signal }) => api.get<AssrListPage>(`/api/assr?${buildParams(pageParam)}`, { signal }),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
@@ -503,6 +512,10 @@ function CaseList({
         <div className="hz-scroll" style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 11, paddingBottom: 2 }}>
           {CHIPS.map((c) => {
             const on = chip === c.key;
+            // Archived is a different SERVER dataset, so a loaded-rows count
+            // is meaningless while inactive (the active list holds no archived
+            // rows) — badge only when selected, showing the server total.
+            const badge = c.key === "archived" ? (on ? totalCount : null) : counts[c.key] ?? 0;
             return (
               <button
                 key={c.key}
@@ -516,9 +529,11 @@ function CaseList({
                 }}
               >
                 {c.label}
-                <span style={{ fontSize: 11, fontWeight: 700, padding: "0 6px", borderRadius: 999, background: on ? "rgba(255,255,255,0.22)" : FIELD_BG, color: on ? "#fff" : MUTED }}>
-                  {counts[c.key] ?? 0}
-                </span>
+                {badge != null && (
+                  <span style={{ fontSize: 11, fontWeight: 700, padding: "0 6px", borderRadius: 999, background: on ? "rgba(255,255,255,0.22)" : FIELD_BG, color: on ? "#fff" : MUTED }}>
+                    {badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -689,6 +704,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const [tab, setTab] = useState<DetailTab>("overview");
   const [openStage, setOpenStage] = useState<string | null>(null);
   const [advOpen, setAdvOpen] = useState(false);
+  const [closeOpen, setCloseOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
   const [noteAudience, setNoteAudience] = useState<NoteAudience>("service");
@@ -941,6 +957,17 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
       await api.post(`/api/assr/${id}/archive`);
     }, "Couldn't archive");
   };
+
+  // ── Close case (desktop #1008 parity) — optional CSAT rating + notes,
+  // then transition straight to completed from ANY open stage, so early
+  // closes (customer withdrew, resolved without delivery) go through the
+  // same rated flow instead of a silent stage jump. The PATCH only fires
+  // when a rating was given (desktop ClosePrompt semantics).
+  const closeCase = (rating: number | null, notes: string) =>
+    runWrite(async () => {
+      if (rating) await api.patch(`/api/assr/${id}`, { satisfaction_rating: rating, satisfaction_notes: notes || null });
+      await api.post(`/api/assr/${id}/transition`, { stage: "completed" });
+    }, "Couldn't close case");
 
   // Stage transition (used by the Stage tab select + the Advance sheet).
   const transitionTo = async (target: string, withConfirm = true) => {
@@ -1278,7 +1305,6 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                           <div className="money" style={{ fontSize: 10, fontWeight: 700, color: BROWN }}>{String(get(it, "itemCode", "item_code") ?? "—")}</div>
                           <div style={{ fontSize: 12, fontWeight: 600, color: INK, marginTop: 2 }}>{String(get(it, "itemDescription", "item_description") ?? "—")}</div>
                         </div>
-                        <MobileItemQty c={c} it={it} busy={busy} onChanged={refetch} notify={notify} />
                         <button
                           onClick={() => removeItem(it)}
                           disabled={busy}
@@ -1287,6 +1313,19 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                         >
                           ×
                         </button>
+                      </div>
+                      {/* Set + Ctn steppers on their own labelled row — the
+                          375px header row can't fit two steppers beside the
+                          description (desktop c505d19f puts them inline). */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 16, marginTop: 9 }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <span className="fld-l">Set</span>
+                          <MobileItemQty c={c} it={it} busy={busy} onChanged={refetch} notify={notify} />
+                        </span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <span className="fld-l">Ctn</span>
+                          <MobileItemCarton c={c} it={it} busy={busy} onChanged={refetch} notify={notify} />
+                        </span>
                       </div>
                       <MobileItemRemark c={c} it={it} busy={busy} onChanged={refetch} notify={notify} field="remark" placeholder="Customer remark — prints on customer copy" />
                       <MobileItemRemark c={c} it={it} busy={busy} onChanged={refetch} notify={notify} field="supplier_remark" placeholder="Supplier remark — prints on supplier copy" />
@@ -1686,17 +1725,32 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               Print
             </button>
           ) : (
-            <button
-              onClick={() => setAdvOpen(true)}
-              disabled={busy || isArchived || !nextStage}
-              style={{
-                flex: 1, height: 42, borderRadius: 11, border: "none", background: TEAL, color: "#fff",
-                fontFamily: "inherit", fontWeight: 700, fontSize: 14, cursor: "pointer",
-                opacity: busy || isArchived || !nextStage ? 0.55 : 1,
-              }}
-            >
-              {nextStage?.key === "completed" ? "Mark complete" : "Advance stage →"}
-            </button>
+            <>
+              {/* Close on every open case (Nick 2026-07-21, desktop #1008) —
+                  hidden at the final step, where "Mark complete" IS the same
+                  rated close. Archived cases keep the read-only bar. */}
+              {!isArchived && nextStage?.key !== "completed" && (
+                <button
+                  onClick={() => setCloseOpen(true)}
+                  disabled={busy}
+                  className="tinybtn"
+                  style={{ flex: "none", padding: "0 14px", height: 42, fontSize: 13, color: RED, opacity: busy ? 0.5 : 1 }}
+                >
+                  Close
+                </button>
+              )}
+              <button
+                onClick={() => (nextStage?.key === "completed" ? setCloseOpen(true) : setAdvOpen(true))}
+                disabled={busy || isArchived || !nextStage}
+                style={{
+                  flex: 1, height: 42, borderRadius: 11, border: "none", background: TEAL, color: "#fff",
+                  fontFamily: "inherit", fontWeight: 700, fontSize: 14, cursor: "pointer",
+                  opacity: busy || isArchived || !nextStage ? 0.55 : 1,
+                }}
+              >
+                {nextStage?.key === "completed" ? "Mark complete" : "Advance stage →"}
+              </button>
+            </>
           )}
         </div>
       )}
@@ -1724,6 +1778,20 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
             {nextStage.key === "completed" ? "Confirm — mark complete" : "Confirm advance"}
           </button>
         </SheetShell>
+      )}
+
+      {/* Close-case sheet — CSAT stars + notes → completed (#1008 parity).
+          Reached from the bar's Close button (any open stage) AND from the
+          final step's "Mark complete", so no close path skips the rating. */}
+      {closeOpen && (
+        <CloseCaseSheet
+          busy={busy}
+          onClose={() => setCloseOpen(false)}
+          onConfirm={async (rating, notes) => {
+            setCloseOpen(false);
+            await closeCase(rating, notes);
+          }}
+        />
       )}
 
       {/* Note sheet — audience + textarea, posts to /:id/notes. */}
@@ -1797,6 +1865,61 @@ function NoteSheet({ onClose, onSave, saving }: {
       >
         {saving ? "Saving…" : "Save note"}
       </button>
+    </SheetShell>
+  );
+}
+
+// ── CLOSE-CASE SHEET (desktop ClosePrompt parity, #1008) ──────────
+// Optional 1–5 star customer-satisfaction rating + notes; Confirm
+// transitions the case to completed. Tapping the active star clears it
+// (the rating stays optional), matching the desktop stars exactly.
+function CloseCaseSheet({ busy, onClose, onConfirm }: {
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: (rating: number | null, notes: string) => void;
+}) {
+  const [rating, setRating] = useState(0);
+  const [notes, setNotes] = useState("");
+  return (
+    <SheetShell title="Close case" onClose={onClose}>
+      <div className="fld-l">Customer satisfaction</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 2, margin: "8px 0 12px" }}>
+        {[1, 2, 3, 4, 5].map((n) => {
+          const filled = n <= rating;
+          return (
+            <button
+              key={n}
+              onClick={() => setRating(rating === n ? 0 : n)}
+              aria-label={`${n} star${n > 1 ? "s" : ""}`}
+              style={{ border: "none", background: "none", padding: 5, cursor: "pointer", lineHeight: 0 }}
+            >
+              <svg width="26" height="26" viewBox="0 0 24 24" fill={filled ? "#fbbf24" : "none"} stroke={filled ? "#fbbf24" : GREY} strokeWidth="1.6" strokeLinejoin="round">
+                <path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+              </svg>
+            </button>
+          );
+        })}
+        {rating > 0 && <span style={{ fontSize: 13, fontWeight: 700, color: INK_SEC, marginLeft: 8 }}>{rating}/5</span>}
+      </div>
+      <textarea
+        value={notes}
+        onChange={(e) => setNotes(e.target.value)}
+        rows={3}
+        placeholder="Satisfaction notes (optional)…"
+        className="fld-i"
+        style={{ resize: "none", width: "100%", boxSizing: "border-box", marginBottom: 14 }}
+      />
+      <button
+        className="btn"
+        disabled={busy}
+        style={{ background: RED, opacity: busy ? 0.6 : 1 }}
+        onClick={() => onConfirm(rating || null, notes.trim())}
+      >
+        Confirm close
+      </button>
+      <div style={{ fontSize: 11, color: MUTED, textAlign: "center", marginTop: 10 }}>
+        Closes the case as Completed. The customer portal updates immediately.
+      </div>
     </SheetShell>
   );
 }
@@ -2814,6 +2937,39 @@ function MobileItemQty({ c, it, busy, onChanged, notify }: { c: Any; it: Any; bu
       <button onClick={() => set(qty - 1)} disabled={dis || qty <= 1} aria-label="Decrease quantity" style={{ ...btn, opacity: dis || qty <= 1 ? 0.4 : 1 }}>−</button>
       <span className="money" style={{ minWidth: 20, textAlign: "center", fontSize: 12, fontWeight: 700, color: INK }}>{qty}</span>
       <button onClick={() => set(qty + 1)} disabled={dis} aria-label="Increase quantity" style={{ ...btn, opacity: dis ? 0.4 : 1 }}>+</button>
+    </div>
+  );
+}
+
+// Per-carton quantity (owner 2026-07-21, desktop c505d19f parity) — the
+// second, user-selected "Ctn" count beside the per-set qty. PATCHes
+// qty_carton and feeds the CTN column on both printed items tables
+// (customer/office + supplier). Not logged to the timeline.
+function MobileItemCarton({ c, it, busy, onChanged, notify }: { c: Any; it: Any; busy: boolean; onChanged: () => void; notify: ReturnType<typeof useNotify> }) {
+  const caseId = Number(get(c, "id"));
+  const itemId = Number(get(it, "id"));
+  const qty = Math.max(1, Number(get(it, "qtyCarton", "qty_carton") ?? 1));
+  const [saving, setSaving] = useState(false);
+  const dis = busy || saving;
+  const set = async (next: number) => {
+    const clamped = Math.max(1, Math.round(next));
+    if (clamped === qty || dis) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/assr/${caseId}/items/${itemId}`, { qty_carton: clamped });
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't update carton quantity", body: e?.message || "Please try again.", tone: "error" });
+    } finally {
+      setSaving(false);
+    }
+  };
+  const btn: React.CSSProperties = { flex: "none", width: 24, height: 26, border: "none", background: "transparent", color: INK, fontSize: 15, fontWeight: 700, lineHeight: 1, cursor: dis ? "default" : "pointer" };
+  return (
+    <div style={{ flex: "none", display: "flex", alignItems: "center", border: `1px solid ${DIM}`, borderRadius: 8, background: FIELD_BG }}>
+      <button onClick={() => set(qty - 1)} disabled={dis || qty <= 1} aria-label="Decrease cartons" style={{ ...btn, opacity: dis || qty <= 1 ? 0.4 : 1 }}>−</button>
+      <span className="money" style={{ minWidth: 20, textAlign: "center", fontSize: 12, fontWeight: 700, color: INK }}>{qty}</span>
+      <button onClick={() => set(qty + 1)} disabled={dis} aria-label="Increase cartons" style={{ ...btn, opacity: dis ? 0.4 : 1 }}>+</button>
     </div>
   );
 }
