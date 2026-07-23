@@ -863,19 +863,29 @@ export function PurchaseOrdersListV2() {
       render: (r) => <span className="text-[12.5px] text-ink-secondary">{fmtDate(r.po_date)}</span>,
     },
     {
+      // Owner 2026-07-23: supplier NAME and CODE are separate columns, not a
+      // stacked cell — a purchaser filters/sorts by code, so it needs to be its
+      // own field.
       key: "supplier",
       label: "Supplier",
       disableSort: true,
       getValue: (r) => supplierNameOf(r),
       render: (r) => (
-        <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold text-ink">
-            {supplierNameOf(r)}
-          </div>
-          <div className="mt-0.5 font-mono text-[11px] text-ink-muted">
-            {supplierCodeOf(r)}
-          </div>
+        <div className="min-w-0 truncate text-[13px] font-semibold text-ink">
+          {supplierNameOf(r)}
         </div>
+      ),
+    },
+    {
+      key: "supplier_code",
+      label: "Code",
+      width: "108px",
+      disableSort: true,
+      getValue: (r) => supplierCodeOf(r),
+      render: (r) => (
+        <span className="font-mono text-[11.5px] text-ink-secondary">
+          {supplierCodeOf(r) || "—"}
+        </span>
       ),
     },
     {

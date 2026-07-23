@@ -238,6 +238,11 @@ function CardsGrid({ rows, onOpen }: { rows: PiRow[]; onOpen: (r: PiRow) => void
             <div className="mt-2 truncate text-[15px] font-semibold text-ink">
               {supplierNameOf(r)}
             </div>
+            {/* Owner 2026-07-23: supplier code shown as its own line, not only
+                buried in the drawer. */}
+            <div className="truncate font-mono text-[11px] text-ink-muted">
+              {supplierCodeOf(r)}
+            </div>
             <div className="mt-1 flex items-center gap-2">
               <span className="text-[11.5px] text-ink-muted">{fmtDate(r.invoice_date)}</span>
               {r.due_date && (
