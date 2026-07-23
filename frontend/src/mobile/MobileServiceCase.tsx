@@ -314,6 +314,23 @@ export function MobileServiceCase({ onBack, startNew = false }: { onBack?: () =>
   );
 }
 
+// Sort menu (owner 2026-07-23: default = Case newest-first, everything else
+// is auxiliary; Stuck/Updated/Priority/Customer added same day, all four
+// picked). Every `by` is a key of the backend ASSR_SORT_MAP whitelist —
+// unknown keys are silently ignored server-side (falls back to id DESC), so
+// keep the two lists in sync. Priority relies on the map's CASE expression
+// for semantic order (urgent→low when asc), not the raw text column.
+const SORT_MENU = [
+  { key: "no", label: "Newest", by: "assr_no", dir: "desc" },
+  { key: "old", label: "Oldest", by: "assr_no", dir: "asc" },
+  { key: "sla", label: "SLA", by: "hours_to_deadline", dir: "asc" },
+  { key: "stuck", label: "Stuck", by: "days_in_stage", dir: "desc" },
+  { key: "updated", label: "Updated", by: "updated_at", dir: "desc" },
+  { key: "priority", label: "Priority", by: "priority", dir: "asc" },
+  { key: "customer", label: "Customer", by: "customer_name", dir: "asc" },
+] as const;
+type SortKey = (typeof SORT_MENU)[number]["key"];
+
 // ── LIST — "Status Cards" (design ListA) ──────────────────────────
 function CaseList({
   onBack,
@@ -327,10 +344,7 @@ function CaseList({
   const { user, can } = useAuth();
   const [q, setQ] = useState("");
   const [chip, setChip] = useState("all");
-  // Default sort = newest case first (owner 2026-07-23: "Sorting by Case，
-  // 新 Case 到旧 Case，然后才有其他的辅助功能") — SLA ordering stays as the
-  // secondary option in the selector.
-  const [sort, setSort] = useState<"sla" | "no">("no");
+  const [sort, setSort] = useState<SortKey>("no");
   /* Debounced search term — the value keyed into (and sent to) the server so a
      keystroke doesn't fire a request per character. Mirrors MobileSalesOrders. */
   const [debouncedQ, setDebouncedQ] = useState("");
@@ -407,9 +421,8 @@ function CaseList({
 
   /* Server-side search + sort + Mine + infinite scroll. `search` covers
      case no / SO doc / Ref / customer server-side (cross-page); the sort
-     selector maps to the endpoint's sort_by (no → assr_no desc = newest case
-     first, the default; sla → hours_to_deadline asc = most-overdue first,
-     nulls last). Changing search / sort /
+     selector maps to the endpoint's sort_by via SORT_MENU (newest case
+     first is the default). Changing search / sort /
      Mine swaps the query key so the list restarts from page 1. per_page 30;
      default id-desc tiebreak → no skipped/dup rows.
      NOTE: the server `search` does NOT cover the complaint issue text or the
@@ -421,8 +434,9 @@ function CaseList({
     p.set("page", String(page));
     p.set("per_page", "30");
     if (debouncedQ) p.set("search", debouncedQ);
-    if (sort === "no") { p.set("sort_by", "assr_no"); p.set("sort_dir", "desc"); }
-    else { p.set("sort_by", "hours_to_deadline"); p.set("sort_dir", "asc"); }
+    const s = SORT_MENU.find((o) => o.key === sort) ?? SORT_MENU[0];
+    p.set("sort_by", s.by);
+    p.set("sort_dir", s.dir);
     // The active chip's server-side filter (archived_only NOT
     // include_archived, which would interleave — the pre-#1023 bug).
     for (const [k, v] of Object.entries(activeChip.params ?? {})) p.set(k, v);
@@ -517,15 +531,25 @@ function CaseList({
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search case · SO · Ref · customer · phone" />
           </div>
           <SearchProgress active={searchTransition.isSearching} label="Searching…" />
-          <select value={sort} onChange={(e) => setSort(e.target.value as "sla" | "no")} style={{ flex: "none", fontFamily: "inherit", fontSize: 12, color: "var(--mut)", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "0 8px", height: 38, appearance: "none", WebkitAppearance: "none" }}>
-            <option value="no">Sort: Newest</option>
-            <option value="sla">Sort: SLA</option>
+          <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} style={{ flex: "none", fontFamily: "inherit", fontSize: 12, color: "var(--mut)", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "0 8px", height: 38, appearance: "none", WebkitAppearance: "none" }}>
+            {SORT_MENU.map((o) => (
+              <option key={o.key} value={o.key}>Sort: {o.label}</option>
+            ))}
           </select>
         </div>
         <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={totalCount} term={q} className="mt-1 px-1" />
-        {/* status chips — petrol active pill with count badge (design SegChips) */}
-        <div className="hz-scroll" style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 11, paddingBottom: 2 }}>
-          {CHIPS.map((c) => {
+        {/* status chips — petrol active pill with count badge (design SegChips).
+            Ops' full stage cut renders as TWO rows (owner 2026-07-23:
+            "Operation view的 chips 要做成2 row") — deterministic halves so the
+            pipeline still reads left-to-right within each row; both rows share
+            one horizontal scroll. Short cuts (sales/director) stay one line. */}
+        <div className="hz-scroll" style={{ overflowX: "auto", marginTop: 11, paddingBottom: 2 }}>
+          {(CHIPS.length > 6
+            ? [CHIPS.slice(0, Math.ceil(CHIPS.length / 2)), CHIPS.slice(Math.ceil(CHIPS.length / 2))]
+            : [CHIPS]
+          ).map((rowChips, ri) => (
+          <div key={ri} style={{ display: "flex", gap: 8, width: "max-content", marginTop: ri ? 8 : 0 }}>
+          {rowChips.map((c) => {
             const on = chip === c.key;
             // Active chip → the envelope total (true cross-page count for the
             // server-filtered list). Inactive → loaded-rows estimate, except
@@ -554,6 +578,8 @@ function CaseList({
               </button>
             );
           })}
+          </div>
+          ))}
         </div>
       </header>
 

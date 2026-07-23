@@ -1578,7 +1578,10 @@ const ASSR_SORT_MAP: Record<string, string> = {
   doc_no: "doc_no",
   status: "status",
   stage: "stage",
-  priority: "priority",
+  // Semantic severity order (ASC = urgent first), not the raw text column —
+  // alphabetically 'high' sorted BELOW 'low'/'normal', so a priority sort
+  // never surfaced High cases second. Unknown values sink to the end.
+  priority: "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 WHEN 'low' THEN 3 ELSE 4 END",
   customer_name: "customer_name",
   complained_date: "complained_date",
   completion_date: "completion_date",
