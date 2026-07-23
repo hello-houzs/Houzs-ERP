@@ -1,5 +1,12 @@
 ## 2026-07-23
 
+### [HIGH] Sales-venue showroom picker leaked HOUZS showrooms into the 2990 company
+- **Symptom.** Editing a 2990 member, the SALES VENUE / SHOWROOM picker listed HOUZS showrooms (AKEMI SLEEP STUDIO KELANA JAYA, DUNLOPILLO SUITE SUNWAY CARNIVAL PENANG) alongside 2990's own (2990s PJ) — a cross-company leak. A 2990 salesperson could be parked under a HOUZS venue.
+- **Root cause (traced).** `staff.ts` GET `/showrooms` queried `warehouses WHERE is_showroom=true` with NO company filter, even though `warehouses` is company-scoped (mig 0083) and the file already imports `activeCompanyId`. Latent since the endpoint was written; mig 0186 (is_showroom synced from `type='showroom'`) widened it by flagging more rows true, so more HOUZS showrooms surfaced.
+- **Fix.** Scope the query to `activeCompanyId(c)` when present (fail-open to all only when there is no active company, e.g. a pre-activation single-company workspace). Mirrors every other company-scoped read in the file.
+- **The class, for next time.** A picker that reads a company-scoped table must itself be company-scoped; a global read is a leak the moment a second company exists. When a migration flips a boolean that an UNSCOPED query filters on, it can turn a latent leak into a visible one — audit the readers of any flag you backfill.
+- **Ref:** #<PR>.
+
 ### [HIGH] Showroom warehouses vanished from the sales-venue picker — is_showroom drifted from the type enum
 - **Symptom.** 2990's "PJ SHOWROOM" warehouse (Type = Showroom, visible in Stock -> Warehouses) did not appear in the member profile's SALES VENUE / SHOWROOM picker — only "-- Not parked --". So no salesperson could be parked under it, and their orders carried no venue. The hint even said "mark one in Warehouses to see it here", but marking it Showroom did nothing.
 - **Root cause (traced).** The picker (`staff.ts` GET `/showrooms`) filters `warehouses WHERE is_showroom = true`. mig 0177 added the `type` enum and did a ONE-TIME, ONE-DIRECTION backfill (`is_showroom=true -> type='showroom'`) with NO trigger; the warehouse write UI sets `type` but never touches the legacy `is_showroom` boolean. So a warehouse typed 'showroom' through the UI (PJ SHOWROOM) kept `is_showroom=false` and disappeared from every is_showroom reader — the venue picker, the venue-binding resolver (mig 0148), and the showroom inventory view (`inventory.ts`). is_showroom is read in 28 sites across 5 files.

@@ -329,11 +329,18 @@ staff.get("/pickable", async (c) => {
 // ready — a flagged showroom with a blank venue resolves to nothing.
 staff.get("/showrooms", async (c) => {
   const supabase = c.get("supabase");
-  const { data, error } = await supabase
+  // Company-scoped: the parking picker must list ONLY the active company's
+  // showrooms. Without this a 2990 member's picker showed HOUZS showrooms
+  // (AKEMI SLEEP STUDIO / DUNLOPILLO SUITE), and mig 0186 (is_showroom synced
+  // from type='showroom') widened the leak by flagging more rows. warehouses is
+  // company-scoped since mig 0083.
+  const cid = activeCompanyId(c);
+  let q = supabase
     .from("warehouses")
     .select("id, code, name, venue_name, is_active")
-    .eq("is_showroom", true)
-    .order("name", { ascending: true });
+    .eq("is_showroom", true);
+  if (cid != null) q = q.eq("company_id", cid);
+  const { data, error } = await q.order("name", { ascending: true });
   if (error) {
     if (/relation .* does not exist|column .* does not exist/i.test(error.message)) {
       return c.json({ showrooms: [] });
