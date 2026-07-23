@@ -2568,18 +2568,21 @@ function FinanceListView() {
           />
         </FilterField>
         <FilterField label="Brand">
+          <span className="relative inline-flex">
           <select
-            value={brand}
-            onChange={(e) => setBrand(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-          >
-            <option value="">All</option>
-            {(brandsQ.data?.data ?? []).map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
+              value={brand}
+              onChange={(e) => setBrand(e.target.value)}
+              className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+            >
+              <option value="">All</option>
+              {(brandsQ.data?.data ?? []).map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted" />
+          </span>
         </FilterField>
         <FilterField label="Stage">
           <select
@@ -3481,14 +3484,23 @@ function ProjectsCalendarView() {
       // still be scrolled by dragging over its content. Works in both modes.
       const target = e.target as HTMLElement | null;
       if (target && target.closest(".cal-bar,[data-cal-content]")) return;
-      /* Owner 2026-07-16 — never hijack the wheel when the page can actually
-         scroll. The .cal-bar/[data-cal-content] escape hatches above only exist
-         on cells that HAVE content, so on an empty calendar (a scoped Sales rep
-         with no in-scope projects) every wheel event flipped the month and the
-         page could not be scrolled at all. This is the behaviour the note below
-         has always claimed but never implemented. */
+      /* Owner 2026-07-16 — never hijack the wheel while the page can still
+         scroll in that direction. Owner 2026-07-23 — but the flip must SURVIVE
+         a scrollable page: 6c29e5cc (always expand all bars) made the grid
+         overflow the viewport on any busy month, which turned the old
+         "scrollable ⇒ never flip" guard into a permanent kill-switch — the
+         tip kept promising a scroll-to-change-month that could never fire.
+         Boundary rule instead: wheeling over blank space flips the month only
+         at the edge being pushed past (down at the bottom, up at the top);
+         mid-scroll the page scrolls normally. An empty short calendar is at
+         both edges at once, which is exactly the pre-expand behaviour. */
       const scroller = el.closest("main");
-      if (scroller && scroller.scrollHeight > scroller.clientHeight + 1) return;
+      if (scroller && scroller.scrollHeight > scroller.clientHeight + 1) {
+        const atTop = scroller.scrollTop <= 1;
+        const atBottom =
+          scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+        if (e.deltaY > 0 ? !atBottom : !atTop) return;
+      }
       e.preventDefault();
       const now = Date.now();
       if (now - wheelTsRef.current < 380) return;
@@ -3657,7 +3669,7 @@ function ProjectsCalendarView() {
             else d.setMonth(d.getMonth() - 1);
             setAnchor(d);
           }}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-primary/40 hover:text-primary"
           title={mode === "week" ? "Previous week" : "Previous month"}
         >
           <ChevronLeft size={16} />
@@ -3675,7 +3687,7 @@ function ProjectsCalendarView() {
               setAnchor(d);
             }
           }}
-          className="rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] hover:border-accent/40"
+          className="rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] text-ink-secondary transition-colors hover:border-primary/40 hover:text-primary"
         >
           Today
         </button>
@@ -3686,7 +3698,7 @@ function ProjectsCalendarView() {
             else d.setMonth(d.getMonth() + 1);
             setAnchor(d);
           }}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-primary/40 hover:text-primary"
           title={mode === "week" ? "Next week" : "Next month"}
         >
           <ChevronRight size={16} />
@@ -3701,8 +3713,10 @@ function ProjectsCalendarView() {
               onClick={() => setMode(m)}
               className={cn(
                 "px-3 py-1.5 text-[11px] font-semibold transition-colors",
+                // Theme C: petrol is the FUNCTIONAL accent (active states);
+                // brass is brand-only (owner 2026-07-23 calendar pass).
                 mode === m
-                  ? "bg-accent text-white"
+                  ? "bg-primary text-white"
                   : "bg-surface text-ink-secondary hover:bg-bg/50",
               )}
             >
@@ -3716,7 +3730,7 @@ function ProjectsCalendarView() {
           <select
             value={brand}
             onChange={(e) => setBrand(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+            className="h-8 appearance-none rounded-md border border-border bg-surface pl-2 pr-7 text-[11px] text-ink-secondary outline-none transition-colors hover:border-primary/40 focus:border-primary focus:ring-2 focus:ring-primary/15"
             title="Filter by brand"
           >
             <option value="">All brands</option>
@@ -3726,33 +3740,39 @@ function ProjectsCalendarView() {
               </option>
             ))}
           </select>
+          <span className="relative inline-flex">
           <select
-            value={section}
-            onChange={(e) => setSection(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-            title="Filter by current section (stage)"
-          >
-            <option value="">All sections</option>
-            {(sectionsListQ.data?.data ?? []).map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-            <option value="__done">Completed</option>
-          </select>
+              value={section}
+              onChange={(e) => setSection(e.target.value)}
+              className="h-8 appearance-none rounded-md border border-border bg-surface pl-2 pr-7 text-[11px] text-ink-secondary outline-none transition-colors hover:border-primary/40 focus:border-primary focus:ring-2 focus:ring-primary/15"
+              title="Filter by current section (stage)"
+            >
+              <option value="">All sections</option>
+              {(sectionsListQ.data?.data ?? []).map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+              <option value="__done">Completed</option>
+            </select>
+            <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted" />
+          </span>
+          <span className="relative inline-flex">
           <select
-            value={organizer}
-            onChange={(e) => setOrganizer(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-            title="Filter by organizer"
-          >
-            <option value="">All organizers</option>
-            {(organizersQ.data?.data ?? []).map((o) => (
-              <option key={o.id} value={o.name}>
-                {o.name}
-              </option>
-            ))}
-          </select>
+              value={organizer}
+              onChange={(e) => setOrganizer(e.target.value)}
+              className="h-8 appearance-none rounded-md border border-border bg-surface pl-2 pr-7 text-[11px] text-ink-secondary outline-none transition-colors hover:border-primary/40 focus:border-primary focus:ring-2 focus:ring-primary/15"
+              title="Filter by organizer"
+            >
+              <option value="">All organizers</option>
+              {(organizersQ.data?.data ?? []).map((o) => (
+                <option key={o.id} value={o.name}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted" />
+          </span>
           <ResetFiltersButton
             active={!!(brand || section || organizer || params.get("stage"))}
             onReset={() => {
@@ -3777,9 +3797,9 @@ function ProjectsCalendarView() {
           <button
             onClick={() => setShowTasks(!showTasks)}
             className={cn(
-              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider transition-colors",
+              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors",
               showTasks
-                ? "border-accent/40 bg-accent-soft/40 text-accent"
+                ? "border-primary/40 bg-primary-soft text-primary-ink"
                 : "border-border bg-surface text-ink-muted hover:text-ink"
             )}
             title="Toggle task chips"
@@ -3789,9 +3809,9 @@ function ProjectsCalendarView() {
           <button
             onClick={() => setShowHolidays(!showHolidays)}
             className={cn(
-              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider transition-colors",
+              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors",
               showHolidays
-                ? "border-accent/40 bg-accent-soft/40 text-accent"
+                ? "border-primary/40 bg-primary-soft text-primary-ink"
                 : "border-border bg-surface text-ink-muted hover:text-ink"
             )}
             title="Show Malaysian federal public holidays"
@@ -3805,7 +3825,7 @@ function ProjectsCalendarView() {
                 setSection("");
                 setOrganizer("");
               }}
-              className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
+              className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
             >
               Clear
             </button>
@@ -3825,7 +3845,7 @@ function ProjectsCalendarView() {
           </span>
         ))}
         {mode === "month" && (
-          <span className="ml-auto text-[10.5px] italic text-ink-muted">
+          <span className="ml-auto text-[10.5px] text-ink-muted">
             Tip: scroll over empty space to change month
           </span>
         )}
@@ -3955,7 +3975,7 @@ function ProjectsCalendarView() {
                           className={cn(
                             "inline-flex items-center rounded-full px-3 py-1 text-[12px] font-semibold",
                             isToday
-                              ? "bg-accent text-white"
+                              ? "bg-primary text-white"
                               : "text-ink-secondary",
                           )}
                         >
@@ -3972,11 +3992,11 @@ function ProjectsCalendarView() {
                     ) : (
                       <div className="flex items-center gap-1.5">
                         {isToday ? (
-                          <span className="inline-flex h-[22px] min-w-[22px] shrink-0 items-center justify-center rounded-full bg-accent px-1.5 font-mono text-[13px] font-bold text-white">
+                          <span className="inline-flex h-[22px] min-w-[22px] shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[13px] font-bold text-white">
                             {cell.date.getUTCDate()}
                           </span>
                         ) : (
-                          <span className="shrink-0 font-mono text-[14px] font-bold text-ink">
+                          <span className="shrink-0 text-[14px] font-semibold text-ink">
                             {cell.date.getUTCDate()}
                           </span>
                         )}
