@@ -48,13 +48,15 @@ export type FabricTrackingRow = {
 
 /* ─── Fabric dual-code display (owner request 2026-06-12) ──────────────────
  * Wherever a fabric is picked or displayed, show BOTH codes:
- *   "CG-015 · DC-151-03 — description"
- * internal fabric_code first, then the supplier's EXTERNAL code
- * (fabric_trackings.supplier_code) when present. DISPLAY-ONLY — stored values
- * remain the internal fabric_code everywhere. */
+ *   "CG-015 (DC-151-03) — description"
+ * internal fabric_code first, then the supplier's EXTERNAL code in PARENTHESES
+ * (fabric_trackings.supplier_code) when present — owner 2026-07-24 ("你正常不是都会
+ * 有括弧（bracket）"): the bracketed supplier code is what the supplier recognises,
+ * so a PO reads "BF-01 (PC151-01)". DISPLAY-ONLY — stored values remain the
+ * internal fabric_code everywhere. */
 export function fabricDualCode(internal: string, supplierCode?: string | null): string {
   const ext = supplierCode?.trim();
-  return ext ? `${internal} · ${ext}` : internal;
+  return ext ? `${internal} (${ext})` : internal;
 }
 
 /** Full dropdown label: dual code + " — description" (falls back to series). */
