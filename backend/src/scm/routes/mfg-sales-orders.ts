@@ -278,14 +278,25 @@ async function isPriceOverrideCaller(c: any): Promise<boolean> {
   return hasHouzsPerm(c, 'scm.so.price_override');
 }
 
-/* TBC fill-in + hatch hardening (Loo 2026-06-11) — self-scoped selling roles
-   used to be gated by scm.staff.role. Houzs has NO POS-self-scoped sellers
-   (the SCM bridge pins every caller to one super_admin row, so this gate
-   trivially passed for nobody). Hardcode false; the every-line edit path is
-   already gated upstream by the Houzs session auth + the scm.access gate.
-   Signature kept for call-site compatibility — args ignored. */
-async function selfScopedSalesBlocked(_sb: any, _userId: string, _docNo: string): Promise<boolean> {
-  return false;
+/* Self/downline scope guard (Task 2, go-live). Confine a scoped Sales rep to
+   their OWN + downline Sales Orders on EVERY mutation route (create-line, edit,
+   delete, override, amend, …). Loads the target SO's salesperson_id by doc_no
+   and defers to salesDocOutOfScope — view-all / director / office callers pass
+   via canViewAllSales, a scoped rep only passes for a Sales Order whose
+   salesperson_id is in their own + reporting-chain subtree. Returns TRUE
+   (→ the caller answers 404, indistinguishable from a nonexistent doc_no) when
+   the SO is outside scope. A missing SO returns FALSE so the route's own
+   existence check owns the 404 — this guard never fabricates one.
+
+   Previously a no-op stub (the 2990 scm.staff.role self-scope had no Houzs
+   equivalent), so every scoped rep could mutate ANY SO by doc_no. */
+async function selfScopedSalesBlocked(c: any, docNo: string): Promise<boolean> {
+  const sb = c.get('supabase');
+  const { data: soRow } = await scopeToCompany(sb.from('mfg_sales_orders')
+    .select('salesperson_id').eq('doc_no', docNo), c).maybeSingle();
+  if (!soRow) return false;
+  const sp = (soRow as { salesperson_id?: number | string | null }).salesperson_id;
+  return salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp);
 }
 
 /* Anti-tamper (Task 6) — Strip variants.freeItem from a client-supplied
@@ -4165,7 +4176,7 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
      transition or cancel another salesperson's SO by doc_no — a cancel even
      converts that SO's deposit into a customer credit. Mirror the
      line-mutation endpoints' self-scope guard. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   const { data: prev } = await sb.from('mfg_sales_orders').select('status').eq('doc_no', docNo).maybeSingle();
   const fromStatus = (prev as { status: string } | null)?.status ?? null;
@@ -4654,7 +4665,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      this a sales/sales_executive reaching the Backend SO detail could PATCH any
      order by doc_no (customer fields, even salesperson_id reassignment). Mirror
      the line-mutation endpoints' self-scope guard. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-03 (migration 0144) — phone is COMPULSORY on every SO. The
      CREATE path blocks an empty phone (phone_required); the EDIT path must too,
@@ -5282,7 +5293,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
 
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Composition guard (Loo 2026-06-11) — the create-path MAIN-mix rule
      (sofa never shares a bill with bedframe / mattress, PR #519) now also
@@ -5775,7 +5786,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
 
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: no line EDIT once the processing
      day has passed (the locked order is already PO'd to the supplier). */
@@ -6140,7 +6151,7 @@ mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
 
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: no line DELETE once the
      processing day has passed (the locked order is already PO'd). */
@@ -6271,7 +6282,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
 
   const childLock = await soHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: a TBC fill-in is still a line
      EDIT (it changes what we PO to the supplier), so it locks too. */
@@ -6480,7 +6491,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
 
   const childLock = await soHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: a product swap is a line EDIT
      (it changes what we PO to the supplier), so it locks too. */
@@ -7037,7 +7048,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
     const procLock = await soProcessingLockBlocked(sb, docNo);
     if (procLock) return c.json(procLock, 409);
   }
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   const { data: prevRow } = await sb.from('mfg_sales_order_items')
     .select('id, item_code, item_group, qty, discount_centi, total_centi, variants, cancelled, line_date, debtor_code, debtor_name, agent, venue, branding, line_delivery_date, line_delivery_date_overridden, warehouse_id, remark')
@@ -7669,7 +7680,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/photos', async (c) => {
   const itemId = c.req.param('itemId');
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -7861,7 +7872,7 @@ mfgSalesOrders.delete('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
   const photoKey = decodeURIComponent(c.req.param('photoKey'));
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -8101,7 +8112,7 @@ export async function recordSoPaymentRow(
 mfgSalesOrders.post('/:docNo/payments', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Ensure the SO exists before inserting a child row (gives a cleaner
   // 404 than a deferred FK violation).
@@ -8227,7 +8238,7 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
   const user = c.get('user');
   // Same self-scope gate as POST / DELETE payments.
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Load the row (need every method-scoped column + created_at for the lock).
   const { data: row } = await sb.from('mfg_sales_order_payments').select('*').eq('id', id).maybeSingle();
@@ -8356,7 +8367,7 @@ mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Guard: only delete if the row belongs to this docNo. Prevents a
   // mis-routed call from nuking another SO's payment.
@@ -8452,7 +8463,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId/stock-status', async (c) => {
   const itemId = c.req.param('itemId');
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   let body: { status?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -8616,7 +8627,7 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
 
   // Self-scope stub (no-op in Houzs — the SCM bridge has no POS-self-scoped
   // sellers); kept for call-site parity with 2990.
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Guard 2 — an amendment only makes sense once the SO is processing-locked;
   // an unlocked SO is still directly editable, so no amendment is needed.
