@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Send, User, Package, MessageSquare } from "lucide-react";
 import { api } from "../api/client";
+import { formatPhone } from "../vendor/shared/phone";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { PageHeader } from "../components/Layout";
@@ -270,7 +271,7 @@ export function MyCaseDetail() {
             <div className="text-[13px] font-medium text-ink">
               {c.customer_name || "—"}
             </div>
-            <div className="text-[11.5px] text-ink-muted">{c.phone || "—"}</div>
+            <div className="text-[11.5px] text-ink-muted">{formatPhone(c.phone) || "—"}</div>
             {(c.addr1 || c.addr2 || c.addr3 || c.addr4) && (
               <div className="mt-1 text-[11.5px] text-ink-secondary">
                 {[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}

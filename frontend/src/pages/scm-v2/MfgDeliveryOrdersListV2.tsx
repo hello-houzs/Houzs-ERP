@@ -55,6 +55,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
 import { fmtCenti } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Subset of the full DoRow (see MfgDeliveryOrdersList.tsx for the 40-field
@@ -487,7 +488,7 @@ function DetailDrawer({
                     )}
                   </div>
                 </div>
-                <RowKV k="Phone" v={row.phone || "—"} />
+                <RowKV k="Phone" v={formatPhone(row.phone) || "—"} />
                 <RowKV k="Email" v={row.email || "—"} />
                 <RowKV
                   k="Address"
@@ -1229,7 +1230,7 @@ export function MfgDeliveryOrdersListV2() {
       disableSort: true,
       getValue: (r) => r.phone ?? "",
       render: (r) => (
-        <span className="text-[12.5px] text-ink-secondary">{r.phone || "—"}</span>
+        <span className="text-[12.5px] text-ink-secondary">{formatPhone(r.phone) || "—"}</span>
       ),
     },
     {

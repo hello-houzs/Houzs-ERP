@@ -66,6 +66,7 @@ import { useAuth } from "../../auth/AuthContext";
 import { canViewScmCosting, canOperateDeliveryOrders } from "../../auth/salesAccess";
 import { capability } from "../../auth/capabilities";
 import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Minimal row shape the listing needs. The full SoRow (in MfgSalesOrdersList
@@ -558,7 +559,7 @@ function DetailDrawer({
                     )}
                   </div>
                 </div>
-                <RowKV k="Phone" v={row.phone || "—"} />
+                <RowKV k="Phone" v={formatPhone(row.phone) || "—"} />
                 <RowKV k="Email" v={row.email || "—"} />
                 <RowKV
                   k="Address"
@@ -1410,7 +1411,7 @@ export function MfgSalesOrdersListV2() {
       disableSort: true,
       getValue: (r) => r.phone ?? "",
       render: (r) => (
-        <span className="text-[12.5px] text-ink-secondary">{r.phone || "—"}</span>
+        <span className="text-[12.5px] text-ink-secondary">{formatPhone(r.phone) || "—"}</span>
       ),
     },
     {

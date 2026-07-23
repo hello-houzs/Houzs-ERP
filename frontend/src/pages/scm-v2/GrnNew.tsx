@@ -31,6 +31,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Plus, Save, Trash2, X, ArrowRightLeft, ChevronDown } from 'lucide-react';
 import { Button } from '@2990s/design-system';
+import { formatPhone } from '@2990s/shared/phone';
 import { activeOptions, buildVariantSummary, fmtDateOrDash, isServiceLine, maintPickerValues } from '@2990s/shared';
 import { useCreateGrn, usePostGrn } from '../../vendor/scm/lib/grn-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
@@ -883,7 +884,7 @@ export const GrnNew = () => {
               flexWrap: 'wrap',
             }}>
               {supplier.contact_person && <span>Contact: <strong>{supplier.contact_person}</strong></span>}
-              {supplier.phone          && <span>Phone: <strong>{supplier.phone}</strong></span>}
+              {supplier.phone          && <span>Phone: <strong>{formatPhone(supplier.phone)}</strong></span>}
               {supplier.email          && <span>Email: <strong>{supplier.email}</strong></span>}
               {supplier.payment_terms  && <span>Terms: <strong>{supplier.payment_terms}</strong></span>}
               <span>Currency: <strong>{supplier.currency ?? currency}</strong></span>

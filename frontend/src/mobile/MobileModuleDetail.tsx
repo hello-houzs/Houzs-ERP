@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { visibleFields, canOperateDeliveryOrders, canOperateSalesInvoices } from "../auth/salesAccess";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
+import { buildVariantSummary } from "../vendor/shared/variant-summary";
+import { formatPhone } from "@2990s/shared/phone";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { api } from "../api/client";
@@ -27,11 +29,20 @@ import "./mobile.css";
 // color-mix, kv grid, .money numerals). Everything degrades: a missing field is
 // an em-dash, never undefined / null / NaN.
 //
-// Document `:id` endpoints + shapes wired (read from backend/src/scm/routes):
-//   delivery-orders-mfg  GET /delivery-orders-mfg/:id → { deliveryOrder, items }
-//   sales-invoices       GET /sales-invoices/:id       → { salesInvoice,  items }
-//   grns                 GET /grns/:id                 → { grn,           items }
-//   mfg-purchase-orders  GET /mfg-purchase-orders/:id  → { purchaseOrder, items }
+// Document `:id` (or `:docNo`) endpoints + shapes wired (backend/src/scm/routes):
+//   delivery-orders-mfg          GET /delivery-orders-mfg/:id           → { deliveryOrder,          items }
+//   sales-invoices               GET /sales-invoices/:id                → { salesInvoice,           items }
+//   grns                         GET /grns/:id                          → { grn,                    items }
+//   mfg-purchase-orders          GET /mfg-purchase-orders/:id           → { purchaseOrder,          items }
+//   purchase-invoices            GET /purchase-invoices/:id             → { purchaseInvoice,        items }
+//   purchase-returns             GET /purchase-returns/:id              → { purchaseReturn,         items }
+//   delivery-returns             GET /delivery-returns/:id              → { deliveryReturn,         items }
+//   consignment-orders           GET /consignment-orders/:docNo         → { salesOrder,             items }
+//   consignment-notes            GET /consignment-notes/:id             → { deliveryOrder,          items }
+//   consignment-returns          GET /consignment-returns/:id           → { deliveryReturn,         items }
+//   purchase-consignment-orders  GET /purchase-consignment-orders/:id   → { purchaseOrder,          items }
+//   purchase-consignment-receives GET /purchase-consignment-receives/:id → { grn,                   items }
+//   purchase-consignment-returns GET /purchase-consignment-returns/:id  → { purchaseReturn,         items }
 // ---------------------------------------------------------------------------
 
 // Money is stored as integer *_centi — delegate display to the shared SCM
@@ -248,7 +259,7 @@ const DOC_MODULES: Record<string, DocMap> = {
     meta: (h) => [
       ["DO Date", dmy(h.do_date)],
       ["Delivery", dmy(h.customer_delivery_date ?? h.expected_delivery_at)],
-      ["Phone", firstOf(h.phone)],
+      ["Phone", formatPhone(firstOf(h.phone))],
       ["Location", firstOf(h.sales_location, h.customer_state, h.state)],
       ["Reference", firstOf(h.ref, h.po_doc_no)],
       ["Salesperson", firstOf(h.agent)],
@@ -282,7 +293,7 @@ const DOC_MODULES: Record<string, DocMap> = {
     meta: (h) => [
       ["Invoice Date", dmy(h.invoice_date)],
       ["Due Date", dmy(h.due_date)],
-      ["Phone", firstOf(h.phone)],
+      ["Phone", formatPhone(firstOf(h.phone))],
       ["Location", firstOf(h.sales_location, h.customer_state, h.state)],
       ["Reference", firstOf(h.ref, h.po_doc_no)],
       ["Salesperson", firstOf(h.agent)],
@@ -373,23 +384,439 @@ const DOC_MODULES: Record<string, DocMap> = {
     ],
     line: (it) => ({
       name: firstOf(it.material_name, it.description, it.material_code),
-      sub: join(it.material_code, s(it.received_qty).trim() ? `Received ${s(it.received_qty)}` : ""),
+      /* variant summary FIRST (item #1 of the mobile UI audit — every doc line
+         surfaces the sofa/bedframe colour+composition), then material_code +
+         cumulative received_qty. buildVariantSummary returns "" when the row
+         has no variants, so a bare material line still reads correctly. */
+      sub: join(
+        buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),
+        it.material_code,
+        s(it.received_qty).trim() ? `Received ${s(it.received_qty)}` : "",
+      ),
       qty: it.qty,
       unitCenti: it.unit_price_centi,
       amountCenti: it.line_total_centi,
     }),
   },
+
+  /* Purchase Invoice — supplier + PI number in the header, supplier code +
+     supplier_invoice_ref (their invoice) as subtitle, PO + GRN in the meta
+     grid. Balance = total_centi − paid_centi (mirrors the SI stat trio). */
+  "purchase-invoices": {
+    path: "/purchase-invoices",
+    headerKey: "purchaseInvoice",
+    eyebrow: (h) => firstOf(h.invoice_number),
+    title: (h) => firstOf(nested(h.supplier)?.name, h.invoice_number),
+    subtitle: (h) => join(
+      firstOf(nested(h.supplier)?.code) === "—" ? "" : firstOf(nested(h.supplier)?.code),
+      s(h.supplier_invoice_ref).trim() ? `Ref ${s(h.supplier_invoice_ref)}` : "",
+    ),
+    status: (h) => h.status,
+    meta: (h) => [
+      ["Invoice Date", dmy(h.invoice_date)],
+      ["Due Date", dmy(h.due_date)],
+      ["Supplier", firstOf(nested(h.supplier)?.code)],
+      ["PO", firstOf(nested(h.purchase_order)?.po_number)],
+      ["GRN", firstOf(nested(h.grn)?.grn_number)],
+      ["Currency", firstOf(h.currency)],
+      ["Posted", dmy(h.posted_at)],
+    ],
+    stats: (h) => {
+      const totalCenti = Number(h.total_centi ?? 0);
+      const paidCenti = Number(h.paid_centi ?? 0);
+      const bal = Math.max(0, (Number.isFinite(totalCenti) ? totalCenti : 0) - (Number.isFinite(paidCenti) ? paidCenti : 0));
+      return [
+        ["Total", money(h.total_centi), "var(--ink)"],
+        ["Paid", money(h.paid_centi), "#2f8a5b"],
+        ["Balance", money(bal), bal > 0 ? "#a16a2e" : "var(--ink)"],
+      ];
+    },
+    /* line: PI items key on material_code (PC/PO family) rather than item_code —
+       hand it to lineIdentity as the code, description = material_name, and put
+       the variant summary in secondary so the sofa/bedframe spec shows on every
+       row. Falls back to the server-stamped description2 for pre-variant rows. */
+    line: (it) => {
+      const { primary } = lineIdentity({
+        code: it.material_code,
+        description: it.material_name ?? it.description,
+      });
+      return {
+        name: primary,
+        sub: buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),
+        qty: it.qty,
+        unitCenti: it.unit_price_centi,
+        amountCenti: it.line_total_centi,
+      };
+    },
+  },
+
+  /* Purchase Return — supplier + return number, source PO/GRN in subtitle so
+     the operator sees which supplier goods this reverses. Only stat is the
+     refund total. Warehouse resolves per-line (backend stamps warehouse_code). */
+  "purchase-returns": {
+    path: "/purchase-returns",
+    headerKey: "purchaseReturn",
+    eyebrow: (h) => firstOf(h.return_number),
+    title: (h) => firstOf(nested(h.supplier)?.name, h.return_number),
+    subtitle: (h) => {
+      const grn = s(nested(h.grn)?.grn_number).trim();
+      const po = s(nested(h.purchase_order)?.po_number).trim();
+      return join(grn ? `GRN ${grn}` : "", po ? `PO ${po}` : "");
+    },
+    status: (h) => h.status,
+    meta: (h) => [
+      ["Return Date", dmy(h.return_date)],
+      ["Reason", firstOf(h.reason)],
+      ["Supplier", firstOf(nested(h.supplier)?.code)],
+      ["GRN", firstOf(nested(h.grn)?.grn_number)],
+      ["PO", firstOf(nested(h.purchase_order)?.po_number)],
+      ["Credit Note", firstOf(h.credit_note_ref)],
+      ["Posted", dmy(h.posted_at)],
+      ["Completed", dmy(h.completed_at)],
+    ],
+    stats: (h) => [
+      ["Refund", money(h.refund_centi), "var(--ink)"],
+    ],
+    line: (it) => {
+      const { primary } = lineIdentity({
+        code: it.material_code,
+        description: it.material_name,
+      });
+      return {
+        name: primary,
+        sub: join(
+          buildVariantSummary(it.item_group, it.variants),
+          it.warehouse_code,
+        ),
+        qty: it.qty_returned,
+        unitCenti: it.unit_price_centi,
+        amountCenti: it.line_refund_centi,
+      };
+    },
+  },
+
+  /* Delivery Return — the SO-side twin of purchase-returns. Customer + return
+     number in the header, source DO number as subtitle. Total + Refund stats
+     because the header carries both local_total_centi (line sum) and
+     refund_centi (payable-out); the customer sees both on the printed slip. */
+  "delivery-returns": {
+    path: "/delivery-returns",
+    headerKey: "deliveryReturn",
+    eyebrow: (h) => firstOf(h.return_number),
+    title: (h) => firstOf(h.debtor_name, h.return_number),
+    subtitle: (h) => (s(h.do_doc_no).trim() ? `DO ${s(h.do_doc_no)}` : ""),
+    status: (h) => h.status,
+    meta: (h) => [
+      ["Return Date", dmy(h.return_date)],
+      ["Reason", firstOf(h.reason)],
+      ["DO", firstOf(h.do_doc_no)],
+      ["Phone", formatPhone(firstOf(h.phone))],
+      ["Location", firstOf(h.sales_location, h.customer_state, h.state)],
+      ["Received", dmy(h.received_at)],
+      ["Inspected", dmy(h.inspected_at)],
+      ["Refunded", dmy(h.refunded_at)],
+      ["Reference", firstOf(h.ref)],
+    ],
+    stats: (h) => [
+      ["Total", money(h.local_total_centi), "var(--ink)"],
+      ["Refund", money(h.refund_centi), "#a16a2e"],
+    ],
+    line: (it) => {
+      const { primary } = lineIdentity({
+        code: it.item_code,
+        description: it.description,
+      });
+      return {
+        name: primary,
+        sub: join(
+          buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),
+          it.condition,
+          it.warehouse_code,
+        ),
+        qty: it.qty_returned,
+        unitCenti: it.unit_price_centi,
+        amountCenti: it.line_total_centi,
+      };
+    },
+  },
+
+  /* Consignment Order — the CO is a clone of the SO for loaner goods; the URL
+     key is doc_no (endpoint /consignment-orders/:docNo, NOT /:id — see
+     backend/src/scm/routes/consignment-orders.ts). docId() falls back to
+     row.doc_no so the DocumentDetail fetch hits the right URL. */
+  "consignment-orders": {
+    path: "/consignment-orders",
+    headerKey: "salesOrder",
+    eyebrow: (h) => firstOf(h.doc_no),
+    title: (h) => firstOf(h.debtor_name, h.doc_no),
+    subtitle: (h) => join(
+      s(h.agent).trim(),
+      s(h.ref).trim() ? `Ref ${s(h.ref)}` : "",
+      s(h.po_doc_no).trim() ? `PO ${s(h.po_doc_no)}` : "",
+    ),
+    status: (h) => h.status,
+    meta: (h) => [
+      ["Order Date", dmy(h.so_date)],
+      ["Delivery", dmy(h.customer_delivery_date ?? h.internal_expected_dd)],
+      ["Phone", formatPhone(firstOf(h.phone))],
+      ["Location", firstOf(h.sales_location, h.customer_state, h.customer_country)],
+      ["Reference", firstOf(h.ref, h.po_doc_no)],
+      ["Salesperson", firstOf(h.agent)],
+    ],
+    stats: (h) => {
+      const totalCenti = Number(h.local_total_centi ?? 0);
+      const paidCenti = Number(h.paid_centi ?? 0);
+      const bal = Math.max(0, (Number.isFinite(totalCenti) ? totalCenti : 0) - (Number.isFinite(paidCenti) ? paidCenti : 0));
+      return [
+        ["Total", money(h.local_total_centi), "var(--ink)"],
+        ["Paid", money(h.paid_centi), "#2f8a5b"],
+        ["Balance", money(bal), bal > 0 ? "#a16a2e" : "var(--ink)"],
+      ];
+    },
+    line: (it) => {
+      const { primary } = lineIdentity({
+        code: it.item_code,
+        description: it.description,
+      });
+      return {
+        name: primary,
+        sub: buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),
+        qty: it.qty,
+        unitCenti: it.unit_price_centi,
+        amountCenti: it.total_centi,
+      };
+    },
+  },
+
+  /* Consignment Note — the CN is the CO's delivery twin (a shipped loaner).
+     Endpoint /consignment-notes/:id returns { deliveryOrder, items }. Header
+     carries local_total_centi (line sum); no paid/balance because payment on
+     a consignment happens against the CO, not the note. */
+  "consignment-notes": {
+    path: "/consignment-notes",
+    headerKey: "deliveryOrder",
+    eyebrow: (h) => firstOf(h.do_number),
+    title: (h) => firstOf(h.debtor_name, h.do_number),
+    subtitle: (h) => (s(h.consignment_so_doc_no).trim() ? `CO ${s(h.consignment_so_doc_no)}` : ""),
+    status: (h) => h.status,
+    meta: (h) => [
+      ["Note Date", dmy(h.do_date)],
+      ["Delivery", dmy(h.customer_delivery_date ?? h.expected_delivery_at)],
+      ["Phone", formatPhone(firstOf(h.phone))],
+      ["Location", firstOf(h.sales_location, h.customer_state, h.state)],
+      ["Reference", firstOf(h.ref, h.po_doc_no)],
+      ["Driver", firstOf(h.driver_name)],
+    ],
+    stats: (h) => [
+      ["Total", money(h.local_total_centi), "var(--ink)"],
+    ],
+    line: (it) => {
+      const { primary } = lineIdentity({
+        code: it.item_code,
+        description: it.description,
+      });
+      return {
+        name: primary,
+        sub: join(
+          buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),
+          it.warehouse_code,
+          dmy(it.line_delivery_date) !== "—" ? dmy(it.line_delivery_date) : "",
+        ),
+        qty: it.qty,
+        unitCenti: it.unit_price_centi,
+        amountCenti: it.line_total_centi,
+      };
+    },
+  },
+
+  /* Consignment Return — the CN's reverse. Endpoint /consignment-returns/:id
+     returns { deliveryReturn, items }. Same two-money stats as delivery-returns
+     (Total = local_total_centi, Refund = refund_centi). */
+  "consignment-returns": {
+    path: "/consignment-returns",
+    headerKey: "deliveryReturn",
+    eyebrow: (h) => firstOf(h.return_number),
+    title: (h) => firstOf(h.debtor_name, h.return_number),
+    subtitle: (h) => (s(h.do_doc_no).trim() ? `CN ${s(h.do_doc_no)}` : ""),
+    status: (h) => h.status,
+    meta: (h) => [
+      ["Return Date", dmy(h.return_date)],
+      ["Reason", firstOf(h.reason)],
+      ["CN", firstOf(h.do_doc_no)],
+      ["Phone", formatPhone(firstOf(h.phone))],
+      ["Location", firstOf(h.sales_location, h.customer_state, h.state)],
+      ["Received", dmy(h.received_at)],
+      ["Inspected", dmy(h.inspected_at)],
+      ["Refunded", dmy(h.refunded_at)],
+    ],
+    stats: (h) => [
+      ["Total", money(h.local_total_centi), "var(--ink)"],
+      ["Refund", money(h.refund_centi), "#a16a2e"],
+    ],
+    line: (it) => {
+      const { primary } = lineIdentity({
+        code: it.item_code,
+        description: it.description,
+      });
+      return {
+        name: primary,
+        sub: join(
+          buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),
+          it.condition,
+        ),
+        qty: it.qty_returned,
+        unitCenti: it.unit_price_centi,
+        amountCenti: it.line_total_centi,
+      };
+    },
+  },
+
+  /* Purchase Consignment Order — the supplier-side PC family clone of a PO.
+     Same shape as mfg-purchase-orders: supplier + pc_number, Subtotal/Tax/Total
+     tiles. Endpoint returns { purchaseOrder, items } keyed by uuid :id. */
+  "purchase-consignment-orders": {
+    path: "/purchase-consignment-orders",
+    headerKey: "purchaseOrder",
+    eyebrow: (h) => firstOf(h.pc_number),
+    title: (h) => firstOf(nested(h.supplier)?.name, h.pc_number),
+    subtitle: (h) => firstOf(nested(h.supplier)?.code) === "—" ? "" : firstOf(nested(h.supplier)?.code),
+    status: (h) => h.status,
+    meta: (h) => [
+      ["PC Date", dmy(h.po_date)],
+      ["Expected", dmy(h.expected_at)],
+      ["Supplier", firstOf(nested(h.supplier)?.code)],
+      ["Contact", firstOf(nested(h.supplier)?.contact_person, nested(h.supplier)?.phone)],
+      ["Currency", firstOf(h.currency)],
+      ["Submitted", dmy(h.submitted_at)],
+    ],
+    stats: (h) => [
+      ["Subtotal", money(h.subtotal_centi), "var(--ink)"],
+      ["Tax", money(h.tax_centi), "#767b6e"],
+      ["Total", money(h.total_centi), "var(--ink)"],
+    ],
+    line: (it) => {
+      const { primary } = lineIdentity({
+        code: it.material_code,
+        description: it.material_name ?? it.description,
+      });
+      return {
+        name: primary,
+        sub: join(
+          buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),
+          it.material_code,
+          s(it.received_qty).trim() ? `Received ${s(it.received_qty)}` : "",
+        ),
+        qty: it.qty,
+        unitCenti: it.unit_price_centi,
+        amountCenti: it.line_total_centi,
+      };
+    },
+  },
+
+  /* Purchase Consignment Receive — the PC family's GRN. Endpoint returns
+     { grn, items } (same headerKey as regular GRN by design — the desktop
+     clones the GRN screen). pc_order_no is the source PC Order's pc_number. */
+  "purchase-consignment-receives": {
+    path: "/purchase-consignment-receives",
+    headerKey: "grn",
+    eyebrow: (h) => firstOf(h.receive_number),
+    title: (h) => firstOf(nested(h.supplier)?.name, h.receive_number),
+    subtitle: (h) => {
+      const code = s(nested(h.supplier)?.code).trim();
+      const pc = s(nested(h.purchase_consignment_order)?.pc_number ?? h.pc_order_no).trim();
+      return join(code, pc ? `PC ${pc}` : "");
+    },
+    status: (h) => h.status,
+    meta: (h) => [
+      ["Received", dmy(h.received_at)],
+      ["Delivery Note", firstOf(h.delivery_note_ref)],
+      ["Supplier", firstOf(nested(h.supplier)?.code)],
+      ["PC Order", firstOf(nested(h.purchase_consignment_order)?.pc_number, h.pc_order_no)],
+      ["Currency", firstOf(h.currency)],
+      ["Posted", dmy(h.posted_at)],
+    ],
+    stats: (h) => [
+      ["Subtotal", money(h.subtotal_centi), "var(--ink)"],
+      ["Tax", money(h.tax_centi), "#767b6e"],
+      ["Total", money(h.total_centi), "var(--ink)"],
+    ],
+    line: (it) => {
+      const { primary } = lineIdentity({
+        code: it.material_code,
+        description: it.material_name ?? it.description,
+      });
+      return {
+        name: primary,
+        sub: join(
+          buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),
+          it.material_code,
+          s(it.qty_accepted).trim() ? `Accepted ${s(it.qty_accepted)}` : "",
+        ),
+        qty: it.qty_received ?? it.qty_accepted,
+        unitCenti: it.unit_price_centi,
+        amountCenti: it.line_total_centi,
+      };
+    },
+  },
+
+  /* Purchase Consignment Return — the reverse of a PC Receive. Endpoint
+     returns { purchaseReturn, items }. Only stat is refund_centi (a supplier
+     credit); no per-line warehouse column on this doc's ITEM select. */
+  "purchase-consignment-returns": {
+    path: "/purchase-consignment-returns",
+    headerKey: "purchaseReturn",
+    eyebrow: (h) => firstOf(h.return_number),
+    title: (h) => firstOf(nested(h.supplier)?.name, h.return_number),
+    subtitle: (h) => {
+      const pc = s(nested(h.purchase_consignment_order)?.pc_number).trim();
+      const recv = s(nested(h.pc_receive)?.receive_number).trim();
+      return join(pc ? `PC ${pc}` : "", recv ? `Receive ${recv}` : "");
+    },
+    status: (h) => h.status,
+    meta: (h) => [
+      ["Return Date", dmy(h.return_date)],
+      ["Reason", firstOf(h.reason)],
+      ["Supplier", firstOf(nested(h.supplier)?.code)],
+      ["PC Order", firstOf(nested(h.purchase_consignment_order)?.pc_number)],
+      ["PC Receive", firstOf(nested(h.pc_receive)?.receive_number)],
+      ["Credit Note", firstOf(h.credit_note_ref)],
+      ["Posted", dmy(h.posted_at)],
+      ["Completed", dmy(h.completed_at)],
+    ],
+    stats: (h) => [
+      ["Refund", money(h.refund_centi), "var(--ink)"],
+    ],
+    line: (it) => {
+      const { primary } = lineIdentity({
+        code: it.material_code,
+        description: it.material_name,
+      });
+      return {
+        name: primary,
+        sub: buildVariantSummary(it.item_group, it.variants),
+        qty: it.qty_returned,
+        unitCenti: it.unit_price_centi,
+        amountCenti: it.line_refund_centi,
+      };
+    },
+  },
 };
 
-/** Derive the id to fetch by from the list row. All four detail routes key on
- *  the uuid `id`; fall back to any doc-number field if `id` is ever absent. */
+/** Derive the id to fetch by from the list row. Most detail routes key on the
+ *  uuid `id`; consignment-orders keys on `doc_no` (its list HEADER doesn't even
+ *  select `id`), and the PC family adds `pc_number` / `receive_number`. Fall
+ *  back through every human key so a row that arrived without `id` still
+ *  resolves to the right URL segment. */
 function docId(row: any): string {
   return s(
     row?.id ??
+      row?.doc_no ??
       row?.do_number ??
       row?.invoice_number ??
       row?.grn_number ??
       row?.po_number ??
+      row?.pc_number ??
+      row?.receive_number ??
       row?.return_number,
   );
 }
@@ -1010,15 +1437,13 @@ const SIMPLE_META: Record<string, { eyebrow: (r: any) => string; title: (r: any)
   },
 };
 
-// Doc-like simple modules (Purchase Invoice, Sales / Purchase Return) route
-// through SimpleDetail but still fetch their full header ({ <headerKey>, items })
-// so the read-only detail shows the richer fields (paid_centi / notes / dates)
-// the list row lacks + the cancelled ribbon can read the real cancel date.
-const SIMPLE_DOC_PATHS: Record<string, { path: string; headerKey: string }> = {
-  "purchase-invoices": { path: "/purchase-invoices", headerKey: "purchaseInvoice" },
-  "purchase-returns": { path: "/purchase-returns", headerKey: "purchaseReturn" },
-  "delivery-returns": { path: "/delivery-returns", headerKey: "deliveryReturn" },
-};
+/* Doc-like simple modules used to sit here (PI / PR / DR) — a stub that pulled
+   the full header into SimpleDetail's KV dump. Item #8 of the 2026-07-23 mobile
+   UI audit promoted all three to first-class DOC_MODULES adapters (meta rows +
+   money-stat tiles + variant-aware line items), so this table is empty by
+   design. Adding a new "doc-like simple" module here still works — SimpleDetail
+   reads it — but any doc worth its own header/stats belongs in DOC_MODULES. */
+const SIMPLE_DOC_PATHS: Record<string, { path: string; headerKey: string }> = {};
 
 // Member account actions (Team → Members). Desktop Team.tsx exposes Reset
 // password / Resend invitation in the member detail; this mirrors them 1:1 on

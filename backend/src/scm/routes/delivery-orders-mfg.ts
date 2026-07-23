@@ -3384,10 +3384,13 @@ deliveryOrdersMfg.put('/:id/crew', async (c) => {
     helper_1_id: helper1Id, helper_2_id: helper2Id,
     lorry_id: lorryId,
     // snapshots captured at assign time
-    driver_1_name: d1?.name ?? null, driver_1_ic: d1?.ic_number ?? null, driver_1_contact: d1?.phone ?? null,
-    driver_2_name: d2?.name ?? null, driver_2_ic: d2?.ic_number ?? null, driver_2_contact: d2?.phone ?? null,
-    helper_1_name: h1?.name ?? null, helper_1_contact: h1?.contact ?? null,
-    helper_2_name: h2?.name ?? null, helper_2_contact: h2?.contact ?? null,
+    // Crew contacts are snapshotted from the drivers/helpers master, which
+    // normalises on write — but a legacy/un-migrated master row could still be
+    // raw, so re-normalise defensively (keeps an already-E.164 value unchanged).
+    driver_1_name: d1?.name ?? null, driver_1_ic: d1?.ic_number ?? null, driver_1_contact: d1?.phone ? (normalizePhone(d1.phone) ?? d1.phone) : null,
+    driver_2_name: d2?.name ?? null, driver_2_ic: d2?.ic_number ?? null, driver_2_contact: d2?.phone ? (normalizePhone(d2.phone) ?? d2.phone) : null,
+    helper_1_name: h1?.name ?? null, helper_1_contact: h1?.contact ? (normalizePhone(h1.contact) ?? h1.contact) : null,
+    helper_2_name: h2?.name ?? null, helper_2_contact: h2?.contact ? (normalizePhone(h2.contact) ?? h2.contact) : null,
     lorry_plate: lorry?.plate ?? null,
     assigned_by: user.id,
     updated_at: now,

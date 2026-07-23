@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { formatPhone } from "../vendor/shared/phone";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { MobileGantt } from "./MobileGantt";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
@@ -401,6 +402,12 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
   const tickOnly = can("projects.checklist.tick") && !can("projects.write");
   const [assignedOnly, setAssignedOnly] = useState<boolean | null>(null);
   const showAssigned = tickOnly && (assignedOnly ?? true);
+  // Owner 2026-07-23: every role gets My Pending on mobile too — the same
+  // server-side role lanes as the desktop checkbox (my_pending=1). Rows come
+  // back timeline-ordered (soonest event first) with my_pending_titles chips
+  // saying WHY each row is the caller's; a completed/submitted task drops the
+  // row server-side.
+  const [myPendingOn, setMyPendingOn] = useState(false);
   // Owner 2026-07-21: field/sales roles (Sales Executive/Manager except Sales
   // Director, plus Driver/Helper/Storekeeper) get a slimmed filter bar — only
   // "My events", "Setup", "Dismantle" (no All / Draft / Live / Completed).
@@ -453,6 +460,7 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     }
     if (debouncedQ) p.set("search", debouncedQ);
     if (showAssigned) p.set("assigned_to_me", "1");
+    if (myPendingOn) p.set("my_pending", "1");
     return p.toString();
   };
   const {
@@ -462,7 +470,7 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
     // `showAssigned` is read by buildParams, so it MUST be in the key (main) —
     // and the query's signal is forwarded so a superseded search is cancelled
     // rather than left racing (this branch).
-    queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ, showAssigned],
+    queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ, showAssigned, myPendingOn],
     queryFn: ({ pageParam, signal }) => api.get<ListResponse>(`/api/projects?${buildParams(pageParam)}`, { signal }),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
@@ -531,6 +539,12 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
         </div>
         <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={totalCount} term={q} className="mt-1 px-1" />
         <div className="chips" style={{ marginTop: 11 }}>
+          <button
+            onClick={() => setMyPendingOn(!myPendingOn)}
+            className={myPendingOn ? "chip on" : "chip"}
+          >
+            My pending
+          </button>
           {(tickOnly || restrictedCohort) && (
             <button
               onClick={() => { if (tickOnly) setAssignedOnly(!showAssigned); }}
@@ -550,7 +564,13 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
 
         {isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load projects. Pull to retry.</div>}
-        {!isLoading && !error && showAssigned && rows.length === 0 && (
+        {!isLoading && !error && myPendingOn && rows.length === 0 && (
+          <div style={{ textAlign: "center", padding: "26px 0" }}>
+            <div style={{ color: "#9aa093", fontSize: 12 }}>Nothing pending on your side.</div>
+            <button className="tinybtn" style={{ marginTop: 10 }} onClick={() => setMyPendingOn(false)}>Show all events</button>
+          </div>
+        )}
+        {!isLoading && !error && !myPendingOn && showAssigned && rows.length === 0 && (
           <div style={{ textAlign: "center", padding: "26px 0" }}>
             <div style={{ color: "#9aa093", fontSize: 12 }}>No events assigned to you{stageFilter !== "all" || debouncedQ ? " match these filters" : " yet"}.</div>
             <button className="tinybtn" style={{ marginTop: 10 }} onClick={() => setAssignedOnly(false)}>Show all events</button>
@@ -842,7 +862,10 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const isDriverCrew = /\b(Driver|Helper)\b/i.test(_pos);
   const isStorekeeper = /storekeeper/i.test(_pos);
   const isLogistic = /logistic/i.test(_pos);
-  const isPurchaser = /purchas|procurement/i.test(_pos);
+  // Purchasers are matched by POSITION OR ROLE — the live purchasers (Farra,
+  // Sim) hold the Purchaser ROLE on an "Operation Executive" position, so a
+  // position-only test missed the actual purchasing staff (owner 2026-07-23).
+  const isPurchaser = /purchas|procurement/i.test(_pos) || /purchas/i.test(_roleName);
   const isSalesStaff = /sales/i.test(_dept) || /^sales/i.test(_pos);
   const seeAllTasks = isOwnerAdmin || isMgt || isBD;
   // Field/sales cohort (owner 2026-07-16): driver, helper, storekeeper, sales
@@ -859,6 +882,35 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // (isSalesExecMgr) HOLDS the log-sale action but has canFinancial=false, so
   // nesting it under the finance gate lost the action for the person who owns it.
   const canViewSales = salesAccess !== "none" || isSalesStaff || isDirectorPos;
+  // ── Owner 2026-07-23 card respec — the remaining two cohorts go card-based ──
+  // cohortMgmt = management dept / directors / owner / BD; cohortOps = the
+  // office/ops staff left over (Nancy, Farra, Sim, Syu, Syasya, logistic
+  // admins, purchasers…). Field staff (cohort5: sales exec/mgr, driver,
+  // helper, storekeeper) keep their existing card views untouched.
+  const cohortMgmt = isMgt || isBD;
+  // Purchasers (Sim, Farra) get their OWN minimal view (owner 2026-07-23):
+  // Team + a three-tile S&D documents card + the floorplan card (display,
+  // 3D/2D, stock records with edit). Everything else is removed for them,
+  // so they sit outside the generic ops cohort.
+  const isPurchaserView = isPurchaser && !cohortMgmt && !cohort5;
+  const cohortOps = !cohort5 && !cohortMgmt && !isSalesStaff && !isPurchaserView;
+  // Named editors (owner spec): "BD, weisiang, kingsley". Matched by stable
+  // user id — names are owner-editable free text (weisiang = id 4 "Lim",
+  // kingsley = id 44 "Kingsley"/Sales Director, the Agreement Approver).
+  const isWeisiangDev = user?.id === 4;
+  const isKingsley = user?.id === 44;
+  const isFinanceRole = /finance/i.test(_roleName) || /^finance manager$/i.test(_pos);
+  const isSalesDirectorPos = /^sales\s*director$/i.test(_pos);
+  // Doc-edit tiers: BD-domain documents (license, weekend, stamp duty, permit,
+  // decoration, payment, S&D docs) are editable by owner/BD/weisiang; the
+  // Agreement/Quotation contract additionally by Kingsley.
+  const canBdEdit = isOwnerAdmin || isBD || isWeisiangDev;
+  const canContractEdit = canBdEdit || isKingsley;
+  // P&L: edit for owner/BD/weisiang/finance; VIEW-ONLY for sales directors;
+  // hidden from everyone else (server already strips finance data for
+  // non-director callers via access.canFinancial).
+  const financeRoleAllowed = isOwnerAdmin || isBD || isWeisiangDev || isFinanceRole || isSalesDirectorPos;
+  const financeCanEdit = isOwnerAdmin || isBD || isWeisiangDev || isFinanceRole;
   const cohortHiddenSection = (name: string) =>
     /payment|closeout|booth layout|setup\s*&?\s*dismantle documents|expo map/i.test(name);
   const sectionNameById = new Map((data?.sections ?? []).map((s) => [s.id, s.name] as const));
@@ -902,6 +954,63 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // crew again — their Floor Plans card keeps Display (banner), Unfilled
   // (view/download) and the stock-transfer records (view/download).
   const hideFilledPlan = isDriverCrew || isStorekeeper;
+  // Owner 2026-07-23: the Unfilled/Filled floorplan tiles are for sales,
+  // sales director, management and BD only — the ops/office cohort keeps the
+  // card (display banner, 3D/2D design, stock records) without them.
+  const hidePlanTiles = cohortOps || isPurchaserView;
+
+  // ── Owner 2026-07-23 card respec — tile sets for the two new cohorts ──
+  // Ops/office cohort: view & download only, except purchasers who keep edit
+  // on their two deliverables. Contract + Payment cards are NOT rendered for
+  // this cohort at all; License / Weekend Activity / Stamp Duty are absent.
+  const opsOperationTiles: DocTile[] = [
+    { label: "Permit", match: /permit/i, readOnly: true },
+    { label: "Decoration", match: /^deco/i, readOnly: true, remarkWithFiles: true },
+  ];
+  const opsSdTiles: DocTile[] = [
+    { label: "Setup Image (Driver)", match: /^setup image/i, driverOnly: true, readOnly: true },
+    { label: "Setup Image (Sales PIC)", match: /^setup image/i, salesPicOnly: true, readOnly: true },
+    { label: "Defect List", match: /^defect list/i, readOnly: true },
+    { label: "Event Complete Image", match: /^event complete image/i, readOnly: true },
+    { label: "Dismantle Image", match: /^dismantle image/i, readOnly: true },
+  ];
+  // Purchaser view (Sim, Farra): exactly three S&D tiles — Defect List to
+  // consult, their own two deliverables to edit.
+  const purchaserSdTiles: DocTile[] = [
+    { label: "Defect List", match: /^defect list/i, readOnly: true },
+    { label: "Exchange List", match: /^exchange list/i },
+    { label: "Stock In Transfer Record", match: /^stock in transfer/i },
+  ];
+  // Management cohort (mgt / sales director / BD / owner): everything view &
+  // download; the BD tier (owner/BD/weisiang) edits, Kingsley additionally
+  // edits the contract. License shows only to the BD tier.
+  const mgmtContractTiles: DocTile[] = [
+    { label: "Agreement / Quotation", match: /^agreement/i, readOnly: !canContractEdit, fullWidth: true },
+  ];
+  // Arrangement per the owner's 2026-07-23 sketch: License + Stamp Duty row,
+  // Permit full-width ("big"), then Weekend Activity + Decoration row.
+  const mgmtOperationTiles: DocTile[] = [
+    ...(canBdEdit ? [{ label: "License", match: /^license/i }] : []),
+    { label: "Stamp Duty", match: /^stamp duty/i, readOnly: !canBdEdit },
+    { label: "Permit", match: /permit/i, readOnly: !canBdEdit, fullWidth: true, mediaH: 108 },
+    { label: "Weekend Activity", match: /^weekend/i, remarkTile: true, readOnly: !canBdEdit },
+    { label: "Decoration", match: /^deco/i, readOnly: !canBdEdit, remarkWithFiles: true },
+  ];
+  const mgmtPaymentTiles: DocTile[] = [
+    { label: "Rental Payment", match: /^rental payment/i, readOnly: !canBdEdit },
+    { label: "Security Deposit", match: /^security deposit/i, readOnly: !canBdEdit },
+  ];
+  const mgmtSdTiles: DocTile[] = [
+    { label: "Setup Image (Driver)", match: /^setup image/i, driverOnly: true, readOnly: !canBdEdit },
+    { label: "Setup Image (Sales PIC)", match: /^setup image/i, salesPicOnly: true, readOnly: !canBdEdit },
+    { label: "Defect List", match: /^defect list/i, readOnly: !canBdEdit },
+    { label: "Exchange List", match: /^exchange list/i, readOnly: !canBdEdit },
+    { label: "Event Complete Image", match: /^event complete image/i, readOnly: !canBdEdit },
+    { label: "Dismantle Image", match: /^dismantle image/i, readOnly: !canBdEdit },
+    // Owner 2026-07-23: full-width ("make it big") — the odd 7th tile was
+    // dangling half-width at the bottom of the grid.
+    { label: "Stock In Transfer Record", match: /^stock in transfer/i, readOnly: !canBdEdit, fullWidth: true, mediaH: 108 },
+  ];
   // Owner 2026-07-18: PIC assignment AND Sales-Attending assignment are open to
   // EVERYONE holding projects.write EXCEPT the Sales Director — same single
   // logic layer as the desktop ProjectTeamSection (canAssignPeople). This
@@ -917,7 +1026,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const canEditAttending = canAssignPeople;
   // PIC's phone from the project detail (backend populates pic_phone) — shown
   // on the mobile Team card for everyone, not just editors.
-  const picPhone = fmtPhone(p?.pic_phone);
+  const picPhone = formatPhone(p?.pic_phone);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -1076,10 +1185,11 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             )}
 
-            {/* stage pipeline (design "Pipeline" card) — hidden from the
-                field/sales cohort, and from the owner account too (owner
-                2026-07-22: "remove pipeline for owner user in mobile"). */}
-            {!cohort5 && !isOwnerAdmin && <StagePipeline stage={p.stage} sections={data.section_progress} />}
+            {/* stage pipeline (design "Pipeline" card) — owner 2026-07-23:
+                removed for the ops/office AND management cohorts too (was
+                already hidden from the field/sales cohort and the owner), so
+                no mobile cohort renders it any more. */}
+            {!cohort5 && !isOwnerAdmin && !cohortMgmt && !cohortOps && !isPurchaserView && <StagePipeline stage={p.stage} sections={data.section_progress} />}
 
             {/* The Project info card (Venue / Organizer / Branding rows) is
                 GONE — owner 2026-07-22: the header already carries all of it
@@ -1145,12 +1255,13 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               </div>
             </details>
 
-            {/* tasklist — REMOVED for the sales cohort (owner 2026-07-17) and
-                for crew (owner 2026-07-21): their deliverables live in the
-                doc-tile cards (SalesDocsCard / CREW_DOC_TILES) and the
-                floorplans in the FloorPlans card, so the row list was pure
-                duplication for them. Everyone else keeps the full tasklist. */}
-            {!isSalesExecMgr && !(isDriverCrew || isStorekeeper) && <TasklistSectionView
+            {/* tasklist — REMOVED for the sales cohort (owner 2026-07-17), for
+                crew (owner 2026-07-21), and now for the ops/office AND
+                management cohorts too (owner 2026-07-23 card respec): every
+                mobile cohort's deliverables live in doc-tile cards. The row
+                list only renders for a user matching NO cohort (a safety
+                fallback that shouldn't occur in practice). */}
+            {!isSalesExecMgr && !(isDriverCrew || isStorekeeper) && !cohortOps && !cohortMgmt && !isPurchaserView && <TasklistSectionView
               sections={data.sections}
               items={visibleChecklist}
               progress={data.section_progress}
@@ -1167,10 +1278,13 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reload={reload}
             />}
 
-            {/* setup & dismantle (logistic). Owner 2026-07-17: Sales may VIEW it
-                (crew + dates) — the backend now sends the data for them — but
-                stays read-only, since PIC/SALES lack the PMS "EDIT" section. */}
-            {(canSetupDismantle || cohort5) && (
+            {/* setup & dismantle (logistic) — FIELD cohort position (sales/
+                crew keep it up here, above their doc cards). For the ops +
+                management cohorts it renders further down instead, between
+                Operation and S&D documents (owner 2026-07-23 order). Owner
+                2026-07-17: Sales may VIEW it (crew + dates) but stay
+                read-only, since PIC/SALES lack the PMS "EDIT" section. */}
+            {cohort5 && !isPurchaserView && (
               <SetupDismantle
                 projectId={id}
                 project={p}
@@ -1183,6 +1297,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 /* Crew manage the setup/dismantle photos (owner 2026-07-21);
                    the backend re-gates on being crewed on the phase. */
                 canPhoto={(isDriverCrew || isStorekeeper) && !archived}
+                /* Schedule reference (owner 2026-07-23): owner/BD/logistic
+                   upload the handbook schedule screenshot from mobile too. */
+                canScheduleEdit={(isOwnerAdmin || isBD || isLogistic) && !archived}
                 busy={busy}
                 setBusy={setBusy}
                 patchProject={patchProject}
@@ -1229,6 +1346,111 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               />
             )}
 
+            {/* Purchaser view (owner 2026-07-23, Sim & Farra): ONLY Team +
+                these three S&D tiles + the floorplan card below. */}
+            {isPurchaserView && (
+              <SalesDocsCard
+                tiles={purchaserSdTiles}
+                title="Setup & Dismantle documents"
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+              />
+            )}
+
+            {/* Owner's 2026-07-23 section order for the office cohorts:
+                TEAM → CONTRACT → PAYMENT → OPERATION → S&D LOGISTIC →
+                S&D DOCUMENTS → FLOORPLANS → SALES → P&L. */}
+            {cohortMgmt && (
+              <>
+                {canContractEdit && (
+                  <SalesDocsCard
+                    tiles={mgmtContractTiles}
+                    showRoleTags
+                    title="Contract"
+                    checklist={data.checklist}
+                    attachments={data.checklist_attachments}
+                    canTick={canTick && !archived}
+                    busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+                  />
+                )}
+                <SalesDocsCard
+                  tiles={mgmtPaymentTiles}
+                  showRoleTags
+                  title="Payment"
+                  checklist={data.checklist}
+                  attachments={data.checklist_attachments}
+                  canTick={canTick && !archived}
+                  busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+                />
+                <SalesDocsCard
+                  tiles={mgmtOperationTiles}
+                  showRoleTags
+                  title="Operation"
+                  checklist={data.checklist}
+                  attachments={data.checklist_attachments}
+                  canTick={canTick && !archived}
+                  busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+                />
+              </>
+            )}
+            {cohortOps && (
+              <SalesDocsCard
+                tiles={opsOperationTiles}
+                title="Operation"
+                showRoleTags={isLogistic}
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+              />
+            )}
+
+            {/* setup & dismantle (logistic) — office-cohort position, below
+                Operation (owner 2026-07-23). */}
+            {!cohort5 && canSetupDismantle && !isPurchaserView && (
+              <SetupDismantle
+                projectId={id}
+                project={p}
+                photos={photos}
+                drivers={drivers}
+                lorries={lorries}
+                canWrite={canWrite && access.canEdit && !archived}
+                canPhoto={(isDriverCrew || isStorekeeper) && !archived}
+                canScheduleEdit={(isOwnerAdmin || isBD || isLogistic) && !archived}
+                busy={busy}
+                setBusy={setBusy}
+                patchProject={patchProject}
+                notify={notify}
+                reloadPhotos={reloadPhotos}
+                confirm={confirm}
+              />
+            )}
+
+            {cohortOps && (
+              <SalesDocsCard
+                tiles={opsSdTiles}
+                title="Setup & Dismantle documents"
+                showRoleTags={isLogistic}
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+              />
+            )}
+            {cohortMgmt && (
+              <SalesDocsCard
+                tiles={mgmtSdTiles}
+                showRoleTags
+                title="Setup & Dismantle documents"
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+              />
+            )}
+
             {/* floor plans & layout + stock transfers (upload-only) */}
             <FloorPlans
               projectId={id}
@@ -1238,6 +1460,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               checklistAttachments={data.checklist_attachments}
               canWrite={canWrite && !archived}
               hideFilledPlan={hideFilledPlan}
+              hidePlanTiles={hidePlanTiles}
+              canStockEdit={isPurchaserView && canTick && !archived}
+              confirm={confirm}
               busy={busy}
               setBusy={setBusy}
               notify={notify}
@@ -1255,7 +1480,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 non-financial salesperson (who HOLDS the log-sale action) can
                 reach it. Mirrors desktop ProjectSalesEntriesSection, gated on
                 canViewSales (NOT canFinancial). */}
-            {canViewSales && (
+            {canViewSales && !isPurchaserView && (
               <SalesPanel
                 projectId={id}
                 incomeLines={data.finance_lines}
@@ -1269,12 +1494,14 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
             )}
 
             {/* financial snapshot (finance-gated) — P&L headline + editable
-                rental amount + Total Sales lump-sum + cost ledger. */}
-            {financeVisible && (
+                rental amount + Total Sales lump-sum + cost ledger. Owner
+                2026-07-23: view+edit only for owner/BD/weisiang/finance;
+                sales directors VIEW only; hidden from everyone else. */}
+            {financeVisible && financeRoleAllowed && (
               <FinancialSnapshot
                 finance={data.finance!}
                 lines={data.finance_lines}
-                canWrite={canWrite && !archived}
+                canWrite={canWrite && !archived && financeCanEdit}
                 busy={busy}
                 setBusy={setBusy}
                 notify={notify}
@@ -2152,18 +2379,7 @@ const parseCrewJson = (raw: string | null | undefined): PhaseCrew => {
   }
   return out;
 };
-// Normalise Malaysian phone numbers to a consistent "+60 NN-NNN NNNN" shape —
-// input is entered in mixed formats ("60-198426454", "+60 14-569 4569", "016…").
-const fmtPhone = (raw: string | null | undefined): string => {
-  if (!raw) return "";
-  let d = raw.replace(/[^\d+]/g, "");
-  if (d.startsWith("+")) d = d.slice(1);
-  if (d.startsWith("0")) d = "60" + d.slice(1);
-  if (!d.startsWith("60") || d.length < 10) return raw.trim();
-  const rest = d.slice(2);
-  return `+60 ${rest.slice(0, 2)}-${rest.slice(2, -4)} ${rest.slice(-4)}`;
-};
-const crewLabel = (p: CrewPerson): string => (p.phone ? `${p.name} (${fmtPhone(p.phone)})` : p.name);
+const crewLabel = (p: CrewPerson): string => (p.phone ? `${p.name} (${formatPhone(p.phone)})` : p.name);
 const crewIsEmpty = (c: PhaseCrew): boolean =>
   c.lorryCrew.length === 0 && c.outsourced.length === 0 && c.drivers.length === 0 && c.helpers.length === 0 && c.lorries.length === 0;
 // One crew member on its own line: fixed-width role label + name · formatted phone.
@@ -2173,7 +2389,7 @@ function CrewLine({ role, person }: { role: string; person: CrewPerson }) {
       <span style={{ flex: "none", width: 44, color: "#9aa093", fontWeight: 600 }}>{role}</span>
       <span style={{ flex: 1, minWidth: 0, color: "#414539" }}>
         {person.name}
-        {person.phone ? <span style={{ color: "#8a8f82" }}> · {fmtPhone(person.phone)}</span> : null}
+        {person.phone ? <span style={{ color: "#8a8f82" }}> · {formatPhone(person.phone)}</span> : null}
       </span>
     </div>
   );
@@ -2212,7 +2428,7 @@ const isoTimePart = (iso: string | null | undefined): string => {
 // PUT /:id/phase-photos/upload → POST /:id/phase-photos). Schedule/driver/
 // lorry all persist via PATCH /:id.
 function SetupDismantle({
-  projectId, project, photos, drivers, lorries, canWrite, canPhoto, busy, setBusy, patchProject, notify, reloadPhotos, confirm,
+  projectId, project, photos, drivers, lorries, canWrite, canPhoto, canScheduleEdit, busy, setBusy, patchProject, notify, reloadPhotos, confirm,
 }: {
   projectId: number;
   project: ProjectDetail["project"];
@@ -2224,6 +2440,10 @@ function SetupDismantle({
    *  photos (upload / replace / remove / view) without canWrite — the
    *  backend gates on being crewed on that phase. */
   canPhoto?: boolean;
+  /** Owner 2026-07-23: the mall-handbook Schedule reference block (desktop's
+   *  ScheduleRef, phase="schedule") now renders on mobile too — view for
+   *  every section viewer, upload/remove for owner/BD/logistic. */
+  canScheduleEdit?: boolean;
   busy: boolean;
   setBusy: SetBusy;
   patchProject: (body: Record<string, unknown>) => Promise<boolean>;
@@ -2233,6 +2453,47 @@ function SetupDismantle({
 }) {
   const setupPhoto = photos.find((ph) => ph.phase === "setup");
   const dismantlePhoto = photos.find((ph) => ph.phase === "dismantle");
+  // r2_key is nullable on PhasePhoto (legacy rows) — only keyed shots render.
+  const scheduleShots = photos.filter((ph): ph is PhasePhoto & { r2_key: string } => ph.phase === "schedule" && !!ph.r2_key);
+  const schedRef = useRef<HTMLInputElement | null>(null);
+  const [schedView, setSchedView] = useState<{ items: MediaItem[]; idx: number } | null>(null);
+  const uploadSchedule = async (file: File) => {
+    if (file.size > 50 * 1024 * 1024) {
+      await notify({ title: "File too large", body: "Max 50MB.", tone: "error" });
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      await notify({ title: "Missing extension", body: "The file needs an extension.", tone: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const up = await api.putBinary<{ key: string; mime_type: string }>(
+        `/api/projects/${projectId}/phase-photos/upload?phase=schedule&ext=${encodeURIComponent(ext)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      await api.post(`/api/projects/${projectId}/phase-photos`, { phase: "schedule", r2_key: up.key, content_type: up.mime_type });
+      reloadPhotos();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (schedRef.current) schedRef.current.value = "";
+    }
+  };
+  const removeSchedule = async (ph: PhasePhoto) => {
+    if (!(await confirm({ title: "Remove this schedule screenshot?", confirmLabel: "Remove", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/projects/phase-photos/${ph.id}`);
+      reloadPhotos();
+    } catch (e) {
+      await notify({ title: "Remove failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally { setBusy(false); }
+  };
 
   const anyData =
     project.setup_start_at || project.dismantle_start_at ||
@@ -2249,6 +2510,60 @@ function SetupDismantle({
       </summary>
       <div className="pbody">
         {!anyData && !canWrite && <div style={{ fontSize: 12, color: "#9aa093", marginBottom: 12 }}>No setup or dismantle logistics assigned yet.</div>}
+
+        {/* Schedule reference (owner 2026-07-23, mobile port of the desktop
+            block): the mall handbook's official schedule screenshot. */}
+        <div style={{ border: "1px dashed #d6d9d2", borderRadius: 10, padding: "9px 11px", marginBottom: 14 }}>
+          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#767b6e", marginBottom: 6 }}>Schedule reference</div>
+          {scheduleShots.length === 0 && <div style={{ fontSize: 12, color: "#9aa093", marginBottom: canScheduleEdit ? 8 : 0 }}>No schedule screenshot uploaded yet.</div>}
+          {scheduleShots.length > 0 && (
+            <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: canScheduleEdit ? 8 : 0 }}>
+              {scheduleShots.map((ph, i) => (
+                <div key={ph.id} style={{ position: "relative" }}>
+                  <div
+                    role="button"
+                    onClick={() => setSchedView({
+                      items: scheduleShots.map((s): MediaItem => ({ r2_key: s.r2_key, content_type: mimeFromKey(s.r2_key), caption: s.caption ?? "Schedule reference" })),
+                      idx: i,
+                    })}
+                    style={{ borderRadius: 8, overflow: "hidden", border: "1px solid #e3e6e0", cursor: "pointer" }}
+                  >
+                    <R2Thumb r2Key={ph.r2_key} style={{ width: 84, height: 64 }} />
+                  </div>
+                  {canScheduleEdit && (
+                    <button
+                      aria-label="Remove schedule screenshot"
+                      disabled={busy}
+                      onClick={() => void removeSchedule(ph)}
+                      style={{ position: "absolute", top: -6, right: -6, width: 20, height: 20, borderRadius: "50%", border: "1px solid #d6d9d2", background: "#fff", color: "#a13a34", fontSize: 12, lineHeight: 1, cursor: "pointer" }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {canScheduleEdit && (
+            <>
+              <button className="tinybtn" style={{ width: "100%" }} disabled={busy} onClick={() => schedRef.current?.click()}>
+                {scheduleShots.length ? "+ Add / replace screenshot" : "Upload handbook schedule screenshot"}
+              </button>
+              <input ref={schedRef} type="file" accept="image/*,application/pdf,.heic" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadSchedule(f); }} />
+            </>
+          )}
+          {schedView && (
+            <MediaLightbox
+              items={schedView.items}
+              index={schedView.idx}
+              onChange={(i) => setSchedView((v) => (v ? { ...v, idx: i } : v))}
+              onClose={() => setSchedView(null)}
+              baseUrl="/api/projects/attachments"
+              badge="Schedule"
+            />
+          )}
+        </div>
+
         <PhaseBlock
           kind="Setup"
           projectId={projectId}
@@ -2487,31 +2802,32 @@ function PhaseBlock({
           )}
         </div>
       )}
-      <button
-        type="button"
-        disabled={busy || (!photoKey && !canPhoto)}
-        onClick={() => { if (photoKey) setPhotoOpen(true); else if (canPhoto) fileRef.current?.click(); }}
-        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 0, overflow: "hidden", cursor: photoKey || canPhoto ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
-      >
-        {photoKey ? (
-          <R2Thumb r2Key={photoKey} style={{ width: 64, height: 54, flex: "none" }} />
-        ) : (
-          <div className="ph" style={{ width: 64, height: 54, flex: "none", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7.5 6.5H4A2 2 0 0 0 2 8.5v9A2 2 0 0 0 4 19.5h16a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-3.5L14.5 4Z" /><circle cx="12" cy="13" r="3.2" /></svg>
+      {/* Owner 2026-07-23: the "Replace photo" text button is gone (remove the
+          photo, then tap-to-upload again) and Remove is the same floating ×
+          every other file row uses. */}
+      <div style={{ position: "relative" }}>
+        <button
+          type="button"
+          disabled={busy || (!photoKey && !canPhoto)}
+          onClick={() => { if (photoKey) setPhotoOpen(true); else if (canPhoto) fileRef.current?.click(); }}
+          style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 0, overflow: "hidden", cursor: photoKey || canPhoto ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
+        >
+          {photoKey ? (
+            <R2Thumb r2Key={photoKey} style={{ width: 64, height: 54, flex: "none" }} />
+          ) : (
+            <div className="ph" style={{ width: 64, height: 54, flex: "none", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7.5 6.5H4A2 2 0 0 0 2 8.5v9A2 2 0 0 0 4 19.5h16a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-3.5L14.5 4Z" /><circle cx="12" cy="13" r="3.2" /></svg>
+            </div>
+          )}
+          <div style={{ padding: "7px 0", minWidth: 0 }}>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canPhoto ? " · tap to upload" : ""}</div>
+            <div style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{uploaderCredit(photo)}</div>
           </div>
-        )}
-        <div style={{ padding: "7px 0", minWidth: 0 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canPhoto ? " · tap to upload" : ""}</div>
-          <div style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{uploaderCredit(photo)}</div>
-        </div>
-      </button>
-      {photoKey && canPhoto && (
-        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-          <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Replace photo</button>
+        </button>
+        {photoKey && canPhoto && (
           <button
-            className="tinybtn"
+            aria-label={`Remove ${kind.toLowerCase()} photo`}
             disabled={busy}
-            style={{ color: "#a13a34" }}
             onClick={async () => {
               if (!photo) return;
               if (!(await confirm({ title: `Remove the ${kind.toLowerCase()} photo?`, confirmLabel: "Remove", danger: true }))) return;
@@ -2525,11 +2841,12 @@ function PhaseBlock({
                 setBusy(false);
               }
             }}
+            style={{ position: "absolute", top: -6, right: -6, width: 20, height: 20, borderRadius: "50%", border: "1px solid #d6d9d2", background: "#fff", color: "#a13a34", fontSize: 12, lineHeight: 1, cursor: "pointer" }}
           >
-            Remove
+            ×
           </button>
-        </div>
-      )}
+        )}
+      </div>
       <input ref={fileRef} type="file" accept="image/*,.pdf,.mp4,.mov,.webm" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadPhoto(f); }} />
       {photoOpen && photoKey && (
         <MediaLightbox
@@ -2601,6 +2918,7 @@ function SalesDocsCard({
   checklist, attachments, canTick, busy, setBusy, notify, prompt, confirm, reload,
   tiles: tileDefs = SALES_DOC_TILES,
   title = "Setup & Dismantle documents",
+  showRoleTags = false,
 }: {
   checklist?: ChecklistItem[];
   attachments?: TaskAttachment[];
@@ -2614,6 +2932,9 @@ function SalesDocsCard({
   /** Tile set — defaults to the sales six; crew pass CREW_DOC_TILES. */
   tiles?: ReadonlyArray<DocTile>;
   title?: string;
+  /** Owner 2026-07-23: show each task's role chip (DRIVER / SALES PIC / …) on
+   *  the tile — for oversight viewers (mgt, BD, owner, SD, logistic). */
+  showRoleTags?: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const pendingRef = useRef<{ itemId: number; caption?: string } | null>(null);
@@ -2788,11 +3109,21 @@ function SalesDocsCard({
                   )}
                   <div style={{ padding: "7px 9px 4px" }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{t.label}</div>
-                    <span className="rbadge" style={{ background: hasContent ? "#e2f0e9" : "#f0f1ed", color: hasContent ? "#2f8a5b" : "#9aa093" }}>
-                      {t.remarkTile || (t.remarkWithFiles && t.files.length === 0)
-                        ? (hasContent ? "DONE" : "NONE")
-                        : (hasContent ? `${t.files.length} FILE${t.files.length === 1 ? "" : "S"}` : "NONE")}
-                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                      <span className="rbadge" style={{ background: hasContent ? "#e2f0e9" : "#f0f1ed", color: hasContent ? "#2f8a5b" : "#9aa093" }}>
+                        {t.remarkTile || (t.remarkWithFiles && t.files.length === 0)
+                          ? (hasContent ? "DONE" : "NONE")
+                          : (hasContent ? `${t.files.length} FILE${t.files.length === 1 ? "" : "S"}` : "NONE")}
+                      </span>
+                      {/* Owner 2026-07-23: oversight viewers (mgt/BD/owner/SD/
+                          logistic) see WHO owns each deliverable — the task's
+                          role chip, same colours as the old tasklist rows. */}
+                      {showRoleTags && (t.item?.role_label ?? "").trim() && (
+                        <span className="rbadge" style={{ background: `${roleColor(t.item!.role_label!)}1f`, color: roleColor(t.item!.role_label!) }}>
+                          {formatRoleLabel(t.item!.role_label!)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
                 {/* Owner 2026-07-17: the editable photo tiles list every uploaded
@@ -2881,7 +3212,7 @@ function SalesDocsCard({
 // record is uploaded via PUT /:id/stock-transfers/upload → POST
 // /:id/stock-transfers. Existing rows are listed read-only.
 function FloorPlans({
-  projectId, stockTransfers, attachments, checklist, checklistAttachments, canWrite, hideFilledPlan, busy, setBusy, notify, reload,
+  projectId, stockTransfers, attachments, checklist, checklistAttachments, canWrite, hideFilledPlan, hidePlanTiles, canStockEdit, confirm, busy, setBusy, notify, reload,
 }: {
   projectId: number;
   stockTransfers?: StockTransfer[];
@@ -2890,6 +3221,13 @@ function FloorPlans({
   checklistAttachments?: TaskAttachment[];
   canWrite: boolean;
   hideFilledPlan?: boolean;
+  /** Owner 2026-07-23: hide the Unfilled+Filled plan tiles (ops/office cohort
+   *  — floorplans are for sales/SD/mgt/BD only); 3D/2D/banner/stock stay. */
+  hidePlanTiles?: boolean;
+  /** Owner 2026-07-23 purchaser view: upload/remove on the Stock Out Transfer
+   *  Record straight from this card (attaches to the checklist task). */
+  canStockEdit?: boolean;
+  confirm?: ConfirmFn;
   busy: boolean;
   setBusy: SetBusy;
   notify: NotifyFn;
@@ -2926,6 +3264,10 @@ function FloorPlans({
   };
   const unfilledFiles = (() => { const t = taskPlanFiles(/^blank\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[0]); })();
   const filledFiles = (() => { const t = taskPlanFiles(/^filled\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[1]); })();
+  // Owner 2026-07-23: 3D + 2D design tiles join this card (view/download via
+  // the lightbox) — their booth-layout tasklist rows are gone on mobile.
+  const threeDFiles = taskPlanFiles(/^3d\s*(design|render)/i);
+  const twoDFiles = taskPlanFiles(/^2d\s*design/i);
   // Black banner (owner 2026-07-17 v2): shows the "Display Floor Plan" task
   // attachments in the lightbox (which carries a Download button). Was the 3D
   // placeholder, then briefly wired to 3D Design; the owner wants the booth's
@@ -2935,6 +3277,37 @@ function FloorPlans({
   const taskIdByPrefix = (prefix: RegExp): number | null =>
     (checklist ?? []).find((it) => prefix.test((it.title || "").trim()))?.id ?? null;
   const filledPlanTaskId = taskIdByPrefix(/^filled\s*floor\s*plan/i);
+  // Purchaser stock-out edit (owner 2026-07-23) — uploads land on the Stock
+  // Out Transfer Record task.
+  const stockOutUploadTaskId = taskIdByPrefix(/^stock\s*out\s*transfer/i);
+  const stockRef = useRef<HTMLInputElement | null>(null);
+  const uploadStockOut = async (file: File) => {
+    if (stockOutUploadTaskId == null) return;
+    if (file.size > 10 * 1024 * 1024) {
+      await notify({ title: "File too large", body: "Max 10MB.", tone: "error" });
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      await notify({ title: "Missing extension", body: "The file needs an extension.", tone: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/projects/checklist/${stockOutUploadTaskId}/attachments?ext=${encodeURIComponent(ext)}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      reload();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (stockRef.current) stockRef.current.value = "";
+    }
+  };
   // Stock out transfer — mirrors the "Stock Out Transfer Record" CHECKLIST task
   // attachments. (The legacy project-level stock_transfers store is unused: every
   // stock-out record is attached to the task, which is why this read empty.)
@@ -3051,9 +3424,21 @@ function FloorPlans({
         </div>
 
         {/* Unfilled / Filled plan tiles — tap to view the stored floorplan.
-            Filled plan is hidden from driver/helper/storekeeper (owner 2026-07-16). */}
-        <div style={{ display: "grid", gridTemplateColumns: hideFilledPlan ? "1fr" : "1fr 1fr", gap: 9 }}>
-          {([["Unfilled", unfilledFiles, "DRAFT", "#f6efd9", "#6e4d12"], ["Filled", filledFiles, "PLACED", "#e2f0e9", "#2f8a5b"]] as const).filter(([label]) => !(hideFilledPlan && label === "Filled")).map(([label, files, badge, badgeBg, badgeCol]) => {
+            Filled plan is hidden from driver/helper/storekeeper (owner
+            2026-07-16); BOTH plan tiles are hidden from the ops/office cohort
+            (owner 2026-07-23: sales/SD/mgt/BD only). 3D + 2D design tiles
+            joined the grid the same day (view/download for everyone who sees
+            this card). */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
+          {([
+            ["Unfilled", unfilledFiles, "DRAFT", "#f6efd9", "#6e4d12"],
+            ["Filled", filledFiles, "PLACED", "#e2f0e9", "#2f8a5b"],
+            ["3D Design", threeDFiles, "3D", "#e9e6f4", "#5b4b8a"],
+            ["2D Design", twoDFiles, "2D", "#e2ecf5", "#2f5c8a"],
+          ] as const).filter(([label]) =>
+            !(hideFilledPlan && label === "Filled") &&
+            !(hidePlanTiles && (label === "Unfilled" || label === "Filled"))
+          ).map(([label, files, badge, badgeBg, badgeCol]) => {
             const latest = files[files.length - 1];
             return (
               <div
@@ -3068,7 +3453,7 @@ function FloorPlans({
                   ? <R2Thumb r2Key={latest.r2_key} style={{ width: "100%", height: 80 }} />
                   : <div className="ph" style={{ height: 80 }} />}
                 <div style={{ padding: "7px 9px" }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{label} plan</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{label === "Unfilled" || label === "Filled" ? `${label} plan` : label}</div>
                   <span className="rbadge" style={{ background: latest ? badgeBg : "#f0f1ed", color: latest ? badgeCol : "#9aa093" }}>
                     {latest ? `${badge}${files.length > 1 ? ` · ${files.length}` : ""}` : "NONE"}
                   </span>
@@ -3105,9 +3490,46 @@ function FloorPlans({
                 >
                   View
                 </button>
+                {canStockEdit && (
+                  <button
+                    className="tinybtn"
+                    disabled={busy}
+                    aria-label={`Remove ${a.file_name || "record"}`}
+                    style={{ color: "#a13a34" }}
+                    onClick={async () => {
+                      if (confirm && !(await confirm({ title: `Remove ${a.file_name || "this record"}?`, confirmLabel: "Remove", danger: true }))) return;
+                      setBusy(true);
+                      try {
+                        await api.del(`/api/projects/checklist/attachments/${a.id}`);
+                        reload();
+                      } catch (e) {
+                        await notify({ title: "Remove failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+                      } finally { setBusy(false); }
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             ))}
           </div>
+        )}
+        {/* Purchaser stock-out upload (owner 2026-07-23) — attaches to the
+            Stock Out Transfer Record checklist task, same store the tasklist
+            row used, so desktop and mobile stay one file set. */}
+        {canStockEdit && stockOutUploadTaskId != null && (
+          <>
+            <button className="tinybtn" style={{ width: "100%", marginBottom: 8 }} disabled={busy} onClick={() => stockRef.current?.click()}>
+              + Upload stock out transfer record
+            </button>
+            <input
+              ref={stockRef}
+              type="file"
+              accept="image/*,.pdf"
+              style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadStockOut(f); }}
+            />
+          </>
         )}
         {planView && (
           <MediaLightbox
@@ -3307,11 +3729,13 @@ function FinancialSnapshot({
   return (
     <details className="pacc fin-only" open>
       <summary>
-        {/* Title + gating badge — design "P&L (finance)" VERBATIM, plus our
-            live net so the collapsed header still carries the headline number. */}
+        {/* Title + the live net so the collapsed header still carries the
+            headline number. The old "Owner / Director only" badge is gone
+            (owner 2026-07-23): visibility is role-gated in code now
+            (owner/BD/weisiang/finance edit, sales directors view), so the
+            label was stale and read as noise to the people allowed in. */}
         <span className="psec-t" style={{ color: "#8a4b12" }}>P&amp;L (finance)</span>
-        <span className="rbadge" style={{ marginLeft: "auto", background: "#f3ece0", color: "#a16a2e" }}>Owner / Director only</span>
-        <span style={{ fontSize: 11, fontWeight: 700, color: netColor, marginLeft: 8 }}>Net {formatCurrency(net)}</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: netColor, marginLeft: "auto" }}>Net {formatCurrency(net)}</span>
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">
