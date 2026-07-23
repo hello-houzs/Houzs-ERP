@@ -26,6 +26,7 @@
 -- or similar) — CHECK-constraining to the 16 MY states would break that.
 -- ----------------------------------------------------------------------------
 
+ALTER TABLE scm.warehouses ADD COLUMN IF NOT EXISTS country  text;
 ALTER TABLE scm.warehouses ADD COLUMN IF NOT EXISTS state    text;
 ALTER TABLE scm.warehouses ADD COLUMN IF NOT EXISTS postcode text;
 ALTER TABLE scm.warehouses ADD COLUMN IF NOT EXISTS city     text;
@@ -52,4 +53,17 @@ UPDATE scm.warehouses SET state = CASE
 END
 WHERE state IS NULL;
 
-CREATE INDEX IF NOT EXISTS idx_warehouses_state ON scm.warehouses (state);
+-- Backfill country from state via my_localities. Idempotent — only fills
+-- NULL, leaves anything the operator has already picked untouched. Rows
+-- whose state isn't in my_localities (HQ, C&C K.J, unknown) stay NULL and
+-- the operator fills via the drawer.
+UPDATE scm.warehouses w
+   SET country = COALESCE((
+         SELECT ml.country FROM scm.my_localities ml
+          WHERE ml.state = w.state
+          LIMIT 1
+       ), w.country)
+ WHERE w.country IS NULL AND w.state IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_warehouses_state   ON scm.warehouses (state);
+CREATE INDEX IF NOT EXISTS idx_warehouses_country ON scm.warehouses (country);

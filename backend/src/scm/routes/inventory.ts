@@ -44,7 +44,7 @@ inventory.get('/warehouses', async (c) => {
   const sb = c.get('supabase');
   const includeInactive = c.req.query('includeInactive') === 'true';
   let q = scopeToCompany(
-    sb.from('warehouses').select('id, code, name, location, state, postcode, city, is_active, is_default, is_showroom, venue_name, type'),
+    sb.from('warehouses').select('id, code, name, location, country, state, postcode, city, is_active, is_default, is_showroom, venue_name, type'),
     c,
   ).order('code');
   if (!includeInactive) q = q.eq('is_active', true);
@@ -84,10 +84,13 @@ inventory.post('/warehouses', async (c) => {
     wantType ?? (body.isShowroom === true ? 'showroom' : 'warehouse');
   const finalIsShowroom = finalType === 'showroom' || body.isShowroom === true;
 
-  /* Mig 0180 — structured address. `state` is canonicalized at ingress so
-     'PENANG' / 'Kl' land as the canonical my_localities spelling; foreign
-     state names (Guangdong etc.) round-trip unchanged. postcode/city are
-     plain strings — validation lives in the frontend cascade. */
+  /* Mig 0180 — structured address (country / state / postcode / city).
+     `state` is canonicalized at ingress so 'PENANG' / 'Kl' land as the
+     canonical my_localities spelling; foreign state names (Guangdong etc.)
+     round-trip unchanged. postcode/city/country are plain strings —
+     validation lives in the frontend cascade off my_localities. */
+  const country = typeof body.country === 'string' && body.country.trim()
+    ? body.country.trim() : null;
   const state = canonicalizeMyState((body.state as string | null | undefined) ?? null);
   const postcode = typeof body.postcode === 'string' && body.postcode.trim()
     ? body.postcode.trim() : null;
@@ -98,7 +101,7 @@ inventory.post('/warehouses', async (c) => {
     company_id: co.companyId, // multi-company: stamp the active company (mig 0086)
     code, name,
     location: (body.location as string) ?? null,
-    state, postcode, city,
+    country, state, postcode, city,
     is_active: body.isActive === false ? false : true,
     is_default: body.isDefault === true,
     /* SHOWROOM (migration 0148) — "Mark as Showroom" makes this warehouse a
@@ -113,7 +116,7 @@ inventory.post('/warehouses', async (c) => {
     venue_name: typeof body.venueName === 'string' && body.venueName.trim()
       ? body.venueName.trim() : null,
     type: finalType,
-  }).select('id, code, name, location, state, postcode, city, is_active, is_default, is_showroom, venue_name, type').single();
+  }).select('id, code, name, location, country, state, postcode, city, is_active, is_default, is_showroom, venue_name, type').single();
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_code' }, 409);
     return c.json({ error: 'insert_failed', reason: error.message }, 500);
@@ -159,7 +162,12 @@ export const patchWarehouseHandler = async (c: any) => {
   if (typeof body.code === 'string')      updates.code = body.code.trim().toUpperCase();
   if (typeof body.name === 'string')      updates.name = body.name.trim();
   if (typeof body.location === 'string')  updates.location = body.location;
-  /* Mig 0180 — structured address. State canonicalized on the way in. */
+  /* Mig 0180 — structured address (country / state / postcode / city).
+     State is canonicalized on the way in. */
+  if (body.country !== undefined) {
+    const cn = typeof body.country === 'string' ? body.country.trim() : '';
+    updates.country = cn || null;
+  }
   if (body.state !== undefined) {
     updates.state = canonicalizeMyState((body.state as string | null | undefined) ?? null);
   }
@@ -208,7 +216,7 @@ export const patchWarehouseHandler = async (c: any) => {
   const { data, error } = await scopeToCompanyId(
     sb.from('warehouses').update(updates).eq('id', id),
     co.companyId,
-  ).select('id, code, name, location, state, postcode, city, is_active, is_default, is_showroom, venue_name, type').maybeSingle();
+  ).select('id, code, name, location, country, state, postcode, city, is_active, is_default, is_showroom, venue_name, type').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   // No row matched id + company: not this company's warehouse, or gone.
   if (!data) return c.json(NOT_THIS_COMPANY, 404);

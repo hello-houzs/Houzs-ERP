@@ -41,7 +41,9 @@ export type Warehouse = {
   code: string;
   name: string;
   location: string | null;
-  /* Mig 0180 — structured address. Optional so pre-mig payloads still parse. */
+  /* Mig 0180 — structured address (country / state / postcode / city).
+     Optional so pre-mig payloads still parse. */
+  country?: string | null;
   state?: string | null;
   postcode?: string | null;
   city?: string | null;
@@ -177,7 +179,7 @@ export function useWarehouses(opts?: { includeInactive?: boolean }) {
 export function useCreateWarehouse() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { code: string; name: string; location?: string; state?: string | null; postcode?: string | null; city?: string | null; isDefault?: boolean; isShowroom?: boolean; venueName?: string | null; type?: WarehouseType }) =>
+    mutationFn: (body: { code: string; name: string; location?: string; country?: string | null; state?: string | null; postcode?: string | null; city?: string | null; isDefault?: boolean; isShowroom?: boolean; venueName?: string | null; type?: WarehouseType }) =>
       authedFetch<{ warehouse: Warehouse }>(`/inventory/warehouses`, { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouses'] }),
   });
@@ -186,7 +188,7 @@ export function useCreateWarehouse() {
 export function useUpdateWarehouse() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...body }: { id: string; code?: string; name?: string; location?: string; state?: string | null; postcode?: string | null; city?: string | null; isActive?: boolean; isDefault?: boolean; isShowroom?: boolean; venueName?: string | null; type?: WarehouseType }) =>
+    mutationFn: ({ id, ...body }: { id: string; code?: string; name?: string; location?: string; country?: string | null; state?: string | null; postcode?: string | null; city?: string | null; isActive?: boolean; isDefault?: boolean; isShowroom?: boolean; venueName?: string | null; type?: WarehouseType }) =>
       authedFetch<{ warehouse: Warehouse }>(`/inventory/warehouses/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouses'] }),
   });

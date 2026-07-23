@@ -70,6 +70,15 @@ export const Warehouses = () => {
       sortFn: (a, b) => typeLabel(a).localeCompare(typeLabel(b)),
     },
     {
+      key: 'country',
+      label: 'Country',
+      width: 110,
+      accessor: (w) => w.country ?? '—',
+      searchValue: (w) => w.country ?? '',
+      filterValue: (w) => w.country ?? '—',
+      sortFn: (a, b) => (a.country ?? '').localeCompare(b.country ?? ''),
+    },
+    {
       key: 'state',
       label: 'State',
       width: 130,

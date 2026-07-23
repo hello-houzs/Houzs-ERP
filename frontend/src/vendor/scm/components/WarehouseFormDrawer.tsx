@@ -17,7 +17,14 @@ import {
   type Warehouse,
   type WarehouseType,
 } from '../lib/inventory-queries';
-import { useLocalities, distinctStates, citiesInState, postcodesInCity } from '../lib/localities-queries';
+import {
+  useLocalities,
+  distinctCountries,
+  statesInCountry,
+  citiesInState,
+  postcodesInCity,
+  countryForState,
+} from '../lib/localities-queries';
 import { useNotify } from './NotifyDialog';
 import styles from '../../../pages/scm-v2/Suppliers.module.css';
 
@@ -53,6 +60,7 @@ export const WarehouseFormDrawer = ({
     code: editing?.code ?? '',
     name: editing?.name ?? '',
     location: editing?.location ?? '',
+    country: editing?.country ?? '',
     state: editing?.state ?? '',
     city: editing?.city ?? '',
     postcode: editing?.postcode ?? '',
@@ -62,13 +70,19 @@ export const WarehouseFormDrawer = ({
     venueName: editing?.venue_name ?? '',
   });
 
-  /* State/City/Postcode cascade off scm.my_localities — same pattern the SO
-     delivery-address form uses. Empty locality set (unseeded) → the state
-     dropdown gracefully renders empty and the operator can free-text the
-     Location field instead. */
+  /* Country / State / City / Postcode cascade off scm.my_localities — same
+     source the SO Maintenance geo table maintains. Country picked first
+     (defaults to Malaysia when unset); State picker is filtered by country;
+     picking State auto-derives Country if it was blank so the operator
+     doesn't have to reselect. Empty locality set (unseeded) → the state
+     dropdown gracefully renders empty free-text so nothing breaks. */
   const localities = useLocalities();
   const localityRows = localities.data ?? [];
-  const states = useMemo(() => distinctStates(localityRows), [localityRows]);
+  const countries = useMemo(() => distinctCountries(localityRows), [localityRows]);
+  const states = useMemo(
+    () => statesInCountry(localityRows, form.country),
+    [localityRows, form.country],
+  );
   const cities = useMemo(
     () => (form.state ? citiesInState(localityRows, form.state) : []),
     [localityRows, form.state],
@@ -77,6 +91,20 @@ export const WarehouseFormDrawer = ({
     () => (form.state && form.city ? postcodesInCity(localityRows, form.state, form.city) : []),
     [localityRows, form.state, form.city],
   );
+
+  /* When the operator picks a State, back-derive Country from my_localities
+     if the current Country is blank OR disagrees. This makes the linkage
+     the owner asked for: pick State, Country auto-fills. */
+  const pickState = (nextState: string) => {
+    const derived = countryForState(localityRows, nextState);
+    setForm((s) => ({
+      ...s,
+      state: nextState,
+      country: derived ?? s.country,
+      city: '',
+      postcode: '',
+    }));
+  };
 
   const done = () => { onSaved?.(); onClose(); };
 
@@ -105,6 +133,7 @@ export const WarehouseFormDrawer = ({
         code: form.code,
         name: form.name,
         location: form.location,
+        country: form.country || null,
         state: form.state || null,
         city: form.city || null,
         postcode: form.postcode || null,
@@ -118,6 +147,7 @@ export const WarehouseFormDrawer = ({
         code: form.code,
         name: form.name,
         location: form.location || undefined,
+        country: form.country || null,
         state: form.state || null,
         city: form.city || null,
         postcode: form.postcode || null,
@@ -157,15 +187,37 @@ export const WarehouseFormDrawer = ({
               onChange={(e) => setForm((s) => ({ ...s, location: e.target.value }))} />
           </label>
           {/* ── Structured address (mig 0180) ────────────────────────────
-              State / City / Postcode as the SO cascade — canonical from
-              scm.my_localities. State dropdown falls back to free-text
-              when the locality dataset is empty (cold-start). */}
+              Country → State → City → Postcode cascade — canonical from
+              scm.my_localities (same source SO Maintenance's Geo table
+              maintains). Country picked first filters the state dropdown;
+              picking State also back-derives Country if it was blank so
+              the operator doesn't reselect. Locality dataset empty (cold-
+              start) → the pickers gracefully fall back to free-text. */}
+          <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
+            <div className={styles.eyebrow}>Country</div>
+            {countries.length > 0 ? (
+              <select className={styles.searchInput} style={{ width: '100%' }}
+                value={form.country ?? ''}
+                onChange={(e) => setForm((s) => ({ ...s, country: e.target.value, state: '', city: '', postcode: '' }))}
+              >
+                <option value="">— pick country —</option>
+                {form.country && !countries.includes(form.country) && (
+                  <option value={form.country}>{form.country} (legacy)</option>
+                )}
+                {countries.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            ) : (
+              <input className={styles.searchInput} style={{ width: '100%' }}
+                value={form.country ?? ''} placeholder="e.g. Malaysia"
+                onChange={(e) => setForm((s) => ({ ...s, country: e.target.value }))} />
+            )}
+          </label>
           <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
             <div className={styles.eyebrow}>State</div>
             {states.length > 0 ? (
               <select className={styles.searchInput} style={{ width: '100%' }}
                 value={form.state ?? ''}
-                onChange={(e) => setForm((s) => ({ ...s, state: e.target.value, city: '', postcode: '' }))}
+                onChange={(e) => pickState(e.target.value)}
               >
                 <option value="">— pick state —</option>
                 {form.state && !states.includes(form.state) && (
