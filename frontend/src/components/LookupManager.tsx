@@ -147,6 +147,33 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
     }
   }
 
+  // Owner 2026-07-23: "Hide from picker" only marked active=0; the row still
+  // sat in the list. Hard-delete removes it entirely. Existing records that
+  // referenced this value by name keep the text (columns like
+  // mfg_products.branding are free-text, not FK) — the BrandingInput surfaces
+  // it as "(legacy)" until an operator re-picks a canonical value.
+  async function removePermanently(row: LookupRow) {
+    if (
+      !(await dialog.confirm({
+        title: `Permanently delete ${title.replace(/s$/, "").toLowerCase()}`,
+        message:
+          `Delete "${row.name}" from this list? This cannot be undone. ` +
+          `Existing records that reference "${row.name}" by name keep the text — ` +
+          `they'll appear marked "(legacy)" in the picker until re-selected.`,
+        danger: true,
+        confirmLabel: "Delete permanently",
+      }))
+    )
+      return;
+    try {
+      await api.del(`${apiPath}/${row.id}?hard=1`);
+      toast.success("Deleted");
+      q.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Something went wrong. Please try again.");
+    }
+  }
+
   return (
     <section className="rounded-md border border-border bg-surface p-6 shadow-stone">
       <h2 className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
@@ -293,10 +320,17 @@ export function LookupManager({ apiPath, title, description, extra }: Props) {
                   },
                   {
                     type: "action",
-                    icon: Trash2,
+                    icon: EyeOff,
                     label: "Hide from picker",
                     danger: true,
                     onClick: () => remove(row),
+                  },
+                  {
+                    type: "action",
+                    icon: Trash2,
+                    label: "Delete permanently",
+                    danger: true,
+                    onClick: () => removePermanently(row),
                   },
                 ]}
               />
