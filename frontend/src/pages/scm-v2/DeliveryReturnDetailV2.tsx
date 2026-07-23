@@ -73,6 +73,7 @@ import {
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
 import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 
 // ─── Row shapes (subset — see DeliveryReturnDetail.tsx for full 40-field
 // header) ────────────────────────────────────────────────────────────────
@@ -962,7 +963,7 @@ export function DeliveryReturnDetailV2() {
                 />
                 <Field
                   label="Phone"
-                  value={deliveryReturn.phone || "Not provided"}
+                  value={formatPhone(deliveryReturn.phone) || "Not provided"}
                   muted={!deliveryReturn.phone}
                   mono={!!deliveryReturn.phone}
                 />
@@ -1089,7 +1090,7 @@ export function DeliveryReturnDetailV2() {
                     {deliveryReturn.emergency_contact_name || "Not provided"}
                   </div>
                   <div className="mt-1 font-mono text-[12.5px] text-ink-secondary">
-                    {deliveryReturn.emergency_contact_phone || "—"}
+                    {formatPhone(deliveryReturn.emergency_contact_phone) || "—"}
                   </div>
                   {deliveryReturn.emergency_contact_relationship && (
                     <div className="mt-1 text-[12px] text-ink-muted">

@@ -10,6 +10,7 @@ import { useDialog } from "../hooks/useDialog";
 import { useUdf, type UdfField, type UdfFieldType } from "../hooks/useUdf";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
+import { formatPhone } from "../vendor/shared/phone";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
 import { formatCurrency, formatDate, formatDateTime, cn, todayInAppTz } from "../lib/utils";
@@ -305,14 +306,14 @@ export function Sales() {
             className="inline-flex items-baseline gap-1.5"
             title={
               e.customer_phone
-                ? `${e.customer_name} · ${e.customer_phone}`
+                ? `${e.customer_name} · ${formatPhone(e.customer_phone)}`
                 : e.customer_name
             }
           >
             <span className="font-semibold text-ink">{e.customer_name}</span>
             {e.customer_phone && (
               <span className="font-mono text-[10px] text-ink-muted">
-                · {e.customer_phone}
+                · {formatPhone(e.customer_phone)}
               </span>
             )}
           </span>

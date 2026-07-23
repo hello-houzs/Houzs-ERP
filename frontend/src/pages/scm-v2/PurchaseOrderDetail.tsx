@@ -43,6 +43,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { buildVariantSummary, fmtDateTime } from '@2990s/shared'; // Commander 2026-05-28 — Description 2
+import { formatPhone } from '@2990s/shared/phone';
 import {
   usePurchaseOrderDetail,
   useUpdatePurchaseOrderHeader,
@@ -1336,7 +1337,7 @@ const SupplierCard = ({
           >
             <InfoCell label="Supplier code" value={supplier.code} />
             <InfoCell label="Contact"       value={supplier.contact_person ?? supplier.attention} />
-            <InfoCell label="Phone"         value={supplier.phone ?? supplier.mobile} />
+            <InfoCell label="Phone"         value={formatPhone(supplier.phone ?? supplier.mobile)} />
             <InfoCell label="Payment terms" value={supplier.payment_terms} />
             <InfoCell label="Email"         value={supplier.email} />
             <InfoCell label="TIN"           value={supplier.tin_number} />
