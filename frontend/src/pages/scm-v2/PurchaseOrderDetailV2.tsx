@@ -11,7 +11,7 @@
 
 import { Suspense, lazy, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import {
   ArrowLeft,
@@ -566,7 +566,7 @@ function PurchaseOrderDetailV2ReadOnly() {
         const { primary, secondary } = lineIdentity({
           code: l.material_code,
           description: l.description || l.material_name,
-          variant: l.description2,
+          variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),
         });
         return (
           <div className="min-w-0">

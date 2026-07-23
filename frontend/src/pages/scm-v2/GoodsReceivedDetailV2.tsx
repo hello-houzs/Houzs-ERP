@@ -3,7 +3,7 @@
 // Received value + qty landed, tinted green once posted.
 
 import { lazy, Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
-import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -349,7 +349,7 @@ function GoodsReceivedDetailV2ReadOnly() {
         const { primary, secondary } = lineIdentity({
           code: l.material_code || l.item_code,
           description: l.description,
-          variant: l.description2,
+          variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),
         });
         return (
           <div className="min-w-0">

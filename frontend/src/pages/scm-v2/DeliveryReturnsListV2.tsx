@@ -18,7 +18,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { fmtCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import {
   Plus,
@@ -373,6 +373,9 @@ function DetailDrawer({
   const items: Array<{
     item_code?: string | null;
     description?: string | null;
+    description2?: string | null;
+    item_group?: string | null;
+    variants?: Record<string, unknown> | null;
     qty_returned?: number | null;
     condition?: string | null;
     unit_price_centi?: number | null;
@@ -381,6 +384,9 @@ function DetailDrawer({
     ((detailQ.data as { items?: unknown[] } | undefined)?.items as Array<{
       item_code?: string | null;
       description?: string | null;
+      description2?: string | null;
+      item_group?: string | null;
+      variants?: Record<string, unknown> | null;
       qty_returned?: number | null;
       condition?: string | null;
       unit_price_centi?: number | null;
@@ -510,9 +516,10 @@ function DetailDrawer({
 
               <SectionHeading>Returned items</SectionHeading>
               <div className="overflow-hidden rounded-lg border border-border">
-                <div className="grid grid-cols-[1fr_52px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                <div className="grid grid-cols-[1fr_52px_82px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
                   <span>Item</span>
                   <span className="text-right">Qty</span>
+                  <span className="text-right">Unit</span>
                   <span className="text-right">Refund</span>
                 </div>
                 {detailQ.isLoading && (
@@ -529,23 +536,27 @@ function DetailDrawer({
                   const amt =
                     l.line_total_centi ??
                     (l.qty_returned ?? 0) * (l.unit_price_centi ?? 0);
+                  const { primary, secondary } = lineIdentity({
+                    code: l.item_code,
+                    description: l.description,
+                    variant:
+                      buildVariantSummary(l.item_group ?? "others", l.variants ?? null) ||
+                      (l.description2 ?? ""),
+                  });
                   return (
                     <div
                       key={i}
-                      className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
+                      className="grid grid-cols-[1fr_52px_82px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
                     >
-                      <div>
-                        {/* Description ONCE, code NOT displayed — the shared
-                            rule (vendor/shared/line-identity.ts). The code still
-                            BINDS. No variant is passed because this drawer's row
-                            shape carries no variant vocabulary at all (no
-                            item_group / variants / description2). The CONDITION
-                            badge shared the code's line and is NOT a duplicate —
-                            it survives, and its row now renders only when there
-                            is a condition to show. */}
-                        <div className="text-[13px] font-semibold text-ink">
-                          {lineIdentity({ code: l.item_code, description: l.description }).primary || "—"}
+                      <div className="min-w-0">
+                        <div className="text-[12.5px] font-medium leading-snug text-ink">
+                          {primary || "—"}
                         </div>
+                        {secondary && (
+                          <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
+                            {secondary}
+                          </div>
+                        )}
                         {l.condition && (
                           <div className="mt-0.5 flex items-center gap-2">
                             <Badge tone="warning" variant="soft" size="xs">
@@ -556,6 +567,9 @@ function DetailDrawer({
                       </div>
                       <span className="text-right font-money text-[12.5px] text-ink-secondary">
                         {l.qty_returned ?? 0}
+                      </span>
+                      <span className="text-right font-money text-[12.5px] text-ink-secondary">
+                        {fmtRm(l.unit_price_centi ?? 0)}
                       </span>
                       <span className="text-right font-money text-[12.5px] font-semibold text-err">
                         {fmtRm(amt)}
