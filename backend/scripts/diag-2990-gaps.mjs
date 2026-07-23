@@ -39,13 +39,19 @@ const notice = (m) => console.log(process.env.GITHUB_ACTIONS ? `::notice::${m}` 
 // Tables shown as MISSING in the last diag run are all listed here; the
 // deliberately-excluded ones (accounts / drivers / lorries) are noted in
 // the summary block at the bottom, not queried.
+// natKey / natKeyIsDocNo: when a row is MISSING by UUID we ALSO check the
+// natural-key column for a dest row under any UUID — that's the ON CONFLICT
+// DO NOTHING silent-skip signature (importer tried to insert but a UNIQUE
+// index on the business key blocked it). natKeyIsDocNo prefixes the src
+// value with "2990-" before the dest lookup, mirroring importer's DOCNO_COL
+// prefix.
 const GAP_TABLES = [
-  { table: "mfg_products",              keys: ["code", "category", "branding", "active"],                       scoped: true },
-  { table: "product_models",            keys: ["code", "category", "branding", "active"],                       scoped: true },
-  { table: "suppliers",                 keys: ["code", "name", "active"],                                        scoped: true },
-  { table: "delivery_orders",           keys: ["do_number", "so_doc_no", "status", "created_at"],                scoped: true },
+  { table: "mfg_products",              keys: ["code", "category", "branding", "active"],                       scoped: true, natKey: "code" },
+  { table: "product_models",            keys: ["code", "category", "branding", "active"],                       scoped: true, natKey: "code" },
+  { table: "suppliers",                 keys: ["code", "name", "active"],                                        scoped: true, natKey: "code" },
+  { table: "delivery_orders",           keys: ["do_number", "so_doc_no", "status", "created_at"],                scoped: true, natKey: "do_number", natKeyIsDocNo: true },
   { table: "delivery_order_items",      keys: ["do_number", "line_no", "item_code"],                             scoped: true },
-  { table: "grns",                      keys: ["grn_number", "po_number", "status", "created_at"],               scoped: true },
+  { table: "grns",                      keys: ["grn_number", "po_number", "status", "created_at"],               scoped: true, natKey: "grn_number", natKeyIsDocNo: true },
   { table: "grn_items",                 keys: ["grn_number", "line_no", "item_code"],                            scoped: true },
   { table: "inventory_lots",            keys: ["source_doc_no", "item_code", "qty", "warehouse_id"],             scoped: true },
   { table: "inventory_movements",       keys: ["source_doc_no", "item_code", "movement_type", "qty"],            scoped: true },
@@ -55,8 +61,8 @@ const GAP_TABLES = [
   { table: "pending_slip_uploads",      keys: ["doc_no", "kind", "created_at"],                                  scoped: true },
   { table: "pos_carts",                 keys: ["created_by", "customer_name", "created_at"],                     scoped: true },
   { table: "so_revisions",              keys: ["doc_no", "rev_no", "created_at"],                                scoped: true },
-  { table: "currencies",                keys: ["code", "name", "rate"],                                          scoped: false },
-  { table: "sync_config",               keys: ["key", "value"],                                                  scoped: false },
+  { table: "currencies",                keys: ["code", "name", "rate"],                                          scoped: false, natKey: "code" },
+  { table: "sync_config",               keys: ["key", "value"],                                                  scoped: false, natKey: "key" },
 ];
 
 // Bounded fetchAll — Supabase caps at 1000 rows per page, so paginate.
@@ -89,7 +95,7 @@ async function main() {
   let grandMissing = 0;
   let grandCollision = 0;
 
-  for (const { table, keys, scoped } of GAP_TABLES) {
+  for (const { table, keys, scoped, natKey, natKeyIsDocNo } of GAP_TABLES) {
     const dcols = await destColSet(table);
     if (dcols.size === 0) {
       notice(`--- ${table}: dest table missing, skipped`);
@@ -143,36 +149,73 @@ async function main() {
     }
     const collisionMap = new Map(collisions.map((r) => [String(r.id), Number(r.company_id)]));
 
-    let coll = 0, miss = 0;
+    // Natural-key check: for MISSING rows (UUID absent from dest) whose table
+    // has a business-key UNIQUE constraint, look up dest by that key. If a
+    // row exists with a DIFFERENT UUID that's the ON CONFLICT DO NOTHING
+    // silent-skip signature — the importer tried but the UNIQUE index blocked.
+    const natKeyMap = new Map(); // src_id -> {destId, destCid, natValue}
+    if (natKey && dcols.has(natKey)) {
+      const missingWithNatKey = missingSrc.filter((r) => r[natKey] != null && !collisionMap.has(String(r.id)));
+      for (let i = 0; i < missingWithNatKey.length; i += 200) {
+        const chunk = missingWithNatKey.slice(i, i + 200);
+        const values = chunk.map((r) => {
+          const raw = String(r[natKey]);
+          return natKeyIsDocNo && !raw.startsWith("2990-") ? `2990-${raw}` : raw;
+        });
+        const q = scoped
+          ? `SELECT id, company_id, "${natKey}" AS nk FROM scm."${table}" WHERE "${natKey}" IN (${values.map((_, k) => `$${k + 1}`).join(",")})`
+          : `SELECT id, "${natKey}" AS nk FROM scm."${table}" WHERE "${natKey}" IN (${values.map((_, k) => `$${k + 1}`).join(",")})`;
+        try {
+          const r = await dst.unsafe(q, values);
+          const foundByNk = new Map(r.map((x) => [String(x.nk), x]));
+          for (let k = 0; k < chunk.length; k++) {
+            const hit = foundByNk.get(values[k]);
+            if (hit) natKeyMap.set(String(chunk[k].id), { destId: hit.id, destCid: hit.company_id, natValue: values[k] });
+          }
+        } catch (e) {
+          notice(`   natKey check ERR (${e.message}) — skipped for this table`);
+        }
+      }
+    }
+
+    let coll = 0, miss = 0, natColl = 0;
     notice(`--- ${table}: ${missingSrc.length} rows on src not in dest (co=${scoped ? cid : "global"})`);
     for (const r of missingSrc) {
-      const kind = collisionMap.has(String(r.id))
-        ? `COLLISION[co=${collisionMap.get(String(r.id))}]`
-        : "MISSING";
-      if (kind === "MISSING") miss++;
-      else coll++;
+      let kind;
+      if (collisionMap.has(String(r.id))) { kind = `COLLISION[co=${collisionMap.get(String(r.id))}]`; coll++; }
+      else if (natKeyMap.has(String(r.id))) {
+        const h = natKeyMap.get(String(r.id));
+        kind = `NATKEY_COLLISION[${natKey}=${h.natValue} dest_id=${h.destId}${scoped ? ` co=${h.destCid}` : ''}]`;
+        natColl++;
+      } else { kind = "MISSING"; miss++; }
       const kv = keys
         .filter((k) => dcols.has(k))
         .map((k) => `${k}=${JSON.stringify(r[k] ?? null)}`)
         .join(" ");
       notice(`   ${kind}  id=${r.id}  ${kv}`);
     }
-    notice(`   -> ${coll} collision, ${miss} truly missing`);
+    notice(`   -> ${coll} id-collision, ${natColl} natkey-collision, ${miss} truly missing`);
     grandMissing += miss;
-    grandCollision += coll;
+    grandCollision += coll + natColl;
   }
 
   notice("");
   notice(`=== SUMMARY ===`);
   notice(`Truly missing (safe to re-insert): ${grandMissing}`);
-  notice(`Collisions (UUID exists under other company_id, ON CONFLICT skipped): ${grandCollision}`);
+  notice(`Collisions (UUID or natural-key under another row, ON CONFLICT skipped): ${grandCollision}`);
   notice(`Deliberately excluded from importer (per owner ruling): accounts / drivers / lorries — not queried.`);
   notice(`Notes:`);
   notice(` * MISSING = a plain re-run of the top-up importer will pick it up`);
-  notice(`   ONCE the parent row it points at also lands (FK-safe path).`);
-  notice(` * COLLISION = same UUID belongs to a different company. This is`);
-  notice(`   how ON CONFLICT DO NOTHING silently drops rows; needs a`);
-  notice(`   remap (assign a fresh id) or an intentional decision to skip.`);
+  notice(`   ONCE the parent row it points at also lands (FK-safe path). If`);
+  notice(`   the table is not in migrate-2990's ORDER list, importer never`);
+  notice(`   touches it (recent example: mfg_products was missing from ORDER).`);
+  notice(` * COLLISION (id) = same UUID under a different company; the`);
+  notice(`   primary-key ON CONFLICT DO NOTHING silently drops the insert.`);
+  notice(` * NATKEY_COLLISION = same business key (do_number / code / grn_number`);
+  notice(`   etc.) already stored under a DIFFERENT UUID. The UNIQUE index on`);
+  notice(`   that column caused ON CONFLICT DO NOTHING to drop this row. Fix is`);
+  notice(`   either to accept the dest row as authoritative (skip the src one)`);
+  notice(`   or to update in place (natural-key merge, per-table decision).`);
 }
 
 main()

@@ -4192,7 +4192,18 @@ function DetailContent({
                 onSave={(v) => patch({ sales_agent: v })}
                 placeholder="Sales rep"
               />
-              <SoNoSearchEdit value={c.doc_no} onSave={(v) => patch({ doc_no: v })} />
+              {/* SO + Ref side by side — mirrors the read view's twin
+                  chips (Nick 2026-07-23). Ref No is a plain editable
+                  field (the SO re-match fills it only on SO change). */}
+              <div className="grid grid-cols-2 gap-2">
+                <SoNoSearchEdit value={c.doc_no} onSave={(v) => patch({ doc_no: v })} />
+                <InlineEdit
+                  label="Ref No"
+                  value={c.ref_no}
+                  onSave={(v) => patch({ ref_no: v })}
+                  placeholder="e.g. DLPG 0285"
+                />
+              </div>
               <InlineEdit
                 label="Phone"
                 value={c.phone}
@@ -4229,7 +4240,6 @@ function DetailContent({
                 onSave={(v) => patch({ customer_email: v })}
                 placeholder="customer@example.com"
               />
-              <FieldRow label="Ref No" mono>{c.ref_no || "—"}</FieldRow>
               <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
             </>
             ) : (

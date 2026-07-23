@@ -12,7 +12,6 @@ import { clearAll as clearApiCache } from "../api/cache";
 import { queryClient } from "../lib/queryClient";
 import { clearQuerySnapshots } from "../lib/query-persist";
 import { subscribeAuthTokenChange } from "../lib/authToken";
-import { subscribeActiveCompany } from "../lib/activeCompany";
 import {
   bindBrowserStorageIdentity,
   clearBrowserStorageIdentity,
@@ -182,28 +181,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  // Another tab logging in/out (a `storage`-sourced token change) reboots this
+  // tab into the new session. A company switch in another tab deliberately does
+  // NOT — each window owns its company for its whole lifetime (multi-window,
+  // owner ask 2026-07-23; see lib/activeCompany.ts).
   useEffect(() => {
     let reloading = false;
-    const reloadCleanly = (clearSnapshots: boolean) => {
-      if (reloading) return;
+    return subscribeAuthTokenChange((_token, source) => {
+      if (source !== "storage" || reloading) return;
       reloading = true;
       clearAllScmHandoffs();
       clearBrowserStorageIdentity();
-      if (clearSnapshots) resetSessionCaches();
-      else resetMemoryCaches();
+      resetSessionCaches();
       setState((prev) => ({ ...prev, user: null, loading: true }));
       window.location.reload();
-    };
-    const unsubscribeAuth = subscribeAuthTokenChange((_token, source) => {
-      if (source === "storage") reloadCleanly(true);
     });
-    const unsubscribeCompany = subscribeActiveCompany((source) => {
-      if (source === "storage") reloadCleanly(false);
-    });
-    return () => {
-      unsubscribeAuth();
-      unsubscribeCompany();
-    };
   }, []);
 
   const login = useCallback(

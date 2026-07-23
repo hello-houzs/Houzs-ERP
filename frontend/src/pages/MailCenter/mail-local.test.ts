@@ -112,6 +112,11 @@ describe("mail draft browser scope", () => {
 
   test("separates drafts by stable user and active company", () => {
     writeAuthToken("user-one", true);
+    // Explicit switcher picks happen SIGNED IN (and reload → re-bind). Only an
+    // explicit pick updates the durable per-user default — an ownerless
+    // pre-bind pick (the ?company= window seed) deliberately does not, so it
+    // could not power the user-1 restore this test asserts below.
+    bindBrowserStorageIdentity(1);
     setActiveCompanyId(7);
     bindBrowserStorageIdentity(1);
     saveDraft(VALID);
