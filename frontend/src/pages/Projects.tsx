@@ -9074,18 +9074,19 @@ function PhaseCrewEditor({
                 </button>
               )}
             </div>
-            {/* Provider (owner 2026-07-23): if this trip isn't an internal lorry,
-                pick Grab or Lalamove instead of a plate. */}
+            {/* 3rd-party transport (owner 2026-07-23): a trip not done by an
+                internal lorry (the plate above) is via Grab or Lalamove. Blank
+                = internal lorry. "Internal lorry" option dropped as redundant. */}
             <div className="flex items-center gap-1">
               <Truck size={12} className="shrink-0 opacity-0" />
-              <span className="w-11 shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-muted">Via</span>
+              <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-muted">3rd-party</span>
               <select
                 value={lorry.provider ?? ""}
                 onChange={(e) => updateLorry(li, { provider: e.target.value })}
                 disabled={readOnly}
                 className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px] disabled:bg-bg/40 disabled:opacity-70"
               >
-                <option value="">Internal lorry</option>
+                <option value="">—</option>
                 <option value="Grab">Grab</option>
                 <option value="Lalamove">Lalamove</option>
               </select>
@@ -9209,12 +9210,19 @@ function LogisticsCrewSection({
   // Everyone else (Sales, ops, purchasing, storekeeper…) renders read-only.
   const _pos = (user?.position_name ?? "").toLowerCase();
   const _role = (user?.role_name ?? "").toLowerCase();
+  const _email = (user?.email ?? "").toLowerCase();
+  // Logistic = position "Logistic Admin" OR role "Logistic" — Syu / Syasya /
+  // Logistic Admin all carry both, so any of them matches (owner 2026-07-23).
   const canEditLogistics =
     isDirectorUser(user) ||
     !!user?.permissions?.includes("*") ||
     /logistic/.test(_pos) ||
+    /logistic/.test(_role) ||
     /\bbd\b/.test(_role);
   const readOnly = !canEditLogistics;
+  // Schedule reference is TIGHTER than the rest of the section (owner
+  // 2026-07-23): only BD + weisiang (Lim, weisiang329@gmail.com) may edit it.
+  const canEditSchedule = /\bbd\b/.test(_role) || _email === "weisiang329@gmail.com";
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [lorryOptions, setLorryOptions] = useState<string[]>([]);
   // A failed reference read must not render as an empty list. `.catch(() => {})`
@@ -9278,7 +9286,7 @@ function LogisticsCrewSection({
       {/* Schedule reference (owner 2026-07-23): the mall handbook's official
           event schedule screenshot, so logistics can read off setup/dismantle
           dates + times. Desktop-only (this whole page is the PC PMS). */}
-      <ScheduleRef projectId={project.id} readOnly={readOnly} />
+      <ScheduleRef projectId={project.id} readOnly={!canEditSchedule} />
       <div>
         <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} readOnly={readOnly} />
       </div>
