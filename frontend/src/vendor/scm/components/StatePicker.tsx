@@ -48,6 +48,8 @@ export const StatePicker = ({
   style,
   disabled,
   placeholder = '— pick state —',
+  compact = false,
+  selectClassName,
 }: {
   /** When set, restrict the picker to this country's states (no Others toggle).
    *  When empty, default to Malaysia + Others expander for CN/SG. */
@@ -60,6 +62,14 @@ export const StatePicker = ({
   style?: React.CSSProperties;
   disabled?: boolean;
   placeholder?: string;
+  /** Compact mode — render ONLY the <select> with MY / Others <optgroup>s
+   *  (no search input, no Show-Others button). For mobile / tight inline
+   *  contexts where the native select+optgroup already gives an OS-level
+   *  grouped picker (iOS wheel picker, Android list). Grouping still keeps
+   *  MY on top so the owner's "MY default" spirit survives. */
+  compact?: boolean;
+  /** Applied to the inner <select> so the caller can share its form styles. */
+  selectClassName?: string;
 }) => {
   const localities = useLocalities();
   const rows = localities.data ?? [];
@@ -112,6 +122,54 @@ export const StatePicker = ({
     !localities.isLoading && rows.length === 0;
   const controlsDisabled = disabled || localities.isLoading || isEmpty;
 
+  /* Compact mode always shows every optgroup (MY on top, then Others by
+     country). The native OS picker groups them for tapping — no search input
+     / expand button needed. Full mode keeps the desktop UX (MY-default with
+     Others toggle + search box). */
+  const alwaysShowOthers = compact;
+  const showOthersRendered = compact || showOthersEffective;
+
+  const selectEl = (
+    <select
+      value={value}
+      onChange={(e) => handlePick(e.target.value)}
+      disabled={controlsDisabled}
+      className={selectClassName}
+      style={selectClassName ? undefined : { width: '100%', padding: '6px 8px', boxSizing: 'border-box' }}
+    >
+      <option value="">
+        {localities.isLoading ? 'Loading…' : isEmpty ? 'No states seeded' : placeholder}
+      </option>
+      {isCountryPinned ? (
+        scoped.filter(match).map((s) => (
+          <option key={s} value={s}>{s}</option>
+        ))
+      ) : (
+        <>
+          <optgroup label={PRIMARY_COUNTRY}>
+            {groups!.my.filter(match).map((s) => (
+              <option key={`my-${s}`} value={s}>{s}</option>
+            ))}
+          </optgroup>
+          {showOthersRendered &&
+            Array.from(groups!.byCountry.entries())
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([c, list]) => (
+                <optgroup key={c} label={c}>
+                  {list.filter(match).map((s) => (
+                    <option key={`${c}-${s}`} value={s}>{s}</option>
+                  ))}
+                </optgroup>
+              ))}
+        </>
+      )}
+    </select>
+  );
+
+  if (compact) {
+    return <div className={className} style={style}>{selectEl}</div>;
+  }
+
   return (
     <div className={className} style={style}>
       {!isCountryPinned && (
@@ -124,40 +182,8 @@ export const StatePicker = ({
           style={{ width: '100%', marginBottom: 6, padding: '6px 8px', boxSizing: 'border-box' }}
         />
       )}
-      <select
-        value={value}
-        onChange={(e) => handlePick(e.target.value)}
-        disabled={controlsDisabled}
-        style={{ width: '100%', padding: '6px 8px', boxSizing: 'border-box' }}
-      >
-        <option value="">
-          {localities.isLoading ? 'Loading…' : isEmpty ? 'No states seeded' : placeholder}
-        </option>
-        {isCountryPinned ? (
-          scoped.filter(match).map((s) => (
-            <option key={s} value={s}>{s}</option>
-          ))
-        ) : (
-          <>
-            <optgroup label={PRIMARY_COUNTRY}>
-              {groups!.my.filter(match).map((s) => (
-                <option key={`my-${s}`} value={s}>{s}</option>
-              ))}
-            </optgroup>
-            {showOthersEffective &&
-              Array.from(groups!.byCountry.entries())
-                .sort(([a], [b]) => a.localeCompare(b))
-                .map(([c, list]) => (
-                  <optgroup key={c} label={c}>
-                    {list.filter(match).map((s) => (
-                      <option key={`${c}-${s}`} value={s}>{s}</option>
-                    ))}
-                  </optgroup>
-                ))}
-          </>
-        )}
-      </select>
-      {!isCountryPinned && !q && (
+      {selectEl}
+      {!isCountryPinned && !q && !alwaysShowOthers && (
         <button
           type="button"
           onClick={() => setShowOthers((v) => !v)}

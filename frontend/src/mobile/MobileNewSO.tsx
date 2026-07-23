@@ -37,6 +37,7 @@ import {
   allCities,
   allPostcodes,
 } from "../vendor/scm/lib/localities-queries";
+import { StatePicker } from "../vendor/scm/components/StatePicker";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
@@ -2246,73 +2247,60 @@ export function MobileNewSO({
                         free-text inputs (the vendor no-data behaviour).
                         FIX D2 — State/City/Postcode freeze once the processing
                         date has passed (identity columns feed the supplier PO). */}
+                    {/* Address MVP2 (2026-07-23) — the shared StatePicker in
+                        compact mode. MY states listed first, then CN + SG
+                        grouped under their country in native <optgroup>s the
+                        OS picker respects (iOS wheel picker, Android list).
+                        No `(legacy)` fallback option, no `<select> → <input>`
+                        free-text branch — a state not in scm.my_localities
+                        must be added via the Localities Maintenance UI first. */}
                     <Field label={addressRequired ? "State *" : "State"} error={touched && addressRequired && !state.trim()} scanned={scanned("state", state)}>
-                      {localitiesReady ? (
-                        <select
-                          className="fld-i"
-                          value={state}
-                          disabled={addressIdentityLocked || locQ.isLoading}
-                          onChange={(e) => onStateChange(e.target.value)}
-                        >
-                          <option value="">{locQ.isLoading ? "Loading…" : "Pick state"}</option>
-                          {state && !stateOpts.includes(state) && <option value={state}>{state}</option>}
-                          {stateOpts.map((s) => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                      ) : (
-                        <input
-                          className="fld-i"
-                          value={state}
-                          disabled={addressIdentityLocked}
-                          onChange={(e) => onStateChange(e.target.value)}
-                          placeholder="State"
-                        />
-                      )}
+                      <StatePicker
+                        compact
+                        value={state}
+                        disabled={addressIdentityLocked}
+                        placeholder="Pick state"
+                        selectClassName="fld-i"
+                        onChange={(next) => onStateChange(next)}
+                      />
                     </Field>
                     <div style={{ display: "flex", gap: 11 }}>
+                      {/* Address MVP2 (2026-07-23) — City + Postcode are
+                          dropdown-only from scm.my_localities, matching the
+                          desktop rule. Removed the hidden legacy fallback
+                          option (`{v && !opts.includes(v) && <option>v</option>}`)
+                          and the `<input>` free-text branch — a value not in
+                          the seeded set forces the operator to add it via
+                          the Localities Maintenance UI. When no state is
+                          picked the picker offers the cross-state pool so
+                          the operator can pick City/Postcode first and let
+                          state resolve back via resolvePostcode /
+                          resolveCityState. */}
                       <Field label={addressRequired ? "City *" : "City"} style={{ flex: 1 }} error={touched && addressRequired && !city.trim()} scanned={scanned("city", city)}>
-                        {localitiesReady && cityChoices.length > 0 ? (
-                          <select
-                            className="fld-i"
-                            value={city}
-                            disabled={addressIdentityLocked}
-                            onChange={(e) => onCityChange(e.target.value)}
-                          >
-                            <option value="">Pick city</option>
-                            {city && !cityChoices.includes(city) && <option value={city}>{city}</option>}
-                            {cityChoices.map((c) => <option key={c} value={c}>{c}</option>)}
-                          </select>
-                        ) : (
-                          <input
-                            className="fld-i"
-                            value={city}
-                            disabled={addressIdentityLocked}
-                            onChange={(e) => onCityChange(e.target.value)}
-                            placeholder="City"
-                          />
-                        )}
+                        <select
+                          className="fld-i"
+                          value={city}
+                          disabled={addressIdentityLocked || cityChoices.length === 0}
+                          onChange={(e) => onCityChange(e.target.value)}
+                        >
+                          <option value="">
+                            {cityChoices.length === 0 ? "No cities seeded" : "Pick city"}
+                          </option>
+                          {cityChoices.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
                       </Field>
                       <Field label={addressRequired ? "Postcode *" : "Postcode"} style={{ flex: 1 }} error={touched && addressRequired && !postcode.trim()} scanned={scanned("postcode", postcode)}>
-                        {localitiesReady && postcodeChoices.length > 0 ? (
-                          <select
-                            className="fld-i"
-                            value={postcode}
-                            disabled={addressIdentityLocked}
-                            onChange={(e) => onPostcodeChange(e.target.value)}
-                          >
-                            <option value="">Pick postcode</option>
-                            {postcode && !postcodeChoices.includes(postcode) && <option value={postcode}>{postcode}</option>}
-                            {postcodeChoices.map((p) => <option key={p} value={p}>{p}</option>)}
-                          </select>
-                        ) : (
-                          <input
-                            className="fld-i"
-                            inputMode="numeric"
-                            value={postcode}
-                            disabled={addressIdentityLocked}
-                            onChange={(e) => onPostcodeChange(e.target.value)}
-                            placeholder="00000"
-                          />
-                        )}
+                        <select
+                          className="fld-i"
+                          value={postcode}
+                          disabled={addressIdentityLocked || postcodeChoices.length === 0}
+                          onChange={(e) => onPostcodeChange(e.target.value)}
+                        >
+                          <option value="">
+                            {postcodeChoices.length === 0 ? "No postcodes seeded" : "Pick postcode"}
+                          </option>
+                          {postcodeChoices.map((p) => <option key={p} value={p}>{p}</option>)}
+                        </select>
                       </Field>
                     </div>
                     {addressIdentityLocked ? (
