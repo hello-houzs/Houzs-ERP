@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { fmtCenti, lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -288,7 +289,7 @@ function DetailDrawer({
                   </div>
                 </div>
                 <RowKV k="Contact" v={row.supplier?.contact_person || "—"} />
-                <RowKV k="Phone" v={row.supplier?.phone || "—"} />
+                <RowKV k="Phone" v={formatPhone(row.supplier?.phone) || "—"} />
               </div>
 
               <SectionHeading>Line items</SectionHeading>

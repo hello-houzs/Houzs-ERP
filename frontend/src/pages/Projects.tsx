@@ -107,6 +107,7 @@ import { ACCESS_RANK } from "../types";
 import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery, humanHttpMessage, tokenStore } from "../api/client";
+import { formatPhone } from "../vendor/shared/phone";
 import { companyHeader } from "../lib/activeCompany";
 import {
   consumeCorrelated,
@@ -5444,7 +5445,7 @@ function ProjectTeamSection({
             </select>
             {p.pic_phone && (
               <div className="mt-1 flex items-center gap-1 text-[11px] text-ink-secondary">
-                <Phone size={11} /> {p.pic_phone}
+                <Phone size={11} /> {formatPhone(p.pic_phone)}
               </div>
             )}
             {picUsers.length === 0 && !picUsersLoading && (
@@ -5460,7 +5461,7 @@ function ProjectTeamSection({
             </div>
             {p.pic_phone && (
               <div className="mt-0.5 flex items-center gap-1 text-[11px] text-ink-secondary">
-                <Phone size={11} /> {p.pic_phone}
+                <Phone size={11} /> {formatPhone(p.pic_phone)}
               </div>
             )}
           </>
@@ -5488,7 +5489,7 @@ function ProjectTeamSection({
                 </span>
                 {a.rep_phone && (
                   <span className="font-mono text-[9px] text-ink-muted">
-                    {a.rep_phone}
+                    {formatPhone(a.rep_phone)}
                   </span>
                 )}
                 {a.rep_code && (
@@ -5557,7 +5558,7 @@ function ProjectTeamSection({
                         <span className="truncate text-ink">{r.name}</span>
                         {r.phone && (
                           <span className="ml-auto shrink-0 font-mono text-[9.5px] text-ink-muted">
-                            {r.phone}
+                            {formatPhone(r.phone)}
                           </span>
                         )}
                       </label>
@@ -9121,7 +9122,7 @@ function PhaseCrewEditor({
                 <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
                   <Truck size={11} />
                   {o.name}
-                  {o.phone ? ` · ${o.phone}` : ""}
+                  {o.phone ? ` · ${formatPhone(o.phone)}` : ""}
                   {o.plate ? ` · ${o.plate}` : ""}
                   {!readOnly && (
                     <button
@@ -9629,7 +9630,7 @@ function CrewInfoCard({ member }: { member: CrewMember }) {
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
         <InfoBit
           label="Phone"
-          value={member.phone}
+          value={formatPhone(member.phone)}
           href={member.phone ? `tel:${member.phone}` : undefined}
         />
       </div>
@@ -10882,7 +10883,7 @@ function ProjectSalesEntriesSection({
                           <div className="font-semibold text-ink">{e.customer_name}</div>
                           {e.customer_phone && (
                             <div className="font-mono text-[9.5px] text-ink-muted">
-                              {e.customer_phone}
+                              {formatPhone(e.customer_phone)}
                             </div>
                           )}
                         </>

@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { fmtCenti, lineIdentity } from "@2990s/shared";
+import { formatPhone } from "@2990s/shared/phone";
 import {
   Plus,
   ChevronDown,
@@ -376,7 +377,7 @@ function DetailDrawer({
                   </div>
                 </div>
                 <RowKV k="Contact" v={row.supplier?.contact_person || "—"} />
-                <RowKV k="Phone" v={row.supplier?.phone || "—"} />
+                <RowKV k="Phone" v={formatPhone(row.supplier?.phone) || "—"} />
                 <RowKV k="Email" v={row.supplier?.email || "—"} />
               </div>
 

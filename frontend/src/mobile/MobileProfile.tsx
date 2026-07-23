@@ -13,6 +13,7 @@ function appFooterLabel(): string {
     : `${shortCompanyName(getBrandingCache().companyName)} ERP`;
 }
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { formatPhone } from "../vendor/shared/phone";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 // useSystemNoticeUnread was renamed useAnnouncementUnread on main; the body
@@ -552,7 +553,7 @@ function PersonalScreen({ onBack, myRow }: { onBack: () => void; myRow: MemberRo
 
           <div style={sectionLabel}>Contact</div>
           <div style={{ ...pgrid2, marginBottom: 16 }}>
-            <KV label="Phone" value={phone || "Not on file"} mono={!!phone} span />
+            <KV label="Phone" value={formatPhone(phone) || "Not on file"} mono={!!phone} span />
             <KV label="Email" value={email} span />
             {alias && <KV label="Mail alias" value={alias} span />}
           </div>
