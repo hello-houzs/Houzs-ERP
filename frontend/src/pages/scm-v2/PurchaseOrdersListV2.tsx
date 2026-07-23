@@ -945,6 +945,7 @@ export function PurchaseOrdersListV2() {
         <div className="hidden md:block">
           <PageHeader
             eyebrow="Procurement"
+            eyebrowMeta={`${total.toLocaleString("en-MY")} orders`}
             title="Purchase Orders"
             description="Every PO raised to a supplier — Draft through Received. Click any row for the quick view; open the full page to edit or receive."
             primaryAction={

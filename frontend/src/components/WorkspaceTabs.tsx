@@ -13,20 +13,21 @@ import {
 } from "../lib/workspaceTabs";
 
 /**
- * Desktop-only workspace tab strip (owner ask 2026-07-23: run Sales Orders and
- * Service Cases side by side INSIDE one window). Sits sticky directly under
- * TopNavbar. Tabs behave like browser tabs: in-content navigation (hub cards,
- * table rows, back buttons) re-points the ACTIVE tab, and only a sidebar click
- * spawns/activates another tab (see lib/workspaceTabs.ts). ✕ or middle-click
- * closes.
+ * Workspace tab strip — rendered INLINE on the left of TopNavbar's single
+ * 52px bar (top-chrome redesign 2b, owner handoff 2026-07-23: one row, no
+ * second bar). Active tab = primary-ink text + a 2.5px petrol underline on
+ * the bar's bottom edge; ✕ closes (hover-revealed on background tabs,
+ * always visible on the active one); middle-click closes.
  *
- * Tabs are react-router <Link>s, not buttons, so Ctrl/Cmd+click falls through
- * to the browser and opens a REAL new window — which then keeps its own
- * per-window company and its own strip (lib/activeCompany.ts).
+ * Behaviour is unchanged from the shipped browser model
+ * (lib/workspaceTabs.ts): in-content navigation re-points the ACTIVE tab,
+ * only a sidebar click spawns/activates, and Ctrl/Cmd+click falls through
+ * to a real browser window — which then keeps its own per-window company
+ * and its own strip (lib/activeCompany.ts).
  *
- * Height is h-9: PageHeader, DetailLayout and the two SCM V2 sticky bars park
- * at lg:top-[5.25rem] (navbar h-12 + this strip) — change one, change all.
- * Hidden below lg like TopNavbar; the mobile chrome is untouched.
+ * This component still owns the recordWorkspaceVisit effect — TopNavbar is
+ * mounted (CSS-hidden) below lg, so recording keeps working at every width
+ * exactly as it did when the strip was its own bar.
  */
 export function WorkspaceTabs() {
   const location = useLocation();
@@ -52,7 +53,7 @@ export function WorkspaceTabs() {
     <div
       role="tablist"
       aria-label="Open pages"
-      className="thin-scroll sticky top-12 z-30 hidden h-9 items-end gap-1 overflow-x-auto overflow-y-hidden border-b border-border bg-surface/95 px-3 backdrop-blur-sm lg:flex"
+      className="thin-scroll flex h-full min-w-0 flex-1 items-stretch gap-0.5 overflow-x-auto overflow-y-hidden"
     >
       {tabs.map((tab) => {
         const isActive = tab.id === activeId;
@@ -61,12 +62,8 @@ export function WorkspaceTabs() {
           <div
             key={tab.id}
             className={cn(
-              // -mb-px drops the active tab over the strip's bottom border so
-              // it visually connects to the page below (bg-bg on bg-bg).
-              "group -mb-px flex shrink-0 items-center rounded-t-md border border-b-0 transition-colors",
-              isActive
-                ? "border-border bg-bg"
-                : "border-transparent hover:bg-bg/50",
+              "group relative flex shrink-0 items-center transition-colors",
+              isActive ? "text-primary-ink" : "text-ink-secondary hover:text-ink",
             )}
           >
             <Link
@@ -92,10 +89,8 @@ export function WorkspaceTabs() {
                 }
               }}
               className={cn(
-                "max-w-[13rem] truncate py-1.5 pl-3 pr-1 text-[11.5px] leading-none",
-                isActive
-                  ? "font-semibold text-primary"
-                  : "font-medium text-ink-secondary hover:text-ink",
+                "flex max-w-[13rem] items-center self-center truncate py-2 pl-[15px] pr-0.5 text-[13px] leading-none",
+                isActive ? "font-semibold" : "font-medium",
               )}
             >
               {label}
@@ -107,14 +102,17 @@ export function WorkspaceTabs() {
               title="Close tab"
               aria-label={`Close ${label}`}
               className={cn(
-                "mr-1 rounded p-0.5 transition-colors hover:bg-border/60 hover:text-ink",
-                isActive
-                  ? "text-ink-muted"
-                  : "text-transparent group-hover:text-ink-muted",
+                "mr-1.5 flex h-[18px] w-[18px] items-center justify-center self-center rounded-[5px] transition-colors hover:bg-surface-2 hover:text-ink-secondary",
+                isActive ? "text-ink-muted" : "text-transparent group-hover:text-ink-muted",
               )}
             >
               <X size={11} strokeWidth={2.5} />
             </button>
+            {/* 2b active affordance: 2.5px petrol underline on the bar's
+                bottom edge, inset 11px each side per the mock. */}
+            {isActive && (
+              <span className="absolute inset-x-[11px] bottom-0 h-[2.5px] rounded-[2px] bg-primary" />
+            )}
           </div>
         );
       })}
