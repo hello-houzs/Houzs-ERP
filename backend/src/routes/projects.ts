@@ -3819,7 +3819,18 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
   /* Owner 2026-07-21: helpers/storekeepers are crew-scoped — their calendar
      shows only events they're crewed on, so they drop out of the unscoped
      see-all lane and get a crew-assignment arm instead. */
-  const crewScoped = isCrewScopedUser(user);
+  /* Owner 2026-07-23: DRIVERS join the crew lane ON THE CALENDAR — "sales,
+     driver and helper only can see event that assigned to them". This
+     reverses the 2026-07-21 "drivers stay see-all" carve-out for this route
+     only; the projects LIST keeps its own lanes. Same no-write guard as
+     isCrewScopedUser so an admin holding the Driver position isn't caged. */
+  const isScopedDriver =
+    !!user &&
+    !isAdmin &&
+    !hasPermission(granted, "projects.write") &&
+    ((user.position_name ?? "").trim().toLowerCase() === "driver" ||
+      /^drivers?$/i.test(((user as { role_name?: string | null }).role_name ?? "").trim()));
+  const crewScoped = isCrewScopedUser(user) || isScopedDriver;
   const seeAll =
     !!user &&
     !crewScoped &&
@@ -3870,21 +3881,14 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
     }
   }
   // Non-admin with no resolvable arms (no session id) → fail closed.
-  /* Owner 2026-07-22 — pending + cancelled fairs are company-wide calendar
-     signal: a tentative booking or a freed slot exists BEFORE anyone is
-     assigned to it, so the assignment arms can never match those rows and
-     scoped staff (sales reps, crew-scoped helpers/storekeepers) reported
-     them missing from their calendars. Event BARS therefore gate the
-     assignment scope on status — confirmed fairs stay assignment-scoped
-     (the 2026-07-05/06/21 rules, unchanged) while pending + cancelled
-     fairs show to every calendar viewer. TASKS keep the strict scope:
-     work items on someone else's fair are noise, not planning signal. */
-  const projectScopeWhere = seeAll
-    ? ""
-    : assignArms.length
-      ? ` AND (p.status IN ('pending','cancelled') OR (${assignArms.join(" OR ")}))`
-      : ` AND 1 = 0`;
-  const taskScopeWhere = seeAll
+  /* Owner 2026-07-23 — scoped staff (sales reps, drivers, helpers,
+     storekeepers) see ONLY events assigned to them, whatever the status.
+     This REVERSES the short-lived 2026-07-22 carve-out that showed every
+     pending/cancelled fair to every viewer — the owner clarified the
+     original ask meant the opposite: those rows must NOT appear for scoped
+     staff unless the event is theirs. Assigned pending/cancelled events
+     still show (the arms don't filter on status). */
+  const scopeWhere = seeAll
     ? ""
     : assignArms.length
       ? ` AND (${assignArms.join(" OR ")})`
@@ -3918,7 +3922,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
       WHERE p.archived_at IS NULL
         AND p.start_date IS NOT NULL
         AND substr(p.start_date, 1, 10) <= substr(?, 1, 10)
-        AND substr(COALESCE(p.end_date, p.start_date), 1, 10) >= substr(?, 1, 10)${projectScopeWhere}${coSql}`
+        AND substr(COALESCE(p.end_date, p.start_date), 1, 10) >= substr(?, 1, 10)${scopeWhere}${coSql}`
   )
     .bind(to, from, ...scopeBinds)
     .all();
@@ -3937,7 +3941,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
         AND c.status != 'done'
         AND c.status != 'na'
         AND c.due_date IS NOT NULL
-        AND substr(c.due_date, 1, 10) BETWEEN substr(?, 1, 10) AND substr(?, 1, 10)${taskScopeWhere}${coSql}
+        AND substr(c.due_date, 1, 10) BETWEEN substr(?, 1, 10) AND substr(?, 1, 10)${scopeWhere}${coSql}
       ORDER BY c.due_date, p.brand, c.id`
   )
     // The MY date is the FIRST bind — the is_overdue placeholder sits in the
