@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { GripVertical, ChevronUp, ChevronDown, Plus, Pencil, Trash2, ShieldCheck, Eye, EyeOff, Upload, Image as ImageIcon } from "lucide-react";
 import { useReorderable } from "../hooks/useReorderable";
 import { PageHeader } from "../components/Layout";
@@ -12,6 +12,11 @@ import { Skeleton } from "../components/Skeleton";
 import { api } from "../api/client";
 import { cn } from "../lib/utils";
 import { clearBrandLogoCache } from "../lib/branding";
+import {
+  useLocalities,
+  distinctCountries,
+  countryForState,
+} from "../vendor/scm/lib/localities-queries";
 
 // ── Projects tab ─────────────────────────────────────────────
 // Lookup management for the project module: organizers, venues, and
@@ -28,6 +33,9 @@ interface VenueRow {
   id: number;
   name: string;
   state: string | null;
+  /* Mig 0178 — optional so pre-mig responses still parse. */
+  country?: string | null;
+  postcode?: string | null;
   notes: string | null;
   active: number;
 }
@@ -333,8 +341,25 @@ function VenueManager() {
   const q = useQuery<{ data: VenueRow[] }>("/api/projects/venues", () => api.get("/api/projects/venues"));
   const [name, setName] = useState("");
   const [stateField, setStateField] = useState("");
+  /* Mig 0178 — Country + Postcode on venue. Country back-derives from state
+     via scm.my_localities when the operator picks State first (owner:
+     "只需要填写 State 就会自动带出国家"). Postcode optional per owner. */
+  const [countryField, setCountryField] = useState("");
+  const [postcodeField, setPostcodeField] = useState("");
   const [adding, setAdding] = useState(false);
   const [expanded, setExpanded] = useState(false);
+
+  /* Country back-derive helper — when the operator picks a state, auto-fill
+     the country if it was blank/different. Uses the seeded my_localities
+     dataset; unknown states leave country untouched. */
+  const localities = useLocalities();
+  const localityRows = localities.data ?? [];
+  const knownCountries = useMemo(() => distinctCountries(localityRows), [localityRows]);
+  const pickState = (next: string) => {
+    setStateField(next);
+    const derived = countryForState(localityRows, next);
+    if (derived && derived !== countryField) setCountryField(derived);
+  };
 
   async function add() {
     const trimmed = name.trim();
@@ -344,9 +369,13 @@ function VenueManager() {
       await api.post("/api/projects/venues", {
         name: trimmed,
         state: stateField.trim() || null,
+        country: countryField.trim() || null,
+        postcode: postcodeField.trim() || null,
       });
       setName("");
       setStateField("");
+      setCountryField("");
+      setPostcodeField("");
       q.reload();
       toast.success(`Added ${trimmed}`);
     } catch (e: any) {
@@ -391,7 +420,7 @@ function VenueManager() {
       count={q.data?.data?.length}
       description="Picker values for the project Venue field. Optionally tag each venue with a state — picking it on a new project will pre-fill the state."
     >
-      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_180px_auto]">
+      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_140px_140px_110px_auto]">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -401,7 +430,7 @@ function VenueManager() {
         />
         <select
           value={stateField}
-          onChange={(e) => setStateField(e.target.value)}
+          onChange={(e) => pickState(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
           className="h-9 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
         >
@@ -412,6 +441,29 @@ function VenueManager() {
             </option>
           ))}
         </select>
+        {/* Country auto-fills when State is picked; can be overridden manually. */}
+        <select
+          value={countryField}
+          onChange={(e) => setCountryField(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+          className="h-9 rounded-md border border-border bg-surface px-2 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+        >
+          <option value="">— country —</option>
+          {countryField && !knownCountries.includes(countryField) && (
+            <option value={countryField}>{countryField} (legacy)</option>
+          )}
+          {knownCountries.map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
+        <input
+          value={postcodeField}
+          onChange={(e) => setPostcodeField(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+          inputMode="numeric"
+          placeholder="postcode"
+          className="h-9 rounded-md border border-border bg-surface px-3 text-[12.5px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+        />
         <Button variant="primary" onClick={add} disabled={adding || !name.trim()}>
           Add
         </Button>
