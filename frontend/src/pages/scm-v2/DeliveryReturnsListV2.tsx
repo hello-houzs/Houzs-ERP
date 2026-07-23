@@ -900,6 +900,16 @@ export function DeliveryReturnsListV2() {
         notes: ((h.note as string | null) ?? (h.notes as string | null)) ?? null,
         delivery_order_id: (h.delivery_order_id as string | null) ?? null,
         sales_invoice_id: null,
+        /* Feed the DO-clone address block (migration 0102) into the unified
+           BILL TO block so batch-printed DRs carry the customer address, not
+           just the single-detail print path. Same fields as the detail page. */
+        address1: (h.address1 as string | null) ?? null,
+        address2: (h.address2 as string | null) ?? null,
+        city: (h.city as string | null) ?? null,
+        state: (h.customer_state as string | null) ?? (h.state as string | null) ?? null,
+        postcode: (h.postcode as string | null) ?? null,
+        phone: (h.phone as string | null) ?? null,
+        email: (h.email as string | null) ?? null,
       },
       items,
     };

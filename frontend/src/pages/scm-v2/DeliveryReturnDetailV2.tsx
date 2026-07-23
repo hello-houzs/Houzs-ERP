@@ -556,6 +556,17 @@ export function DeliveryReturnDetailV2() {
             notes: deliveryReturn.note ?? deliveryReturn.notes,
             delivery_order_id: deliveryReturn.delivery_order_id,
             sales_invoice_id: null,
+            /* Feed the DO-clone address block (migration 0102) into the PDF's
+               unified BILL TO — the fields have always been on the DR record
+               but the printout ignored them, so a DR left the building with
+               no customer address on it (owner UI audit Item #9). */
+            address1: deliveryReturn.address1,
+            address2: deliveryReturn.address2,
+            city: deliveryReturn.city,
+            state: deliveryReturn.customer_state,
+            postcode: deliveryReturn.postcode,
+            phone: deliveryReturn.phone,
+            email: deliveryReturn.email,
           },
           items.map((it) => ({
             item_code: it.item_code,

@@ -10,7 +10,9 @@ import {
   orderSofaModuleRowsWithinBuilds,
   sortSoLinesByGroupRank,
 } from '@2990s/shared/so-line-display';
+import { formatPhone } from '@2990s/shared/phone';
 import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
+import { supplierBlock } from './pdf-party-blocks';
 import { loadSupplierDocData, supplierCodeFor, specsLine } from './supplier-doc-data';
 
 type GrnHeader = {
@@ -63,16 +65,34 @@ export async function renderGrnInto(
     ],
   });
 
+  /* Load supplier master + dual-code lookups BEFORE the info block so the
+     canonical SUPPLIER block can include address / tel / attn / terms — the
+     GRN's own header carries only { code, name } (endpoint economy), the
+     top-up comes from GET /suppliers/:id. loadSupplierDocData is a single
+     parallel round; moving it forward doesn't add a request. */
+  const { skuMap, fabricMap, supplier: sFull } = await loadSupplierDocData(header.supplier_id, items);
+  const supplierAddressLines = [
+    sFull?.address,
+    sFull?.area,
+    [sFull?.postcode, sFull?.state].filter(Boolean).join(' ').trim() || null,
+    sFull?.country,
+  ].filter(Boolean) as string[];
+
   const statusText = header.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
   y = drawInfoColumns(doc, y,
-    {
-      title: 'SUPPLIER',
-      rows: [
-        ['Company', header.supplier?.name ?? null],
-        ['Code', header.supplier?.code ?? null],
-        ['Note', header.notes],
-      ],
-    },
+    /* Canonical supplier block via the shared helper — matches PO / PI / PR
+       so the four purchasing docs read the same rows in the same order. */
+    supplierBlock({
+      name: header.supplier?.name ?? sFull?.name,
+      code: header.supplier?.code ?? sFull?.code,
+      address: supplierAddressLines.join(', '),
+      phone: formatPhone(sFull?.phone ?? sFull?.mobile ?? '') || (sFull?.phone ?? sFull?.mobile),
+      fax: sFull?.fax,
+      email: sFull?.email,
+      attention: sFull?.attention ?? sFull?.contact_person,
+      paymentTerms: sFull?.payment_terms,
+      note: header.notes,
+    }),
     {
       title: 'GRN DETAILS',
       rows: [
@@ -86,13 +106,12 @@ export async function renderGrnInto(
     },
   );
 
-  // Codes note + dual-code lookups (snapshotted grn_items.supplier_sku first,
-  // live binding fallback; fabric specs mapped via fabric_trackings).
+  // Codes note (dual-code lookups already loaded above with the supplier
+  // top-up, so the block prints with a full supplier profile in one round).
   doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(80);
   doc.text('Codes shown are SUPPLIER codes; our reference in second column.', margin, y);
   doc.setFont('helvetica', 'normal'); doc.setTextColor(0);
   y += 4;
-  const { skuMap, fabricMap } = await loadSupplierDocData(header.supplier_id, items);
 
   /* Canonical SKU/build order (sofa modules LHF→NA→RHF, mains→accessories→
      services) — mirror the sales side. The shared helper keys on `item_code`;
