@@ -39,7 +39,7 @@ import { paginateAll } from '../lib/paginate-all';
 import {
   activeCompanyId,
   stampCompany,
-  scopeToAllowedCompanies,
+  scopeToCompany,
   requireActiveCompanyId,
   scopeToCompanyId,
   NOT_THIS_COMPANY,
@@ -68,17 +68,23 @@ function regionOut(r: RegionRow) {
   };
 }
 
-// ── GET / — list all region buckets (active + inactive), sorted for the tab row.
+// ── GET / — list region buckets for the ACTIVE company (owner audit 2026-07-23).
+//   Was `scopeToAllowedCompanies` (CROSS-COMPANY view) — that was correct
+//   pre-mig-0176 when regions were shared config. Post-mig-0176 each company
+//   holds its own set of regions (HOUZS: KL/NORTHERN/… + 2990: KL/NORTHERN/…),
+//   so the cross-company read returned each code TWICE and the maintenance
+//   dropdown showed duplicate entries. Picking a duplicate then failed the
+//   PATCH /states/:stateKey save because the region_id belonged to the
+//   NON-active company. Owner-flagged 2026-07-23 with a screenshot.
 deliveryPlanningRegions.get('/', async (c) => {
   const sb = c.get('supabase');
   const { data, error } = await paginateAll<RegionRow>((from, to) => {
-    // CROSS-COMPANY view: widen to every allowed company (one shared config).
     let q = sb.from('delivery_planning_regions')
       .select(REGION_COLS)
       .order('sort_order', { ascending: true })
       .order('code', { ascending: true })
       .range(from, to);
-    q = scopeToAllowedCompanies(q, c);
+    q = scopeToCompany(q, c);
     return q;
   });
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
@@ -200,11 +206,13 @@ type StateRegionRow = {
   region_id?: string | null; regionId?: string | null;
 };
 
-/* Build code-by-id + id-by-code maps from the region master (one read). */
+/* Build code-by-id + id-by-code maps from the ACTIVE company's region master.
+   Same fix as GET / above (owner audit 2026-07-23): mig 0176 made regions
+   per-company so cross-company read returned duplicate codes. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function loadRegionMaps(sb: any, c: any) {
   const { data, error } = await paginateAll<RegionRow>((from, to) =>
-    scopeToAllowedCompanies(
+    scopeToCompany(
       sb.from('delivery_planning_regions').select('id, code, name, active'),
       c,
     ).range(from, to),
@@ -226,7 +234,7 @@ deliveryPlanningRegions.get('/states', async (c) => {
   if (rErr) return c.json({ error: 'fetch_failed', reason: rErr.message }, 500);
 
   const { data, error } = await paginateAll<StateRegionRow>((from, to) =>
-    scopeToAllowedCompanies(
+    scopeToCompany(
       sb.from('state_delivery_regions').select('state_key, country, region_id'),
       c,
     ).range(from, to),
@@ -262,7 +270,7 @@ deliveryPlanningRegions.get('/states/:stateKey', async (c) => {
   if (rErr) return c.json({ error: 'fetch_failed', reason: rErr.message }, 500);
 
   const { data, error } = await paginateAll<StateRegionRow>((from, to) =>
-    scopeToAllowedCompanies(
+    scopeToCompany(
       sb.from('state_delivery_regions').select('state_key, country, region_id'),
       c,
     ).eq('state_key', stateKey).eq('country', country).range(from, to),
@@ -289,9 +297,8 @@ const putStateSchema = z.object({
 //    unscoped, so a caller in company A could wipe company B's mapping for a
 //    given state_key + country. Now the DELETE is pinned to this company's
 //    rows only, and the code→id resolution is drawn from THIS company's
-//    region masters (loadRegionMaps is now scopeToAllowedCompanies-widened,
-//    but we further tighten: the caller's write can only reference regions
-//    they can see under scope).
+//    region masters (loadRegionMaps is scoped to the active company, so the
+//    caller's write can only reference regions in their own company).
 deliveryPlanningRegions.put('/states/:stateKey', async (c) => {
   const stateKey = c.req.param('stateKey');
   if (!stateKey) return c.json({ error: 'state_required' }, 400);
