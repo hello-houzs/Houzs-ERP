@@ -755,7 +755,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <!-- items -->
     <div class="bar">Items</div>
     <div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;">
-      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">CTN</span><span class="th">REMARK (IF ANY)</span>
+      <span class="th">NO</span><span class="th">ITEM</span><span class="th">SET</span><span class="th">CTN</span><span class="th">REMARK (IF ANY)</span>
     </div>
     ${officeItems.join("")}
 
@@ -850,7 +850,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <!-- items -->
     <div class="bar">Items</div>
     <div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;">
-      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">CTN</span><span class="th">REMARK (IF ANY)</span>
+      <span class="th">NO</span><span class="th">ITEM</span><span class="th">SET</span><span class="th">CTN</span><span class="th">REMARK (IF ANY)</span>
     </div>
     ${supItems.join("") || `<div class="itable" style="grid-template-columns: 10mm 1fr 12mm 12mm 1.4fr;"><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span></div>`}
 
