@@ -5,6 +5,7 @@ import {
   closeWorkspaceTab,
   getWorkspaceTabsSnapshot,
   markWorkspaceOpenIntent,
+  moveWorkspaceTab,
   recordWorkspaceVisit,
   resetWorkspaceTabsForTests,
   sectionKeyFor,
@@ -201,6 +202,49 @@ describe("browser-model navigation", () => {
     // Next spawn must mint an id ABOVE the surviving t5, not recycle t2.
     openVia("/assr", "");
     expect(getWorkspaceTabsSnapshot().tabs.map((t) => t.id)).toEqual(["t5", "t6"]);
+  });
+});
+
+describe("moveWorkspaceTab", () => {
+  let ids: string[];
+  beforeEach(() => {
+    bindBrowserStorageIdentity(1);
+    openVia("/", "");
+    openVia("/scm/sales-orders", "");
+    openVia("/assr", "");
+    ids = getWorkspaceTabsSnapshot().tabs.map((t) => t.id); // [/, SO, assr]
+  });
+
+  it("reorders without touching hrefs or the active pointer", () => {
+    moveWorkspaceTab(ids[0], 2); // Overview to the end
+    expect(hrefs()).toEqual(["/scm/sales-orders", "/assr", "/"]);
+    expect(activeHref()).toBe("/assr"); // assr was active and stays active
+    moveWorkspaceTab(ids[2], 0); // assr (active) to the front — still active
+    expect(hrefs()).toEqual(["/assr", "/scm/sales-orders", "/"]);
+    expect(activeHref()).toBe("/assr");
+  });
+
+  it("clamps out-of-range targets and no-ops same-position / unknown ids", () => {
+    moveWorkspaceTab(ids[0], 99);
+    expect(hrefs()).toEqual(["/scm/sales-orders", "/assr", "/"]);
+    moveWorkspaceTab(ids[0], -5);
+    expect(hrefs()).toEqual(["/", "/scm/sales-orders", "/assr"]);
+    const before = getWorkspaceTabsSnapshot().tabs;
+    moveWorkspaceTab(ids[1], 1); // already at 1
+    moveWorkspaceTab("t999", 0); // unknown
+    expect(getWorkspaceTabsSnapshot().tabs).toBe(before); // same reference — no emit
+  });
+
+  it("the new order survives a reload and drives close-neighbour semantics", () => {
+    moveWorkspaceTab(ids[2], 0); // assr first: [assr, /, SO]
+    resetWorkspaceTabsForTests();
+    bindBrowserStorageIdentity(1);
+    expect(hrefs()).toEqual(["/assr", "/", "/scm/sales-orders"]);
+    // assr is still active; closing it now lands on its NEW right neighbour
+    // (it sits first), which is Overview — the reordered layout, not the
+    // creation order.
+    const { navigateTo } = closeWorkspaceTab(ids[2]);
+    expect(navigateTo).toBe("/");
   });
 });
 

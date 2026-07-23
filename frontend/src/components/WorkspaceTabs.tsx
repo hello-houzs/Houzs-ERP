@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { X } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -6,6 +6,7 @@ import {
   activateWorkspaceTab,
   closeWorkspaceTab,
   getWorkspaceTabsSnapshot,
+  moveWorkspaceTab,
   recordWorkspaceVisit,
   sectionKeyFor,
   subscribeWorkspaceTabs,
@@ -19,7 +20,16 @@ import {
  * the bar's bottom edge; ✕ closes (hover-revealed on background tabs,
  * always visible on the active one); middle-click closes.
  *
- * Behaviour is unchanged from the shipped browser model
+ * DRAG TO REORDER (owner ask 2026-07-23: "可以自主拖拽前后"): grab a tab and
+ * drag it along the strip — native HTML5 DnD (the repo idiom, see
+ * Positions.tsx), reordering LIVE as the pointer crosses each neighbour's
+ * midpoint, browser-tab style. Order persists with the strip
+ * (sessionStorage, per window) and close-neighbour semantics follow the new
+ * order. The inner <Link> sets draggable={false} so grabbing a tab drags
+ * the TAB, not the link URL; plain clicks are untouched (DnD only engages
+ * on an actual drag).
+ *
+ * Behaviour is otherwise unchanged from the shipped browser model
  * (lib/workspaceTabs.ts): in-content navigation re-points the ACTIVE tab,
  * only a sidebar click spawns/activates, and Ctrl/Cmd+click falls through
  * to a real browser window — which then keeps its own per-window company
@@ -37,6 +47,11 @@ export function WorkspaceTabs() {
     getWorkspaceTabsSnapshot,
     getWorkspaceTabsSnapshot,
   );
+  // Id of the tab being dragged (null = no drag). State so the dragged tab
+  // can dim; a ref mirror so dragover handlers read the CURRENT value without
+  // re-binding listeners mid-drag.
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const draggingRef = useRef<string | null>(null);
 
   // Record AFTER render (an effect, not render-time) — recordWorkspaceVisit
   // emits, and emitting during render would schedule an update mid-render.
@@ -54,16 +69,60 @@ export function WorkspaceTabs() {
       role="tablist"
       aria-label="Open pages"
       className="thin-scroll flex h-full min-w-0 flex-1 items-stretch gap-0.5 overflow-x-auto overflow-y-hidden"
+      // Dropping on the strip's empty tail (right of the last tab) must not
+      // bounce back or navigate — order was already applied live on dragover.
+      onDragOver={(e) => {
+        if (draggingRef.current !== null) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        if (draggingRef.current !== null) e.preventDefault();
+      }}
     >
-      {tabs.map((tab) => {
+      {tabs.map((tab, index) => {
         const isActive = tab.id === activeId;
         const label = workspaceTabLabel(sectionKeyFor(tab.href));
         return (
           <div
             key={tab.id}
+            draggable
+            onDragStart={(e) => {
+              // Firefox refuses to start a drag without data; "move" keeps
+              // the cursor honest. The tab itself is the drag image.
+              e.dataTransfer.setData("text/plain", tab.id);
+              e.dataTransfer.effectAllowed = "move";
+              draggingRef.current = tab.id;
+              setDraggingId(tab.id);
+            }}
+            onDragEnd={() => {
+              draggingRef.current = null;
+              setDraggingId(null);
+            }}
+            onDragOver={(e) => {
+              const dragged = draggingRef.current;
+              if (dragged === null) return; // foreign drag (a file, a link) — ignore
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (dragged === tab.id) return;
+              // Live reorder, browser-tab style: crossing this tab's midpoint
+              // slots the dragged tab before/after it. The insertion index is
+              // expressed post-removal (moveWorkspaceTab splices out first),
+              // hence the -1 when the dragged tab currently sits to our left.
+              // moveWorkspaceTab no-ops on same-position, so the continuous
+              // dragover stream stays cheap and the midpoint rule is stable.
+              const rect = e.currentTarget.getBoundingClientRect();
+              const after = e.clientX > rect.left + rect.width / 2;
+              const from = tabs.findIndex((t) => t.id === dragged);
+              moveWorkspaceTab(dragged, index + (after ? 1 : 0) - (from < index ? 1 : 0));
+            }}
+            onDrop={(e) => {
+              // Order was applied live during dragover; just swallow the drop
+              // so the browser doesn't navigate/open anything.
+              if (draggingRef.current !== null) e.preventDefault();
+            }}
             className={cn(
               "group relative flex shrink-0 items-center transition-colors",
               isActive ? "text-primary-ink" : "text-ink-secondary hover:text-ink",
+              draggingId === tab.id && "opacity-50",
             )}
           >
             <Link
@@ -71,6 +130,7 @@ export function WorkspaceTabs() {
               role="tab"
               aria-selected={isActive}
               data-tab-id={tab.id}
+              draggable={false}
               onClick={(e) => {
                 // Plain left click: mark the clicked tab active BEFORE the
                 // route changes, so the ensuing location effect re-points
