@@ -581,7 +581,7 @@ app.get("/cost-rates", requirePageAccess("projects.finances"), async (c) => {
             cr.updated_at
        FROM project_cost_rates cr
        JOIN project_brands pb ON pb.name = cr.brand
-      WHERE pb.active = 1
+      WHERE pb.active = 1${(() => { const id = activeCompanyId(c); return id != null ? ` AND pb.company_id = ${id}` : ""; })()}
       ORDER BY pb.sort_order ASC, pb.name ASC`,
   ).all();
   return c.json({ data: rows.results ?? [] });
@@ -966,9 +966,13 @@ app.delete("/organizers/:id", requirePermission("projects.manage"), async (c) =>
 // `projects.venue` stays valid so legacy data still renders.
 
 app.get("/venues", requirePageAccess("projects"), async (c) => {
+  // Company-scoped: project_venues carries company_id (mig 0093, all existing
+  // rows tagged HOUZS). Without this the 2990 Project Maintenance venue master
+  // + the SO venue picker listed every HOUZS exhibition venue — the same leak
+  // already fixed for the brand pool below.
   const rows = await c.env.DB.prepare(
     `SELECT id, name, state, notes, active FROM project_venues
-      WHERE active = 1 ORDER BY name`
+      WHERE active = 1${activeCompanySql(c)} ORDER BY name`
   ).all();
   type VenueOut = Record<string, unknown> & { name?: unknown; origin: 'PROJECT' | 'SHOWROOM' };
   const projectVenues: VenueOut[] = ((rows.results ?? []) as Array<Record<string, unknown>>).map((r) => ({
