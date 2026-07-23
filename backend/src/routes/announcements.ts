@@ -1280,8 +1280,11 @@ app.put(
       return c.json({ error: "forbidden key" }, 403);
     }
     const contentType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
-    if (!contentType.startsWith("image/")) {
-      return c.json({ error: "Thumbnails must be images" }, 400);
+    // Raster allow-list, not startsWith("image/") — the latter admits
+    // image/svg+xml, which is a stored-XSS vector when served back (audit M6).
+    const THUMB_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+    if (!THUMB_TYPES.has(contentType)) {
+      return c.json({ error: "Thumbnails must be JPEG, PNG, WebP, or GIF" }, 400);
     }
     const body = await c.req.arrayBuffer();
     if (body.byteLength === 0 || body.byteLength > THUMB_MAX_BYTES) {
@@ -1347,6 +1350,23 @@ app.get("/:id/attachments/:key{.+}", async (c) => {
   if (!obj) return c.json({ error: "Not found" }, 404);
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
+  // Never serve a stored blob inline with an executable content-type. Keep the
+  // known-safe raster/PDF types inline; force everything else (e.g. a legacy SVG
+  // thumbnail from before the upload allow-list) to download inertly. nosniff
+  // blocks MIME-sniffing back into html/svg either way (audit M6).
+  const INLINE_SAFE = new Set([
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "application/pdf",
+  ]);
+  const served = (headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase();
+  if (!INLINE_SAFE.has(served)) {
+    headers.set("Content-Type", "application/octet-stream");
+    headers.set("Content-Disposition", "attachment");
+  }
+  headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Cache-Control", "private, max-age=300");
   return new Response(obj.body, { headers });
 });
