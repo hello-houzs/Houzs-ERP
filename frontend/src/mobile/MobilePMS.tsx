@@ -869,7 +869,12 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // admins, purchasers…). Field staff (cohort5: sales exec/mgr, driver,
   // helper, storekeeper) keep their existing card views untouched.
   const cohortMgmt = isMgt || isBD;
-  const cohortOps = !cohort5 && !cohortMgmt && !isSalesStaff;
+  // Purchasers (Sim, Farra) get their OWN minimal view (owner 2026-07-23):
+  // Team + a three-tile S&D documents card + the floorplan card (display,
+  // 3D/2D, stock records with edit). Everything else is removed for them,
+  // so they sit outside the generic ops cohort.
+  const isPurchaserView = isPurchaser && !cohortMgmt && !cohort5;
+  const cohortOps = !cohort5 && !cohortMgmt && !isSalesStaff && !isPurchaserView;
   // Named editors (owner spec): "BD, weisiang, kingsley". Matched by stable
   // user id — names are owner-editable free text (weisiang = id 4 "Lim",
   // kingsley = id 44 "Kingsley"/Sales Director, the Agreement Approver).
@@ -933,7 +938,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // Owner 2026-07-23: the Unfilled/Filled floorplan tiles are for sales,
   // sales director, management and BD only — the ops/office cohort keeps the
   // card (display banner, 3D/2D design, stock records) without them.
-  const hidePlanTiles = cohortOps;
+  const hidePlanTiles = cohortOps || isPurchaserView;
 
   // ── Owner 2026-07-23 card respec — tile sets for the two new cohorts ──
   // Ops/office cohort: view & download only, except purchasers who keep edit
@@ -949,11 +954,13 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     { label: "Defect List", match: /^defect list/i, readOnly: true },
     { label: "Event Complete Image", match: /^event complete image/i, readOnly: true },
     { label: "Dismantle Image", match: /^dismantle image/i, readOnly: true },
-    // Purchaser-only deliverables — hidden from every other ops user.
-    ...(isPurchaser ? [
-      { label: "Exchange List", match: /^exchange list/i },
-      { label: "Stock In Transfer Record", match: /^stock in transfer/i },
-    ] : []),
+  ];
+  // Purchaser view (Sim, Farra): exactly three S&D tiles — Defect List to
+  // consult, their own two deliverables to edit.
+  const purchaserSdTiles: DocTile[] = [
+    { label: "Defect List", match: /^defect list/i, readOnly: true },
+    { label: "Exchange List", match: /^exchange list/i },
+    { label: "Stock In Transfer Record", match: /^stock in transfer/i },
   ];
   // Management cohort (mgt / sales director / BD / owner): everything view &
   // download; the BD tier (owner/BD/weisiang) edits, Kingsley additionally
@@ -961,11 +968,13 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const mgmtContractTiles: DocTile[] = [
     { label: "Agreement / Quotation", match: /^agreement/i, readOnly: !canContractEdit, fullWidth: true },
   ];
+  // Arrangement per the owner's 2026-07-23 sketch: License + Stamp Duty row,
+  // Permit full-width ("big"), then Weekend Activity + Decoration row.
   const mgmtOperationTiles: DocTile[] = [
     ...(canBdEdit ? [{ label: "License", match: /^license/i }] : []),
-    { label: "Weekend Activity", match: /^weekend/i, remarkTile: true, fullWidth: true, readOnly: !canBdEdit },
     { label: "Stamp Duty", match: /^stamp duty/i, readOnly: !canBdEdit },
-    { label: "Permit", match: /permit/i, readOnly: !canBdEdit },
+    { label: "Permit", match: /permit/i, readOnly: !canBdEdit, fullWidth: true, mediaH: 108 },
+    { label: "Weekend Activity", match: /^weekend/i, remarkTile: true, readOnly: !canBdEdit },
     { label: "Decoration", match: /^deco/i, readOnly: !canBdEdit, remarkWithFiles: true },
   ];
   const mgmtPaymentTiles: DocTile[] = [
@@ -1159,7 +1168,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 removed for the ops/office AND management cohorts too (was
                 already hidden from the field/sales cohort and the owner), so
                 no mobile cohort renders it any more. */}
-            {!cohort5 && !isOwnerAdmin && !cohortMgmt && !cohortOps && <StagePipeline stage={p.stage} sections={data.section_progress} />}
+            {!cohort5 && !isOwnerAdmin && !cohortMgmt && !cohortOps && !isPurchaserView && <StagePipeline stage={p.stage} sections={data.section_progress} />}
 
             {/* The Project info card (Venue / Organizer / Branding rows) is
                 GONE — owner 2026-07-22: the header already carries all of it
@@ -1231,7 +1240,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 mobile cohort's deliverables live in doc-tile cards. The row
                 list only renders for a user matching NO cohort (a safety
                 fallback that shouldn't occur in practice). */}
-            {!isSalesExecMgr && !(isDriverCrew || isStorekeeper) && !cohortOps && !cohortMgmt && <TasklistSectionView
+            {!isSalesExecMgr && !(isDriverCrew || isStorekeeper) && !cohortOps && !cohortMgmt && !isPurchaserView && <TasklistSectionView
               sections={data.sections}
               items={visibleChecklist}
               progress={data.section_progress}
@@ -1251,7 +1260,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
             {/* setup & dismantle (logistic). Owner 2026-07-17: Sales may VIEW it
                 (crew + dates) — the backend now sends the data for them — but
                 stays read-only, since PIC/SALES lack the PMS "EDIT" section. */}
-            {(canSetupDismantle || cohort5) && (
+            {(canSetupDismantle || cohort5) && !isPurchaserView && (
               <SetupDismantle
                 projectId={id}
                 project={p}
@@ -1310,15 +1319,28 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               />
             )}
 
+            {/* Purchaser view (owner 2026-07-23, Sim & Farra): ONLY Team +
+                these three S&D tiles + the floorplan card below. */}
+            {isPurchaserView && (
+              <SalesDocsCard
+                tiles={purchaserSdTiles}
+                title="Setup & Dismantle documents"
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+              />
+            )}
+
             {/* Owner 2026-07-23 card respec — ops/office cohort: Operation +
-                Setup & Dismantle doc cards, view & download only (purchasers
-                keep edit on Exchange List + Stock In Transfer). No Contract,
+                Setup & Dismantle doc cards, view & download only. No Contract,
                 no Payment card for this cohort. */}
             {cohortOps && (
               <>
                 <SalesDocsCard
                   tiles={opsOperationTiles}
                   title="Operation"
+                  showRoleTags={isLogistic}
                   checklist={data.checklist}
                   attachments={data.checklist_attachments}
                   canTick={canTick && !archived}
@@ -1327,6 +1349,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 <SalesDocsCard
                   tiles={opsSdTiles}
                   title="Setup & Dismantle documents"
+                  showRoleTags={isLogistic}
                   checklist={data.checklist}
                   attachments={data.checklist_attachments}
                   canTick={canTick && !archived}
@@ -1344,6 +1367,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 {canContractEdit && (
                   <SalesDocsCard
                     tiles={mgmtContractTiles}
+                    showRoleTags
                     title="Contract"
                     checklist={data.checklist}
                     attachments={data.checklist_attachments}
@@ -1353,6 +1377,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 )}
                 <SalesDocsCard
                   tiles={mgmtOperationTiles}
+                  showRoleTags
                   title="Operation"
                   checklist={data.checklist}
                   attachments={data.checklist_attachments}
@@ -1361,6 +1386,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 />
                 <SalesDocsCard
                   tiles={mgmtPaymentTiles}
+                  showRoleTags
                   title="Payment"
                   checklist={data.checklist}
                   attachments={data.checklist_attachments}
@@ -1369,6 +1395,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 />
                 <SalesDocsCard
                   tiles={mgmtSdTiles}
+                  showRoleTags
                   title="Setup & Dismantle documents"
                   checklist={data.checklist}
                   attachments={data.checklist_attachments}
@@ -1388,6 +1415,8 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               canWrite={canWrite && !archived}
               hideFilledPlan={hideFilledPlan}
               hidePlanTiles={hidePlanTiles}
+              canStockEdit={isPurchaserView && canTick && !archived}
+              confirm={confirm}
               busy={busy}
               setBusy={setBusy}
               notify={notify}
@@ -1405,7 +1434,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 non-financial salesperson (who HOLDS the log-sale action) can
                 reach it. Mirrors desktop ProjectSalesEntriesSection, gated on
                 canViewSales (NOT canFinancial). */}
-            {canViewSales && (
+            {canViewSales && !isPurchaserView && (
               <SalesPanel
                 projectId={id}
                 incomeLines={data.finance_lines}
@@ -2742,6 +2771,7 @@ function SalesDocsCard({
   checklist, attachments, canTick, busy, setBusy, notify, prompt, confirm, reload,
   tiles: tileDefs = SALES_DOC_TILES,
   title = "Setup & Dismantle documents",
+  showRoleTags = false,
 }: {
   checklist?: ChecklistItem[];
   attachments?: TaskAttachment[];
@@ -2755,6 +2785,9 @@ function SalesDocsCard({
   /** Tile set — defaults to the sales six; crew pass CREW_DOC_TILES. */
   tiles?: ReadonlyArray<DocTile>;
   title?: string;
+  /** Owner 2026-07-23: show each task's role chip (DRIVER / SALES PIC / …) on
+   *  the tile — for oversight viewers (mgt, BD, owner, SD, logistic). */
+  showRoleTags?: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const pendingRef = useRef<{ itemId: number; caption?: string } | null>(null);
@@ -2929,11 +2962,21 @@ function SalesDocsCard({
                   )}
                   <div style={{ padding: "7px 9px 4px" }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{t.label}</div>
-                    <span className="rbadge" style={{ background: hasContent ? "#e2f0e9" : "#f0f1ed", color: hasContent ? "#2f8a5b" : "#9aa093" }}>
-                      {t.remarkTile || (t.remarkWithFiles && t.files.length === 0)
-                        ? (hasContent ? "DONE" : "NONE")
-                        : (hasContent ? `${t.files.length} FILE${t.files.length === 1 ? "" : "S"}` : "NONE")}
-                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                      <span className="rbadge" style={{ background: hasContent ? "#e2f0e9" : "#f0f1ed", color: hasContent ? "#2f8a5b" : "#9aa093" }}>
+                        {t.remarkTile || (t.remarkWithFiles && t.files.length === 0)
+                          ? (hasContent ? "DONE" : "NONE")
+                          : (hasContent ? `${t.files.length} FILE${t.files.length === 1 ? "" : "S"}` : "NONE")}
+                      </span>
+                      {/* Owner 2026-07-23: oversight viewers (mgt/BD/owner/SD/
+                          logistic) see WHO owns each deliverable — the task's
+                          role chip, same colours as the old tasklist rows. */}
+                      {showRoleTags && (t.item?.role_label ?? "").trim() && (
+                        <span className="rbadge" style={{ background: `${roleColor(t.item!.role_label!)}1f`, color: roleColor(t.item!.role_label!) }}>
+                          {formatRoleLabel(t.item!.role_label!)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
                 {/* Owner 2026-07-17: the editable photo tiles list every uploaded
@@ -3022,7 +3065,7 @@ function SalesDocsCard({
 // record is uploaded via PUT /:id/stock-transfers/upload → POST
 // /:id/stock-transfers. Existing rows are listed read-only.
 function FloorPlans({
-  projectId, stockTransfers, attachments, checklist, checklistAttachments, canWrite, hideFilledPlan, hidePlanTiles, busy, setBusy, notify, reload,
+  projectId, stockTransfers, attachments, checklist, checklistAttachments, canWrite, hideFilledPlan, hidePlanTiles, canStockEdit, confirm, busy, setBusy, notify, reload,
 }: {
   projectId: number;
   stockTransfers?: StockTransfer[];
@@ -3034,6 +3077,10 @@ function FloorPlans({
   /** Owner 2026-07-23: hide the Unfilled+Filled plan tiles (ops/office cohort
    *  — floorplans are for sales/SD/mgt/BD only); 3D/2D/banner/stock stay. */
   hidePlanTiles?: boolean;
+  /** Owner 2026-07-23 purchaser view: upload/remove on the Stock Out Transfer
+   *  Record straight from this card (attaches to the checklist task). */
+  canStockEdit?: boolean;
+  confirm?: ConfirmFn;
   busy: boolean;
   setBusy: SetBusy;
   notify: NotifyFn;
@@ -3083,6 +3130,37 @@ function FloorPlans({
   const taskIdByPrefix = (prefix: RegExp): number | null =>
     (checklist ?? []).find((it) => prefix.test((it.title || "").trim()))?.id ?? null;
   const filledPlanTaskId = taskIdByPrefix(/^filled\s*floor\s*plan/i);
+  // Purchaser stock-out edit (owner 2026-07-23) — uploads land on the Stock
+  // Out Transfer Record task.
+  const stockOutUploadTaskId = taskIdByPrefix(/^stock\s*out\s*transfer/i);
+  const stockRef = useRef<HTMLInputElement | null>(null);
+  const uploadStockOut = async (file: File) => {
+    if (stockOutUploadTaskId == null) return;
+    if (file.size > 10 * 1024 * 1024) {
+      await notify({ title: "File too large", body: "Max 10MB.", tone: "error" });
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      await notify({ title: "Missing extension", body: "The file needs an extension.", tone: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/projects/checklist/${stockOutUploadTaskId}/attachments?ext=${encodeURIComponent(ext)}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      reload();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (stockRef.current) stockRef.current.value = "";
+    }
+  };
   // Stock out transfer — mirrors the "Stock Out Transfer Record" CHECKLIST task
   // attachments. (The legacy project-level stock_transfers store is unused: every
   // stock-out record is attached to the task, which is why this read empty.)
@@ -3265,9 +3343,46 @@ function FloorPlans({
                 >
                   View
                 </button>
+                {canStockEdit && (
+                  <button
+                    className="tinybtn"
+                    disabled={busy}
+                    aria-label={`Remove ${a.file_name || "record"}`}
+                    style={{ color: "#a13a34" }}
+                    onClick={async () => {
+                      if (confirm && !(await confirm({ title: `Remove ${a.file_name || "this record"}?`, confirmLabel: "Remove", danger: true }))) return;
+                      setBusy(true);
+                      try {
+                        await api.del(`/api/projects/checklist/attachments/${a.id}`);
+                        reload();
+                      } catch (e) {
+                        await notify({ title: "Remove failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+                      } finally { setBusy(false); }
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             ))}
           </div>
+        )}
+        {/* Purchaser stock-out upload (owner 2026-07-23) — attaches to the
+            Stock Out Transfer Record checklist task, same store the tasklist
+            row used, so desktop and mobile stay one file set. */}
+        {canStockEdit && stockOutUploadTaskId != null && (
+          <>
+            <button className="tinybtn" style={{ width: "100%", marginBottom: 8 }} disabled={busy} onClick={() => stockRef.current?.click()}>
+              + Upload stock out transfer record
+            </button>
+            <input
+              ref={stockRef}
+              type="file"
+              accept="image/*,.pdf"
+              style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadStockOut(f); }}
+            />
+          </>
         )}
         {planView && (
           <MediaLightbox
