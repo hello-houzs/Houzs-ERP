@@ -3377,11 +3377,9 @@ function ProjectsCalendarView() {
     true,
     booleanPreference,
   );
-  const [expandAll, setExpandAll] = useIdentityPreference(
-    "projects:cal:expandAll",
-    false,
-    booleanPreference,
-  );
+  // Owner 2026-07-23: the calendar always shows every project bar + task inline
+  // (no "+N more", no Expand-all toggle) — pc and mobile both default-expanded.
+  const expandAll = true;
   const brandsQ = useQuery<{ data: string[] }>("/api/projects/brands", () =>
     api.get("/api/projects/brands")
   );
@@ -3799,18 +3797,6 @@ function ProjectsCalendarView() {
             title="Show Malaysian federal public holidays"
           >
             {showHolidays ? <Check size={12} /> : <Circle size={12} />} MY Holidays
-          </button>
-          <button
-            onClick={() => setExpandAll(!expandAll)}
-            className={cn(
-              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider transition-colors",
-              expandAll
-                ? "border-accent/40 bg-accent-soft/40 text-accent"
-                : "border-border bg-surface text-ink-muted hover:text-ink"
-            )}
-            title="Show every project bar + task inline (no +N more)"
-          >
-            {expandAll ? <Check size={12} /> : <Circle size={12} />} Expand all
           </button>
           {(brand || section || organizer) && (
             <button

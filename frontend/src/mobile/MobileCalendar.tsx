@@ -235,7 +235,10 @@ export function MobileCalendar({
   // Defaults ON to match the desktop Projects calendar, which always overlays
   // federal holidays.
   const [showHolidays, setShowHolidays] = useState(true);
-  const [expand, setExpand] = useState(false);
+  // Owner 2026-07-23: always expand every week's bars (no cap, no "+N more");
+  // the Expand-all toggle was removed. Kept as a const so MonthGrid's prop and
+  // the (now-unreachable) overflow handler still type-check.
+  const expand = true;
   // Day-detail sheet — opened by tapping a date cell or a "+N more" overflow
   // link, mirroring the desktop CalendarDayModal. Holds the tapped day (1-31)
   // so the sheet can list that day's project/task bars + public holidays.
@@ -512,7 +515,6 @@ export function MobileCalendar({
         <div style={{ display: "flex", gap: 7, marginBottom: 10, flexWrap: "wrap" }}>
           <button onClick={() => setShowTasks((v) => !v)} className={`cal-tog${showTasks ? " on" : ""}`}>{showTasks ? "●" : "○"} Tasks</button>
           <button onClick={() => setShowHolidays((v) => !v)} className={`cal-tog${showHolidays ? " on" : ""}`}>{showHolidays ? "●" : "○"} My holidays</button>
-          <button onClick={() => setExpand((v) => !v)} className={`cal-tog${expand ? " on" : ""}`}>{expand ? "●" : "○"} Expand all</button>
         </div>
         {/* Legend */}
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 6, padding: "0 2px" }}>
@@ -541,7 +543,7 @@ export function MobileCalendar({
             uncapped, exactly as the prototype's calRender() does. No separate
             agenda list (the prototype has none). */}
         {!isLoading && !error && (
-          <MonthGrid weeks={weeks} byDay={byDay} expand={expand || mode === "week"} onExpandAll={() => setExpand(true)} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} focusProjectId={focusProjectId} todayDay={todayDay} />
+          <MonthGrid weeks={weeks} byDay={byDay} expand={expand} onExpandAll={() => {}} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} focusProjectId={focusProjectId} todayDay={todayDay} />
         )}
       </div>
 
