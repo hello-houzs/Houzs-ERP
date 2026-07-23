@@ -734,7 +734,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <div class="mgrid cols-6 rule-top">
       <div class="lc">Sales Agent</div><div class="vc">${esc(cs.sales_agent || "—")}</div>
       <div class="lc">Request Date</div><div class="vc mono">${fmtDate(cs.complained_date)}</div>
-      <div class="lc">ASSR No</div><div class="vc"><span class="chip">${esc(cs.assr_no)}</span></div>
+      <div class="lc">ASSR No</div><div class="vc mono" style="white-space: nowrap;">${esc(cs.assr_no)}</div>
       <div class="lc">Category</div><div class="vc">${cs.service_category || cs.issue_category ? `<span class="pill-cat">${esc(cs.service_category || cs.issue_category)}</span>` : `<span class="dim">—</span>`}</div>
       <div class="lc">Delivery Return</div><div class="vc dim">No · NA</div>
       <div class="lc">Purchase Return</div><div class="vc dim">No · NA</div>
@@ -817,7 +817,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <!-- meta grid -->
     <div class="mgrid cols-8 rule-top">
       <div class="lc">Request Date</div><div class="vc mono">${fmtDate(cs.complained_date)}</div>
-      <div class="lc">ASSR No</div><div class="vc"><span class="chip">${esc(cs.assr_no)}</span></div>
+      <div class="lc">ASSR No</div><div class="vc mono" style="white-space: nowrap;">${esc(cs.assr_no)}</div>
       <div class="lc">Reference</div><div class="vc mono">${esc(cs.ref_no || "—")}</div>
       <div class="lc">Category</div><div class="vc">${cs.service_category || cs.issue_category ? `<span class="pill-cat">${esc(cs.service_category || cs.issue_category)}</span>` : `<span class="dim">—</span>`}</div>
     </div>
