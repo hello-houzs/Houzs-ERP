@@ -373,38 +373,37 @@ function CaseList({
   // Role-aware chip row (owner 2026-07-23: "不同user show不同的chips") —
   // three cuts derived from the SAME capability signals that gate the list
   // (canViewCases below), so visibility and chip set can't drift apart:
-  //   · ops/service (service_cases.read) work the queue → work-state chips
-  //     plus the SLA risk / Urgent auxiliaries;
+  //   · ops/service (service_cases.read) get the desktop-equivalent FULL
+  //     stage cut (owner: "operation 的话…跟 desktop 一样有 full staging 的")
+  //     — one chip per pipeline stage, plus All and Archived;
   //   · sales (org.sales.staff) follow their own cases → Mine/Open/Completed,
   //     no queue noise;
   //   · directors/others get the overview cut with Archived.
-  // Chips with `params` filter SERVER-SIDE (cross-page correct): mine →
-  // assigned_to (matches assigned_to OR assigned_to_2, like isMine); open →
-  // exclude_stage=completed; completed → stage=completed; archived →
-  // archived_only=1, a separate list rather than archived rows interleaved
-  // with live work (desktop #1023 parity — its match is a no-op because the
-  // server already returns only archived rows). risk / urgent have no
-  // endpoint param, so they stay CLIENT-SIDE over the rows loaded so far;
-  // infinite scroll keeps pulling pages as the (shorter) filtered list
-  // leaves the sentinel in view, so matches accumulate as the operator
-  // scrolls rather than being hard-capped.
+  // Every chip filters SERVER-SIDE (cross-page correct): stage chips →
+  // stage=<key>; open → exclude_stage=completed; completed → stage=completed;
+  // mine → assigned_to (matches assigned_to OR assigned_to_2, like isMine);
+  // archived → archived_only=1, a separate list rather than archived rows
+  // interleaved with live work (desktop #1023 parity — its match is a no-op
+  // because the server already returns only archived rows).
   type ChipDef = { key: string; label: string; match: (r: Any) => boolean; params?: Record<string, string> };
   const CHIP_DEFS: Record<string, ChipDef> = {
     all: { key: "all", label: "All", match: () => true },
     open: { key: "open", label: "Open", match: (r) => stageOf(r) !== "completed", params: { exclude_stage: "completed" } },
     completed: { key: "completed", label: "Completed", match: (r) => stageOf(r) === "completed", params: { stage: "completed" } },
     mine: { key: "mine", label: "Mine", match: isMine, params: { ...(user?.id ? { assigned_to: String(user.id) } : {}) } },
-    risk: { key: "risk", label: "SLA risk", match: (r) => ["breach", "risk"].includes(slaStateOf(r).tone) },
-    urgent: { key: "urgent", label: "Urgent", match: (r) => priorityOf(r) === "urgent" },
     archived: { key: "archived", label: "Archived", match: () => true, params: { archived_only: "1" } },
   };
-  const CHIPS: ChipDef[] = (
-    can("service_cases.read")
-      ? ["all", "open", "mine", "risk", "urgent", "archived"]
-      : capability(user, "org.sales.staff")
-        ? ["all", "mine", "open", "completed"]
-        : ["all", "open", "completed", "archived"]
-  ).map((k) => CHIP_DEFS[k]);
+  const stageChips: ChipDef[] = STAGES.map((s) => ({
+    key: `stage:${s.key}`,
+    label: s.label,
+    match: (r) => stageOf(r) === s.key,
+    params: { stage: s.key },
+  }));
+  const CHIPS: ChipDef[] = can("service_cases.read")
+    ? [CHIP_DEFS.all, ...stageChips, CHIP_DEFS.archived]
+    : capability(user, "org.sales.staff")
+      ? [CHIP_DEFS.all, CHIP_DEFS.mine, CHIP_DEFS.open, CHIP_DEFS.completed]
+      : [CHIP_DEFS.all, CHIP_DEFS.open, CHIP_DEFS.completed, CHIP_DEFS.archived];
 
   /* Server-side search + sort + Mine + infinite scroll. `search` covers
      case no / SO doc / Ref / customer server-side (cross-page); the sort
@@ -528,10 +527,12 @@ function CaseList({
         <div className="hz-scroll" style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 11, paddingBottom: 2 }}>
           {CHIPS.map((c) => {
             const on = chip === c.key;
-            // Archived is a different SERVER dataset, so a loaded-rows count
-            // is meaningless while inactive (the active list holds no archived
-            // rows) — badge only when selected, showing the server total.
-            const badge = c.key === "archived" ? (on ? totalCount : null) : counts[c.key] ?? 0;
+            // Active chip → the envelope total (true cross-page count for the
+            // server-filtered list). Inactive → loaded-rows estimate, except
+            // All and Archived: All's "estimate" would just echo whatever list
+            // is currently loaded, and Archived's rows aren't in the active
+            // dataset at all — both hide their badge until selected.
+            const badge = on ? totalCount : c.key === "archived" || c.key === "all" ? null : counts[c.key] ?? 0;
             return (
               <button
                 key={c.key}
@@ -561,13 +562,11 @@ function CaseList({
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load service cases. Pull to retry.</div>}
         {!isLoading && !error && (
           <>
-            {/* Count note — server total for All/Mine (cross-page); for the
-                client-side risk/urgent chips it can only reflect loaded rows. */}
+            {/* Count note — every chip filters server-side now, so the
+                envelope total is the true cross-page count for all of them. */}
             {!searchTransition.resultsAreStale && (
               <div style={{ fontSize: 11, color: MUTED, margin: "0 2px 10px" }}>
-                {chip === "urgent" || chip === "risk"
-                  ? `${visibleRows.length} shown (loaded)`
-                  : `${totalCount} case${totalCount === 1 ? "" : "s"}`}
+                {`${totalCount} case${totalCount === 1 ? "" : "s"}`}
               </div>
             )}
             {visibleRows.length > 0 && (
@@ -669,11 +668,7 @@ function CaseList({
               />
             )}
             {/* Infinite-scroll sentinel — watched by the IntersectionObserver;
-                enters view (+600px) near the end and pulls the next page. Keyed
-                off hasNextPage alone (not rows.length): the client-side
-                risk/urgent chips can filter the loaded rows to zero while more
-                pages remain, and we still want those pages pulled so matches on
-                later pages surface. */}
+                enters view (+600px) near the end and pulls the next page. */}
             {!searchTransition.isSearching && hasNextPage && (
               <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
             )}
