@@ -40,7 +40,7 @@ export const ASSR_STAGES: AssrStageDef[] = [
   { key: "under_verification",       short: "Verify",      long: "Under Verification",         owner: "Service Admin" },
   { key: "pending_solution",         short: "Solution",    long: "Pending Solution",           owner: "Service Admin" },
   { key: "pending_supplier_pickup",  short: "Supplier",    long: "Supplier Pickup / Return",   owner: "Service Admin" },
-  { key: "pending_item_ready",       short: "Item Ready",  long: "Pending Item Ready",         owner: "Service Admin" },
+  { key: "pending_item_ready",       short: "Pending Item Ready", long: "Pending Item Ready",  owner: "Service Admin" },
   { key: "pending_delivery_service", short: "Delivery",    long: "Pending Delivery / Service", owner: "Logistic Admin" },
   { key: "completed",                short: "Completed",   long: "Completed",                  owner: "System" },
 ];

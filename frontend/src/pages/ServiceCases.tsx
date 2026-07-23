@@ -109,7 +109,7 @@ const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "under_verification", label: "Verification" },
   { value: "pending_solution", label: "Solution" },
   { value: "pending_supplier_pickup", label: "Supplier Pickup" },
-  { value: "pending_item_ready", label: "Item Ready" },
+  { value: "pending_item_ready", label: "Pending Item Ready" },
   { value: "pending_delivery_service", label: "Delivery / Service" },
   { value: "completed", label: "Completed" },
 ];
@@ -3974,7 +3974,7 @@ function DetailContent({
               c={c}
               priorityMap={priorityMap}
               stageId="pending_item_ready"
-              title="Item Ready"
+              title="Pending Item Ready"
               summary={
                 c.inspection_result
                   ? `QC: ${c.inspection_result}${c.items_ready_at ? ` · ready ${formatDate(c.items_ready_at)}` : ""}`
@@ -5104,14 +5104,16 @@ const VERIFICATION_OPTIONS = [
 // 5-cell status summary bar. The full accordion + resolution-driven flow
 // filtering land in later PRs; this PR only refreshes the header strip.
 
-const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
-  { id: "pending_review",              short: "Review",       long: "Review" },
-  { id: "under_verification",          short: "Verification", long: "Verification" },
-  { id: "pending_solution",            short: "Solution",     long: "Solution" },
-  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup / Return" },
-  { id: "pending_item_ready",          short: "Item Ready",   long: "Item Ready" },
-  { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service" },
-  { id: "completed",                   short: "Completed",    long: "Completed" },
+// desc — one-line caption under each funnel dot (Nick 2026-07-23:
+// 在 stage funnel 每个 stage 加上 description).
+const DETAIL_STAGES: { id: AssrStage; short: string; long: string; desc: string }[] = [
+  { id: "pending_review",              short: "Review",       long: "Review",                  desc: "Case intake & review" },
+  { id: "under_verification",          short: "Verification", long: "Verification",            desc: "QC issue inspection" },
+  { id: "pending_solution",            short: "Solution",     long: "Solution",                desc: "Resolution & supplier" },
+  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup / Return", desc: "Pickup, repair & return" },
+  { id: "pending_item_ready",          short: "Pending Item Ready", long: "Pending Item Ready", desc: "QC after repair" },
+  { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service",      desc: "Deliver back to customer" },
+  { id: "completed",                   short: "Completed",    long: "Completed",               desc: "Case closed" },
 ];
 
 // `resolutionRoute` — which side of the flow a resolution method routes to —
@@ -5351,6 +5353,9 @@ function WorkflowCard({
                   )}
                 >
                   {s.short}
+                </span>
+                <span className="mt-0.5 px-0.5 text-center text-[7.5px] leading-tight text-ink-muted/80">
+                  {s.desc}
                 </span>
                 {current && subStatus && (
                   <span className="mt-1 rounded-full bg-accent-soft/60 px-1.5 py-0.5 text-center text-[8.5px] font-semibold uppercase tracking-wide leading-snug text-accent">
