@@ -51,7 +51,7 @@ Invalidation always wins over all three (mutation → invalidate → forced refe
 
 | Method | Path | Handler | Purpose |
 |--------|------|---------|---------|
-| GET | `/api/scm/mfg-sales-orders` | list handler | Grid rows (+ `?summary=1` lightweight bucket mode, `?status=`, `?debtor=`) |
+| GET | `/api/scm/mfg-sales-orders` | list handler | Grid rows (+ `?summary=1` lightweight bucket mode, `?status=`, `?debtor=`; `?page=` opts into the paginated contract) |
 | GET | `/api/scm/mfg-sales-orders/:docNo` | detail | One SO header + lines |
 | GET | `/api/scm/mfg-sales-orders/my-mtd` | MTD scoreboard | Mobile Profile tiles |
 | GET | `/api/scm/mfg-sales-orders/mine` | POS board | Salesperson's own orders |
@@ -60,6 +60,16 @@ Invalidation always wins over all three (mutation → invalidate → forced refe
 All under `backend/src/scm/routes/mfg-sales-orders.ts`. Auth: inside `/api/scm/*`,
 `user.id` is the caller's **scm.staff UUID** (bridge-pinned); use `houzsUser.id` for
 the public bigint or you get a 500 (uuid-in-int column).
+
+Paginated contract (`?page=`) returns `{ salesOrders, total, page, pageSize,
+statusCounts, aggregates }`. `statusCounts` carries `all` plus ONE lowercase
+bucket per `SO_STATUSES` vocabulary entry (draft / confirmed / in_production /
+ready_to_ship / shipped / delivered / invoiced / closed / on_hold / cancelled)
+plus `other` (rows whose status is outside the vocabulary — legacy spellings,
+blanks), so the buckets always sum to `all`. It is computed by ONE grouped
+PostgREST aggregate over the base table (JS-reduce fallback if aggregates are
+disabled). `?status=OTHER` filters to exactly that catch-all bucket; every real
+status stays an exact match.
 
 ---
 
