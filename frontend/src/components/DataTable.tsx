@@ -57,7 +57,13 @@ export interface Column<T> {
    *  to the front of the render order (can't be reordered past). */
   alwaysVisible?: boolean;
   /** Opt-out of sort for columns that have getValue but aren't meaningfully
-   *  sortable (e.g. a selection checkbox column). */
+   *  sortable (e.g. a selection checkbox column).
+   *
+   *  On a `serverSort` table this means "not in the backend sort whitelist",
+   *  NOT "never sortable": the column still sorts, but CLIENT-side over the
+   *  loaded page only (owner 2026-07-24: every column must sort). The sort is
+   *  never reported to the parent, so the backend query is untouched. To make
+   *  a server-sorted column truly unsortable, drop its `getValue`. */
   disableSort?: boolean;
   /**
    * Hide on first load even though the column exists. The user can still
@@ -1060,38 +1066,79 @@ export function DataTable<T>({
   // ── Sorting ────────────────────────────────────────────
   // Clicking a sortable header cycles: none → asc → desc → none.
   // - Default (client mode): sort applies in-memory to the rows passed in.
-  // - Server mode (serverSort): in-memory sort is skipped and the new
-  //   sort state is reported via onSortChange so the parent can re-query
-  //   with sort_by/sort_dir. This makes ordering apply across the full
-  //   dataset, not just the visible page.
+  // - Server mode (serverSort): for columns the backend can sort (no
+  //   `disableSort`), in-memory sort is skipped and the new sort state is
+  //   reported via onSortChange so the parent can re-query with
+  //   sort_by/sort_dir — ordering applies across the full dataset. Columns
+  //   marked `disableSort` (= not in the backend's sort whitelist) fall back
+  //   to CLIENT-side sorting of the loaded page and are NEVER reported, so
+  //   the server query (and pagination) is untouched.
+
+  // Every getValue column is sortable. On client tables `disableSort` opts
+  // out entirely; on server tables it only demotes the column to the
+  // client-side fallback (see above).
+  const canSortColumn = useCallback(
+    (col: Column<T>) => !!col.getValue && (!col.disableSort || !!serverSort),
+    [serverSort]
+  );
+
+  // A sort the parent's backend understands: a sort on a non-disableSort
+  // column. Anything else maps to null (backend default order).
+  const serverReportable = useCallback(
+    (s: SortState | null): SortState | null => {
+      if (!s) return null;
+      const col = allColumns.find((c) => c.key === s.key);
+      return col?.getValue && !col.disableSort ? s : null;
+    },
+    [allColumns]
+  );
+
+  // Report a sort change to a server-sorted parent, de-duplicated: switching
+  // between two client-fallback columns both maps to null, and re-reporting
+  // null would needlessly reset the parent's pagination on every click. The
+  // `undefined` sentinel guarantees exactly ONE call on mount (the parent's
+  // sortSyncedRef handshake relies on it).
+  const lastReportedSortRef = useRef<string | null | undefined>(undefined);
+  const reportServerSort = useCallback(
+    (next: SortState | null) => {
+      if (!serverSort || !onSortChange) return;
+      const reportable = serverReportable(next);
+      const sig = reportable ? `${reportable.key}:${reportable.dir}` : null;
+      if (lastReportedSortRef.current === sig) return;
+      lastReportedSortRef.current = sig;
+      onSortChange(reportable);
+    },
+    [serverSort, onSortChange, serverReportable]
+  );
 
   function onHeaderClick(col: Column<T>) {
-    if (!col.getValue || col.disableSort) return;
-    setSort((cur) => {
-      let next: SortState | null;
-      if (!cur || cur.key !== col.key) next = { key: col.key, dir: "asc" };
-      else if (cur.dir === "asc") next = { key: col.key, dir: "desc" };
-      else next = null;
-      if (serverSort && onSortChange) onSortChange(next);
-      return next;
-    });
+    if (!canSortColumn(col)) return;
+    const cur = sort;
+    let next: SortState | null;
+    if (!cur || cur.key !== col.key) next = { key: col.key, dir: "asc" };
+    else if (cur.dir === "asc") next = { key: col.key, dir: "desc" };
+    else next = null;
+    setSort(next);
+    reportServerSort(next);
   }
 
   // Set an explicit sort direction for a column (used by the header
   // context menu's "Sort ascending / descending"). Mirrors onHeaderClick's
   // server-mode reporting so server-sorted tables re-query.
   function applySort(col: Column<T>, dir: SortDir) {
-    if (!col.getValue || col.disableSort) return;
+    if (!canSortColumn(col)) return;
     const next: SortState = { key: col.key, dir };
     setSort(next);
-    if (serverSort && onSortChange) onSortChange(next);
+    reportServerSort(next);
   }
 
   // On mount, if the parent is in server-sort mode and we restored a
   // sort from localStorage, push it up so the initial query matches.
+  // A restored sort on a client-fallback column reports null — the backend
+  // never saw that key; the loaded page is re-sorted in memory instead.
   // (Effect, not render, so we don't fire during render.)
   useEffect(() => {
-    if (serverSort && onSortChange) onSortChange(sort);
+    reportServerSort(sort);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1175,10 +1222,13 @@ export function DataTable<T>({
 
   const sortedRows = useMemo(() => {
     if (!filteredRows) return filteredRows;
-    if (serverSort) return filteredRows; // backend already ordered
     if (!sort) return filteredRows;
     const col = allColumns.find((c) => c.key === sort.key);
     if (!col || !col.getValue) return filteredRows;
+    // Server mode: a whitelisted column is already ordered by the backend
+    // across the full dataset — leave it alone. A `disableSort` column is
+    // NOT server-sortable, so sort the loaded page in memory instead.
+    if (serverSort && !col.disableSort) return filteredRows;
     const getter = col.getValue;
     const mul = sort.dir === "asc" ? 1 : -1;
     // Stable-ish copy — Array.prototype.sort is stable in modern engines.
@@ -1534,7 +1584,7 @@ export function DataTable<T>({
                   />
                 )}
                 {displayColumns.map((c, i) => {
-                  const sortable = !!c.getValue && !c.disableSort;
+                  const sortable = canSortColumn(c);
                   const active = sort?.key === c.key;
                   const isSticky = i < stickyCount;
                   const isLastSticky = isSticky && i === stickyCount - 1;
@@ -1551,6 +1601,13 @@ export function DataTable<T>({
                     cellStyle.maxWidth = userW;
                   } else if (c.width) {
                     cellStyle.width = c.width;
+                    // A declared px width is a CAP, not a suggestion: without
+                    // maxWidth the auto table layout stretches the column to
+                    // its longest nowrap cell, and a long value in a squeezed
+                    // layout paints over the neighbouring column (owner
+                    // 2026-07-24 screenshot — cells must clip, system-wide).
+                    const px = parsePxWidth(c.width);
+                    if (px != null) cellStyle.maxWidth = px;
                   }
                   if (isSticky) {
                     cellStyle.position = "sticky";
@@ -1614,7 +1671,10 @@ export function DataTable<T>({
                         setHeaderMenu({ x: e.clientX, y: e.clientY, colKey: c.key });
                       }}
                       className={cn(
-                        "group/th relative border-b-2 border-border bg-surface-dim text-[10px] font-bold uppercase tracking-brand text-ink",
+                        // overflow-hidden: a header must never paint over its
+                        // neighbour either — crop the label when the column is
+                        // narrower than it (same clip rule as body cells).
+                        "group/th relative overflow-hidden border-b-2 border-border bg-surface-dim text-[10px] font-bold uppercase tracking-brand text-ink",
                         headPad,
                         c.align === "right" && "text-right",
                         c.align === "center" && "text-center",
@@ -1907,6 +1967,10 @@ export function DataTable<T>({
                             cellStyle.maxWidth = userW;
                           } else if (c.width) {
                             cellStyle.width = c.width;
+                            // Same cap as the header cell: a px width means
+                            // "clip here", never "stretch to the longest value".
+                            const px = parsePxWidth(c.width);
+                            if (px != null) cellStyle.maxWidth = px;
                           }
                           if (isSticky) {
                             cellStyle.position = "sticky";
@@ -1914,21 +1978,34 @@ export function DataTable<T>({
                             cellStyle.zIndex = 20;
                             cellStyle.background = stickyBg;
                           }
+                          // Full raw value as a native tooltip so a clipped
+                          // cell is still readable on hover. Strings only:
+                          // numeric getValues are raw centi/ISO shapes that
+                          // would contradict the formatted cell text.
+                          const rawVal = c.getValue?.(row);
+                          const cellTitle =
+                            typeof rawVal === "string" && rawVal !== ""
+                              ? rawVal
+                              : undefined;
                           return (
                             <td
                               key={c.key}
                               style={cellStyle}
+                              title={cellTitle}
                               className={cn(
                                 "border-b border-border-subtle text-[13px] text-ink transition-colors",
                                 cellPad,
-                                // Single-line rule (2026-05-08). Cells stop
-                                // wrapping their text content; long values
-                                // overflow into the next cell visually but
-                                // never push the row to two lines. Render
-                                // functions that genuinely need multi-line
-                                // (rare) can opt back in via `c.className`
-                                // ("whitespace-normal").
-                                "whitespace-nowrap",
+                                // Single-line rule (2026-05-08) + clip rule
+                                // (owner 2026-07-24). Cells stop wrapping AND
+                                // stop painting past their own column: a value
+                                // longer than the column is cropped with an
+                                // ellipsis (full text in the title tooltip)
+                                // instead of overlapping the neighbour cell.
+                                // Render functions that genuinely need
+                                // multi-line wrap via an inner block element
+                                // or `c.className` ("whitespace-normal") —
+                                // still overflow-hidden within the column.
+                                "overflow-hidden text-ellipsis whitespace-nowrap",
                                 // Pine-green tint on hover (matches the
                                 // calendar's "on track" green). Reads clearly
                                 // on both zebra shades. (Was a pale brass
@@ -2165,7 +2242,7 @@ export function DataTable<T>({
             : values;
           const shownValues = shown.map(([v]) => v);
           const selected = new Set(colFilters[col.key] ?? []);
-          const canSort = !col.disableSort;
+          const canSort = canSortColumn(col);
           const sortActive = sort?.key === col.key ? sort.dir : null;
 
           // Select all / Invert operate on the CURRENTLY SHOWN values (i.e.
@@ -2316,7 +2393,7 @@ export function DataTable<T>({
         (() => {
           const col = allColumns.find((c) => c.key === headerMenu.colKey);
           if (!col) return null;
-          const sortable = !!col.getValue && !col.disableSort;
+          const sortable = canSortColumn(col);
           const isPinned = pinnedSet.has(col.key);
           const canHide = !col.alwaysVisible;
           const itemCls =
