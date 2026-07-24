@@ -38,6 +38,7 @@ import { writeMovements, defaultWarehouseId, resolveWarehouseLotBatches } from '
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import { recomputePcoReceived } from './purchase-consignment-receives';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
@@ -378,6 +379,10 @@ purchaseConsignmentReturns.get('/:id', async (c) => {
       (r) => r.item_group as string | null | undefined,
     ),
   );
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" — same READ enrichment as the SO/PO/DO/SI details
+  // (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ purchaseReturn: h.data, items });
 });
 

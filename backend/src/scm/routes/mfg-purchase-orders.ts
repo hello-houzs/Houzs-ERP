@@ -385,7 +385,11 @@ mfgPurchaseOrders.get('/', async (c) => {
   // purchase_location embeds the warehouse the PO ships to (PR #77 — the
   // column is an FK → warehouses.id); the list needs its NAME, not just the
   // id, for the "Purchase Location" column (Owner 2026-07-02).
-  const SELECT = `${HEADER_COLS}, supplier:suppliers(id, code, name), items:purchase_order_items(material_code, material_name, qty), purchase_location:warehouses!purchase_location_id(id, code, name)`;
+  // Supplier CONTACT fields ride the list embed because the quick-view drawer
+  // renders its SUPPLIER panel straight off the list row (owner 2026-07-24:
+  // the panel showed "—" for contact/phone/email/address — the row simply
+  // never carried them).
+  const SELECT = `${HEADER_COLS}, supplier:suppliers(id, code, name, contact_person, phone, email, address), items:purchase_order_items(material_code, material_name, qty), purchase_location:warehouses!purchase_location_id(id, code, name)`;
 
   /* Opt-in server-side pagination + search + sort + status-counts (mirrors the
      SO list in mfg-sales-orders.ts). The PRESENCE of `page` switches paging on;

@@ -34,6 +34,7 @@ import {
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY,
 } from '../lib/companyScope';
 import { canonicalizeMyState } from '../lib/canonical-state';
+import { enrichVariantKeyRowsWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import type { Env, Variables } from '../env';
 
 export const inventory = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -562,6 +563,10 @@ inventory.get('/breakdown/:productCode', async (c) => {
         last_movement_at: b.last_movement_at ?? null,
       };
     });
+  // Stamp fabric_supplier_code per bucket so the Attributes cell can render the
+  // shared final fabric format — "EZ-002 (KN390-2) / SEAT 28" (owner 2026-07-24,
+  // "全部包裹 stocks 你也是要看到 supplier 的 fabric code"). Batched; fail-soft.
+  await enrichVariantKeyRowsWithFabricSupplierCode(sb, c, balances);
   return c.json({ balances });
 });
 
@@ -710,6 +715,11 @@ inventory.get('/batches', async (c) => {
   if (productCode) batches = batches.filter((b) => b.components.some((c2) => c2.productCode === productCode));
   // FIFO order — oldest batch first (matches outbound consumption preference).
   batches.sort((a, b) => (a.receivedAt ?? '').localeCompare(b.receivedAt ?? ''));
+
+  // Stamp fabric_supplier_code per component (variantKey-keyed) so the Batches
+  // tab renders the shared final fabric format too. Batched; fail-soft.
+  const allComponents = batches.flatMap((b) => b.components as unknown as Array<Record<string, unknown>>);
+  await enrichVariantKeyRowsWithFabricSupplierCode(sb, c, allComponents, 'variantKey');
 
   return c.json({ batches });
 });

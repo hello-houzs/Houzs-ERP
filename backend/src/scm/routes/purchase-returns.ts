@@ -19,6 +19,7 @@ import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import { warehouseLabel } from '../lib/warehouse-label';
 import { buildVariantSummary, computeVariantKey, type VariantAttrs } from '../shared';
 import {
@@ -137,7 +138,7 @@ async function adjustGrnReturnedQty(sb: any, grnItemId: string, _delta?: number)
 purchaseReturns.get('/', async (c) => {
   const sb = c.get('supabase');
   let q = sb.from('purchase_returns')
-    .select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number)`)
+    .select(`${HEADER}, supplier:suppliers(id, code, name, contact_person, phone, email, address), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number)`)
     .order('return_date', { ascending: false })
     .limit(300);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
@@ -182,6 +183,10 @@ purchaseReturns.get('/:id', async (c) => {
     const wid = lineWh.get(it.id) ?? null;
     return { ...it, warehouse_id: wid, warehouse_code: wid ? (codeMap.get(wid) ?? null) : null };
   });
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" — same READ enrichment as the SO/PO/DO/SI details
+  // (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ purchaseReturn: h.data, items });
 });
 

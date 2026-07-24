@@ -20,6 +20,7 @@ import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
 import { todayMyt } from '../lib/my-time';
 import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 import { PI_LINE_AUDIT_FIELDS, PI_LINE_AUDIT_SELECT } from '../lib/entity-audit-fields';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 
 export const purchaseInvoices = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseInvoices.use('*', supabaseAuth);
@@ -476,7 +477,9 @@ const PI_STATUS_BUCKETS: Record<string, string[]> = {
 
 purchaseInvoices.get('/', async (c) => {
   const sb = c.get('supabase');
-  const SELECT = `${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number, delivery_note_ref)`;
+  // Supplier CONTACT fields ride the list embed — the quick-view drawer's
+  // SUPPLIER panel renders off the list row (owner 2026-07-24: all "—").
+  const SELECT = `${HEADER}, supplier:suppliers(id, code, name, contact_person, phone, email, address), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number, delivery_note_ref)`;
 
   /* Opt-in server-side pagination + search + sort + status-counts (mirrors the
      SO list in mfg-sales-orders.ts). The PRESENCE of `page` switches paging on;
@@ -657,7 +660,7 @@ purchaseInvoices.get('/:id', async (c) => {
   const [h, i] = await Promise.all([
     /* grn embed (owner 2026-07-23: "PI need show Do number") — the source GRN's
        doc no + the supplier's delivery-note ref surface on the PI detail. */
-    sb.from('purchase_invoices').select(`${HEADER}, supplier:suppliers(id, code, name), grn:grns(id, grn_number, delivery_note_ref)`).eq('id', id).maybeSingle(),
+    sb.from('purchase_invoices').select(`${HEADER}, supplier:suppliers(id, code, name, contact_person, phone, email, address), grn:grns(id, grn_number, delivery_note_ref)`).eq('id', id).maybeSingle(),
     sb.from('purchase_invoice_items').select(ITEM).eq('purchase_invoice_id', id).order('created_at'),
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
@@ -706,6 +709,10 @@ purchaseInvoices.get('/:id', async (c) => {
     // eslint-disable-next-line no-console
     console.error('[pi detail] customer-DO resolve failed', { id, error: e });
   }
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" — same READ enrichment as the SO/PO/DO/SI details
+  // (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ purchaseInvoice: h.data, items, customerDos });
 });
 

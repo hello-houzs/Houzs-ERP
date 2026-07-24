@@ -717,9 +717,17 @@ const SORT_COL_MAP: Record<string, string> = {
 // instant.
 
 type DoDrillItem = {
+  item_code?: string;
   product_code?: string;
   product_name?: string;
   description?: string;
+  /* Variant fields — the SAME payload the quick-view drawer above already
+     renders; the drill-down previously dropped them and showed the bare
+     name + code (owner 2026-07-24, "为什么没有这个 description 的呢？全部文件
+     by right 都要一样的啦"). */
+  item_group?: string | null;
+  variants?: Record<string, unknown> | null;
+  description2?: string | null;
   qty?: number;
   unit_price_centi?: number;
   amount_centi?: number;
@@ -759,6 +767,16 @@ function DoLinesExpansion({ doId }: { doId: string }) {
           l.amount_centi ??
           l.total_centi ??
           (l.qty ?? 0) * (l.unit_price_centi ?? 0);
+        // Shared order-line rule (vendor/shared/line-identity.ts): item CODE
+        // as the primary, variant summary as the subtitle — identical to the
+        // SO list drill-down and this page's own quick-view drawer.
+        const { primary, secondary } = orderLineIdentity({
+          code: l.item_code || l.product_code,
+          description: l.description || l.product_name,
+          variant:
+            buildVariantSummary(l.item_group ?? "others", l.variants ?? null) ||
+            (l.description2 ?? ""),
+        });
         return (
           <div
             key={i}
@@ -766,11 +784,11 @@ function DoLinesExpansion({ doId }: { doId: string }) {
           >
             <div className="min-w-0">
               <div className="text-[12.5px] font-semibold text-ink">
-                {l.description || l.product_name || "—"}
+                {primary || "—"}
               </div>
-              {l.product_code && (
-                <div className="mt-0.5 font-mono text-[10.5px] text-ink-muted">
-                  {l.product_code}
+              {secondary && (
+                <div className="mt-0.5 text-[11px] leading-snug text-ink-secondary">
+                  {secondary}
                 </div>
               )}
             </div>

@@ -303,13 +303,22 @@ export function docVariantLine(
       const desc = fabricDescMap.get(code);  // our fabric description
       if (ext || desc) {
         if (mapped === v) mapped = { ...v };
-        // Strip a redundant leading code from the description (the fabric_trackings
-        // description often starts with the code, e.g. "EZ-008 Forest") so the line
-        // doesn't read "EZ-008 (M2402-13) — EZ-008 Forest" (Commander 2026-06-19).
+        // Owner format ruling 2026-07-24: customer PDFs print the SAME final
+        // fabric format as the shared on-screen summary — description joined
+        // bare, supplier parens LAST: "CG-001 Pearl (KN390-1)". The supplier
+        // code is stamped as variants.fabricSupplierCode so buildVariantSummary
+        // appends the parens at the segment end (the single home of that rule)
+        // instead of being spliced inline here. Strip a redundant leading code
+        // from the description (often starts with the code, e.g. "EZ-008
+        // Forest") so the line doesn't read "EZ-008 EZ-008 Forest"
+        // (Commander 2026-06-19).
         const cleanDesc = desc && desc.toLowerCase().startsWith(code.toLowerCase())
           ? desc.slice(code.length).trim()
           : desc;
-        mapped[key] = `${code}${ext ? ` (${ext})` : ''}${cleanDesc ? ` — ${cleanDesc}` : ''}`;
+        mapped[key] = `${code}${cleanDesc ? ` ${cleanDesc}` : ''}`;
+        if (ext && !(mapped as Record<string, unknown>).fabricSupplierCode) {
+          (mapped as Record<string, unknown>).fabricSupplierCode = ext;
+        }
       }
     }
   }

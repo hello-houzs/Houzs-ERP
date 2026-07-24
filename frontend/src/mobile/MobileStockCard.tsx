@@ -168,7 +168,7 @@ export function MobileStockCard({
             <div className="sc-sl"><span className="t">Per warehouse</span><span className="ln" /></div>
             <div className="sc-whgrid">
               {balances.map((b) => {
-                const attrs = formatVariantKey(b.variant_key);
+                const attrs = formatVariantKey(b.variant_key, b.fabric_supplier_code);
                 return (
                   <div key={`${b.warehouse_id}|${b.variant_key ?? ""}`}>
                     <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>

@@ -148,11 +148,31 @@ const VARIANT_LABELS: Record<string, string> = {
 
 /**
  * Turn a canonical variant key into a readable label for the UI, e.g.
- * "fabriccode=bf-16|gap=16|legheight=2" -> "Fabric BF-16 · Gap 16 · Leg 2".
- * Empty / unclassified -> '' (caller decides how to show it, e.g. "Standard").
+ * "fabriccode=bf-16|gap=16|legheight=2" -> "BF-16 / GAP 16 / LEG 2".
+ *
+ * Owner 2026-07-23: unify with the SO/PO/GRN/PI/DR variant summary style
+ * (buildVariantSummary — terse " / " separator, bare fabric code, UPPERCASE
+ * bedframe/sofa labels). Empty / unclassified -> '' (caller decides how to
+ * show it, e.g. "Standard").
+ *
+ * Was: "Fabric BF-16 · Gap 16 · Leg 2" (labelled + " · ") — retired. (This BE
+ * copy had drifted behind the FE vendored copy's 2026-07-23 format update —
+ * re-synced 2026-07-24 so the pair renders identically again.)
+ *
+ * Owner 2026-07-24 ("全部包裹 stocks 你也是要看到 supplier 的 fabric code"):
+ * optional `fabricSupplierCode` — the supplier's own code for the key's
+ * internal fabric, resolved READ-side by the inventory endpoints (batched,
+ * fail-soft; see backend scm/lib/fabric-supplier-code.ts). When present +
+ * distinct it renders in parens straight after the fabric code — the SAME
+ * final format buildVariantSummary uses on document lines:
+ * "EZ-002 (KN390-2) / SEAT 28 / LEG 6\"". Absent -> unchanged.
  */
-export function formatVariantKey(key: string | null | undefined): string {
+export function formatVariantKey(
+  key: string | null | undefined,
+  fabricSupplierCode?: string | null,
+): string {
   if (!key) return '';
+  const sup = (fabricSupplierCode ?? '').trim();
   return key
     .split('|')
     .map((part) => {
@@ -160,8 +180,16 @@ export function formatVariantKey(key: string | null | undefined): string {
       if (eq < 0) return part;
       const slug = part.slice(0, eq);
       const value = part.slice(eq + 1);
-      const label = VARIANT_LABELS[slug] ?? slug;
-      return `${label} ${slug === 'fabriccode' ? value.toUpperCase() : value}`;
+      // Fabric code is bare (no "Fabric" prefix — matches buildVariantSummary);
+      // everything else upper-cases the slug label to read like the SO summary.
+      if (slug === 'fabriccode') {
+        const code = value.toUpperCase();
+        // Distinct-only, same guard as buildVariantSummary — a supplier code
+        // equal to the internal code adds no parens.
+        return sup && sup.toUpperCase() !== code ? `${code} (${sup})` : code;
+      }
+      const label = (VARIANT_LABELS[slug] ?? slug).toUpperCase();
+      return `${label} ${value}`;
     })
-    .join(' · ');
+    .join(' / ');
 }

@@ -69,6 +69,10 @@ export type InventoryBalance = {
   /* Migration 0095 — attribute-composition bucket; '' = unclassified.
      Present on the default (non-showAll) balances rows. */
   variant_key?: string;
+  /* Supplier's own code for the key's internal fabric, stamped READ-side by
+     /inventory/breakdown (batched, fail-soft — absent when the fabric has no
+     distinct supplier code). Feeds formatVariantKey's parens: "EZ-002 (KN390-2)". */
+  fabric_supplier_code?: string | null;
   product_name: string | null;
   qty: number;
   last_movement_at: string | null;
@@ -290,6 +294,9 @@ export type BatchComponent = {
   qtyRemaining: number;
   unitCostSen: number;
   receivedAt: string | null;
+  /* Supplier fabric code for the component's variantKey (READ-side stamp,
+     /inventory/batches — same contract as InventoryBalance.fabric_supplier_code). */
+  fabric_supplier_code?: string | null;
 };
 export type InventoryBatch = {
   warehouseId: string;

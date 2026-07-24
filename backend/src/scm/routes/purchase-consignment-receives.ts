@@ -36,6 +36,7 @@ import { mintMonthlyDocNo } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 
 export const purchaseConsignmentReceives = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseConsignmentReceives.use('*', supabaseAuth);
@@ -625,6 +626,10 @@ purchaseConsignmentReceives.get('/:id', async (c) => {
     received_at: headerReceivedAt,
     downstream: downstreamMap.get(it.id) ?? [],
   }));
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" — same READ enrichment as the SO/PO/DO/SI details
+  // (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ grn: receive, items });
 });
 

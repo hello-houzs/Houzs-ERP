@@ -22,11 +22,17 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { scopeToCompany, type CompanyScopeCtx } from './companyScope';
 
-/* The variant key carrying the LEAD internal fabric code buildVariantSummary
-   shows first (and the one it parenthesises the supplier code after). SO/PO/DO/SI
-   lines store the fabric there; the GRN/PI/PR `fabricColor` fallback is a
-   separate, out-of-scope path (see the task's deferred note). */
-const FABRIC_CODE_KEY = 'fabricCode';
+/* The variant keys that can carry the internal fabric code, in the SAME
+   precedence order computeVariantKey / buildVariantSummary read them:
+   SO/PO/DO/SI lines store it under `fabricCode`; the GRN / PI / PR /
+   Stock-Adjustment variant editors store the pick under `fabricColor`; POS
+   lines may carry `colorCode` / `colourCode`. The summary renders whichever is
+   present, so the enrichment must resolve the same chain — otherwise a PI/GRN
+   line whose fabric lives in `fabricColor` never gets its supplier parens
+   (owner 2026-07-24, "为什么我的 Purchase Invoice 没有看到 PC151-01 那种 code").
+   A value that is not actually a fabric code (e.g. a bare colour code) simply
+   finds no fabric_trackings row and the line is left unchanged. */
+const FABRIC_CODE_KEYS = ['fabricCode', 'colorCode', 'colourCode', 'fabricColor'] as const;
 
 /* A returned order line, loose enough to accept every detail endpoint's mapped
    row shape. Record (index signature) — NOT `{ variants?: unknown }`, which is a
@@ -35,6 +41,15 @@ const FABRIC_CODE_KEY = 'fabricCode';
 type LineWithVariants = Record<string, unknown>;
 
 const trimStr = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+
+/* The line's internal fabric code, read through the alias chain above. */
+const fabricCodeOf = (v: Record<string, unknown>): string => {
+  for (const k of FABRIC_CODE_KEYS) {
+    const fc = trimStr(v[k]);
+    if (fc) return fc;
+  }
+  return '';
+};
 
 /**
  * Stamp `variants.fabricSupplierCode` on every line whose internal fabricCode has
@@ -53,7 +68,7 @@ export async function enrichLinesWithFabricSupplierCode(
   for (const it of items) {
     const v = it.variants;
     if (v && typeof v === 'object') {
-      const fc = trimStr((v as Record<string, unknown>)[FABRIC_CODE_KEY]);
+      const fc = fabricCodeOf(v as Record<string, unknown>);
       if (fc) codes.add(fc);
     }
   }
@@ -81,7 +96,7 @@ export async function enrichLinesWithFabricSupplierCode(
   for (const it of items) {
     const v = it.variants;
     if (!v || typeof v !== 'object') continue;
-    const fc = trimStr((v as Record<string, unknown>)[FABRIC_CODE_KEY]);
+    const fc = fabricCodeOf(v as Record<string, unknown>);
     if (!fc) continue;
     const sup = map.get(fc);
     // Distinct-only: a supplier code equal to the internal code adds no parens
@@ -89,5 +104,66 @@ export async function enrichLinesWithFabricSupplierCode(
     if (sup && sup !== fc) {
       it.variants = { ...(v as Record<string, unknown>), fabricSupplierCode: sup };
     }
+  }
+}
+
+/**
+ * INVENTORY flavour — stamp `fabric_supplier_code` on rows that carry only the
+ * canonical composite `variant_key` (inventory_balances / lots / batch
+ * components; mig 0095) instead of a variants object. The key's fabric segment
+ * is `fabriccode=<value>` with the value LOWERCASED by computeVariantKey, so
+ * the batched fabric_trackings lookup matches case-insensitively by querying
+ * both the lowercased key value and its uppercased form (fabric codes are
+ * conventionally uppercase — BF-01 / EZ-002 / KN390-1). A code that matches
+ * nothing leaves the row unchanged (fail-soft, same contract as above).
+ *
+ * The stamped `fabric_supplier_code` is what lets the UI render the SAME final
+ * fabric format as buildVariantSummary — "EZ-002 (KN390-2) / SEAT 28" — via
+ * formatVariantKey's supplier parameter (owner 2026-07-24, "全部包裹 stocks,
+ * 你也是要看到他 supplier 的 fabric code").
+ */
+export async function enrichVariantKeyRowsWithFabricSupplierCode(
+  sb: SupabaseClient<any, any, any>,
+  c: CompanyScopeCtx,
+  rows: Array<Record<string, unknown>>,
+  keyField = 'variant_key',
+): Promise<void> {
+  const fabricOfKey = (key: unknown): string => {
+    const k = trimStr(key);
+    if (!k) return '';
+    for (const part of k.split('|')) {
+      if (part.startsWith('fabriccode=')) return part.slice('fabriccode='.length).trim();
+    }
+    return '';
+  };
+
+  const codes = new Set<string>();
+  for (const r of rows) {
+    const fc = fabricOfKey(r[keyField]);
+    if (fc) { codes.add(fc); codes.add(fc.toUpperCase()); }
+  }
+  if (codes.size === 0) return;
+
+  const map = new Map<string, string>(); // LOWERCASED internal code -> supplier code
+  try {
+    const { data } = await scopeToCompany(
+      sb.from('fabric_trackings').select('fabric_code, supplier_code').in('fabric_code', [...codes]),
+      c,
+    );
+    for (const r of (data ?? []) as Array<{ fabric_code?: string | null; supplier_code?: string | null }>) {
+      const code = trimStr(r.fabric_code).toLowerCase();
+      const sup = trimStr(r.supplier_code);
+      if (code && sup && sup.toLowerCase() !== code) map.set(code, sup);
+    }
+  } catch {
+    return; // a lookup hiccup must never fail an inventory response
+  }
+  if (map.size === 0) return;
+
+  for (const r of rows) {
+    const fc = fabricOfKey(r[keyField]).toLowerCase();
+    if (!fc) continue;
+    const sup = map.get(fc);
+    if (sup) r.fabric_supplier_code = sup;
   }
 }

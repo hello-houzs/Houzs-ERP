@@ -44,6 +44,7 @@ import {
 } from '../shared/so-line-display';
 import { supabaseAuth } from '../middleware/auth';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
@@ -218,6 +219,10 @@ purchaseConsignmentOrders.get('/:id', async (c) => {
   const receiptsMap = await pcoLineReceipts(supabase, itemRows.map((it) => it.id));
   const items = itemRows.map((it) => ({ ...it, receipts: receiptsMap.get(it.id) ?? [] }));
 
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" — same READ enrichment as the SO/PO/DO/SI details
+  // (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(supabase, c, items);
   return c.json({ purchaseOrder: purchaseConsignmentOrder, items });
 });
 

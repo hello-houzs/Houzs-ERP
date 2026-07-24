@@ -51,6 +51,7 @@ import { paginateAll } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
 import { recordEntityAudit, assertAuditWritable, auditUnavailableBody, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 import { GRN_LINE_AUDIT_FIELDS, GRN_LINE_AUDIT_SELECT } from '../lib/entity-audit-fields';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
 grns.use('*', supabaseAuth);
@@ -853,7 +854,7 @@ grns.get('/', async (c) => {
 
   if (!paginate) {
     /* --- LEGACY PATH (unchanged) --- */
-    let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`).order('received_at', { ascending: false }).limit(500);
+    let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name, contact_person, phone, email, address), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`).order('received_at', { ascending: false }).limit(500);
     const status = c.req.query('status'); if (status) q = q.eq('status', status);
     const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
@@ -871,7 +872,7 @@ grns.get('/', async (c) => {
     const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'received_at';
     const sortAsc = rawDir === 'asc';
 
-    let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name, contact_person, phone, email, address), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
     /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
     if (sortCol !== 'grn_number') q = q.order('grn_number', { ascending: sortAsc });
     /* Resolve the incoming `status`: a known bucket key → all its raw statuses;
@@ -1173,7 +1174,7 @@ export async function grnLineDownstream(
 grns.get('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   const [h, i] = await Promise.all([
-    sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number)`).eq('id', id).maybeSingle(),
+    sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name, contact_person, phone, email, address), purchase_order:purchase_orders(id, po_number)`).eq('id', id).maybeSingle(),
     sb.from('grn_items').select(ITEM).eq('grn_id', id).order('created_at'),
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
@@ -1221,6 +1222,10 @@ grns.get('/:id', async (c) => {
     received_at: headerReceivedAt,
     downstream: downstreamMap.get(it.id) ?? [],
   }));
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" — same READ enrichment as the SO/PO/DO/SI details
+  // (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ grn, items });
 });
 
