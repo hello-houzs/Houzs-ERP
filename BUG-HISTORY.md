@@ -1,5 +1,12 @@
 ## 2026-07-24
 
+### [MEDIUM] Delivery Planning region chips rendered every region TWICE (cross-company double-read)
+- **Symptom.** Owner 2026-07-24 with screenshot: the Delivery Planning board's region chip row showed "All, KL/SEL, KL/SEL, Northern, Northern, Southern, Southern, East Coast, East Coast, East Malaysia, East Malaysia" — every bucket duplicated — while the Delivery Regions maintenance page correctly listed 5.
+- **Root cause (traced).** Same class as the 2026-07-23 Delivery Regions maintenance fix, in the OTHER reader. Post-mig-0176 every company carries its OWN copy of each region bucket (2 companies x 5 regions = 10 rows). The maintenance page's list was already scoped to the active company, but the board's `loadRegionConfig` (`scm/routes/delivery-planning.ts`) reads `delivery_planning_regions` UNSCOPED — correct for a cross-company board (it must resolve BOTH companies' `state_delivery_regions` mappings, which point at each company's own region ids) — and pushed every active row into the `regions` chip list without deduping by code.
+- **Fix.** Dedupe the chip list by region CODE inside `loadRegionConfig` (guard on the existing `validCodes` set). `codeById` still indexes EVERY row, so both companies' state mappings keep resolving; only the chip/master list collapses to one entry per code.
+- **The class, for next time.** When the same config table becomes per-company, EVERY reader must decide: scope to active company (isolating views) or dedupe by business key (cross-company views). Grep all readers of the table when making a config table per-company — the maintenance page was fixed on 2026-07-23 and the board reader was missed.
+- **Ref:** #<PR>. Owner screenshot 2026-07-24.
+
 ### [LOW] Sales Report DO tab didn't show the linked SO's amount (only its cost)
 - **Symptom.** Owner 2026-07-24: "DO 那边怎么没有给我看到 SO amount" — the Delivery Orders tab of the Sales Report showed SO *cost* (`total_so_cost_centi`) but not the SO's *amount*, so you couldn't see the sale value against the delivery.
 - **Root cause (traced).** `FairDoRow` never carried the SO amount — the DO stage builder (`scm/routes/reports.ts` `stage==='do'`) already has the linked SO header `h` in scope (used for margins) but only emitted its cost.
