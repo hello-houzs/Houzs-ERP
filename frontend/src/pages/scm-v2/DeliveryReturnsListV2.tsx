@@ -40,6 +40,11 @@ import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
 import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
+import {
+  DocumentLinesExpansion,
+  type DocumentDrillLine,
+  type DrillItemFields,
+} from "../../components/DocumentLinesExpansion";
 import { SearchScopeHint } from "../../components/SearchScopeHint";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
@@ -710,6 +715,39 @@ function TotalRow({
         {v}
       </span>
     </div>
+  );
+}
+
+// ─── Row drill-down (DataTable `expandable`) ──────────────────────────────────
+// Inline per-line breakdown for one DR, lazy-fetched via the SAME
+// useDeliveryReturnDetail hook the drawer uses (TanStack-cached). Group + item
+// code/variant + Qty (returned) + Amount, via the shared DocumentLinesExpansion.
+// A delivery return is a sales-side doc but its detail payload carries no
+// per-line MRP coverage (that rides the SO detail, not this one), so the
+// SO/DO-only Stock + Incoming PO columns are absent.
+function DrLinesExpansion({ id }: { id: string }) {
+  const detailQ = useDeliveryReturnDetail(id);
+  const items =
+    ((detailQ.data as { items?: DrillItemFields[] } | undefined)?.items ?? []);
+  const lines: DocumentDrillLine[] = items.map((l) => ({
+    itemGroup: l.item_group ?? null,
+    code: l.item_code ?? null,
+    description: l.description ?? null,
+    description2: l.description2 ?? null,
+    variants: l.variants ?? null,
+    qty: Number(l.qty_returned ?? 0),
+    amountCenti:
+      l.line_total_centi ??
+      Number(l.qty_returned ?? 0) * (l.unit_price_centi ?? 0),
+  }));
+  return (
+    <DocumentLinesExpansion
+      isLoading={detailQ.isLoading}
+      isError={Boolean(detailQ.error)}
+      errorMessage={detailQ.error instanceof Error ? detailQ.error.message : null}
+      lines={lines}
+      emptyLabel="No lines on this delivery return."
+    />
   );
 }
 
@@ -1594,6 +1632,10 @@ export function DeliveryReturnsListV2() {
               columns={columns}
               getRowKey={(r) => r.id}
               onRowClick={(r) => setSelected(r)}
+              expandable={{
+                render: (r) => <DrLinesExpansion id={r.id} />,
+                rowKey: (r) => r.id,
+              }}
               selection={{
                 selectedIds,
                 onToggle: toggleSelect,

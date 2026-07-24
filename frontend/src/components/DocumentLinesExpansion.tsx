@@ -1,0 +1,160 @@
+// DocumentLinesExpansion — shared inline per-line breakdown rendered under a
+// document row when the DataTable chevron is toggled. It is the DRY twin of the
+// SO list's SoLinesExpansion (frontend/src/pages/scm-v2/MfgSalesOrdersListV2.tsx):
+// Group pill + item CODE/variant identity + Qty + Amount. The SO/DO list keeps
+// its own richer variant (Stock pill + Incoming PO/ETA columns) because those
+// fields ride the SO detail payload; the six purchase/sales document lists that
+// consume THIS component do not carry per-line MRP coverage, so they render the
+// four columns their existing detail hooks actually return.
+//
+// Each caller owns its own detail hook and field quirks (which column is Qty,
+// which is the line amount, how the code resolves) and maps its raw items into
+// DocumentDrillLine[] before handing them here — this component is purely
+// presentational so no list's field mapping leaks into another's.
+
+import { buildVariantSummary, fmtCenti, orderLineIdentity } from "@2990s/shared";
+import { ItemGroupPill } from "../vendor/scm/lib/category-badges";
+import { cn } from "../lib/utils";
+
+// A single normalised drill line. Callers resolve `code` (e.g. material_code ||
+// item_code), `qty` (ordered / received / returned as the document means) and
+// `amountCenti` (line_total_centi / total_centi) themselves; `itemGroup` +
+// `variants` feed the same live buildVariantSummary the detail drawers use.
+export type DocumentDrillLine = {
+  itemGroup: string | null;
+  code: string | null;
+  description: string | null;
+  description2: string | null;
+  variants: Record<string, unknown> | null;
+  qty: number;
+  amountCenti: number;
+};
+
+// Permissive superset of the per-line fields the six document detail hooks
+// return. Each list's items are cast to this in its wrapper (the same shape the
+// SI/DR detail drawers already cast to inline), so a wrapper never has to
+// import that list's exact item type — it just reads the fields it means and
+// picks its own Qty / amount source. Every field is optional; a document that
+// omits one falls through to the `??` defaults in the wrapper.
+export type DrillItemFields = {
+  item_group?: string | null;
+  material_code?: string | null;
+  item_code?: string | null;
+  product_code?: string | null;
+  description?: string | null;
+  material_name?: string | null;
+  product_name?: string | null;
+  description2?: string | null;
+  variants?: Record<string, unknown> | null;
+  qty?: number | null;
+  received_qty?: number | null;
+  qty_returned?: number | null;
+  unit_price_centi?: number | null;
+  line_total_centi?: number | null;
+  total_centi?: number | null;
+  amount_centi?: number | null;
+};
+
+// Shared centi → RM string, same helper the lists use.
+const fmtRm = (centi: number): string => fmtCenti(centi);
+
+const GRID =
+  "grid grid-cols-[92px_minmax(220px,1fr)_64px_110px] items-start gap-2";
+
+export function DocumentLinesExpansion({
+  isLoading,
+  isError,
+  errorMessage,
+  lines,
+  emptyLabel = "No lines on this document.",
+}: {
+  isLoading: boolean;
+  isError?: boolean;
+  errorMessage?: string | null;
+  lines: DocumentDrillLine[];
+  emptyLabel?: string;
+}) {
+  if (isLoading) {
+    return (
+      <div className="py-4 text-center text-[12px] text-ink-muted">
+        Loading lines…
+      </div>
+    );
+  }
+  if (isError) {
+    return (
+      <div className="py-4 text-center text-[12px] text-err">
+        {errorMessage || "Failed to load lines."}
+      </div>
+    );
+  }
+  if (lines.length === 0) {
+    return (
+      <div className="py-4 text-center text-[12px] text-ink-muted">
+        {emptyLabel}
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border bg-surface">
+      <div className="min-w-[540px]">
+        <div
+          className={cn(
+            GRID,
+            "border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted"
+          )}
+        >
+          <span>Group</span>
+          <span>Item</span>
+          <span className="text-right">Qty</span>
+          <span className="text-right">Amount</span>
+        </div>
+        {lines.map((l, i) => {
+          // Item CODE first, then the variant subtitle; live variant summary
+          // wins over the stored description2 (which can be stale on older rows
+          // with no variants blob) — the same shared order-line rule the detail
+          // drawers already apply.
+          const { primary, secondary } = orderLineIdentity({
+            code: l.code ?? undefined,
+            description: l.description ?? undefined,
+            variant:
+              buildVariantSummary(l.itemGroup ?? "others", l.variants ?? null) ||
+              (l.description2 ?? ""),
+          });
+          return (
+            <div
+              key={i}
+              className={cn(
+                GRID,
+                "border-b border-border-subtle px-4 py-2.5 last:border-b-0"
+              )}
+            >
+              <span>
+                <ItemGroupPill group={l.itemGroup} />
+              </span>
+              <div className="min-w-0">
+                <div className="text-[12.5px] font-semibold text-ink">
+                  {primary || "—"}
+                </div>
+                {secondary && (
+                  <div className="mt-0.5 text-[11px] leading-snug text-ink-secondary">
+                    {secondary}
+                  </div>
+                )}
+              </div>
+              <span className="text-right font-money text-[12px] text-ink-secondary">
+                {l.qty}
+              </span>
+              <span className="text-right font-money text-[12px] font-semibold text-ink">
+                {fmtRm(l.amountCenti)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export default DocumentLinesExpansion;

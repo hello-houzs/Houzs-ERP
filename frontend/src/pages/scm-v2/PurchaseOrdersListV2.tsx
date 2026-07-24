@@ -29,6 +29,11 @@ import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
 import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
+import {
+  DocumentLinesExpansion,
+  type DocumentDrillLine,
+  type DrillItemFields,
+} from "../../components/DocumentLinesExpansion";
 import { ListPager } from "../../components/ListPager";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { Badge } from "../../components/Badge";
@@ -554,6 +559,38 @@ const SORT_COL_MAP: Record<string, string> = {
   total: "total_centi",
 };
 
+// ─── Row drill-down (DataTable `expandable`) ──────────────────────────────────
+// Inline per-line breakdown for one PO, rendered under its parent row when the
+// chevron is toggled. Lazy-fetches via the SAME usePurchaseOrderDetail hook the
+// drawer uses — TanStack caches it, so expanding a row the drawer already opened
+// (or re-expanding) is instant. Group + item code/variant + Qty (ordered) +
+// Amount, via the shared DocumentLinesExpansion. A PO is a purchase-side doc
+// with no MRP coverage on its lines, so the SO/DO-only Stock + Incoming PO
+// columns are correctly absent.
+function PoLinesExpansion({ id }: { id: string }) {
+  const detailQ = usePurchaseOrderDetail(id);
+  const items =
+    ((detailQ.data as { items?: DrillItemFields[] } | undefined)?.items ?? []);
+  const lines: DocumentDrillLine[] = items.map((l) => ({
+    itemGroup: l.item_group ?? null,
+    code: l.material_code ?? null,
+    description: l.description || l.material_name || null,
+    description2: l.description2 ?? null,
+    variants: l.variants ?? null,
+    qty: Number(l.qty ?? 0),
+    amountCenti: l.line_total_centi ?? 0,
+  }));
+  return (
+    <DocumentLinesExpansion
+      isLoading={detailQ.isLoading}
+      isError={Boolean(detailQ.error)}
+      errorMessage={detailQ.error instanceof Error ? detailQ.error.message : null}
+      lines={lines}
+      emptyLabel="No lines on this purchase order."
+    />
+  );
+}
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function PurchaseOrdersListV2() {
@@ -1070,6 +1107,10 @@ export function PurchaseOrdersListV2() {
                 columns={columns}
                 getRowKey={(r) => r.id}
                 onRowClick={(r) => setSelected(r)}
+                expandable={{
+                  render: (r) => <PoLinesExpansion id={r.id} />,
+                  rowKey: (r) => r.id,
+                }}
                 selection={{
                   selectedIds,
                   onToggle: toggleSelect,
