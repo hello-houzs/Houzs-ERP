@@ -100,6 +100,17 @@ showroom rows get synthetic ids `showroom:<uuid>` (`:987`) and are de-duplicated
 case-insensitively against the project venues (`:972-978`, `:996`). There is no
 mobile venue-management screen; the mobile venue surface is the SO form.
 
+**Venue writes are company-scoped** (fix `fix/venue-save-company-scope`,
+2026-07-24), the same lock the sibling `/brands` handlers already carry.
+`GET /venues` filters by the active company (`company_id`, PG mig 0093), so every
+write must stay inside it too: `POST /venues` resolves the active company via
+`requireActiveCompanyId(c)` and **refuses with `company_unresolved` (409)** rather
+than falling back to the `NOT NULL DEFAULT <HOUZS>` column default (the bug that
+made a 2990 venue save then vanish), stamps `company_id` on the INSERT, and scopes
+its existing-by-name upsert to the caller's company so it can't hijack another
+company's same-named row. `PATCH`/`DELETE /venues/:id` carry the same
+`activeCompanySql(c)` guard on their WHERE; PATCH returns **404** on a scoped miss.
+
 ### Data hooks and caching
 
 The desktop page sets **no per-callsite `staleTime`, `gcTime` or
