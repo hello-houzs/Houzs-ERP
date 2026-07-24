@@ -1,4 +1,4 @@
--- 0192_mail_2990_mailbox.sql (Postgres). Wire 2990's mailbox into the Mail
+-- 0193_mail_2990_mailbox.sql (Postgres). Wire 2990's mailbox into the Mail
 -- Center: hello@2990shome.com (owner ask 2026-07-24).
 --
 -- Two seeds, both canonical production data (not demo rows):

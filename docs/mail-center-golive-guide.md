@@ -87,7 +87,7 @@ ACTIVE company's Branding, and reply/compose from a 2990 mailbox goes out as
    new account: `[{"user":"hello@2990shome.com","password":"<app password>"}]`.
    The sync MERGES it with the existing `IMAP_USER`/`IMAP_PASSWORD` pair (which
    keeps pulling hello@houzscentury.com untouched). The next run starts pulling.
-4. **ERP** — migration 0192 seeds both the 2990 Branding email and the
+4. **ERP** — migration 0193 seeds both the 2990 Branding email and the
    `hello@2990shome.com` mailbox row on deploy. What remains manual: Mail Center
    -> Mailboxes (2990 active) -> assign who can read/send from it.
 5. **Test** — compose from `hello@2990shome.com` to an external address; send a
