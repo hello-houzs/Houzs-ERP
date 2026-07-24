@@ -29,6 +29,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { scmListReturnTo } from "../../lib/scmListReturn";
 import {
   ArrowLeft,
   History,
@@ -667,7 +668,7 @@ export function SalesInvoiceDetailV2() {
   // details page's back button goes to its relevant list, not wherever
   // browser history happens to point). The list restores its own sticky
   // filters, so the prior filtered view comes back — no context lost.
-  const goBack = () => navigate("/scm/sales-invoices");
+  const goBack = () => navigate(scmListReturnTo("/scm/sales-invoices"));
   const goEdit = () => id && navigate(`/scm/sales-invoices/${id}?edit=1`);
   // Status transitions post to the same server endpoint the ledger page uses.
   // The endpoint keys off UPPERCASE status values (SENT / CANCELLED / PAID) — a

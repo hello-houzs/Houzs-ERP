@@ -24,6 +24,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { scmListReturnTo } from "../../lib/scmListReturn";
 import {
   ArrowLeft,
   History,
@@ -851,7 +852,7 @@ export function DeliveryOrderDetailV2() {
   // details page's back button goes to its relevant list, not wherever
   // browser history happens to point). The list restores its own sticky
   // filters, so the prior filtered view comes back — no context lost.
-  const goBack = () => navigate("/scm/delivery-orders");
+  const goBack = () => navigate(scmListReturnTo("/scm/delivery-orders"));
   const goEdit = () => id && navigate(`/scm/delivery-orders/new?edit=${id}`);
   const doCancel = () => {
     if (!deliveryOrder) return;

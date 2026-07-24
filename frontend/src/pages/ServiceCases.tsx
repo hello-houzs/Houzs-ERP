@@ -75,6 +75,7 @@ import {
   pageSizePreference,
   useIdentityPreference,
 } from "../hooks/useIdentityPreference";
+import { readAssrListFilter, writeAssrListFilter } from "../lib/assrListFilter";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
@@ -393,8 +394,20 @@ function CasesView({
   const dialog = useDialog();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const [stage, setStage] = useState<StageFilter>("ALL");
-  const [search, setSearch] = useState("");
+  // Search + stage restore from a per-tab session record, so opening a case and
+  // clicking Back returns to the still-filtered list (owner 2026-07-24, session
+  // scope — see lib/assrListFilter.ts). The other list filters already persist
+  // via useIdentityPreference; these two were the reset-on-unmount gap.
+  const [stage, setStage] = useState<StageFilter>(
+    () => (readAssrListFilter().stage as StageFilter) || "ALL",
+  );
+  const [search, setSearch] = useState(() => readAssrListFilter().search);
+  // Write-through: persist the current search + stage to the per-tab record on
+  // every change, so a Back into this list restores them. Cleared automatically
+  // once both are empty/ALL (see writeAssrListFilter).
+  useEffect(() => {
+    writeAssrListFilter({ search, stage });
+  }, [search, stage]);
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useIdentityPreference("pp:assr", 50, pageSizePreference([10, 25, 50, 100, 200]));
   const [showArchived, setShowArchived] = useIdentityPreference("assr:showArchived", false, booleanPreference);

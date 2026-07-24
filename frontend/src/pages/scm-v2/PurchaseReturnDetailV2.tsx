@@ -6,6 +6,7 @@
 import { useMemo, type ReactNode } from "react";
 import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { scmListReturnTo } from "../../lib/scmListReturn";
 import {
   ArrowLeft,
   History,
@@ -259,7 +260,7 @@ export function PurchaseReturnDetailV2() {
   // details page's back button goes to its relevant list, not wherever
   // browser history happens to point). The list restores its own sticky
   // filters, so the prior filtered view comes back — no context lost.
-  const goBack = () => navigate("/scm/purchase-returns");
+  const goBack = () => navigate(scmListReturnTo("/scm/purchase-returns"));
   const goEdit = () => id && navigate(`/scm/purchase-returns/${id}?edit=1`);
   const goHistory = () => id && navigate(`/scm/purchase-returns/${id}?tab=history`);
   // Render + download the PR PDF via the shared jspdf generator (client-side),
