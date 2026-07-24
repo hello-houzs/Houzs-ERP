@@ -1,5 +1,12 @@
 ## 2026-07-24
 
+### [MEDIUM] Combo Pricing cards showed a dash in (almost) every price cell - the card read the COST map, which is allowed to be all-null, and the type dropped the selling map
+- **Symptom.** Owner 2026-07-24 with screenshot ("这一个的 UI 也爆掉了"): Products -> Combo Pricing, every per-seat cell "—" except one lone RM 2,990.00; plus a raw grey "PRICE_1" chip.
+- **Root cause (traced).** NOT the new price-history work (#1160/#1167 never touched the combo path - verified by diff) and NOT a render bug (the lone surviving cell proves the pipeline works). `SofaComboTab`'s card read ONLY `pricesByHeight` - the COST/PO-benchmark map - and the backend explicitly permits that map to be all-null (only the SELLING side has an all-null guard). The winning `sofa_combo_pricing` rows carry their prices in `selling_prices_by_height`, which the backend returns but the frontend `SofaComboRule` type silently dropped.
+- **Fix.** Carry `sellingPricesByHeight`/`pwpPricesByHeight` in the type; the master card renders selling-first (cost as fallback), while supplier-scoped rows (supplierId set - the purchasing benchmark card) keep showing cost. "PRICE_1" chip renders as "Fabric Tier 1".
+- **The class, for next time.** A wire field the frontend type omits is invisible forever - and a card that shows a NULLABLE map with a dash fallback looks "broken" the day the nullable side is empty. When two parallel maps exist (cost vs selling), every card must state which one it shows and fall back deliberately.
+- **Ref:** #<PR>. Owner screenshot 2026-07-24.
+
 ### [LOW] Fabric line read "CG-002 (KN390-2) CG-002 Sand" - the supplier-parens enrichment made the colour label's leading code show twice
 - **Symptom.** Owner 2026-07-24 with screenshot: an SO drill line showed `CG-002 (KN390-2) CG-002 Sand` - the fabric code twice.
 - **Root cause (traced).** Colour labels often lead with the fabric code ("CG-002 Sand"). Before the supplier-code parens (#1174), the bare-vs-richer dedupe dropped the bare `CG-002` because the richer label starts with it. Once the code renders as `CG-002 (KN390-2)`, NEITHER part leads with the other, so both survive and the code doubles.

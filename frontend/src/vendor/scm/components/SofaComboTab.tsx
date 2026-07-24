@@ -566,7 +566,13 @@ function ComboCard({
         }}>
           {label}
         </span>
-        {rule.tier && <span style={chipStyleSoft}>{rule.tier}</span>}
+        {/* Friendly tier label — the raw enum ("PRICE_1") read as a bug to the
+            owner. Same vocabulary, human face. */}
+        {rule.tier && (
+          <span style={chipStyleSoft}>
+            {rule.tier.replace(/^PRICE_(\d+)$/, 'Fabric Tier $1')}
+          </span>
+        )}
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); onDelete(); }}
@@ -582,7 +588,15 @@ function ComboCard({
           auto-fill at a comfortable min-width and the size + price font is bumped. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(68px, 1fr))', gap: 6 }}>
         {sortByNumeric(heights).map((h) => {
-          const v = rule.pricesByHeight?.[h];
+          /* Owner 2026-07-24 ("爆掉了"): the master card used to read ONLY the
+             COST map (prices_by_height), which the backend explicitly allows
+             to be all-null — so combos whose prices live in the SELLING map
+             rendered an all-dash grid. Master view now shows selling first,
+             cost as fallback; a supplier-scoped row (supplierId set) is the
+             purchasing/PO-benchmark card and keeps showing cost. */
+          const v = rule.supplierId
+            ? rule.pricesByHeight?.[h]
+            : (rule.sellingPricesByHeight?.[h] ?? rule.pricesByHeight?.[h]);
           return (
             <div key={h} style={{
               padding: '6px 8px',
