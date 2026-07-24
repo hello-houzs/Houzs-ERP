@@ -44,9 +44,11 @@ import {
   useReopenPurchaseOrder,
   useSubmitPurchaseOrder,
   useConfirmPurchaseOrder,
+  useSupplierDetail,
   type PoHeaderRow,
   type PoItemRow,
 } from "../../vendor/scm/lib/suppliers-queries";
+import { skuMapFromBindings, supplierCodeFor } from "../../vendor/scm/lib/supplier-doc-data";
 import { useWarehouses } from "../../vendor/scm/lib/inventory-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
@@ -405,6 +407,27 @@ function PurchaseOrderDetailV2ReadOnly() {
     { label: purchaseOrder?.po_number ?? id ?? "Purchase Order" },
   ]);
 
+  /* Supplier SKU — the code the SUPPLIER acts on, and the one the purchaser
+     quotes on the phone. Lines SNAPSHOT it at PO creation (`supplier_sku`);
+     lines raised before that column existed didn't, so fall back to the live
+     supplier↔material binding — the same two-step the PRINTED PO already runs
+     (supplierCodeFor). The screen must not say "—" where the PDF prints a code.
+
+     The binding fetch is skipped entirely when every line carries a snapshot,
+     which is the normal case; `useSupplierDetail(null)` is disabled, so this
+     costs nothing on a modern PO. */
+  const needsSkuLookup = useMemo(
+    () => items.some((l) => !(l.supplier_sku ?? "").trim()),
+    [items]
+  );
+  const supplierForSku = useSupplierDetail(
+    needsSkuLookup ? purchaseOrder?.supplier_id ?? null : null
+  );
+  const skuByMaterialCode = useMemo(
+    () => skuMapFromBindings(supplierForSku.data?.bindings),
+    [supplierForSku.data]
+  );
+
   const eff = purchaseOrder ? effectiveOf(purchaseOrder) : null;
   const stageLabel = purchaseOrder
     ? STAGE_LABEL[(purchaseOrder.status || "").toUpperCase()] ??
@@ -541,8 +564,9 @@ function PurchaseOrderDetailV2ReadOnly() {
     }
   };
 
-  // Line item columns — 6 cols with a Received column and a Balance column so
-  // ops can see per-line where the PO stands vs the supplier's shipments.
+  // Line item columns — carries a Received and a Balance column so ops can see
+  // per-line where the PO stands vs the supplier's shipments. Any of these can
+  // be hidden from the Columns drawer; only Item is alwaysVisible.
   const lineColumns: Column<PoItemRow>[] = [
     {
       key: "item",
@@ -580,6 +604,27 @@ function PurchaseOrderDetailV2ReadOnly() {
               </div>
             )}
           </div>
+        );
+      },
+    },
+    {
+      /* Sits next to Item deliberately: the two codes for the same thing —
+         ours on the left, theirs on the right — read as a pair, which is how
+         the purchaser uses them when chasing a line with the supplier. */
+      key: "supplierSku",
+      label: "Supplier SKU",
+      width: "132px",
+      getValue: (l) => {
+        const code = supplierCodeFor(l, skuByMaterialCode);
+        // getValue feeds sort / search / export — an em dash is a RENDER
+        // fallback, not a value, so unknown sorts and exports as empty.
+        return code === "—" ? "" : code;
+      },
+      render: (l) => {
+        const code = supplierCodeFor(l, skuByMaterialCode);
+        if (code === "—") return <span className="text-ink-muted">—</span>;
+        return (
+          <span className="font-mono text-[12px] text-ink-secondary">{code}</span>
         );
       },
     },
