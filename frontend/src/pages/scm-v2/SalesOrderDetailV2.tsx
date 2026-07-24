@@ -983,8 +983,8 @@ function SalesOrderDetailV2ReadOnly() {
                 />
                 <Field
                   label="Processing date"
-                  value={fmtDate(salesOrder.processing_date)}
-                  muted={!salesOrder.processing_date}
+                  value={fmtDate(salesOrder.internal_expected_dd ?? salesOrder.processing_date)}
+                  muted={!(salesOrder.internal_expected_dd ?? salesOrder.processing_date)}
                 />
                 <Field
                   label="Delivery date"
@@ -1121,8 +1121,8 @@ function SalesOrderDetailV2ReadOnly() {
                 <KeyDateRow k="SO date" v={fmtDate(salesOrder.so_date)} />
                 <KeyDateRow
                   k="Processing"
-                  v={fmtDate(salesOrder.processing_date)}
-                  muted={!salesOrder.processing_date}
+                  v={fmtDate(salesOrder.internal_expected_dd ?? salesOrder.processing_date)}
+                  muted={!(salesOrder.internal_expected_dd ?? salesOrder.processing_date)}
                 />
                 <KeyDateRow
                   k="Delivery"
