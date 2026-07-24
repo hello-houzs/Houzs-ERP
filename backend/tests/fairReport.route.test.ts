@@ -228,9 +228,9 @@ describe('filters narrow correctly', () => {
     const body = (await (await req(app, '/fair-report?stage=so&state=Johor', env)).json()) as any;
     expect(body.rows.map((r: any) => r.so_no)).toEqual(['SO-2']);
   });
-  test('venue filter', async () => {
+  test('venue filter (on the venue TEXT, not the dead venue_id column)', async () => {
     const { app, env } = appWith(fixture());
-    const body = (await (await req(app, '/fair-report?stage=so&venue=v-1', env)).json()) as any;
+    const body = (await (await req(app, '/fair-report?stage=so&venue=Hall%201', env)).json()) as any;
     expect(body.rows.map((r: any) => r.so_no)).toEqual(['SO-1']);
   });
   test('branding filter', async () => {
