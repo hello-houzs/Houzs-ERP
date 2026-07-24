@@ -1,33 +1,36 @@
 // ----------------------------------------------------------------------------
-// StatePicker — canonical state dropdown across MY + CN + SG.
+// StatePicker — the ONE canonical state dropdown for every address surface.
 //
-// Owner directive 2026-07-23 (after finding my `(legacy)` sneak-through in
-// #1054/#1058/#1059):
-//   "1. 默认设置(By default): 只显示马来西亚的 state.
-//    2. 查看其它地区: 如果要看到中国和新加坡的 state, 用户需要点击 Others 才会跳出来.
-//    3. 搜索功能: 用户可以通过 Search 功能直接搜索并打出这些 state."
+// Owner directive 2026-07-24 (task #102): one consistent, clean state selector
+// everywhere — no ad-hoc free-text state entry.
+//   • States are ALWAYS GROUPED BY COUNTRY in native <optgroup>s. Malaysia (the
+//     primary market) lists first, then every other seeded country
+//     alphabetically, with any country-less state under "Other".
+//   • Type-to-search FILTERS the grouped list (desktop). It only narrows the
+//     seeded options; it can NEVER introduce a new value.
+//   • The legacy "Others" expander and the free-text "Search" escape are GONE.
+//     Both were backdoors — the first hid CN/SG behind an extra click, the
+//     second let an operator commit a state that isn't in scm.my_localities.
 //
-// TWO MODES driven by the `country` prop:
-//   • Country pinned (Warehouse / Supplier form — country is picked separately)
-//     → plain <select> filtered to that country's states. No Others toggle,
-//       no search overlay — the country picker already narrowed the scope.
-//   • Country empty (Venue form, or any surface where State is picked before
-//     Country)
-//     → search input + <select> with Malaysia states listed by default and
-//       an "Others" button that expands to show China + Singapore states.
-//       Typing in the search box auto-expands Others and filters every
-//       state across all three countries.
+// TWO layouts, driven by the `country` prop:
+//   • Country pinned (Warehouse / Supplier edit — country is a separate field)
+//     → a flat <select> of just that country's states.
+//   • Country empty (create-supplier / Venue / SO forms) → the grouped-by-country
+//     <select>.
+//   Both desktop layouts sit under a visible type-to-search box; only `compact`
+//   (mobile, native OS picker) is select-only.
 //
-// State value MUST be in scm.my_localities — no `(legacy)` fallback option
-// (that was the backdoor). If the current stored value isn't in the seeded
-// set, the <select> renders it as "— pick state —" instead of preserving
-// an unmaintained string. The operator is forced to pick a legit state, or
-// go add the missing state via the Localities Maintenance UI.
+// STYLING: the default select + search box are bordered to match the sibling
+// City / Country / Postcode selects (see StatePicker.module.css) — the owner's
+// 2026-07-24 fix for the picker reading as a bare borderless control. A caller
+// may still pass `selectClassName` (e.g. mobile "fld-i") to restyle the select.
 //
-// NEVER a free-text fallback. If localities is loading or the seed is
-// empty (cold-start / new environment before mig 0181 runs), the dropdown
-// stays disabled with "Loading…" — writing an arbitrary state through a
-// text input is exactly the pattern this component exists to remove.
+// The value MUST live in scm.my_localities. While the seed is loading or empty
+// the control stays DISABLED ("Loading…" / "No states seeded") — never a
+// free-text input, which is the exact pattern this component removes. A stored
+// value that isn't in the seeded set is still shown as the current selection so
+// old data never blanks; it just isn't offered as a fresh option — pick a
+// seeded state, or add the missing one via the Localities Maintenance UI.
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState } from 'react';
@@ -37,8 +40,10 @@ import {
   countryForState,
   distinctStates,
 } from '../lib/localities-queries';
+import styles from './StatePicker.module.css';
 
 const PRIMARY_COUNTRY = 'Malaysia' as const;
+const UNGROUPED = 'Other' as const;
 
 export const StatePicker = ({
   country = '',
@@ -51,59 +56,67 @@ export const StatePicker = ({
   compact = false,
   selectClassName,
 }: {
-  /** When set, restrict the picker to this country's states (no Others toggle).
-   *  When empty, default to Malaysia + Others expander for CN/SG. */
+  /** When set, restrict the picker to this country's states (flat list).
+   *  When empty, show every seeded state grouped by country. */
   country?: string;
   value: string;
-  /** derivedCountry is the state's country from my_localities — the caller
-   *  can patch its own Country field if it was blank. Null if unknown. */
+  /** derivedCountry is the state's country from my_localities — the caller can
+   *  patch its own Country field if it was blank. Null if unknown. */
   onChange: (nextState: string, derivedCountry: string | null) => void;
   className?: string;
   style?: React.CSSProperties;
   disabled?: boolean;
   placeholder?: string;
-  /** Compact mode — render ONLY the <select> with MY / Others <optgroup>s
-   *  (no search input, no Show-Others button). For mobile / tight inline
-   *  contexts where the native select+optgroup already gives an OS-level
-   *  grouped picker (iOS wheel picker, Android list). Grouping still keeps
-   *  MY on top so the owner's "MY default" spirit survives. */
+  /** Compact — render ONLY the grouped <select> (no search box). For mobile /
+   *  tight inline contexts where the native optgroup picker already groups by
+   *  country (iOS wheel, Android list). Grouping keeps MY on top so the owner's
+   *  "MY first" spirit survives. */
   compact?: boolean;
   /** Applied to the inner <select> so the caller can share its form styles. */
   selectClassName?: string;
 }) => {
   const localities = useLocalities();
   const rows = localities.data ?? [];
-  const [showOthers, setShowOthers] = useState(false);
   const [query, setQuery] = useState('');
   const isCountryPinned = country.trim().length > 0;
 
-  /* Country-pinned view: single flat list of that country's states.
-     Country-empty view: pre-computed MY / Others buckets. */
+  /* Country-pinned: a flat list of that country's states.
+     Country-empty: states bucketed by country, MY first, "Other" last. */
   const scoped = useMemo(
     () => (isCountryPinned ? statesInCountry(rows, country) : []),
     [rows, country, isCountryPinned],
   );
-  const groups = useMemo(() => {
-    if (isCountryPinned) return null;
-    const my = statesInCountry(rows, PRIMARY_COUNTRY);
-    const others = distinctStates(rows).filter((s) => !my.includes(s));
-    // Bucket Others by country so the <optgroup> labels stay legible.
+  const orderedGroups = useMemo<[string, string[]][]>(() => {
+    if (isCountryPinned) return [];
     const byCountry = new Map<string, string[]>();
-    for (const s of others) {
-      const c = countryForState(rows, s) ?? 'Other';
-      const arr = byCountry.get(c) ?? [];
-      arr.push(s);
-      byCountry.set(c, arr);
+    for (const s of distinctStates(rows)) {
+      const c = countryForState(rows, s) ?? UNGROUPED;
+      const arr = byCountry.get(c);
+      if (arr) arr.push(s);
+      else byCountry.set(c, [s]);
     }
-    return { my, byCountry };
+    // MY first, then every other country A→Z, "Other" (country-less) last.
+    return Array.from(byCountry.entries()).sort(([a], [b]) => {
+      if (a === b) return 0;
+      if (a === PRIMARY_COUNTRY) return -1;
+      if (b === PRIMARY_COUNTRY) return 1;
+      if (a === UNGROUPED) return 1;
+      if (b === UNGROUPED) return -1;
+      return a.localeCompare(b);
+    });
   }, [rows, isCountryPinned]);
 
   const q = query.trim().toLowerCase();
   const match = (s: string) => !q || s.toLowerCase().includes(q);
 
-  /* Search auto-expands Others so a match under China/Singapore is visible
-     without a second click. */
-  const showOthersEffective = showOthers || q.length > 0;
+  /* Is the stored value one of the seeded states? If not (legacy data, or a
+     state whose country differs from a now-pinned one), it is still shown as the
+     current selection below so it never blanks. */
+  const knownStates = useMemo(
+    () => new Set(isCountryPinned ? scoped : distinctStates(rows)),
+    [isCountryPinned, scoped, rows],
+  );
+  const orphanValue = value.trim().length > 0 && !knownStates.has(value);
 
   const handlePick = (nextState: string) => {
     if (!nextState) {
@@ -114,93 +127,64 @@ export const StatePicker = ({
     onChange(nextState, derived);
   };
 
-  /* Loading / empty locality set: keep the dropdown DISABLED rather than
-     falling back to free text. Empty = pre-seed environment; loading = the
-     data fetch is in flight. Either way, letting the operator type a raw
-     string is the exact backdoor this component removes. */
-  const isEmpty =
-    !localities.isLoading && rows.length === 0;
+  /* Loading / empty locality set: keep the dropdown DISABLED rather than falling
+     back to free text. Empty = pre-seed environment; loading = fetch in flight.
+     Either way, letting the operator type a raw string is the backdoor this
+     component exists to remove. */
+  const isEmpty = !localities.isLoading && rows.length === 0;
   const controlsDisabled = disabled || localities.isLoading || isEmpty;
-
-  /* Compact mode always shows every optgroup (MY on top, then Others by
-     country). The native OS picker groups them for tapping — no search input
-     / expand button needed. Full mode keeps the desktop UX (MY-default with
-     Others toggle + search box). */
-  const alwaysShowOthers = compact;
-  const showOthersRendered = compact || showOthersEffective;
 
   const selectEl = (
     <select
       value={value}
       onChange={(e) => handlePick(e.target.value)}
       disabled={controlsDisabled}
-      className={selectClassName}
-      style={selectClassName ? undefined : { width: '100%', padding: '6px 8px', boxSizing: 'border-box' }}
+      className={selectClassName ?? styles.select}
     >
       <option value="">
         {localities.isLoading ? 'Loading…' : isEmpty ? 'No states seeded' : placeholder}
       </option>
-      {isCountryPinned ? (
-        scoped.filter(match).map((s) => (
-          <option key={s} value={s}>{s}</option>
-        ))
-      ) : (
-        <>
-          <optgroup label={PRIMARY_COUNTRY}>
-            {groups!.my.filter(match).map((s) => (
-              <option key={`my-${s}`} value={s}>{s}</option>
-            ))}
-          </optgroup>
-          {showOthersRendered &&
-            Array.from(groups!.byCountry.entries())
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(([c, list]) => (
-                <optgroup key={c} label={c}>
-                  {list.filter(match).map((s) => (
-                    <option key={`${c}-${s}`} value={s}>{s}</option>
-                  ))}
-                </optgroup>
-              ))}
-        </>
-      )}
+      {/* Stored value not in the seed — shown so old data never blanks. Not
+          grouped (it isn't a maintained state); picking a real one replaces it. */}
+      {orphanValue && <option value={value}>{value}</option>}
+      {isCountryPinned
+        ? scoped.filter(match).map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))
+        : orderedGroups.map(([c, list]) => {
+            const opts = list.filter(match);
+            if (opts.length === 0) return null;
+            return (
+              <optgroup key={c} label={c}>
+                {opts.map((s) => (
+                  <option key={`${c}-${s}`} value={s}>{s}</option>
+                ))}
+              </optgroup>
+            );
+          })}
     </select>
   );
 
+  const wrapCls = className ? `${styles.wrap} ${className}` : styles.wrap;
+
+  /* Compact (mobile native picker) is select-only. Every desktop layout —
+     country-pinned AND country-empty — carries the type-to-search box above
+     the select, so the search is consistently visible on every surface. */
   if (compact) {
-    return <div className={className} style={style}>{selectEl}</div>;
+    return <div className={wrapCls} style={style}>{selectEl}</div>;
   }
 
   return (
-    <div className={className} style={style}>
-      {!isCountryPinned && (
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search state…"
-          disabled={controlsDisabled}
-          style={{ width: '100%', marginBottom: 6, padding: '6px 8px', boxSizing: 'border-box' }}
-        />
-      )}
+    <div className={wrapCls} style={style}>
+      <input
+        type="search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search state…"
+        disabled={controlsDisabled}
+        className={styles.search}
+      />
       {selectEl}
-      {!isCountryPinned && !q && !alwaysShowOthers && (
-        <button
-          type="button"
-          onClick={() => setShowOthers((v) => !v)}
-          disabled={controlsDisabled}
-          style={{
-            marginTop: 6,
-            padding: '4px 8px',
-            fontSize: 12,
-            background: 'transparent',
-            border: '1px solid var(--line, #ccc)',
-            borderRadius: 4,
-            cursor: controlsDisabled ? 'not-allowed' : 'pointer',
-          }}
-        >
-          {showOthers ? '▲ Hide Others' : '▼ Show Others (China / Singapore)'}
-        </button>
-      )}
     </div>
   );
 };
