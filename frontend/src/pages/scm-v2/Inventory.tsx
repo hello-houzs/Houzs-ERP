@@ -875,7 +875,7 @@ const BatchesTab = ({
         {warehouses.map((w) => (
           <button key={w.id} type="button" className={styles.chip}
             data-active={warehouseId === w.id} onClick={() => setWarehouseId(w.id)}>
-            {w.name}
+            {w.code}
           </button>
         ))}
       </div>
@@ -1094,7 +1094,7 @@ const ReservationsTab = ({
         {warehouses.map((w) => (
           <button key={w.id} type="button" className={styles.chip}
             data-active={warehouseId === w.id} onClick={() => setWarehouseId(w.id)}>
-            {w.name}
+            {w.code}
           </button>
         ))}
       </div>
