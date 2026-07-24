@@ -25,6 +25,7 @@ import {
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { warehouseLabel } from '../lib/warehouse-label';
 import { todayMyt } from '../lib/my-time';
@@ -616,6 +617,10 @@ consignmentOrders.get('/:docNo', async (c) => {
   const deliveriesMap = await coLineDeliveries(sb, itemRows.map((it) => it.id));
   const items = itemRows.map((it) => ({ ...it, deliveries: deliveriesMap.get(it.id) ?? [] }));
   gateCoFinance(c, salesOrder, items);
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" — same READ enrichment as the SO/PO/DO/SI details
+  // (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ salesOrder, items });
 });
 

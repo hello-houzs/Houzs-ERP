@@ -598,12 +598,14 @@ const SkuVariantPanel = ({ code }: { code: string }) => {
   const bd = useInventoryProductBreakdown(code);
   const balances = (bd.data?.balances ?? []).filter((b) => b.product_code === code);
   const variants = useMemo(() => {
-    const m = new Map<string, { vk: string; qty: number; value: number }>();
+    const m = new Map<string, { vk: string; sup: string | null; qty: number; value: number }>();
     for (const b of balances) {
       const vk = b.variant_key ?? '';
-      const cur = m.get(vk) ?? { vk, qty: 0, value: 0 };
+      const cur = m.get(vk) ?? { vk, sup: null, qty: 0, value: 0 };
       cur.qty += b.qty ?? 0;
       cur.value += b.value_sen ?? 0;
+      // Same vk = same fabric = same supplier code — keep the first stamp seen.
+      cur.sup = cur.sup ?? b.fabric_supplier_code ?? null;
       m.set(vk, cur);
     }
     return [...m.values()].sort((a, b) =>
@@ -626,7 +628,7 @@ const SkuVariantPanel = ({ code }: { code: string }) => {
               <td style={{ width: 280 }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, paddingLeft: 22 }}>
                   <span className={styles.numCellZero}>↳</span>
-                  <span>{formatVariantKey(v.vk) || 'Standard'}</span>
+                  <span>{formatVariantKey(v.vk, v.sup) || 'Standard'}</span>
                 </span>
               </td>
               <td className={`${styles.numCell} ${qtyClass}`} style={{ width: 100, textAlign: 'right' }}>
@@ -849,7 +851,7 @@ const BatchComponentsPanel = ({ batch }: { batch: InventoryBatch }) => (
           </td>
           <td>
             {c.productName ?? '—'}
-            {c.variantKey && <span className={styles.numCellZero}> · {formatVariantKey(c.variantKey) || 'Standard'}</span>}
+            {c.variantKey && <span className={styles.numCellZero}> · {formatVariantKey(c.variantKey, c.fabric_supplier_code) || 'Standard'}</span>}
           </td>
           <td className={`${styles.numCell} ${styles.numCellZero}`} style={{ width: 110, textAlign: 'right' }}>
             {fmtRm(c.unitCostSen)}
@@ -966,7 +968,7 @@ const ProductBreakdownDrawer = ({
               )}
               {!breakdown.isLoading && balances.map((b) => {
                 const avgCost = b.qty > 0 && b.value_sen ? b.value_sen / b.qty : 0;
-                const attrs = formatVariantKey(b.variant_key);
+                const attrs = formatVariantKey(b.variant_key, b.fabric_supplier_code);
                 return (
                   <tr key={`${b.warehouse_id}|${b.variant_key ?? ''}`}>
                     <td>{b.warehouse_code} · {b.warehouse_name}</td>

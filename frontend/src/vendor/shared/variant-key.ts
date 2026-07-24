@@ -161,9 +161,21 @@ const VARIANT_LABELS: Record<string, string> = {
  * show it, e.g. "Standard").
  *
  * Was: "Fabric BF-16 · Gap 16 · Leg 2" (labelled + " · ") — retired.
+ *
+ * Owner 2026-07-24 ("全部包裹 stocks 你也是要看到 supplier 的 fabric code"):
+ * optional `fabricSupplierCode` — the supplier's own code for the key's
+ * internal fabric, resolved READ-side by the inventory endpoints (batched,
+ * fail-soft; see backend scm/lib/fabric-supplier-code.ts). When present +
+ * distinct it renders in parens straight after the fabric code — the SAME
+ * final format buildVariantSummary uses on document lines:
+ * "EZ-002 (KN390-2) / SEAT 28 / LEG 6\"". Absent -> unchanged.
  */
-export function formatVariantKey(key: string | null | undefined): string {
+export function formatVariantKey(
+  key: string | null | undefined,
+  fabricSupplierCode?: string | null,
+): string {
   if (!key) return '';
+  const sup = (fabricSupplierCode ?? '').trim();
   return key
     .split('|')
     .map((part) => {
@@ -173,7 +185,12 @@ export function formatVariantKey(key: string | null | undefined): string {
       const value = part.slice(eq + 1);
       // Fabric code is bare (no "Fabric" prefix — matches buildVariantSummary);
       // everything else upper-cases the slug label to read like the SO summary.
-      if (slug === 'fabriccode') return value.toUpperCase();
+      if (slug === 'fabriccode') {
+        const code = value.toUpperCase();
+        // Distinct-only, same guard as buildVariantSummary — a supplier code
+        // equal to the internal code adds no parens.
+        return sup && sup.toUpperCase() !== code ? `${code} (${sup})` : code;
+      }
       const label = (VARIANT_LABELS[slug] ?? slug).toUpperCase();
       return `${label} ${value}`;
     })

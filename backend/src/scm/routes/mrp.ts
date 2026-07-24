@@ -45,6 +45,7 @@ import { computeVariantKey, buildVariantSummary, isServiceLine, splitSofaCode, e
 import { supabaseAuth } from '../middleware/auth';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
 import { activeCompanyId } from '../lib/companyScope';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import {
   loadLeadTimeBase,
   resolveLeadDays,
@@ -378,6 +379,20 @@ export async function computeMrp(
   };
   const effQtyOf = (r: DemandRow): number => Math.max(0, r.qty - deliveredNetOf(r.id));
   const demand = demandActive.filter((r) => effQtyOf(r) > 0);
+
+  // Stamp variants.fabricSupplierCode on the demand lines (ONE batched read,
+  // fail-soft) BEFORE any label is built, so every variant summary this page
+  // shows (bucket vlabel in section 6, sofa-set labels in section 8) renders
+  // the shared final fabric format "CG-001 Pearl (KN390-1)" — owner
+  // 2026-07-24, same READ enrichment as the document detail endpoints. The ctx
+  // shim mirrors `scoped()` above: eq(company_id) when a company is resolved,
+  // no filter otherwise. variantKeyOf is unaffected — fabricSupplierCode is
+  // not a key attribute (see shared/variant-key.ts ATTRS_BY_GROUP).
+  await enrichLinesWithFabricSupplierCode(
+    sb,
+    { get: (k: unknown) => (k === 'companyId' ? companyId ?? undefined : undefined) },
+    demand as unknown as Array<Record<string, unknown>>,
+  );
 
   // ── 2. Product master — category + name (bounded by the codes in demand) ─
   // The category lookup MUST be complete for every demanded SKU. An unbounded

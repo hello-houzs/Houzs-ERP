@@ -210,13 +210,22 @@ const variantLine = (
       const desc = fabricDescMap.get(code);  // our fabric_description
       if (ext || desc) {
         if (mapped === v) mapped = { ...v }; // clone once, on demand
-        // internal (external) — description. Strip a redundant leading code from
-        // the description ("EZ-008 Forest") so it doesn't read "EZ-008 (…) — EZ-008
-        // Forest" (Commander 2026-06-19, 2026-06-16).
+        // Owner format ruling 2026-07-24 (screenshots, "还是有很多个地方没有跟着改
+        // 过来"): the PDF must print the SAME final fabric format as the shared
+        // on-screen summary — description joined bare, supplier parens LAST:
+        // "CG-001 Pearl (KN390-1)". So the supplier code is no longer spliced
+        // inline here; it is stamped as variants.fabricSupplierCode and
+        // buildVariantSummary appends the parens at the end of the segment
+        // (the single place that rule lives). Strip a redundant leading code
+        // from the description ("EZ-008 Forest") so it doesn't read
+        // "EZ-008 EZ-008 Forest" (Commander 2026-06-19, 2026-06-16).
         const cleanDesc = desc && desc.toLowerCase().startsWith(code.toLowerCase())
           ? desc.slice(code.length).trim()
           : desc;
-        mapped[key] = `${code}${ext ? ` (${ext})` : ''}${cleanDesc ? ` — ${cleanDesc}` : ''}`;
+        mapped[key] = `${code}${cleanDesc ? ` ${cleanDesc}` : ''}`;
+        if (ext && !(mapped as Record<string, unknown>).fabricSupplierCode) {
+          (mapped as Record<string, unknown>).fabricSupplierCode = ext;
+        }
       }
     }
   }

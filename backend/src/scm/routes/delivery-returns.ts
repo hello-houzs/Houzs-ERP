@@ -32,6 +32,7 @@ import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { sourceUnitCostByItemId } from '../lib/source-cost';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 
 export const deliveryReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryReturns.use('*', supabaseAuth);
@@ -808,6 +809,10 @@ deliveryReturns.get('/:id', async (c) => {
      The refund/total everyone is meant to see (local_total_centi / refund_centi /
      line_total_centi) are deliberately NOT stripped. */
   gateDrFinance(c, h.data, items);
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" — same READ enrichment as the SO/PO/DO/SI details
+  // (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ deliveryReturn: h.data, items });
 });
 
