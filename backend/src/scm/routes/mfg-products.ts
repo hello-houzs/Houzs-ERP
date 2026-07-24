@@ -28,6 +28,8 @@ import { PRODUCT_FINANCE_KEYS, stripProductPriceHistory } from '../lib/finance-k
 import { scopeToCompany, activeCompanyId,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY,
   detailMissResponse } from '../lib/companyScope';
+import { todayMyt } from '../lib/my-time';
+import { resolveSellPriceSenAsOf, resolvePendingSellPriceAfter } from '../lib/product-pricing-history';
 import type { Env, Variables } from '../env';
 
 export const mfgProducts = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -989,3 +991,194 @@ mfgProducts.get('/:id/suppliers', async (c) => {
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ product, suppliers: data ?? [] });
 });
+
+// ── Effective-dated SELLING price (Pricing "Option B", ph.2) ──────────────────
+// Schedule a product's selling price BY DATE, and read the timeline back. Backed
+// by scm.mfg_product_price_history (migration 0187); the resolver
+// (lib/product-pricing-history.ts) returns the as-of price, falling back to the
+// flat mfg_products.sell_price_sen when no row applies — so with the table empty
+// every price resolves exactly as today. Append-only: a correction is a NEW row,
+// never an UPDATE/DELETE. See docs/pricing-effective-dating-design.md.
+//
+// ⚠️ SCOPE BOUNDARY: these routes only STORE/READ scheduled prices. The order
+// read-integration (mfg-pricing-recompute.ts takes the as-of price on a document's
+// own date — design phase 3) is deliberately NOT wired here, so no existing order
+// changes how it is priced.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// ── POST /:id/price-changes ───────────────────────────────────────────────────
+// Append ONE { effectiveFrom, sellPriceSen, notes? } row. Editor-gated (requireRole
+// / canWriteScmConfig — the SCM area guard's openRead lets reads through, so writes
+// carry the app-layer gate, exactly like PATCH). Company-stamped strictly.
+export const createPriceChangeHandler = async (c: any) => {
+  const gate = await requireRole(c);
+  if (!gate.ok) return gate.res;
+  const id = c.req.param('id');
+
+  let body: { effectiveFrom?: string; sellPriceSen?: number | null; notes?: string };
+  try {
+    body = (await c.req.json()) as typeof body;
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const effectiveFrom = (body.effectiveFrom ?? '').trim();
+  if (!ISO_DATE.test(effectiveFrom)) {
+    return c.json({ error: 'effective_from_required', message: 'YYYY-MM-DD' }, 400);
+  }
+  // Phase 1 always writes the selling price (the nullable column is reserved for
+  // future multi-column snapshots). Integer sen, >= 0.
+  const sellPriceSen = body.sellPriceSen;
+  if (typeof sellPriceSen !== 'number' || !Number.isInteger(sellPriceSen) || sellPriceSen < 0) {
+    return c.json({ error: 'sell_price_required', message: 'integer sen >= 0' }, 400);
+  }
+
+  const supabase = c.get('supabase');
+  const houzsUser = c.get('houzsUser');
+  const systemUser = c.get('user');
+  /* Multi-company: this WRITE stamps company_id, so resolve the active company
+     STRICTLY and refuse when unknown — never append across every company. */
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
+  // Resolve the SKU by id, scoped to the active company (same detail-scoping
+  // pattern as PATCH/DELETE). A blind id from another company reads as a miss;
+  // detailMissResponse turns that into an honest cross-company hint.
+  const { data: product, error: loadErr } = await scopeToCompanyId(
+    supabase.from('mfg_products').select('code, sell_price_sen').eq('id', id),
+    co.companyId,
+  ).maybeSingle();
+  if (loadErr) return c.json({ error: 'load_failed', reason: loadErr.message }, 500);
+  if (!product) {
+    return c.json(await detailMissResponse(c, supabase.from('mfg_products').select('company_id').eq('id', id), 'product'), 404);
+  }
+  const code = (product as { code: string }).code;
+  const currentSellPriceSen = (product as { sell_price_sen: number | null }).sell_price_sen ?? null;
+
+  /* created_by is ATTRIBUTION, and inside /api/scm/* c.get('user') is the pinned
+     system row (the same uuid for every caller — see scm/middleware/auth.ts). So
+     record the REAL caller stashed on houzsUser. The column is free text (no FK),
+     so we store the readable name the owner wants to see in the timeline, falling
+     back to email / id, and finally the system id if houzsUser is absent. */
+  const createdBy =
+    (houzsUser?.name?.trim() || houzsUser?.email?.trim() ||
+      (houzsUser?.id != null ? String(houzsUser.id) : '')) || systemUser.id;
+
+  const today = todayMyt();
+
+  /* AUTO-BASELINE (Hookka trick): when scheduling the FIRST future-dated price for
+     a product with NO history yet, also snapshot the CURRENT flat price at today,
+     so the timeline reads "today = current, <future> = new" rather than implying
+     the new price was always in effect. Skipped when the flat price is null — a
+     null baseline row says nothing, and reads already fall back to the null flat. */
+  let baselined = false;
+  const toInsert: Array<Record<string, unknown>> = [];
+  if (effectiveFrom > today && currentSellPriceSen != null) {
+    const { data: existing, error: existErr } = await supabase
+      .from('mfg_product_price_history')
+      .select('id')
+      .eq('company_id', co.companyId)
+      .eq('product_code', code)
+      .limit(1)
+      .maybeSingle();
+    if (existErr) return c.json({ error: 'load_failed', reason: existErr.message }, 500);
+    if (!existing) {
+      baselined = true;
+      toInsert.push({
+        company_id: co.companyId,
+        product_code: code,
+        sell_price_sen: currentSellPriceSen,
+        effective_from: today,
+        notes: 'Auto-baseline: current price before the first scheduled change.',
+        created_by: createdBy,
+      });
+    }
+  }
+  toInsert.push({
+    company_id: co.companyId,
+    product_code: code,
+    sell_price_sen: sellPriceSen,
+    effective_from: effectiveFrom,
+    notes: body.notes?.trim() ? body.notes.trim() : null,
+    created_by: createdBy,
+  });
+
+  // Single insert (atomic when a baseline rides along); the DB owns id + created_at.
+  const { data, error } = await supabase
+    .from('mfg_product_price_history')
+    .insert(toInsert)
+    .select('id, effective_from, sell_price_sen, notes, created_by, created_at');
+  if (error) {
+    if (error.code === '42501' || /permission denied/i.test(error.message)) {
+      return c.json({ error: 'forbidden', reason: error.message }, 403);
+    }
+    return c.json({ error: 'insert_failed', reason: error.message }, 500);
+  }
+  const inserted = (data ?? []) as Array<{
+    id: string; effective_from: string; sell_price_sen: number | null;
+    notes: string | null; created_by: string | null; created_at: string;
+  }>;
+  // The baseline (if any) is dated today; the scheduled row is the future date.
+  const created = inserted.find((r) => r.effective_from === effectiveFrom) ?? inserted.at(-1) ?? null;
+
+  return c.json({
+    ok: true,
+    baselined,
+    row: created ? {
+      id: created.id,
+      effectiveFrom: created.effective_from,
+      sellPriceSen: created.sell_price_sen,
+      notes: created.notes ?? null,
+      createdBy: created.created_by ?? null,
+      createdAt: created.created_at,
+    } : null,
+  }, 201);
+};
+mfgProducts.post('/:id/price-changes', createPriceChangeHandler);
+
+// ── GET /:id/price-changes ─────────────────────────────────────────────────────
+// The product's selling-price timeline (newest first) + the current as-of price
+// and the pending-next price (for a "Next: RM X from <date>" badge). Open read,
+// mirroring GET /:id/price-history: the SCM area guard's openRead lets a
+// salesperson read the catalogue, and a SELLING price is not cost, so it is NOT
+// finance-gated (see lib/finance-keys.ts — only cost_price_sen is confidential).
+export const listPriceChangesHandler = async (c: any) => {
+  const id = c.req.param('id');
+  const supabase = c.get('supabase');
+  // Both the history filter and the resolver need a concrete companyId, so resolve
+  // it strictly here too (same as the write) rather than degrading.
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+
+  const { data: product, error: pErr } = await scopeToCompanyId(
+    supabase.from('mfg_products').select('code, sell_price_sen').eq('id', id),
+    co.companyId,
+  ).maybeSingle();
+  if (pErr) return c.json({ error: 'load_failed', reason: pErr.message }, 500);
+  if (!product) {
+    return c.json(await detailMissResponse(c, supabase.from('mfg_products').select('company_id').eq('id', id), 'product'), 404);
+  }
+  const code = (product as { code: string }).code;
+  const flatSellPriceSen = (product as { sell_price_sen: number | null }).sell_price_sen ?? null;
+
+  const { data, error } = await supabase
+    .from('mfg_product_price_history')
+    .select('id, effective_from, sell_price_sen, notes, created_by, created_at')
+    .eq('company_id', co.companyId)
+    .eq('product_code', code)
+    .order('effective_from', { ascending: false })
+    .order('created_at', { ascending: false });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+
+  const today = todayMyt();
+  // Current as-of price = the newest row effective <= today, else the flat value.
+  const asOf = await resolveSellPriceSenAsOf(supabase, co.companyId, code, today);
+  const pending = await resolvePendingSellPriceAfter(supabase, co.companyId, code, today);
+
+  return c.json({
+    history: data ?? [],
+    currentSellPriceSen: asOf ?? flatSellPriceSen,
+    pending: pending ? { sellPriceSen: pending.sellPriceSen, effectiveFrom: pending.effectiveFrom } : null,
+  });
+};
+mfgProducts.get('/:id/price-changes', listPriceChangesHandler);
