@@ -168,7 +168,8 @@ import { pickCrossCategoryMatch, type AutoMatchCandidate } from '../lib/cross-ca
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { advanceSoGeneration } from '../lib/so-generation';
 import { creditFromCancelledSo, getCustomerCreditBalance } from '../lib/customer-credits';
-import { summariseReadiness, normCategory } from '../lib/so-readiness';
+import { summariseReadiness } from '../lib/so-readiness';
+import { deriveDisplayBrandingByDoc } from '../lib/so-display-branding';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { soDeliverableRemaining, soLineDeliveries, computeSoLifecycle, soCurrentDocNo, soLineShippedSourcePos } from './delivery-orders-mfg';
 /* Shared 4-state delivery-planning derivation — the SO list emits planning_state
@@ -2581,43 +2582,21 @@ mfgSalesOrders.get('/:docNo', async (c) => {
       (r) => r.item_group as string | null | undefined,
     ),
   );
-  /* Bedframe-only branding for the detail view (Commander 2026-07-16, "如果
-     BEDFRAME only 的话 branding 就放 BEDFRAME") — mirror the list rule so a
-     bedframe-only SO's Branding field reads "BEDFRAME" instead of a dash. Only
-     when the header carries no explicit brand text (an AKEMI/2990 brand always
-     wins). Category is catalog-resolved (mfg_products.category) with an
-     item_group fallback, same as the list, so a sofa line mis-saved with
-     item_group 'others' can't masquerade the SO as bedframe-only. */
+  /* Display branding for the detail view — derive the SAME `first_item_branding`
+     the SO LIST shows (single source of truth: deriveDisplayBrandingByDoc, the
+     helper the Fair/Sales Report detail already uses). The header `branding`
+     column is NULL on essentially every SO, so the detail's brandOf() —
+     `branding || first_item_branding || "—"` — fell through to a dash whenever
+     the endpoint left first_item_branding unset. This USED to be a partial
+     bedframe-only rule (Commander 2026-07-16) that only stamped "BEDFRAME" for
+     bedframe-only SOs; a SOFA / branded-MATTRESS / accessories SO got nothing,
+     so the detail read "—" while the list showed e.g. "2990S SOFA". The helper
+     covers mains-first + mattress-brand fallback + bedframe-only in one place,
+     so both surfaces resolve the identical value. */
   {
-    const headerBrand = String((salesOrder as { branding?: string | null }).branding ?? '').trim();
-    if (!headerBrand) {
-      const codes = [...new Set(
-        itemRows
-          .map((it) => String((it as { item_code?: string | null }).item_code ?? '').trim())
-          .filter(Boolean),
-      )];
-      const catByCode = new Map<string, string>();
-      for (let k = 0; k < codes.length; k += 300) {
-        const chunk = codes.slice(k, k + 300);
-        if (chunk.length === 0) continue;
-        const { data: prodRows } = await scopeToCompany(
-          sb.from('mfg_products').select('code, category').in('code', chunk),
-          c,
-        );
-        for (const p of (prodRows ?? []) as Array<{ code: string; category: string | null }>) {
-          if (p.category) catByCode.set(p.code, normCategory(p.category));
-        }
-      }
-      const detailCats = new Set<string>();
-      for (const it of itemRows) {
-        const code = String((it as { item_code?: string | null }).item_code ?? '').trim();
-        const grp = String((it as { item_group?: string | null }).item_group ?? '');
-        detailCats.add(catByCode.get(code) ?? normCategory(grp));
-      }
-      if (detailCats.has('BEDFRAME') && !detailCats.has('MATTRESS') && !detailCats.has('SOFA')) {
-        (salesOrder as Record<string, unknown>).first_item_branding = 'BEDFRAME';
-      }
-    }
+    const derived = await deriveDisplayBrandingByDoc(sb, c, [docNo]);
+    const b = derived.get(docNo);
+    if (b) (salesOrder as Record<string, unknown>).first_item_branding = b;
   }
   /* Brand letterhead resolution (owner 2026-07) — stamp the R2 key of the
      brand logo the SO PDF should print IN PLACE OF the company logo (the
