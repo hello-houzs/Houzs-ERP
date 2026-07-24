@@ -2688,7 +2688,19 @@ mfgSalesOrders.get('/:docNo', async (c) => {
        stock_status (READY only when ONE batch covers the set); keep MRP's PO/ETA
        if an outstanding PO is on the way. (Wei Siang 2026-06-03) */
     const isSofaLine = String((it as { item_group?: string | null }).item_group ?? '').toUpperCase().includes('SOFA');
-    const stockState = isSofaLine
+    /* SERVICE lines (delivery fee / dispose / lift) never enter the MRP
+       allocator — they create no purchase demand (mrp.ts skips them), so `cov`
+       is always undefined and stock_state would fall through to null, rendering
+       a blank Stock cell. A service is inherently available, so surface it as
+       READY ('stock') — matching the stored stock_status the SO create path
+       already stamps READY-from-birth. (Owner Q2, 2026-07-24.) */
+    const isSvcLine = isServiceLine({
+      itemGroup: (it as { item_group?: string | null }).item_group ?? null,
+      itemCode: (it as { item_code?: string | null }).item_code ?? null,
+    });
+    const stockState = isSvcLine
+      ? 'stock'
+      : isSofaLine
       ? (it.stock_status === 'READY' ? 'stock' : (cov?.source === 'po' ? 'po' : 'shortage'))
       : (cov?.source ?? null);
     return {
@@ -2809,7 +2821,19 @@ mfgSalesOrders.get('/:docNo/items', async (c) => {
     // SOFA stock-coverage trusts the batch-aware stock_status; non-sofa trusts
     // the MRP SKU-pool source (identical to the detail's rule).
     const isSofaLine = String((it as { item_group?: string | null }).item_group ?? '').toUpperCase().includes('SOFA');
-    const stockState = isSofaLine
+    /* SERVICE lines (delivery fee / dispose / lift) never enter the MRP
+       allocator — they create no purchase demand (mrp.ts skips them), so `cov`
+       is always undefined and stock_state would fall through to null, rendering
+       a blank Stock cell. A service is inherently available, so surface it as
+       READY ('stock') — matching the stored stock_status the SO create path
+       already stamps READY-from-birth. (Owner Q2, 2026-07-24.) */
+    const isSvcLine = isServiceLine({
+      itemGroup: (it as { item_group?: string | null }).item_group ?? null,
+      itemCode: (it as { item_code?: string | null }).item_code ?? null,
+    });
+    const stockState = isSvcLine
+      ? 'stock'
+      : isSofaLine
       ? (it.stock_status === 'READY' ? 'stock' : (cov?.source === 'po' ? 'po' : 'shortage'))
       : (cov?.source ?? null);
     return {
