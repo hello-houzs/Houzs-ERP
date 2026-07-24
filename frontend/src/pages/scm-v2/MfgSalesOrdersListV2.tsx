@@ -1952,11 +1952,16 @@ export function MfgSalesOrdersListV2() {
         </div>
       </div>
 
-      {/* Desktop sticky page chrome — Nick 2026-07-09: pin PageHeader + KPIs
-          + filter pills at the top so the table gets more vertical space and
-          the chrome never scrolls away. Mobile flow keeps its own sticky
-          search below. */}
-      <div className="sticky top-0 z-20 -mx-4 hidden bg-bg/95 pb-3 backdrop-blur-sm sm:-mx-6 md:block">
+      {/* Page chrome — owner 2026-07-24 reversed the 2026-07-09 "pin KPIs +
+          filter pills" ruling: like Service Cases, the cards and pills now
+          SCROLL AWAY and only the DataTable's own toolbar + header + pager
+          freeze under the (self-sticky) PageHeader. The old page-local
+          `sticky top-0 z-20` here also sat ABOVE the freeze box's z-10 and
+          occluded its toolbar/header, and its height was invisible to
+          --page-header-offset (published by PageHeader alone), so the freeze
+          geometry could never account for it. Mobile flow keeps its own
+          sticky search below. */}
+      <div className="-mx-4 hidden pb-3 sm:-mx-6 md:block">
         <div className="px-4 sm:px-6">
           <PageHeader
             eyebrow="Supply Chain"
@@ -1988,6 +1993,10 @@ export function MfgSalesOrdersListV2() {
             ]}
           />
 
+          {/* No data-freeze-anchor here: the owner revised the SO ruling to
+              match Service Cases — cards + status pills scroll away, and the
+              freeze keeps only the DataTable's own toolbar + header + pager
+              (the component-root default). */}
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
               pending={statsPending}
