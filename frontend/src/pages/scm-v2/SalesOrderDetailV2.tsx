@@ -1066,7 +1066,7 @@ function SalesOrderDetailV2ReadOnly() {
                   <div className="mt-1.5 text-[12.5px] text-ink-muted">
                     Only if unreachable on delivery day
                   </div>
-                  <div className="mt-2.5 text-[14px] font-semibold text-ink">
+                  <div className="mt-2.5 font-mono text-[14px] font-semibold text-ink">
                     {formatPhone(salesOrder.phone) || "Not provided"}
                   </div>
                   <div className="mt-1 text-[12px] text-ink-muted">

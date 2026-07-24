@@ -157,6 +157,19 @@ async function resolveDest(srcTable, alts, cid) {
   return { primary, found };
 }
 
+// Source rows join to dest by the verbatim-copied UUID when the source carries
+// `id`. The 2990 upstream keys some HEADERS by doc-number instead (e.g.
+// mfg_sales_orders has no `id`), so fall back to the doc column — dest stores it
+// with a "2990-" prefix (importer DOCNO_COL), so normalise both sides.
+const DOCNO = { mfg_sales_orders: "doc_no", delivery_orders: "do_number", mfg_delivery_orders: "do_number" };
+const normDoc = (v) => (v == null ? null : String(v).replace(/^2990-/, ""));
+async function resolveJoinKey(srcTable, srcCols, schema, table) {
+  if (srcCols.includes("id") && (await destHasCol(schema, table, "id"))) return { src: "id", dest: "id", doc: false };
+  const dc = DOCNO[srcTable];
+  if (dc && srcCols.includes(dc) && (await destHasCol(schema, table, dc))) return { src: dc, dest: dc, doc: true };
+  return null;
+}
+
 // ── SOURCE helpers (Supabase REST) ──────────────────────────────────────────
 async function srcCount(table) {
   if (!src) return undefined;
@@ -312,14 +325,15 @@ async function statusCompare(srcTable, alts, label, cid) {
   notice(`  DEST ${schema}.${table} co2 by status:`);
   for (const r of destRows) notice(`     ${pad(r.status, 18)} ${r.n}`);
 
-  // source by status (+ id/status for the transition matrix)
+  // source by status (+ join key for the transition matrix)
   const scols = await srcColumns(srcTable);
   if (!scols) { notice("  SOURCE not probed / empty — status gap cannot be computed."); return; }
   if (!scols.includes("status")) { notice(`  SOURCE ${srcTable} has no 'status' column — skipped.`); return; }
-  const idCol = scols.includes("id") ? "id" : null;
+  const jk = await resolveJoinKey(srcTable, scols, schema, table);
+  const fetchCols = jk ? [...new Set([jk.src, "status"])] : ["status"];
   let srcData;
   try {
-    srcData = await srcFetch(srcTable, [idCol, "status"].filter(Boolean));
+    srcData = await srcFetch(srcTable, fetchCols);
   } catch (e) {
     notice(`  SOURCE fetch ERR: ${e.message}`);
     return;
@@ -329,25 +343,27 @@ async function statusCompare(srcTable, alts, label, cid) {
   notice(`  SOURCE 2990 ${srcTable} by status (all rows):`);
   for (const [st, n] of [...srcByStatus.entries()].sort((a, b) => b[1] - a[1])) notice(`     ${pad(st, 18)} ${n}`);
 
-  // transition matrix on the id-intersection (dest carries source UUIDs verbatim)
-  if (!idCol) { notice("  (no id column on source — transition matrix skipped)"); return; }
-  const destIdRows = await pg.unsafe(
-    `SELECT id::text AS id, COALESCE(status::text,'(null)') AS status
+  // transition matrix on the id/doc-number intersection (dest carries source
+  // UUIDs verbatim; doc-numbers with a "2990-" prefix normalised on both sides)
+  if (!jk) { notice("  (no shared id/doc-number join key — transition matrix skipped)"); return; }
+  const destKeyRows = await pg.unsafe(
+    `SELECT "${ident(jk.dest)}"::text AS k, COALESCE(status::text,'(null)') AS status
        FROM "${ident(schema)}"."${ident(table)}" WHERE company_id = ${cid}`,
   );
-  const destById = new Map(destIdRows.map((r) => [r.id, r.status]));
+  const keyOf = (v) => (jk.doc ? normDoc(v) : String(v));
+  const destByKey = new Map(destKeyRows.map((r) => [keyOf(r.k), r.status]));
   const deliveredLike = (s) => /deliver|sign|complet|invoic/i.test(String(s));
   let matched = 0, srcDeliveredDestNot = 0;
   const trans = new Map();
   for (const r of srcData) {
-    const d = destById.get(String(r.id));
+    const d = destByKey.get(keyOf(r[jk.src]));
     if (d === undefined) continue;
     matched++;
     const key = `${r.status ?? "(null)"}  ->  ${d}`;
     trans.set(key, (trans.get(key) ?? 0) + 1);
     if (deliveredLike(r.status) && !deliveredLike(d)) srcDeliveredDestNot++;
   }
-  notice(`  TRANSITION (source-status -> dest-status) over ${matched} id-matched rows:`);
+  notice(`  TRANSITION (source-status -> dest-status) over ${matched} ${jk.doc ? jk.src : "id"}-matched rows:`);
   for (const [k, n] of [...trans.entries()].sort((a, b) => b[1] - a[1])) {
     const flag = /deliver|sign|complet|invoic/i.test(k.split("->")[0]) && !/deliver|sign|complet|invoic/i.test(k.split("->")[1]) ? "  <-- DELIVERED-in-2990 now NON-delivered" : "";
     notice(`     ${pad(k, 40)} ${n}${flag}`);
@@ -391,26 +407,31 @@ async function costCompare(srcTable, alts, label, cid) {
     notice(`  SOURCE ${srcTable} has NO cost column (${scols.length} cols). => a zero cost in Houzs is a Houzs-side costing/trigger concern, NOT a dropped migration value.`);
     return;
   }
-  const joinCol = costCols.find((c) => srcCostCols.includes(c));
-  if (!joinCol || !scols.includes("id") || !(await destHasCol(schema, table, "id"))) {
-    notice(`  SOURCE cost cols: ${srcCostCols.join(", ")} — no shared id+cost column with dest (${costCols.join(", ")}); reporting side-by-side only.`);
+  // Prefer the headline TOTAL cost column for the join; else first shared one.
+  const joinCol =
+    costCols.find((c) => /total.*cost/i.test(c) && srcCostCols.includes(c)) ||
+    costCols.find((c) => srcCostCols.includes(c));
+  const jk = joinCol ? await resolveJoinKey(srcTable, scols, schema, table) : null;
+  if (!joinCol || !jk) {
+    notice(`  SOURCE cost cols: ${srcCostCols.join(", ")} — no shared cost column + id/doc join key with dest (${costCols.join(", ")}); reporting side-by-side only.`);
     return;
   }
   ident(joinCol);
   let srcData;
   try {
-    srcData = await srcFetch(srcTable, ["id", joinCol]);
+    srcData = await srcFetch(srcTable, [...new Set([jk.src, joinCol])]);
   } catch (e) {
     notice(`  SOURCE fetch ERR: ${e.message}`);
     return;
   }
   const destRows = await pg.unsafe(
-    `SELECT id::text AS id, "${joinCol}" AS c FROM "${ident(schema)}"."${ident(table)}" WHERE company_id = ${cid}`,
+    `SELECT "${ident(jk.dest)}"::text AS k, "${joinCol}" AS c FROM "${ident(schema)}"."${ident(table)}" WHERE company_id = ${cid}`,
   );
-  const destById = new Map(destRows.map((r) => [r.id, r.c]));
+  const keyOf = (v) => (jk.doc ? normDoc(v) : String(v));
+  const destByKey = new Map(destRows.map((r) => [keyOf(r.k), r.c]));
   let matched = 0, dropped = 0, neverBoth = 0, destGained = 0, bothOk = 0;
   for (const r of srcData) {
-    const d = destById.get(String(r.id));
+    const d = destByKey.get(keyOf(r[jk.src]));
     if (d === undefined) continue;
     matched++;
     const sZero = isZeroish(r[joinCol]);
@@ -420,7 +441,7 @@ async function costCompare(srcTable, alts, label, cid) {
     else if (sZero && !dZero) destGained++;
     else bothOk++;
   }
-  notice(`  JOIN on '${joinCol}' over ${matched} id-matched ${label}:`);
+  notice(`  JOIN on '${joinCol}' over ${matched} ${jk.doc ? jk.src : "id"}-matched ${label}:`);
   notice(`     src>0 & dest zero/null : ${dropped}   <-- MIGRATION DROPPED THE COST`);
   notice(`     src zero/null & dest 0 : ${neverBoth}  (never costed in 2990 either)`);
   notice(`     src zero/null & dest>0 : ${destGained} (Houzs recomputed / trigger)`);
