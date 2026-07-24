@@ -298,10 +298,18 @@ export const GrnFromPo = () => {
       searchValue: (r) => r.poDocNo,
     },
     {
+      // Owner 2026-07-24: supplier NAME and CODE are separate columns on every
+      // procurement table, not one combined "code · name" cell.
       key: 'supplier', label: 'Supplier', width: 200, sortable: true, groupable: true,
-      accessor: (r) => <span>{r.supplierCode}{r.supplierName ? ` · ${r.supplierName}` : ''}</span>,
-      searchValue: (r) => `${r.supplierCode ?? ''} ${r.supplierName ?? ''}`.trim(),
+      accessor: (r) => r.supplierName ?? '—',
+      searchValue: (r) => r.supplierName ?? '',
       groupValue: (r) => r.supplierName ?? r.supplierCode ?? '(none)',
+    },
+    {
+      key: 'supplier_code', label: 'Supplier Code', width: 110, sortable: true,
+      accessor: (r) => <span className={styles.codeCell}>{r.supplierCode ?? '—'}</span>,
+      searchValue: (r) => r.supplierCode ?? '',
+      filterValue: (r) => r.supplierCode ?? '—',
     },
     {
       /* Warehouse column (Deliverable 4b) — each PO line's purchase_location.
