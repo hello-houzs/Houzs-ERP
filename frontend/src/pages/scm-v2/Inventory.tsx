@@ -730,7 +730,7 @@ const BatchesTab = ({
         {warehouses.map((w) => (
           <button key={w.id} type="button" className={styles.chip}
             data-active={warehouseId === w.id} onClick={() => setWarehouseId(w.id)}>
-            {w.name}
+            {w.code}
           </button>
         ))}
       </div>
@@ -949,7 +949,7 @@ const ReservationsTab = ({
         {warehouses.map((w) => (
           <button key={w.id} type="button" className={styles.chip}
             data-active={warehouseId === w.id} onClick={() => setWarehouseId(w.id)}>
-            {w.name}
+            {w.code}
           </button>
         ))}
       </div>
@@ -1037,7 +1037,7 @@ const ReservationsTab = ({
                     {r.variant_key ? ` · ${formatVariantKey(r.variant_key) || 'Standard'}` : ''}
                   </div>
                 </td>
-                <td>{r.warehouse_name ?? r.warehouse_code ?? '—'}</td>
+                <td>{r.warehouse_code ?? r.warehouse_name ?? '—'}</td>
                 <td className={styles.numCellZero}>{r.batch_no ?? '—'}</td>
                 <td className={`${styles.numCell} ${r.qty_remaining > 0 ? styles.numCellPos : styles.numCellZero}`}>
                   {fmtQty(r.qty_remaining)}
@@ -1169,7 +1169,7 @@ const ProductBreakdownDrawer = ({
                 const attrs = formatVariantKey(b.variant_key, b.fabric_supplier_code);
                 return (
                   <tr key={`${b.warehouse_id}|${b.variant_key ?? ''}`}>
-                    <td>{b.warehouse_name ?? b.warehouse_code ?? '—'}</td>
+                    <td>{b.warehouse_code ?? b.warehouse_name ?? '—'}</td>
                     <td>{attrs || <span className={styles.numCellZero}>Standard</span>}</td>
                     <td className={`${styles.numCell} ${b.qty > 0 ? styles.numCellPos : styles.numCellZero}`}>
                       {fmtQty(b.qty)}
