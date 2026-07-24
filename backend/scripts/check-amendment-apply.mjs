@@ -53,7 +53,7 @@ const pg = postgres(url, { ssl: "require", prepare: false, max: 1 });
 try {
   const so = await pg`
     SELECT doc_no, status, revision, version, company_id, updated_at
-    FROM mfg_sales_orders WHERE doc_no = ${SO_DOC_NO}`;
+    FROM scm.mfg_sales_orders WHERE doc_no = ${SO_DOC_NO}`;
   if (so.length === 0) {
     notice(`SO ${SO_DOC_NO}: NOT FOUND in mfg_sales_orders.`);
     process.exit(0);
@@ -66,7 +66,7 @@ try {
 
   const amendments = await pg`
     SELECT id, amendment_no, status, created_at, so_approved_at, po_approved_at
-    FROM so_amendments WHERE so_doc_no = ${SO_DOC_NO} ORDER BY created_at`;
+    FROM scm.so_amendments WHERE so_doc_no = ${SO_DOC_NO} ORDER BY created_at`;
   if (amendments.length === 0) notice("No amendments exist for this SO.");
   for (const a of amendments) {
     notice(
@@ -79,7 +79,7 @@ try {
   const amendLines = amendIds.length
     ? await pg`
         SELECT amendment_id, change_type, new_item_code, sales_order_item_id
-        FROM so_amendment_lines WHERE amendment_id IN ${pg(amendIds)}`
+        FROM scm.so_amendment_lines WHERE amendment_id IN ${pg(amendIds)}`
     : [];
   for (const l of amendLines) {
     const parent = amendments.find((a) => a.id === l.amendment_id);
@@ -91,7 +91,7 @@ try {
 
   const items = await pg`
     SELECT id, line_no, item_code, cancelled
-    FROM mfg_sales_order_items WHERE doc_no = ${SO_DOC_NO}
+    FROM scm.mfg_sales_order_items WHERE doc_no = ${SO_DOC_NO}
     ORDER BY line_no NULLS LAST, created_at`;
   notice(`Current SO lines (${items.length} rows incl. cancelled):`);
   for (const it of items) {
@@ -103,7 +103,7 @@ try {
 
   const revisions = await pg`
     SELECT revision, amendment_id, created_at
-    FROM so_revisions WHERE so_doc_no = ${SO_DOC_NO} ORDER BY revision`;
+    FROM scm.so_revisions WHERE so_doc_no = ${SO_DOC_NO} ORDER BY revision`;
   notice(
     revisions.length === 0
       ? "so_revisions: ZERO snapshots — no apply has ever run for this SO."
@@ -113,7 +113,7 @@ try {
 
   const audit = await pg`
     SELECT action, actor_name_snapshot, created_at
-    FROM mfg_so_audit_log WHERE so_doc_no = ${SO_DOC_NO}
+    FROM scm.mfg_so_audit_log WHERE so_doc_no = ${SO_DOC_NO}
     ORDER BY created_at DESC LIMIT 12`;
   if (audit.length === 0) {
     notice(
