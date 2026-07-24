@@ -518,10 +518,11 @@ export function DeliveryReturnDetailV2() {
 
   const refund = deliveryReturn ? refundOf(deliveryReturn, items) : 0;
 
-  const goBack = () => {
-    if (params.get("from") === "list") navigate("/scm/delivery-returns");
-    else navigate(-1);
-  };
+  // Back always returns to the Delivery Returns list (owner 2026-07-24: every
+  // details page's back button goes to its relevant list, not wherever
+  // browser history happens to point). The list restores its own sticky
+  // filters, so the prior filtered view comes back — no context lost.
+  const goBack = () => navigate("/scm/delivery-returns");
   const goEdit = () => id && navigate(`/scm/delivery-returns/${id}?edit=1`);
   const doCancel = () => {
     if (!deliveryReturn) return;
