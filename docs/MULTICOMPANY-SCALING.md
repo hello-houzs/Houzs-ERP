@@ -62,6 +62,17 @@ per-company:
 proved all 31 codes free), so the 2-company world is fine — but the composite
 constraint is the thing to land before a 3rd chart of accounts exists.
 
+**Status — shipped in migration `0188_percompany_natural_key_masters.sql`.** All
+four are now keyed per company: `product_models` gets a per-company UNIQUE index,
+`product_dept_configs` and `pwp_codes` get a composite `PRIMARY KEY(company_id,
+key)`, and `accounts` gets `UNIQUE(company_id, account_code)` with its three
+inbound FKs (`journal_entry_lines`, `payment_vouchers.credit_account_code`,
+`payment_voucher_lines.debit_account_code`) re-added as composite and `NOT VALID`
+(enforced on new writes, no existing-row scan — see the migration header). A
+follow-up may `VALIDATE CONSTRAINT` those three once confirmed clean against prod,
+and scope the by-code reads of these masters (e.g. `product_dept_configs` /
+`pwp_codes` lookups) to the active company before company 3 goes live.
+
 ## 4. Decision needed — `app_config`
 
 `app_config` keys on `key` alone (global). Whether a new company should share the
