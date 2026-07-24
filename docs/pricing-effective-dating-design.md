@@ -127,14 +127,40 @@ dormant `price_valid_from/to`.
 
 ## Rollout order (each its own PR, verified before the next)
 
-1. **This PR** — migration 0187 + resolver + resolver unit tests. Inert (nothing
-   reads it yet). Safe to merge.
-2. Write endpoint `POST /mfg-products/:id/price-changes` + auto-baseline + tests.
-3. Read integration in `mfg-pricing-recompute.ts` (as-of doc date, flat fallback)
-   + tests proving empty-history == today's price.
-4. Product Maintenance timeline UI + pending badge.
+1. **DONE (PR #1160)** — migration 0187 + resolver + resolver unit tests. Inert
+   (nothing reads it yet). Safe to merge.
+2. **DONE** — Write endpoint `POST /mfg-products/:id/price-changes` + auto-baseline
+   + tests (`backend/tests/mfgProductPriceChanges.test.ts`).
+3. **HELD — money-critical, own CI-verified PR.** Read integration in
+   `mfg-pricing-recompute.ts` (as-of doc date, flat fallback) + tests proving
+   empty-history == today's price. Deliberately NOT in the ph.2/4 PR, so no
+   existing order changes how it is priced.
+4. **DONE** — Product Maintenance timeline UI + pending badge (a price-timeline
+   panel on the SKU detail drawer in `Products.tsx`: current + "Next: RM X from
+   <date>" badges, dated history, and an add-future-price form).
 5. Price-timeline report.
 6. Phase 2 — supplier price history.
+
+### Go-live backfill (one-time, runs AFTER phase 2 merges)
+
+So no existing price is date-less when effective-dating goes live, a manual
+backfill seeds `scm.mfg_product_price_history` from what we already know, PER
+COMPANY. `backend/scripts/backfill-product-price-baseline.mjs` +
+`.github/workflows/backfill-product-price-baseline.yml` (DRY-RUN default, `apply=1`
+to write, staging/prod choice, own concurrency group, `secrets.DATABASE_URL`).
+
+- Keys on `scm.master_price_history` where **`field = 'sell_price_sen'`** (the exact
+  value `mfg-products.ts` PATCH writes for the selling price) — reconstructs one
+  row per change (`sell_price_sen = new_value_sen`, `effective_from =
+  changed_at::date` in **MYT**), plus a baseline for the value BEFORE the first
+  change (`old_value_sen` of the earliest record) dated at the product's
+  **`created_at::date` (MYT)**, fallback anchor **2024-01-01** when null.
+- No audit rows → ONE baseline = the current flat `sell_price_sen` at
+  `created_at::date`.
+- ALWAYS guarantees a row whose value equals the current flat price so
+  `resolveSellPriceSenAsOf(today) == today's price` — no visible change on go-live.
+- Non-clobbering + idempotent: any `(company_id, product_code)` that already has
+  rows is skipped whole.
 
 ## Why this is safe on money
 

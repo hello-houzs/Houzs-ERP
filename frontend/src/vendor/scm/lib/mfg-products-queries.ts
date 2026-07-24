@@ -502,6 +502,54 @@ export function useMfgProductPriceHistory(id: string | null) {
   });
 }
 
+/* Effective-dated SELLING price (Pricing "Option B", ph.2) — the /price-changes
+   timeline. Distinct from the audit drawer above (master_price_history): these
+   are the DATED prices the owner schedules, backed by scm.mfg_product_price_history.
+   Money is integer sen. */
+export type MfgProductPriceChangeRow = {
+  id: string;
+  effective_from: string;      // YYYY-MM-DD
+  sell_price_sen: number | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+};
+
+export type MfgProductPriceChanges = {
+  history: MfgProductPriceChangeRow[];
+  /** The price in effect as-of today (a scheduled row <= today, else the flat value). */
+  currentSellPriceSen: number | null;
+  /** The next scheduled price strictly after today — powers the "Next: RM X from <date>" badge. */
+  pending: { sellPriceSen: number; effectiveFrom: string } | null;
+};
+
+export function useMfgProductPriceChanges(id: string | null) {
+  return useQuery({
+    queryKey: ['mfg-product-price-changes', id],
+    queryFn: () => authedFetch<MfgProductPriceChanges>(`/mfg-products/${id}/price-changes`),
+    enabled: Boolean(id),
+    staleTime: 30_000,
+  });
+}
+
+export function useCreateMfgProductPriceChange() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { id: string; effectiveFrom: string; sellPriceSen: number; notes?: string }) => {
+      const { id, ...body } = args;
+      return authedFetch<{ ok: boolean; baselined: boolean }>(
+        `/mfg-products/${id}/price-changes`,
+        { method: 'POST', body: JSON.stringify(body) },
+      );
+    },
+    // Append-only write — the whole timeline (rows + current + pending) can move,
+    // so orphan every /price-changes query rather than guessing the affected id.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mfg-product-price-changes'] });
+    },
+  });
+}
+
 /* PR #38 — Suppliers carrying a given product (via supplier_material_bindings). */
 export type ProductSupplierRow = {
   id: string;

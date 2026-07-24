@@ -402,10 +402,10 @@ function VenueManager() {
       count={q.data?.data?.length}
       description="Picker values for the project Venue field. Optionally tag each venue with a state — picking it on a new project will pre-fill the state."
     >
-      {/* Owner spec 2026-07-23:
-          - StatePicker shows Malaysia states by default, click "Show Others"
-            for CN + SG, Search across all — no more hard-coded MY_STATES.
-          - No `(legacy)` fallback options — a value not in my_localities
+      {/* Owner spec (task #102, 2026-07-24):
+          - StatePicker lists every seeded state grouped by country (MY first),
+            with type-to-search — no hard-coded MY_STATES, no "Others" toggle.
+          - No `(legacy)` / free-text fallback — a value not in my_localities
             must be added via the Localities Maintenance UI first.
           - Country auto-fills from State via StatePicker's derivedCountry
             callback. City + Postcode are optional and scoped to the picked

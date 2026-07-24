@@ -149,8 +149,15 @@ async function loadRegionConfig(sb: any): Promise<RegionConfig> {
       if (!code) continue;
       codeById.set(r.id, code);
       if ((r.active ?? true) !== false) {
-        regions.push({ key: code, label: r.name ?? code });
-        validCodes.add(code);
+        /* DEDUPE by code: the board is a CROSS-COMPANY view, so this read spans
+           both companies' region masters — post-mig-0176 each company carries
+           its own copy of every bucket, so without this each chip rendered
+           TWICE (owner screenshot 2026-07-24). codeById keeps EVERY row (both
+           companies' ids) so state mappings from either company still resolve. */
+        if (!validCodes.has(code)) {
+          regions.push({ key: code, label: r.name ?? code });
+          validCodes.add(code);
+        }
       }
     }
   } catch { /* fall through to fallback below */ }

@@ -98,6 +98,7 @@ export type FairDoRow = FairDims & {
   so_no: string | null;
   status: string | null;
   qty: number;
+  so_amount_centi: number | null;   // linked SO's amount (matches the SO tab)
   total_so_cost_centi: number;
   total_do_cost_centi: number;
   do_cost_is_legacy: boolean;
