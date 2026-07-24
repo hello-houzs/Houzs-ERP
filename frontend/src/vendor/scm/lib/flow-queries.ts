@@ -26,11 +26,21 @@ export type FlowNode = {
   isAnchor: boolean;
 };
 export type FlowEdge = { from: string; to: string; kind: FlowEdgeKind };
+// SO amendments (revision requests) hang off the Sales Order. The backend
+// returns them as a read-only side list, not graph nodes, so the relationship
+// map can branch them off the SO — each clickable to /scm/amendments/:id.
+export type FlowAmendment = {
+  id: string;
+  soDocNo: string;
+  amendmentNo: number | string;
+  status: string | null;
+  createdAt: string | null;
+};
 
 export const useDocumentFlow = (type: FlowNodeType | null, id: string | null) =>
   useQuery({
     queryKey: ['document-flow', type, id],
-    queryFn: () => authedFetch<{ nodes: FlowNode[]; edges: FlowEdge[]; rootSos: string[] }>(
+    queryFn: () => authedFetch<{ nodes: FlowNode[]; edges: FlowEdge[]; rootSos: string[]; amendments?: FlowAmendment[] }>(
       `/document-flow/${type}/${encodeURIComponent(id!)}`,
     ),
     enabled: Boolean(type && id),

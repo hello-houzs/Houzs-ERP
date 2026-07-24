@@ -28,7 +28,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth/AuthContext';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useDocumentFlow, useCandidatePos, type FlowNode } from '../../vendor/scm/lib/flow-queries';
-import type { ChainNode } from '../../components/scm-v2/DocumentRelationshipMapModal';
+import type { ChainNode, AmendmentChip } from '../../components/scm-v2/DocumentRelationshipMapModal';
 
 /** The header columns the chain reads. Loose on purpose — the two SO detail
  *  pages carry their own (differently-typed) SoHeader. */
@@ -78,6 +78,8 @@ const flowNodesOf = (data: { nodes: FlowNode[] } | undefined, type: FlowNode['ty
 export function useSoRelationshipMap(salesOrder: SoRelationshipHeader | null): {
   nodes: ChainNode[];
   onNodeClick: (n: ChainNode) => boolean;
+  amendments: AmendmentChip[];
+  onAmendmentClick: (a: AmendmentChip) => boolean;
 } {
   const navigate = useNavigate();
   const notify = useNotify();
@@ -96,6 +98,28 @@ export function useSoRelationshipMap(salesOrder: SoRelationshipHeader | null): {
   // purchase_invoices); the chain just never showed them.
   const poNodes = useMemo(() => flowNodesOf(flow.data, 'po'), [flow.data]);
   const piNodes = useMemo(() => flowNodesOf(flow.data, 'pi'), [flow.data]);
+
+  /* Amendments (SO revision requests) hang off this SO. document-flow returns
+     them as a read-only side list; the map branches them off the Sales Order,
+     each chip clicking through to its job card. The amendment detail route is
+     gated exactly like the SO (scm.sales.orders + allowSales), so no extra
+     access check is needed here. */
+  const amendments: AmendmentChip[] = useMemo(
+    () =>
+      (flow.data?.amendments ?? []).map((a) => ({
+        id: a.id,
+        label: `Amendment ${a.amendmentNo}`,
+        status: a.status,
+      })),
+    [flow.data],
+  );
+  const onAmendmentClick = useCallback(
+    (a: AmendmentChip): boolean => {
+      navigate(`/scm/amendments/${a.id}`);
+      return true;
+    },
+    [navigate],
+  );
 
   /* Pre-MRP SOs (2026-07-09) have no linked PO leg. When the flow has loaded
      and returned no PO node, ask the backend for ADVISORY candidates matched by
@@ -201,6 +225,10 @@ export function useSoRelationshipMap(salesOrder: SoRelationshipHeader | null): {
         // Candidates are a GUESS, not a link, so the node stays 'pending' (grey)
         // — only a real PO node paints it done.
         state: poNodes.length > 0 ? 'done' : 'pending',
+        // A grey candidate node is still tappable (it lists the advisory POs).
+        // Without this the modal renders it disabled and "N candidates — tap"
+        // does nothing.
+        actionable: poNodes.length > 0 || candidatePos.length > 0,
       },
       {
         type: 'GRN',
@@ -357,5 +385,5 @@ export function useSoRelationshipMap(salesOrder: SoRelationshipHeader | null): {
     [navigate, notify, showCustomerPo, salesOrder?.doc_no, doNodes, siNodes, grnNodes, poNodes, piNodes, candidatePos, canOpenGrn, canOpenPo, canOpenPi],
   );
 
-  return { nodes, onNodeClick };
+  return { nodes, onNodeClick, amendments, onAmendmentClick };
 }
