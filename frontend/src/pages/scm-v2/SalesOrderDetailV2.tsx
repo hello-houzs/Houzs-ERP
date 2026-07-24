@@ -52,7 +52,7 @@ import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { DocumentRelationshipMapModal } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { useSoRelationshipMap } from "./so-relationship-map";
 import { cn } from "../../lib/utils";
-import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import {
   isLocked as isSoLocked,
@@ -631,13 +631,13 @@ function SalesOrderDetailV2ReadOnly() {
       alwaysVisible: true,
       getValue: (l) => l.item_code,
       render: (l) => {
-        /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+        /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
            (vendor/shared/line-identity.ts, which carries the four-report history
            this table was the fourth of). The item CODE still BINDS: getValue
            above keeps it the sort / search / export value. Live variant summary
            wins over the stored description2, which can be stale on older rows
            that carry no variants blob. */
-        const { primary, secondary } = lineIdentity({
+        const { primary, secondary } = orderLineIdentity({
           code: l.item_code,
           description: l.description,
           variant:

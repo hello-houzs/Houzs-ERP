@@ -5,7 +5,7 @@
 // side where every other doc is money-out.
 
 import { useMemo, useState, type ReactNode } from "react";
-import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -325,7 +325,7 @@ function DetailDrawer({
                   <div className="px-4 py-8 text-center text-[12px] text-ink-muted">No lines</div>
                 )}
                 {items.map((l, i) => {
-                  const { primary, secondary } = lineIdentity({
+                  const { primary, secondary } = orderLineIdentity({
                     code: l.material_code || l.item_code,
                     description: l.description,
                     variant:

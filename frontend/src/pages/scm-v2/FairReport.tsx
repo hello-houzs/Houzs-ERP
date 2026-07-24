@@ -28,6 +28,7 @@ import { Download, Columns3, X, ChevronRight, LayoutList, Table2 } from 'lucide-
 import { PageHeader } from '../../components/Layout';
 import { StatCard } from '../../components/StatCard';
 import { formatDate } from '../../lib/utils';
+import { buildVariantSummary, orderLineIdentity } from '@2990s/shared';
 import { useAuth } from '../../auth/AuthContext';
 import { fairAllowedStages } from '../../auth/salesAccess';
 import {
@@ -917,16 +918,36 @@ function FairDrawer({ docNo, onClose }: { docNo: string | null; onClose: () => v
                     <th className={th}>Item</th><th className={thR}>Qty</th><th className={thR}>Unit sell</th><th className={thR}>Amount</th><th className={thR}>Unit cost</th><th className={thR}>Line cost</th>
                   </tr></thead>
                   <tbody>
-                    {d.lines.map((l, i) => (
+                    {d.lines.map((l, i) => {
+                      /* Item CODE + variant, exactly like every other order-line
+                         surface (owner 2026-07-24, shared order-line rule). Was
+                         "code · description" — which printed the code twice when
+                         the description already contained it ("XAMMAR-1A(LHF) ·
+                         SOFA XAMMAR 1A(LHF)") and dropped the variant entirely.
+                         orderLineIdentity leads with the code and keeps the
+                         variant summary (supplier code folded in) as the
+                         subtitle; the description is dropped. */
+                      const { primary, secondary } = orderLineIdentity({
+                        code: l.item_code,
+                        description: l.description,
+                        variant:
+                          buildVariantSummary(l.item_group ?? '', l.variants ?? null) ||
+                          (l.description2 ?? ''),
+                      });
+                      return (
                       <tr key={i} className={`border-t border-border/60 ${l.cancelled ? 'opacity-50 line-through' : ''}`}>
-                        <td className={`${td} whitespace-normal`}>{l.item_code ?? '—'}{l.description ? <span className="text-ink-muted"> · {l.description}</span> : ''}</td>
+                        <td className={`${td} whitespace-normal`}>
+                          <div>{primary || '—'}</div>
+                          {secondary && <div className="text-ink-muted">{secondary}</div>}
+                        </td>
                         <td className={tdR}>{l.qty ?? '—'}</td>
                         <td className={tdR}>{cell(l.unit_price_centi)}</td>
                         <td className={tdR}>{cell(l.amount_centi)}</td>
                         <td className={`${tdR} text-ink-muted`}>{cell(l.unit_cost_centi)}</td>
                         <td className={`${tdR} text-ink-muted`}>{cell(l.line_cost_centi)}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                     {d.lines.length === 0 && <tr><td className={`${td} text-ink-muted`} colSpan={6}>No lines.</td></tr>}
                   </tbody>
                 </table>

@@ -26,6 +26,7 @@ import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr, phoneSearchOrParts } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import { scopeToCompany, scopeToAllowedCompanies, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap,
   isCrossCompanySource, crossCompanyConversionBlocked,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
@@ -2582,6 +2583,9 @@ deliveryOrdersMfg.get('/:id', async (c) => {
       for (const k of SO_ITEM_FINANCE_KEYS) delete (it as Record<string, unknown>)[k];
     }
   }
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ deliveryOrder, items });
 });
 

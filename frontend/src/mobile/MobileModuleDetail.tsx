@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { visibleFields, canOperateDeliveryOrders, canOperateSalesInvoices } from "../auth/salesAccess";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { lineIdentity } from "@2990s/shared";
+import { lineIdentity, orderLineIdentity } from "@2990s/shared";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
 import { formatPhone } from "@2990s/shared/phone";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
@@ -308,7 +308,7 @@ const DOC_MODULES: Record<string, DocMap> = {
         ["Balance", money(bal), bal > 0 ? "#a16a2e" : "var(--ink)"],
       ];
     },
-    /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+    /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
        (vendor/shared/line-identity.ts). This adapter is the one place in the
        mobile set where the code and the VARIANT shared a line
        (`join(it.item_code, it.description2)`), so dropping `sub` wholesale would
@@ -316,7 +316,7 @@ const DOC_MODULES: Record<string, DocMap> = {
        / seat — rather than a duplicate. The helper splits them: code out,
        description2 stays. */
     line: (it) => {
-      const { primary, secondary } = lineIdentity({
+      const { primary, secondary } = orderLineIdentity({
         code: it.item_code,
         description: it.description,
         variant: it.description2,

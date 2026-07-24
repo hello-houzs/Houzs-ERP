@@ -4,7 +4,7 @@
 // customer. Outstanding here is what WE owe, not what customers owe us.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, orderLineIdentity } from "@2990s/shared";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -396,7 +396,7 @@ function DetailDrawer({
                   <div className="px-4 py-8 text-center text-[12px] text-ink-muted">No lines</div>
                 )}
                 {items.map((l, i) => {
-                  const { primary, secondary } = lineIdentity({
+                  const { primary, secondary } = orderLineIdentity({
                     code: l.material_code || l.item_code,
                     description: l.description,
                     variant:

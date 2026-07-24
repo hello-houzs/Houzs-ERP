@@ -42,6 +42,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { scopeToCompany } from '../lib/companyScope';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import { deriveDisplayBrandingByDoc } from '../lib/so-display-branding';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { salesJdDenial } from '../../services/salesJdAccess';
@@ -1174,16 +1175,24 @@ export const fairReportDetailHandler = async (c: FairCtx) => {
   // Order lines — item, qty, unit sell, amount, unit cost, line cost.
   const { data: itemData, error: iErr } = await paginateAll((pFrom: number, pTo: number) => scopeToCompany(sb
     .from('mfg_sales_order_items')
-    .select('item_code, description, qty, unit_price_centi, total_centi, unit_cost_centi, line_cost_centi, cancelled')
+    // item_group + variants + description2 carry the VARIANT summary so the
+    // Fair Report's "Order lines · selling & cost" line reads the same
+    // "code / SEAT / LEG / fabric" subtitle every other order-line surface shows
+    // (owner 2026-07-24: the variant must appear consistently system-wide).
+    .select('item_group, item_code, description, description2, variants, qty, unit_price_centi, total_centi, unit_cost_centi, line_cost_centi, cancelled')
     .eq('doc_no', docNo), c)
     .range(pFrom, pTo));
   if (iErr) return c.json({ error: 'load_failed', reason: iErr.message }, 500);
   const lines = ((itemData ?? []) as Array<Record<string, unknown>>).map((r) => ({
-    item_code: r.item_code, description: r.description, qty: r.qty,
+    item_group: r.item_group, item_code: r.item_code, description: r.description,
+    description2: r.description2, variants: r.variants, qty: r.qty,
     unit_price_centi: r.unit_price_centi, amount_centi: r.total_centi,
     unit_cost_centi: r.unit_cost_centi, line_cost_centi: r.line_cost_centi,
     cancelled: r.cancelled,
   }));
+  // Stamp each line's supplier fabric code so the Fair Report line reads
+  // "BF-01 (PC151-01)" too — same enrichment the SO/PO/DO/SI detail endpoints do.
+  await enrichLinesWithFabricSupplierCode(sb, c, lines);
 
   // Deposit-by-tender + merchant bank / plan.
   const { data: payData, error: pErr } = await paginateAll((pFrom: number, pTo: number) => scopeToCompany(sb

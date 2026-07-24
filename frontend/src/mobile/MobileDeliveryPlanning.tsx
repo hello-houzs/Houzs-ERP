@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { lineIdentity } from "@2990s/shared";
+import { orderLineIdentity } from "@2990s/shared";
 import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
@@ -1954,7 +1954,7 @@ function StopDetail({
    expand-row drill-down uses; scoped to the caller's allowed companies so a
    cross-company row doesn't 404). Cancelled lines are filtered (desktop parity:
    PlanningExpandedLines filters `!it.cancelled`). Name + variant use the shared
-   lineIdentity rule (code dropped, description2 kept) — the same rule the POD
+   orderLineIdentity rule (code dropped, description2 kept) — the same rule the POD
    checklist + the DO detail use. Falls back to a single branded summary line
    when the lines can't be read, so this never regresses below the summary-only
    card it replaced.
@@ -1975,7 +1975,7 @@ function GoodsToDeliverCard({ order }: { order: BoardRow }) {
         <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "11px 13px" }}>Loading lines{"…"}</div>
       ) : lines.length ? (
         lines.map((l) => {
-          const ident = lineIdentity({ code: l.item_code, description: l.description, variant: l.description2 });
+          const ident = orderLineIdentity({ code: l.item_code, description: l.description, variant: l.description2 });
           return <PdItem key={l.id} n={ident.primary || EM} spec={ident.secondary} q={l.qty} />;
         })
       ) : (

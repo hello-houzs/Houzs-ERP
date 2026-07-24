@@ -54,7 +54,7 @@ import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
-import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -531,7 +531,7 @@ function DetailDrawer({
                     l.amount_centi ??
                     l.total_centi ??
                     (l.qty ?? 0) * (l.unit_price_centi ?? 0);
-                  const { primary, secondary } = lineIdentity({
+                  const { primary, secondary } = orderLineIdentity({
                     code: l.item_code || l.product_code,
                     description: l.description || l.product_name,
                     variant:

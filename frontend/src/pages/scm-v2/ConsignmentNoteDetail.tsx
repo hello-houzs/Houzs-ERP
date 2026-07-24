@@ -29,7 +29,7 @@ import {
   ArrowLeft, FileText, Pencil, Plus, Printer, Save, Ban, RotateCcw, ChevronDown,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
-import { buildVariantSummary, fmtDateOrDash, fmtMoneyCenti, lineIdentity } from '@2990s/shared';
+import { buildVariantSummary, fmtDateOrDash, fmtMoneyCenti, orderLineIdentity } from '@2990s/shared';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import {
@@ -473,13 +473,12 @@ export const ConsignmentNoteDetail = () => {
               {items.map((it) => (
                 <tr key={it.id}>
                   <td>
-                    {/* Description ONCE, code NOT displayed — the shared rule
-                        (vendor/shared/line-identity.ts). Sales vocabulary
-                        (item_code + description), same shape as SO/DO/DR/SI
-                        detail. The code still BINDS. No variant passed: it has
-                        its OWN "Description 2" column below. */}
+                    {/* Item CODE (owner 2026-07-24, orderLineIdentity) — the
+                        shared order-line rule (vendor/shared/line-identity.ts),
+                        same shape as SO/DO/DR/SI detail. Description dropped; the
+                        variant rides its OWN "Description 2" column below. */}
                     <div className={styles.codeCell}>
-                      {lineIdentity({ code: it.item_code, description: it.description }).primary || '—'}
+                      {orderLineIdentity({ code: it.item_code, description: it.description }).primary || '—'}
                     </div>
                   </td>
                   <td>

@@ -4,7 +4,7 @@
 // Credit expected (synced/green because it's money coming back).
 
 import { useMemo, type ReactNode } from "react";
-import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -302,13 +302,13 @@ export function PurchaseReturnDetailV2() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.material_code || l.item_code || "",
-      /* Description ONCE, code NOT displayed — the shared rule
+      /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
          (vendor/shared/line-identity.ts). Swept on SHAPE, not vocabulary. The
          WAREHOUSE pill is not a duplicate and stays — its row is kept when only
          the pill is present (the #647 DR precedent). The code still BINDS via
          getValue above. */
       render: (l) => {
-        const { primary, secondary } = lineIdentity({
+        const { primary, secondary } = orderLineIdentity({
           code: l.material_code || l.item_code,
           description: l.description,
           variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),

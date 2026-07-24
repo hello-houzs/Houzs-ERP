@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import {
   Plus,
@@ -405,7 +405,7 @@ function DetailDrawer({
                   // #1110 (variant summary in the item cell) + #1108 (Ord/Rcv/Bal
                   // fulfillment cols) merged: a PO drawer needs both the fabric/
                   // colour line AND the received-vs-ordered progress.
-                  const { primary, secondary } = lineIdentity({
+                  const { primary, secondary } = orderLineIdentity({
                     code: l.material_code,
                     description: l.description || l.material_name,
                     variant:
