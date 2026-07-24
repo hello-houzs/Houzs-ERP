@@ -67,7 +67,16 @@ export function buildVariantSummary(
   const fabricCodeShown = fabricCodeRaw && fabricSupplierCode && fabricSupplierCode !== fabricCodeRaw
     ? `${fabricCodeRaw} (${fabricSupplierCode})`
     : fabricCodeRaw;
-  const fabricParts = [fabricCodeShown, str(variants.colorCode), str(variants.colourLabel)];
+  // When the code is enriched with the supplier parens, a colour part that
+  // LEADS with the bare code (colour labels are often "CG-002 Sand") would
+  // repeat it - the bare-vs-richer dedupe below can't see through the parens
+  // (owner 2026-07-24: "CG-002 (KN390-2) CG-002 Sand"). Strip the redundant
+  // prefix so the pair reads "CG-002 (KN390-2) Sand".
+  const stripCodePrefix = (part: string): string =>
+    fabricCodeShown !== fabricCodeRaw && part.startsWith(`${fabricCodeRaw} `)
+      ? part.slice(fabricCodeRaw.length + 1)
+      : part;
+  const fabricParts = [fabricCodeShown, stripCodePrefix(str(variants.colorCode)), stripCodePrefix(str(variants.colourLabel))];
   // Dedupe — when the colour label/code is just the fabric code again (e.g.
   // BF-07 whose colour label is also "BF-07"), don't repeat it ("BF-07 BF-07").
   // GRN / PI / PR / Stock-Adjustment editors store the fabric under fabricColor;
