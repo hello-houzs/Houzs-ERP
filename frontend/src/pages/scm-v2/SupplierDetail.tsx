@@ -4165,12 +4165,12 @@ const smallInputStyle: React.CSSProperties = {
    Address pickers — Country / City / Postcode.
 
    State picker moved out to the shared `StatePicker` component
-   (frontend/src/vendor/scm/components/StatePicker.tsx) which supports the
-   MY-default + Others-expander + Search UX the owner asked for after finding
-   the `(legacy)` sneak-through. All three pickers here read exclusively from
-   scm.my_localities — no `(legacy)` fallback options, no free-text fallback
-   for empty lists. A value that isn't in the seeded set must be added via
-   the Localities Maintenance UI first.
+   (frontend/src/vendor/scm/components/StatePicker.tsx). Task #102 made it one
+   consistent selector — states grouped by country (MY first) with type-to-search,
+   no "Others" toggle, no free-text escape. All three pickers here read
+   exclusively from scm.my_localities — no `(legacy)` fallback options, no
+   free-text fallback for empty lists. A value that isn't in the seeded set must
+   be added via the Localities Maintenance UI first.
    ════════════════════════════════════════════════════════════════════════ */
 
 /* CountrySelect — dropdown of every country present in scm.my_localities.
