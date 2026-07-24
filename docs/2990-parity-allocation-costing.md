@@ -23,16 +23,30 @@ gap** (below) and two cosmetic stale comments.
 | Cost model | SO line = snapshot at create (price tables); GRN = landed cost (PO price x rate + freight) into FIFO lots; DO OUT = actual FIFO COGS restamped onto DO lines then SI; PI recost = final authority, cascades | identical + Houzs freezes `ship_cost_centi` once (mig 0143) enabling the 3-way SO-vs-ship-vs-PI costing report | MATCH (Houzs wider) |
 | Fair/Sales report cost fields | — | `total_so_cost_centi` = SO-time snapshot roll-up; `total_do_cost_centi` = frozen actual ship cost; the delta is the point | (documented) |
 | Inventory ledger | `inventory_movements` (IN/OUT/ADJUSTMENT) -> AFTER-INSERT FIFO trigger -> `inventory_lots` + `inventory_lot_consumptions`; balances are a SUM view with no floor | identical design; Houzs adds consignment types (CS_DO/CS_DR/PC_RECEIVE/PC_RETURN); DO/DR reversals use signed ADJUSTMENT rows because the idempotency indexes (`uq_inv_mov_do_source` etc.) exclude movement_type | MATCH |
-| Convert-from-SO guard | ordinary picker path REJECTS qty over remaining (409 `qty_exceeds_remaining`, `po_qty_picked` cap); MRP path uncapped by design (`from_mrp` lines excluded from the counter) | **GAP: no server-side cap at all.** The From-SO picker only SHOWS lines whose pooled shortage > 0 (UI-level protection); `po_qty_picked` is a soft self-healing counter, never a write guard | **GAP** |
+| Convert-from-SO guard | ordinary picker path REJECTS qty over remaining (409 `qty_exceeds_remaining`, `po_qty_picked` cap); MRP path uncapped by design (`from_mrp` lines excluded from the counter) | `/from-sos` (`convertSosToPosCore`) retains the 2990 cap verbatim (`!fromMrp && p.qty > remaining` -> 409); it backs the mobile convert + append-to-existing-PO flows. The gap was NARROWER than first stated: the desktop "create NEW PO from SO" flow routes picks through the generic `POST /mfg-purchase-orders` (New-PO-form), which carried `soItemId` lines but had no remaining cap. **CLOSED 2026-07-24** — `POST /` now applies the same per-`soItemId` cap, overridable via `confirmOverConvert` | MATCH |
 
-## The one gap, and the owner's questions it answers
+## The (now-closed) gap, and the owner's questions it answers
 
-**Gap:** Houzs dropped 2990's hard remaining-qty rejection on the ordinary
-convert-from-SO path. Normal operation is safe (the picker hides fully-covered
-lines) but nothing server-side stops a duplicate over-convert. Cheap fix:
-restore the 409 on the non-MRP path, mirroring 2990
-(`mfg-purchase-orders.ts` in 2990 rejects with `qty_exceeds_remaining`).
-Status: proposed to the owner 2026-07-24, awaiting go-ahead.
+**Gap (corrected 2026-07-24):** the first pass of this audit said Houzs had "no
+server-side cap at all." That was imprecise. The `/from-sos` core
+(`convertSosToPosCore`) still carries 2990's exact hard cap
+(`!fromMrp && p.qty > remaining` -> 409 `qty_exceeds_remaining`), and it backs
+both the mobile convert-to-PO flow and the append-to-existing-PO flow. What
+Houzs added was a SECOND create route: the desktop "create new PO from SO"
+picker stashes its picks and hands them to the New-PO-form, which submits the
+generic `POST /mfg-purchase-orders`. Those lines carry `soItemId` but that
+endpoint had no remaining cap — so a New-PO-form line could order more than the
+SO still needs. (2990's generic `POST /` is also uncapped; 2990 avoids the
+problem by routing create-from-SO through `/from-sos`, which Houzs' desktop no
+longer does.)
+
+**Fix (owner-approved Approach A, 2026-07-24):** `POST /mfg-purchase-orders`
+now sums the requested qty per source `soItemId` and rejects with 409
+`qty_exceeds_remaining` when it exceeds `qty - po_qty_picked`, unless the request
+carries `confirmOverConvert: true`. Purely-manual lines (no `soItemId`) are
+untouched; MRP never routes here. The desktop New-PO-form shows a confirm dialog
+on the 409 and replays with the override (mirrors the `confirmShortStock` gate).
+Mobile + `/from-sos` were already capped and were left unchanged.
 
 **Owner Q&A settled by this audit (2026-07-24):**
 - "Mattress 是不是按 delivery date 分配?" — yes, and so is everything else;
@@ -44,7 +58,9 @@ Status: proposed to the owner 2026-07-24, awaiting go-ahead.
   2990-era incident (shipped sofa before GR, negative stock, SO kept its batch
   number) is exactly this designed path.
 - "SO 二次 convert 怎么防重?" — 2990: hard cap on the ordinary path + pooled
-  shortage view on the MRP path. Houzs: pooled shortage view only (see gap).
+  shortage view on the MRP path. Houzs (from 2026-07-24): hard cap on BOTH the
+  `/from-sos` path (always had it) and the generic `POST /` New-PO-form path (now
+  added, overridable), plus the pooled shortage view on the MRP path.
 - "Costing / 库存进出跟 2990 一样吗?" — yes (and slightly wider).
 
 **Stale comments (cosmetic, both repos):** the top-of-file prose in
