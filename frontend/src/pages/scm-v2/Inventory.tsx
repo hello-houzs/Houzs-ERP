@@ -27,7 +27,7 @@ import { StatCard } from '../../components/StatCard';
 import { SearchProgress } from '../../components/SearchProgress';
 import { SearchScopeHint } from '../../components/SearchScopeHint';
 import { useDebouncedSearchTerm, useSearchResultTransition } from '../../hooks/useServerSearch';
-import { formatVariantKey, fmtCenti, fmtDate, fmtQty } from '@2990s/shared';
+import { adjustmentReasonLabel, formatVariantKey, fmtCenti, fmtDate, fmtQty } from '@2990s/shared';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import {
@@ -39,12 +39,14 @@ import {
   useInventoryBatches,
   useCogsEntries,
   useInventoryAnalytics,
+  useInventoryReservations,
   useCreateWarehouse,
   useUpdateWarehouse,
   type CogsEntry,
   type InventoryBatch,
   type InventoryMovement,
   type InventoryProductTotal,
+  type InventoryReservation,
   type Warehouse,
 } from '../../vendor/scm/lib/inventory-queries';
 
@@ -82,7 +84,7 @@ const STAT_GRID_3 = 'grid grid-cols-2 gap-3 md:grid-cols-3';
 const BANNER_ERR =
   'rounded-lg border border-err/40 bg-err/10 px-4 py-3 text-[13px] text-err';
 
-type Tab = 'balances' | 'batches' | 'warehouses' | 'analytics';
+type Tab = 'balances' | 'batches' | 'reservations' | 'warehouses' | 'analytics';
 type Category = 'all' | 'ACCESSORY' | 'BEDFRAME' | 'SOFA' | 'MATTRESS' | 'SERVICE';
 
 const CATEGORIES: { value: Category; label: string }[] = [
@@ -128,6 +130,7 @@ export const Inventory = () => {
             {([
               { value: 'balances' as const, label: 'Balances' },
               { value: 'batches' as const, label: 'Batches' },
+              { value: 'reservations' as const, label: 'Reservations' },
               { value: 'warehouses' as const, label: 'Warehouses' },
               { value: 'analytics' as const, label: 'Analytics' },
             ]).map((t) => (
@@ -181,6 +184,15 @@ export const Inventory = () => {
       )}
       {tab === 'batches' && (
         <BatchesTab
+          warehouseId={warehouseId}
+          setWarehouseId={setWarehouseId}
+          warehouses={warehouses.data ?? []}
+          search={search}
+          setSearch={setSearch}
+        />
+      )}
+      {tab === 'reservations' && (
+        <ReservationsTab
           warehouseId={warehouseId}
           setWarehouseId={setWarehouseId}
           warehouses={warehouses.data ?? []}
@@ -527,6 +539,23 @@ const BALANCE_COLUMNS: DataGridColumn<InventoryProductTotal>[] = [
     sortFn: (a, b) => a.reserve_14d - b.reserve_14d,
   },
   {
+    key: 'committed',
+    label: 'Committed',
+    width: 95,
+    align: 'right',
+    accessor: (r) => (
+      <span
+        className={`${styles.numCell} ${r.reserved_total > 0 ? styles.numCellNeg : styles.numCellZero}`}
+        title="Committed = open SO demand reserved to customers (all non-done sales orders). This is what Stock is subtracted by to give Available."
+      >
+        {r.reserved_total > 0 ? `−${fmtQty(r.reserved_total)}` : '—'}
+      </span>
+    ),
+    searchValue: () => '',
+    filterValue: (r) => String(r.reserved_total),
+    sortFn: (a, b) => a.reserved_total - b.reserved_total,
+  },
+  {
     key: 'available',
     label: 'Available',
     width: 90,
@@ -534,7 +563,8 @@ const BALANCE_COLUMNS: DataGridColumn<InventoryProductTotal>[] = [
     accessor: (r) => (
       <span
         className={`${styles.numCell} ${r.available_qty < 0 ? styles.numCellNeg : r.available_qty > 0 ? styles.numCellPos : styles.numCellZero}`}
-        title="Stock − reserved (open SO demand)"
+        title={`${fmtQty(r.total_qty)} stock − ${fmtQty(r.reserved_total)} committed = ${fmtQty(r.available_qty)} available` +
+          (r.incoming_qty > 0 ? `  (+${fmtQty(r.incoming_qty)} incoming, not yet in stock)` : '')}
       >
         {fmtQty(r.available_qty)}
       </span>
@@ -869,6 +899,174 @@ const BatchComponentsPanel = ({ batch }: { batch: InventoryBatch }) => (
 );
 
 /* ════════════════════════════════════════════════════════════════════════
+   Reservations tab — reserved-but-unshipped visibility
+   ───────────────────────────────────────────────────────────────────────
+   Every OPEN FIFO lot (stock physically on the shelf) with the READY sales-
+   order demand claiming it (GET /inventory/reservations). Answers the owner's
+   question: for a lot sitting unshipped, which SO reserved it — vs which stock
+   is free (no order). "Reserved since" is the reserving SO's created_at (no
+   allocation timestamp exists — an honest proxy for the age of the claim).
+   ════════════════════════════════════════════════════════════════════════ */
+const ReservationsTab = ({
+  warehouseId, setWarehouseId, warehouses, search, setSearch,
+}: {
+  warehouseId: string | null;
+  setWarehouseId: (id: string | null) => void;
+  warehouses: Warehouse[];
+  search: string;
+  setSearch: (s: string) => void;
+}) => {
+  const [statusFilter, setStatusFilter] = useState<'all' | 'RESERVED' | 'FREE'>('all');
+  const { data, isLoading, error } = useInventoryReservations({
+    warehouseId: warehouseId ?? undefined,
+  });
+  const all: InventoryReservation[] = useMemo(() => data ?? [], [data]);
+
+  const q = search.trim().toLowerCase();
+  const rows = useMemo(() => all.filter((r) => {
+    if (statusFilter !== 'all' && r.status !== statusFilter) return false;
+    if (!q) return true;
+    return r.product_code.toLowerCase().includes(q) ||
+      (r.product_name ?? '').toLowerCase().includes(q) ||
+      (r.batch_no ?? '').toLowerCase().includes(q) ||
+      r.reserved_by.some((x) => x.doc_no.toLowerCase().includes(q));
+  }), [all, q, statusFilter]);
+
+  const stats = useMemo(() => ({
+    reservedQty: rows.filter((r) => r.status === 'RESERVED').reduce((s, r) => s + r.qty_remaining, 0),
+    freeQty: rows.filter((r) => r.status === 'FREE').reduce((s, r) => s + r.qty_remaining, 0),
+    lotCount: rows.length,
+  }), [rows]);
+
+  return (
+    <>
+      {/* Warehouse filter chips */}
+      <div className={styles.warehouseChips}>
+        <button type="button" className={styles.chip}
+          data-active={warehouseId === null} onClick={() => setWarehouseId(null)}>
+          All warehouses
+        </button>
+        {warehouses.map((w) => (
+          <button key={w.id} type="button" className={styles.chip}
+            data-active={warehouseId === w.id} onClick={() => setWarehouseId(w.id)}>
+            {w.name}
+          </button>
+        ))}
+      </div>
+
+      <div className={STAT_GRID_3}>
+        <StatCard label="Reserved (on shelf, claimed)" value={fmtQty(stats.reservedQty)} pending={isLoading} />
+        <StatCard label="Free (no order)" value={fmtQty(stats.freeQty)} pending={isLoading} />
+        <StatCard label="Open lots" value={stats.lotCount} pending={isLoading} />
+      </div>
+
+      <div className={styles.warehouseChips} style={{ marginTop: 'var(--space-3)' }}>
+        {([
+          { value: 'all' as const, label: 'All' },
+          { value: 'RESERVED' as const, label: 'Reserved' },
+          { value: 'FREE' as const, label: 'Free (no order)' },
+        ]).map((f) => (
+          <button key={f.value} type="button" className={styles.chip}
+            data-active={statusFilter === f.value} onClick={() => setStatusFilter(f.value)}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      <div className={styles.filterRow}>
+        <div className={styles.searchBox} style={{ width: '100%' }}>
+          <Search {...ICON} className={styles.searchIcon} />
+          <input
+            type="search"
+            className={styles.searchInput}
+            placeholder="Search SKU / batch / SO doc no…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <p className={styles.eyebrow}>
+        {isLoading ? 'Loading…' : `${rows.length} open lot${rows.length === 1 ? '' : 's'} · a RESERVED lot is claimed by a READY sales order; FREE stock has no order yet`}
+      </p>
+
+      {error && !isLoading && (
+        <div className={BANNER_ERR}>
+          <strong className="font-semibold">Failed to load.</strong>{' '}
+          {error instanceof Error ? error.message : 'Something went wrong.'}
+        </div>
+      )}
+
+      <div className={styles.tableCard}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Product</th>
+              <th>Warehouse</th>
+              <th>Batch</th>
+              <th style={{ textAlign: 'right' }}>Qty on Shelf</th>
+              <th>Reserved For (SO)</th>
+              <th>Reserved Since</th>
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading && <tr><td colSpan={7} className={styles.emptyRow}>Loading…</td></tr>}
+            {!isLoading && rows.length === 0 && (
+              <tr><td colSpan={7} className={styles.emptyRow}>No open lots match the filters.</td></tr>
+            )}
+            {!isLoading && rows.map((r, i) => (
+              <tr key={`${r.warehouse_id}|${r.product_code}|${r.variant_key}|${r.batch_no ?? ''}|${i}`}>
+                <td>
+                  <span className={`${styles.movementPill} ${r.status === 'RESERVED' ? styles.movementOut : styles.movementIn}`}>
+                    {r.status === 'RESERVED' ? 'Reserved' : 'Free'}
+                  </span>
+                </td>
+                <td>
+                  <div>
+                    <Link
+                      to={`/scm/inventory/stock-card/${encodeURIComponent(r.product_code)}`}
+                      className={styles.codeChip}
+                      style={{ textDecoration: 'none' }}
+                    >
+                      {r.product_code}
+                    </Link>
+                  </div>
+                  <div className={styles.numCellZero} style={{ fontSize: 'var(--fs-11)' }}>
+                    {r.product_name ?? '—'}
+                    {r.variant_key ? ` · ${formatVariantKey(r.variant_key) || 'Standard'}` : ''}
+                  </div>
+                </td>
+                <td>{r.warehouse_name ?? r.warehouse_code ?? '—'}</td>
+                <td className={styles.numCellZero}>{r.batch_no ?? '—'}</td>
+                <td className={`${styles.numCell} ${r.qty_remaining > 0 ? styles.numCellPos : styles.numCellZero}`}>
+                  {fmtQty(r.qty_remaining)}
+                </td>
+                <td>
+                  {r.reserved_by.length === 0
+                    ? <span className={styles.numCellZero}>No order</span>
+                    : r.reserved_by.map((x, j) => (
+                        <span key={x.doc_no}>
+                          {j > 0 ? ', ' : ''}
+                          <Link to={`/scm/sales-orders/${encodeURIComponent(x.doc_no)}`} className={styles.docLink}>
+                            {x.doc_no}
+                          </Link>
+                        </span>
+                      ))}
+                </td>
+                <td className={styles.numCellZero} title={r.reserved_since ?? undefined}>
+                  {r.reserved_since ? fmtAgeDays(r.reserved_since) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+};
+
+/* ════════════════════════════════════════════════════════════════════════
    Product breakdown drawer — AutoCount-style "Up To Date Cost" panel:
    per-warehouse Location | Qty | Unit Cost  +  FIFO lots underneath
    ════════════════════════════════════════════════════════════════════════ */
@@ -925,7 +1123,7 @@ const ProductBreakdownDrawer = ({
         className="w-[720px] max-w-[95vw] overflow-auto bg-bg p-5">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-3">
           <div>
-            <h2 className="font-display text-[20px] font-extrabold leading-tight tracking-tight text-ink">Stock Breakdown</h2>
+            <h2 className="font-display text-[17px] font-extrabold leading-tight tracking-tight text-ink">Stock Breakdown</h2>
             <p className="mt-1 text-[12px] text-ink-secondary">
               <span className={styles.codeChip}>{code}</span> {name}
             </p>
@@ -936,7 +1134,7 @@ const ProductBreakdownDrawer = ({
           </button>
         </div>
 
-        <div className={`${STAT_GRID_3} mt-4`}>
+        <div className="mt-4 grid grid-cols-2 gap-3">
           {/* Both are reduces over `balances`, which is [] until the breakdown
               resolves — so the drawer would open on a confident "RM 0.00" for a
               SKU that may well hold stock. Unknown until it is known. */}
@@ -971,7 +1169,7 @@ const ProductBreakdownDrawer = ({
                 const attrs = formatVariantKey(b.variant_key, b.fabric_supplier_code);
                 return (
                   <tr key={`${b.warehouse_id}|${b.variant_key ?? ''}`}>
-                    <td>{b.warehouse_code} · {b.warehouse_name}</td>
+                    <td>{b.warehouse_name ?? b.warehouse_code ?? '—'}</td>
                     <td>{attrs || <span className={styles.numCellZero}>Standard</span>}</td>
                     <td className={`${styles.numCell} ${b.qty > 0 ? styles.numCellPos : styles.numCellZero}`}>
                       {fmtQty(b.qty)}
@@ -1045,13 +1243,14 @@ const ProductBreakdownDrawer = ({
                   <th style={{ textAlign: 'right' }}>Qty</th>
                   <th style={{ textAlign: 'right' }}>Running</th>
                   <th>Source Doc</th>
+                  <th>Reason</th>
                   <th>Notes</th>
                 </tr>
               </thead>
               <tbody>
-                {movements.isLoading && <tr><td colSpan={7} className={styles.emptyRow}>Loading…</td></tr>}
+                {movements.isLoading && <tr><td colSpan={8} className={styles.emptyRow}>Loading…</td></tr>}
                 {!movements.isLoading && movementsWithBalance.length === 0 && (
-                  <tr><td colSpan={7} className={styles.emptyRow}>No movements yet for this SKU.</td></tr>
+                  <tr><td colSpan={8} className={styles.emptyRow}>No movements yet for this SKU.</td></tr>
                 )}
                 {movementsWithBalance.map((m) => {
                   const href = docHrefFor(m);
@@ -1079,7 +1278,10 @@ const ProductBreakdownDrawer = ({
                             : <span className={styles.docLink}>{m.source_doc_no}</span>
                         ) : <span className={styles.numCellZero}>—</span>}
                       </td>
-                      <td className={styles.numCellZero}>{m.notes ?? '—'}</td>
+                      <td className={styles.numCellZero}>
+                        {m.reason_code ? adjustmentReasonLabel(m.reason_code) : '—'}
+                      </td>
+                      <td className={`${styles.numCellZero} ${styles.notesCell}`} title={m.notes ?? ''}>{m.notes ?? '—'}</td>
                     </tr>
                   );
                 })}
@@ -1202,15 +1404,16 @@ const MovementsTab = ({
               <th style={{ textAlign: 'right' }}>Unit Cost</th>
               <th style={{ textAlign: 'right' }}>Line Cost</th>
               <th>Source Doc</th>
+              <th>Reason</th>
               <th>Notes</th>
             </tr>
           </thead>
           <tbody>
             {isLoading && (
-              <tr><td colSpan={9} className={styles.emptyRow}>Loading…</td></tr>
+              <tr><td colSpan={10} className={styles.emptyRow}>Loading…</td></tr>
             )}
             {!isLoading && movements.length === 0 && (
-              <tr><td colSpan={9} className={styles.emptyRow}>No movements match the filters.</td></tr>
+              <tr><td colSpan={10} className={styles.emptyRow}>No movements match the filters.</td></tr>
             )}
             {!isLoading && movements.map((m) => {
               const w = wmap.get(m.warehouse_id);
@@ -1250,7 +1453,10 @@ const MovementsTab = ({
                         : <span className={styles.docLink}>{m.source_doc_no}</span>;
                     })() : <span className={styles.numCellZero}>—</span>}
                   </td>
-                  <td className={styles.numCellZero}>{m.notes ?? '—'}</td>
+                  <td className={styles.numCellZero}>
+                    {m.reason_code ? adjustmentReasonLabel(m.reason_code) : '—'}
+                  </td>
+                  <td className={`${styles.numCellZero} ${styles.notesCell}`} title={m.notes ?? ''}>{m.notes ?? '—'}</td>
                 </tr>
               );
             })}
