@@ -80,12 +80,23 @@ const buildColumns = (): DataGridColumn<PoHeaderRow>[] => [
     sortFn: (a, b) => pcNo(a).localeCompare(pcNo(b)),
   },
   {
+    // Owner 2026-07-24: supplier NAME and CODE are separate columns on every
+    // procurement table — code is no longer buried as the name's fallback.
     key: 'supplier', label: 'Supplier', width: 200, sortable: true, groupable: true,
-    accessor: (po) => po.supplier?.name ?? po.supplier?.code ?? '—',
-    searchValue: (po) => `${po.supplier?.name ?? ''} ${po.supplier?.code ?? ''}`,
+    accessor: (po) => po.supplier?.name ?? '—',
+    searchValue: (po) => po.supplier?.name ?? '',
     groupValue: (po) => po.supplier?.name ?? po.supplier?.code ?? '(none)',
     sortFn: (a, b) =>
-      (a.supplier?.name ?? a.supplier?.code ?? '').localeCompare(b.supplier?.name ?? b.supplier?.code ?? ''),
+      (a.supplier?.name ?? '').localeCompare(b.supplier?.name ?? ''),
+  },
+  {
+    key: 'supplier_code', label: 'Supplier Code', width: 120, sortable: true,
+    accessor: (po) => po.supplier?.code
+      ? <span className={styles.codeChip}>{po.supplier.code}</span>
+      : '—',
+    searchValue: (po) => po.supplier?.code ?? '',
+    filterValue: (po) => po.supplier?.code ?? '—',
+    sortFn: (a, b) => (a.supplier?.code ?? '').localeCompare(b.supplier?.code ?? ''),
   },
   {
     key: 'items', label: 'Items', width: 320, sortable: false, groupable: false,

@@ -691,15 +691,25 @@ export function GoodsReceivedListV2() {
       render: (r) => <span className="font-mono text-[12px] text-ink-secondary">{poOf(r)}</span>,
     },
     {
+      // Owner 2026-07-24: supplier NAME and CODE are separate columns on every
+      // procurement table, not a stacked cell — code must be scannable on its
+      // own (same split as the PO list, 2026-07-23).
       key: "supplier",
       label: "Supplier",
       disableSort: true,
       getValue: (r) => supplierNameOf(r),
       render: (r) => (
-        <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold text-ink">{supplierNameOf(r)}</div>
-          <div className="mt-0.5 font-mono text-[11px] text-ink-muted">{supplierCodeOf(r)}</div>
-        </div>
+        <div className="min-w-0 truncate text-[13px] font-semibold text-ink">{supplierNameOf(r)}</div>
+      ),
+    },
+    {
+      key: "supplier_code",
+      label: "Code",
+      width: "108px",
+      disableSort: true,
+      getValue: (r) => supplierCodeOf(r),
+      render: (r) => (
+        <span className="font-mono text-[11.5px] text-ink-secondary">{supplierCodeOf(r)}</span>
       ),
     },
     {

@@ -71,12 +71,23 @@ const buildColumns = (): DataGridColumn<PrRow>[] => [
     sortFn: (a, b) => a.return_number.localeCompare(b.return_number),
   },
   {
+    // Owner 2026-07-24: supplier NAME and CODE are separate columns on every
+    // procurement table — code is no longer buried as the name's fallback.
     key: 'supplier', label: 'Supplier', width: 220, sortable: true, groupable: true,
-    accessor: (r) => r.supplier?.name ?? r.supplier?.code ?? '—',
-    searchValue: (r) => `${r.supplier?.name ?? ''} ${r.supplier?.code ?? ''}`.trim(),
+    accessor: (r) => r.supplier?.name ?? '—',
+    searchValue: (r) => r.supplier?.name ?? '',
     groupValue: (r) => r.supplier?.name ?? r.supplier?.code ?? '(none)',
     sortFn: (a, b) =>
-      (a.supplier?.name ?? a.supplier?.code ?? '').localeCompare(b.supplier?.name ?? b.supplier?.code ?? ''),
+      (a.supplier?.name ?? '').localeCompare(b.supplier?.name ?? ''),
+  },
+  {
+    key: 'supplier_code', label: 'Supplier Code', width: 120, sortable: true,
+    accessor: (r) => r.supplier?.code
+      ? <span className={styles.codeChip}>{r.supplier.code}</span>
+      : '—',
+    searchValue: (r) => r.supplier?.code ?? '',
+    filterValue: (r) => r.supplier?.code ?? '—',
+    sortFn: (a, b) => (a.supplier?.code ?? '').localeCompare(b.supplier?.code ?? ''),
   },
   {
     key: 'receive_number', label: 'Transfer From (Receive)', width: 170, sortable: true, groupable: true,
