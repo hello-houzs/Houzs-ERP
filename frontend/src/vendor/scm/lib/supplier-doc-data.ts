@@ -142,38 +142,57 @@ export async function loadFabricDescriptionMap(fabricCodes: string[]): Promise<M
   }
 }
 
+/** The binding shape both the SKU map and its callers care about. */
+export type SupplierBinding = {
+  material_kind: string;
+  material_code: string;
+  supplier_sku: string | null;
+  is_main_supplier: boolean;
+};
+
+/**
+ * material_code → supplier_sku out of ONE supplier's bindings. Filters to
+ * material_kind='mfg_product' and (when `codes` is given) the requested codes;
+ * when the same code is bound twice the main binding (is_main_supplier) wins.
+ *
+ * Pure so the SCREEN can share the rule with the PDF: the purchase-order detail
+ * page already holds these bindings via useSupplierDetail's cache and must not
+ * re-derive "which SKU wins" on its own — a screen that disagrees with the
+ * printed PO is worse than one that shows nothing.
+ *
+ * `codes` omitted = map every bound mfg_product.
+ */
+export function skuMapFromBindings(
+  bindings: SupplierBinding[] | null | undefined,
+  codes?: string[],
+): Map<string, string> {
+  const wanted = codes && new Set(codes.map((c) => c.trim()).filter(Boolean));
+  const candidates = (bindings ?? [])
+    .filter((b) => b.material_kind === 'mfg_product'
+      && (!wanted || wanted.has(b.material_code))
+      && (b.supplier_sku ?? '').trim() !== '')
+    // Main binding first; first writer wins below.
+    .sort((a, b) => Number(b.is_main_supplier) - Number(a.is_main_supplier));
+  const map = new Map<string, string>();
+  for (const b of candidates) {
+    if (!map.has(b.material_code)) map.set(b.material_code, (b.supplier_sku ?? '').trim());
+  }
+  return map;
+}
+
 /**
  * material_code → supplier_sku for ONE supplier, via the SupplierDetail page's
- * GET /suppliers/:id (returns every binding for that supplier). Filters to
- * material_kind='mfg_product' and the requested codes; when the same code is
- * bound twice the main binding (is_main_supplier) wins.
+ * GET /suppliers/:id (returns every binding for that supplier).
  */
 export async function loadSupplierSkuMap(
   supplierId: string | null | undefined,
   codes: string[],
 ): Promise<Map<string, string>> {
-  const wanted = new Set(codes.map((c) => c.trim()).filter(Boolean));
-  if (!supplierId || wanted.size === 0) return new Map();
+  const wanted = codes.map((c) => c.trim()).filter(Boolean);
+  if (!supplierId || wanted.length === 0) return new Map();
   try {
-    const res = await authedFetch<{
-      bindings: Array<{
-        material_kind: string;
-        material_code: string;
-        supplier_sku: string | null;
-        is_main_supplier: boolean;
-      }>;
-    }>(`/suppliers/${supplierId}`);
-    const candidates = (res.bindings ?? [])
-      .filter((b) => b.material_kind === 'mfg_product'
-        && wanted.has(b.material_code)
-        && (b.supplier_sku ?? '').trim() !== '')
-      // Main binding first; first writer wins below.
-      .sort((a, b) => Number(b.is_main_supplier) - Number(a.is_main_supplier));
-    const map = new Map<string, string>();
-    for (const b of candidates) {
-      if (!map.has(b.material_code)) map.set(b.material_code, (b.supplier_sku ?? '').trim());
-    }
-    return map;
+    const res = await authedFetch<{ bindings: SupplierBinding[] }>(`/suppliers/${supplierId}`);
+    return skuMapFromBindings(res.bindings, wanted);
   } catch {
     return new Map();
   }
