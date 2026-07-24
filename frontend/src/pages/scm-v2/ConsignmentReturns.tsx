@@ -26,6 +26,8 @@ import {
   useConsignmentReturnsPaged, useUpdateConsignmentReturnStatus, useConsignmentReturnDetail,
 } from '../../vendor/scm/lib/consignment-return-queries';
 import { SearchProgress } from '../../components/SearchProgress';
+import { ListPager } from '../../components/ListPager';
+import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { useDebouncedSearchTerm, useSearchResultTransition } from '../../hooks/useServerSearch';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { useAuth } from '../../auth/AuthContext';
@@ -307,7 +309,7 @@ export const ConsignmentReturns = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = searchParams.get('status') ?? 'all';
 
-  const PAGE_SIZE = 50;
+  const [pageSize, setPageSize] = useLocalStorage<number>('scm:perpage:consignment-returns', 50);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState('');
   // Debounce the search box so each keystroke doesn't fire a server round-trip.
@@ -320,7 +322,7 @@ export const ConsignmentReturns = () => {
 
   const { data, isLoading, isFetching, isPlaceholderData, error } = useConsignmentReturnsPaged({
     page,
-    pageSize: PAGE_SIZE,
+    pageSize: pageSize,
     status: statusChip === 'all' ? undefined : statusChip,
     q: debouncedSearch.trim() || undefined,
   });
@@ -528,42 +530,14 @@ export const ConsignmentReturns = () => {
         }}
       />
 
-      {!searchTransition.resultsAreStale && <PaginationFooter
+      {!searchTransition.resultsAreStale && <ListPager
         page={page}
-        pageSize={PAGE_SIZE}
+        pageSize={pageSize}
         total={total}
         noun="returns"
-        onPrev={() => setPage((p) => Math.max(0, p - 1))}
-        onNext={() => setPage((p) => p + 1)}
+        onPageChange={setPage}
+        onPageSizeChange={(n) => { setPageSize(n); setPage(0); }}
       />}
-    </div>
-  );
-};
-
-/* Pagination footer — "Showing X–Y of N" + Prev/Next, mirroring Suppliers.tsx /
-   the other scm-v2 list pages. Server-side paging, so N is the grand total. */
-const PaginationFooter = ({
-  page, pageSize, total, noun, onPrev, onNext,
-}: {
-  page: number; pageSize: number; total: number; noun: string;
-  onPrev: () => void; onNext: () => void;
-}) => {
-  const from = total === 0 ? 0 : page * pageSize + 1;
-  const to = Math.min((page + 1) * pageSize, total);
-  const atStart = page === 0;
-  const atEnd = (page + 1) * pageSize >= total;
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      gap: 'var(--space-3)', marginTop: 'var(--space-3)',
-    }}>
-      <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-12)' }}>
-        {total === 0 ? `No ${noun}` : `Showing ${from}${to > from ? `–${to}` : ''} of ${total}`}
-      </span>
-      <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-        <Button variant="secondary" size="md" onClick={onPrev} disabled={atStart}>Prev</Button>
-        <Button variant="secondary" size="md" onClick={onNext} disabled={atEnd}>Next</Button>
-      </div>
     </div>
   );
 };
