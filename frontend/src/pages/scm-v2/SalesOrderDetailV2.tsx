@@ -542,10 +542,11 @@ function SalesOrderDetailV2ReadOnly() {
       : "Submit SO Amendment"
     : "Edit";
 
-  const goBack = () => {
-    if (params.get("from") === "list") navigate("/scm/sales-orders");
-    else navigate(-1);
-  };
+  // Back always returns to the Sales Orders list (owner 2026-07-24: every
+  // details page's back button goes to its relevant list, not wherever
+  // browser history happens to point). The list restores its own sticky
+  // filters, so the prior filtered view comes back — no context lost.
+  const goBack = () => navigate("/scm/sales-orders");
   // Edit always forwards to the full editor (?edit=1). When the SO is
   // amendment-eligible the editor opens in amendment mode (Save submits an
   // amendment request); when hard-locked the button is disabled here.

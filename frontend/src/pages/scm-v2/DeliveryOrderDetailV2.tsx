@@ -847,10 +847,11 @@ export function DeliveryOrderDetailV2() {
     ];
   }, [deliveryOrder]);
 
-  const goBack = () => {
-    if (params.get("from") === "list") navigate("/scm/delivery-orders");
-    else navigate(-1);
-  };
+  // Back always returns to the Delivery Orders list (owner 2026-07-24: every
+  // details page's back button goes to its relevant list, not wherever
+  // browser history happens to point). The list restores its own sticky
+  // filters, so the prior filtered view comes back — no context lost.
+  const goBack = () => navigate("/scm/delivery-orders");
   const goEdit = () => id && navigate(`/scm/delivery-orders/new?edit=${id}`);
   const doCancel = () => {
     if (!deliveryOrder) return;

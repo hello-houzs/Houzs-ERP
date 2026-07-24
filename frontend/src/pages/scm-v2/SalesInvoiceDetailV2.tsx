@@ -663,10 +663,11 @@ export function SalesInvoiceDetailV2() {
   const overdueDays = salesInvoice ? daysPast(salesInvoice.due_date) : -1;
   const isOverdue = overdueDays > 0 && outstanding > 0;
 
-  const goBack = () => {
-    if (params.get("from") === "list") navigate("/scm/sales-invoices");
-    else navigate(-1);
-  };
+  // Back always returns to the Sales Invoices list (owner 2026-07-24: every
+  // details page's back button goes to its relevant list, not wherever
+  // browser history happens to point). The list restores its own sticky
+  // filters, so the prior filtered view comes back — no context lost.
+  const goBack = () => navigate("/scm/sales-invoices");
   const goEdit = () => id && navigate(`/scm/sales-invoices/${id}?edit=1`);
   // Status transitions post to the same server endpoint the ledger page uses.
   // The endpoint keys off UPPERCASE status values (SENT / CANCELLED / PAID) — a

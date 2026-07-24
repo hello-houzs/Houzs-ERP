@@ -412,10 +412,11 @@ function PurchaseOrderDetailV2ReadOnly() {
     : "";
   const badgeTone = eff ? EFFECTIVE_TONE[eff].tone : "neutral";
 
-  const goBack = () => {
-    if (params.get("from") === "list") navigate("/scm/purchase-orders");
-    else navigate(-1);
-  };
+  // Back always returns to the Purchase Orders list (owner 2026-07-24: every
+  // details page's back button goes to its relevant list, not wherever
+  // browser history happens to point). The list restores its own sticky
+  // filters, so the prior filtered view comes back — no context lost.
+  const goBack = () => navigate("/scm/purchase-orders");
   const goEdit = () => id && navigate(`/scm/purchase-orders/${id}?edit=1`);
   const goHistory = () => id && navigate(`/scm/purchase-orders/${id}?tab=history`);
   // Render + download the PO PDF via the shared jspdf generator (client-side),

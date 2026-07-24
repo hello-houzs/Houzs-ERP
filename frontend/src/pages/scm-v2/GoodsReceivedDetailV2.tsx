@@ -299,10 +299,11 @@ function GoodsReceivedDetailV2ReadOnly() {
   const stageLabel = grn ? STAGE_LABEL[(grn.status || "").toUpperCase()] ?? grn.status : "";
   const badgeTone = eff ? EFFECTIVE_TONE[eff].tone : "neutral";
 
-  const goBack = () => {
-    if (params.get("from") === "list") navigate("/scm/grns");
-    else navigate(-1);
-  };
+  // Back always returns to the Goods Received list (owner 2026-07-24: every
+  // details page's back button goes to its relevant list, not wherever
+  // browser history happens to point). The list restores its own sticky
+  // filters, so the prior filtered view comes back — no context lost.
+  const goBack = () => navigate("/scm/grns");
   const goEdit = () => id && navigate(`/scm/grns/${id}?edit=1`);
   // Render + download the GRN PDF via the shared jspdf generator (client-side),
   // mirroring the V1 GoodsReceivedDetail handler. The old `?print=1` navigation

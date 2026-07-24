@@ -382,10 +382,11 @@ function PurchaseInvoiceDetailV2ReadOnly() {
   const overdueDays = purchaseInvoice ? daysPast(purchaseInvoice.due_date) : -1;
   const isOverdue = overdueDays > 0 && outstanding > 0;
 
-  const goBack = () => {
-    if (params.get("from") === "list") navigate("/scm/purchase-invoices");
-    else navigate(-1);
-  };
+  // Back always returns to the Purchase Invoices list (owner 2026-07-24: every
+  // details page's back button goes to its relevant list, not wherever
+  // browser history happens to point). The list restores its own sticky
+  // filters, so the prior filtered view comes back — no context lost.
+  const goBack = () => navigate("/scm/purchase-invoices");
   const goEdit = () => id && navigate(`/scm/purchase-invoices/${id}?edit=1`);
   const goHistory = () => id && navigate(`/scm/purchase-invoices/${id}?tab=history`);
   // Render + download the PI PDF via the shared jspdf generator (client-side),

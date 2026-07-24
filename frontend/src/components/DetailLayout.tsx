@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useSetBreadcrumbs } from "../hooks/useBreadcrumbs";
@@ -67,15 +67,21 @@ export function DetailLayout({
   wide,
 }: Props) {
   const navigate = useNavigate();
+  const location = useLocation();
   // Push the breadcrumb stack into the top-navbar context. On mount
   // the TopNavbar re-renders; on unmount the context clears so list
   // pages fall back to the route-derived crumb.
   useSetBreadcrumbs(breadcrumbs);
 
   function goBack() {
-    if (backTo) navigate(backTo);
-    else if (window.history.length > 1) navigate(-1);
-    else navigate("/");
+    if (backTo) return navigate(backTo);
+    // No explicit target: return to THIS detail's list by dropping the
+    // trailing id segment (/scm/foo/ID → /scm/foo). Deliberately NOT
+    // navigate(-1): every details page's back button must land on its own
+    // list, never on wherever external browser history happens to point
+    // (owner 2026-07-24). Falls back to "/" only for a top-level path.
+    const parent = location.pathname.replace(/\/+$/, "").split("/").slice(0, -1).join("/");
+    navigate(parent || "/");
   }
 
   return (
