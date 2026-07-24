@@ -602,10 +602,20 @@ export async function computeMrp(
     // shared map. Fold in the same-warehouse EMPTY-variant PO pool (legacy POs
     // created before SO→PO carried variants → key ''), so a PO raised for a
     // bedframe still shows as supply against the variant row.
+    //
+    // Audit R4 (legacy-variant double-count) — the legacy '' pool is a FALLBACK,
+    // NOT an addition. It is folded in ONLY when this real-variant bucket has no
+    // PO supply of its own; it must never be added ON TOP of the variant's own
+    // PO. Adding both let a single physical legacy PO line count its quantity
+    // twice — once against the real-variant row (as extra supply) and again as
+    // the '' bucket's own supply / against every other variant row of the SKU —
+    // inflating PO Outstanding and over-covering demand (understating shortage).
+    // Prefer the real variant; '' answers only when the real one is silent.
     const legacyKey = composite(whId, code, '');
-    const useLegacy = bucket.vkey !== '' && legacyKey !== k;
+    const ownPo = poByKey.get(k) ?? [];
+    const useLegacy = bucket.vkey !== '' && legacyKey !== k && ownPo.length === 0;
     const poQueue: PoSupply[] = [
-      ...(poByKey.get(k) ?? []),
+      ...ownPo,
       ...(useLegacy ? (poByKey.get(legacyKey) ?? []) : []),
     ].map((p) => ({ ...p })).sort((a, b) => byDateAsc(a.eta, b.eta));
 
