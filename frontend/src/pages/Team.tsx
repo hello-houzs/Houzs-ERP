@@ -3467,6 +3467,16 @@ function OrgChartTab() {
   const depts = useQuery<{ departments: Department[] }>("/api/departments", () =>
     api.get("/api/departments")
   );
+  // Multi-company (Phase 0e). Each company gets its OWN reporting tree; a member
+  // is placed in a company's tree when granted to it — using the same grant
+  // resolution as the Members table (empty grant = every company; "Both" = all
+  // ids, so those members appear in EVERY tree). Pre-activation this returns 0/1
+  // companies, so `companyOpts.length > 1` is false and the chart falls back to a
+  // single combined tree — single-company Houzs is visually unchanged.
+  const companiesQ = useQuery<{
+    companies: Array<{ id: number; code: string; name: string }>;
+  }>("/api/companies", () => api.get("/api/companies"), [], { staleTime: 60_000 });
+  const companyOpts: CompanyOpt[] = companiesQ.data?.companies ?? [];
 
   // Department filter — null = "All". When a dept is selected the chart
   // narrows to that dept's members only; reps reporting up to a manager
@@ -3493,49 +3503,93 @@ function OrgChartTab() {
     return allActive.filter((u) => inDept(u, filterDeptId));
   }, [allActive, filterDeptId]);
 
-  // Any user whose manager_id points at an inactive/missing/out-of-
-  // filter user gets re-rooted so they stay visible.
-  const { roots, childrenOf, byId } = useMemo(() => {
-    const byId = new Map(users.map((u) => [u.id, u]));
-    const childrenOf = new Map<number | null, TeamMember[]>();
-    for (const u of users) {
-      const parentId =
-        u.manager_id != null && byId.has(u.manager_id) ? u.manager_id : null;
-      const arr = childrenOf.get(parentId) ?? [];
-      arr.push(u);
-      childrenOf.set(parentId, arr);
+  // Global lookup for the mutation handlers (manager reassignment, cycle checks)
+  // — keyed across the full filtered set, not one company's slice.
+  const byId = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
+
+  // One reporting tree PER company (or a single combined tree when there is not
+  // more than one company). Within each tree the manager -> report hierarchy is
+  // preserved exactly as before: a user whose manager_id points at someone NOT in
+  // that tree (inactive, missing, out-of-dept-filter, or granted to a different
+  // company) is re-rooted so they stay visible. A member granted to both
+  // companies is present in both slices, so they render in BOTH trees under their
+  // reporting line there — not in a separate side section.
+  const companyViews = useMemo(() => {
+    const departments = depts.data?.departments ?? [];
+    const buildView = (
+      key: string,
+      label: string,
+      viewUsers: TeamMember[],
+    ) => {
+      const inSet = new Set(viewUsers.map((u) => u.id));
+      const childrenOf = new Map<number | null, TeamMember[]>();
+      for (const u of viewUsers) {
+        const parentId =
+          u.manager_id != null && inSet.has(u.manager_id) ? u.manager_id : null;
+        const arr = childrenOf.get(parentId) ?? [];
+        arr.push(u);
+        childrenOf.set(parentId, arr);
+      }
+      for (const arr of childrenOf.values()) {
+        arr.sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+      }
+      const roots = childrenOf.get(null) ?? [];
+      // Namespace each box's key by tree so expand/collapse state never collides
+      // between companies (both trees can have a "d5" or "none" box).
+      const groups = buildDeptGroups(viewUsers, roots, departments).map((g) => ({
+        ...g,
+        key: `${key}:${g.key}`,
+      }));
+      return { key, label, users: viewUsers, roots, groups };
+    };
+
+    if (companyOpts.length > 1) {
+      // Grant resolution mirrors the Members table (companyLabelFor): an empty
+      // grant is fail-open (member acts in every company) so it appears in every
+      // tree; otherwise the member appears in each company whose id it carries.
+      return companyOpts.map((co) =>
+        buildView(
+          `c${co.id}`,
+          co.name,
+          users.filter((u) => {
+            const ids = u.company_ids ?? [];
+            return ids.length === 0 || ids.includes(co.id);
+          }),
+        ),
+      );
     }
-    for (const arr of childrenOf.values()) {
-      arr.sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
-    }
-    return { roots: childrenOf.get(null) ?? [], childrenOf, byId };
-  }, [users]);
+    return [buildView("all", "", users)];
+  }, [companyOpts, users, depts.data?.departments]);
+
+  // Flat list of every box across every tree — drives the shared expand/collapse
+  // controls and the initial-render card budget (bounds total DOM at scale).
+  const allGroups = useMemo(
+    () => companyViews.flatMap((v) => v.groups),
+    [companyViews],
+  );
 
   const [draggingId, setDraggingId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [zoom, setZoom] = useState(1);
 
-  // Department boxes, and which are expanded. Lazy-mount: a collapsed box shows
-  // only its header (name + count + chevron) and mounts none of its member
-  // cards, so deep/large departments contribute 0 DOM nodes until opened.
-  const groups = useMemo(
-    () => buildDeptGroups(users, roots, depts.data?.departments ?? []),
-    [users, roots, depts.data?.departments],
-  );
+  // Which department boxes are expanded. Lazy-mount: a collapsed box shows only
+  // its header (name + count + chevron) and mounts none of its member cards, so
+  // deep/large departments contribute 0 DOM nodes until opened. Keys are
+  // tree-namespaced (see companyViews) so the state spans every company tree.
   // null = "use the budget-based default". Once the user toggles anything we
   // hold their explicit set instead.
   const [expandedGroups, setExpandedGroups] = useState<Set<string> | null>(null);
   const defaultExpandedGroups = useMemo(() => {
     const s = new Set<string>();
     let budget = ORG_INITIAL_CARD_BUDGET;
-    for (const g of groups) {
+    for (const g of allGroups) {
       if (g.members.length <= budget) {
         s.add(g.key);
         budget -= g.members.length;
       }
     }
     return s;
-  }, [groups]);
+  }, [allGroups]);
   const expandedKeys = expandedGroups ?? defaultExpandedGroups;
   function toggleGroup(key: string) {
     const base = expandedGroups ?? defaultExpandedGroups;
@@ -3545,13 +3599,13 @@ function OrgChartTab() {
     setExpandedGroups(next);
   }
   function expandAllGroups() {
-    setExpandedGroups(new Set(groups.map((g) => g.key)));
+    setExpandedGroups(new Set(allGroups.map((g) => g.key)));
   }
   function collapseAllGroups() {
     setExpandedGroups(new Set());
   }
   const allGroupsExpanded =
-    groups.length > 0 && groups.every((g) => expandedKeys.has(g.key));
+    allGroups.length > 0 && allGroups.every((g) => expandedKeys.has(g.key));
 
   async function reassign(userId: number, managerId: number | null) {
     if (userId === managerId) return;
@@ -3746,7 +3800,7 @@ function OrgChartTab() {
         />
       )}
 
-      {roots.length === 0 ? (
+      {users.length === 0 ? (
         <div className="rounded-md border border-border bg-surface px-5 py-8 text-center text-[12px] text-ink-muted">
           {filterDept
             ? `No active members in ${filterDept.name}.`
@@ -3756,7 +3810,7 @@ function OrgChartTab() {
         <>
           {/* Controls: expand · export · zoom */}
           <div className="flex flex-wrap items-center justify-end gap-1.5">
-            {groups.length > 1 && (
+            {allGroups.length > 1 && (
               <button
                 type="button"
                 onClick={allGroupsExpanded ? collapseAllGroups : expandAllGroups}
@@ -3784,13 +3838,16 @@ function OrgChartTab() {
                 expandAllGroups();
                 requestAnimationFrame(() =>
                   requestAnimationFrame(() => {
-                    // Shrink the chart to fit one landscape page so it isn't
-                    // clipped (see the @media print rule in index.css).
-                    const el = document.querySelector(".org-print-scale") as HTMLElement | null;
-                    if (el)
-                      el.style.setProperty(
-                        "--print-zoom",
-                        String(Math.min(1, 1000 / (el.scrollWidth || 1))),
+                    // Shrink each tree to fit one landscape page so it isn't
+                    // clipped (see the @media print rule in index.css). One
+                    // scale box per company tree, so size them all.
+                    document
+                      .querySelectorAll<HTMLElement>(".org-print-scale")
+                      .forEach((el) =>
+                        el.style.setProperty(
+                          "--print-zoom",
+                          String(Math.min(1, 1000 / (el.scrollWidth || 1))),
+                        ),
                       );
                     window.print();
                   }),
@@ -3830,31 +3887,57 @@ function OrgChartTab() {
             </button>
           </div>
 
-          <div className="org-print-area thin-scroll overflow-auto pb-6">
-            <div
-              className="org-print-scale mx-auto flex min-w-fit items-start justify-center gap-10 px-4 pt-2"
-              style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}
-            >
-              <OrgDeptChart
-                users={users}
-                roots={roots}
-                groups={groups}
-                expandedKeys={expandedKeys}
-                onToggleGroup={toggleGroup}
-                departments={deptList}
-                divisionOptions={divisionOptions}
-                canManage={canManage}
-                draggingId={draggingId}
-                setDraggingId={setDraggingId}
-                onReassign={reassign}
-                onChangeDept={changeDept}
-                onChangeDepts={changeDepts}
-                onChangeDivision={changeDivision}
-                onMoveMember={moveMember}
-                editingId={editingId}
-                setEditingId={setEditingId}
-              />
-            </div>
+          <div className="org-print-area thin-scroll space-y-8 overflow-auto pb-6">
+            {companyViews.map((view) => {
+              // Only label the tree when there is more than one — a single
+              // combined tree stays header-less, exactly as before.
+              const showHeader = companyViews.length > 1;
+              return (
+                <section key={view.key} className="space-y-2">
+                  {showHeader && (
+                    <div className="flex items-center gap-2 px-1">
+                      <h3 className="font-mono text-[11px] font-semibold uppercase tracking-brand text-ink-secondary">
+                        {view.label}
+                      </h3>
+                      <span className="rounded-full bg-surface-dim px-1.5 py-px text-[10px] font-semibold text-ink-muted">
+                        {view.users.length}
+                      </span>
+                      <span className="h-px flex-1 bg-border" />
+                    </div>
+                  )}
+                  {view.users.length === 0 ? (
+                    <div className="rounded-md border border-border bg-surface px-5 py-6 text-center text-[12px] text-ink-muted">
+                      No active members in this company.
+                    </div>
+                  ) : (
+                    <div
+                      className="org-print-scale mx-auto flex min-w-fit items-start justify-center gap-10 px-4 pt-2"
+                      style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}
+                    >
+                      <OrgDeptChart
+                        users={view.users}
+                        roots={view.roots}
+                        groups={view.groups}
+                        expandedKeys={expandedKeys}
+                        onToggleGroup={toggleGroup}
+                        departments={deptList}
+                        divisionOptions={divisionOptions}
+                        canManage={canManage}
+                        draggingId={draggingId}
+                        setDraggingId={setDraggingId}
+                        onReassign={reassign}
+                        onChangeDept={changeDept}
+                        onChangeDepts={changeDepts}
+                        onChangeDivision={changeDivision}
+                        onMoveMember={moveMember}
+                        editingId={editingId}
+                        setEditingId={setEditingId}
+                      />
+                    </div>
+                  )}
+                </section>
+              );
+            })}
           </div>
         </>
       )}
