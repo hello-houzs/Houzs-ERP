@@ -39,11 +39,14 @@ See `git log origin/main` for the full list; the notable ones:
 - Diagnostics (read-only, re-runnable via Actions): **#1157** supplier reachability, **#1168/#1173** migration completeness, **#1176** DO-payments forensic.
 - **#1171** `docs/add-company-design.md`. **#754** (wenwei4046/2990s) reversible read-only freeze — MERGED, switch **OFF**.
 
-## Open PRs — NEED ATTENTION
-- **#1174** on-screen order lines: CODE-only + variant everywhere + fabric `(PC151-01)`. **CONFLICTING** with Fair Report branding (#1163/#1175). Agent `a62fd581d5614a326` is resolving (keep both sides) — merge when green. Owner's #1 UI complaint; NOT yet live.
-- **`fix/so-processing-date-display`** — SO read views show the legacy `processing_date` column (null) instead of the real `internal_expected_dd` (PR #140 renamed the LABEL to "Processing date", not the column). Agent `aeb652f73e4b21d7c` sweeping all SO surfaces. Merge when green.
-- **#1165** `mig 0188_percompany_natural_key_masters` — per-company UNIQUE on `accounts`/`product_models`/`product_dept_configs`/`pwp_codes` (prereq for company 3). Touches **accounting FKs** (re-added `NOT VALID`, cannot fail on existing rows). **Review the SQL before merge.** Not urgent.
-- `chore/diag-do-payments` etc. — read-only diags, safe.
+## Open PRs / just-merged — NEED ATTENTION (state as of session end)
+- **#1174 — STILL OPEN, MERGE WHEN GREEN.** On-screen order lines: CODE-only + variant everywhere + fabric `(PC151-01)`. Agent `a62fd581d5614a326` RESOLVED the Fair Report conflict (#1163/#1175) and pushed; GitHub was recomputing mergeability/CI at session end. Do: `gh pr view 1174 --json state,mergeStateStatus`; once CLEAN + CI green → `gh pr merge 1174 --repo hello-houzs/Houzs-ERP --squash --admin` then CONFIRM `state=MERGED`. This is the owner's #1 UI complaint and is NOT live until this lands. Also re-verify it covers the exact "ORDER LINES · SELLING & COST" component the owner sees (may not be only FairReport).
+- **#1179 — MERGED.** Processing-date read-column fix (SO detail + list now use `internal_expected_dd ?? processing_date`; the list had the fallback reversed). Live after deploy.
+- **#1165 — MERGED (mig 0188).** Per-company UNIQUE on `accounts`/`product_models`/`product_dept_configs`/`pwp_codes`. I had flagged it to review the SQL first; it got merged anyway. It re-adds accounting FKs `NOT VALID` (cannot fail on existing rows; `backend-postgres` CI passed). ⚠️ **VERIFY `APPLIED 0188...` shows in the deploy log** (Actions → deploy on main) — the deploy was still PENDING at session end (a background poll was checking). If that deploy failed, it BLOCKS ALL later migrations — fix before anything else.
+- `chore/diag-*` (supplier reachability, migration completeness, DO payments, pos-role-access, amendment-apply) — read-only diagnostics, merged/safe. Re-runnable from Actions.
+
+## First thing next session should do
+1. Confirm `APPLIED 0188` in the latest successful deploy (see #1165 above). 2. Merge #1174 when green + confirm state. 3. Then work the owner decisions below.
 
 ## Migration integrity (the go-live evidence)
 Diags ran vs prod (2990 source vs Houzs company_2). **Counts: every doc type
