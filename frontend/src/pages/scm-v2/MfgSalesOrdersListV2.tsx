@@ -40,6 +40,8 @@ import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
 import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
+import { ListPager } from "../../components/ListPager";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
@@ -807,43 +809,6 @@ function TotalRow({
   );
 }
 
-// ─── Pagination footer ──────────────────────────────────────────────────────
-
-function PaginationFooter({
-  page,
-  pageSize,
-  total,
-  onPrev,
-  onNext,
-}: {
-  page: number;
-  pageSize: number;
-  total: number;
-  onPrev: () => void;
-  onNext: () => void;
-}) {
-  const from = total === 0 ? 0 : page * pageSize + 1;
-  const to = Math.min((page + 1) * pageSize, total);
-  const atStart = page === 0;
-  const atEnd = (page + 1) * pageSize >= total;
-  return (
-    <div className="mt-4 flex items-center justify-between gap-3">
-      <span className="text-[12px] text-ink-muted">
-        Showing {from}
-        {to > from ? `–${to}` : ""} of {total}
-      </span>
-      <div className="flex items-center gap-2">
-        <Button variant="secondary" onClick={onPrev} disabled={atStart}>
-          Prev
-        </Button>
-        <Button variant="secondary" onClick={onNext} disabled={atEnd}>
-          Next
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 // Table column key → backend sort-whitelist column. Only the mismatched key
 // ("amount" → "local_total_centi") needs a map; doc_no / so_date / debtor_name
 // / status already match the backend names 1:1. Columns not in this map that
@@ -1054,7 +1019,9 @@ export function MfgSalesOrdersListV2() {
   // fixed 50 (backend caps at 100). Both feed the server-pagination hook so
   // search / status counts / sort span the FULL set, not the visible page.
   const page = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
-  const pageSize = 50;
+  // Per-page is now the operator's choice (owner 2026-07-24), persisted per
+  // list. Backend caps at 100, so the options stay ≤100.
+  const [pageSize, setPageSize] = useLocalStorage<number>("scm:perpage:sales-orders", 50);
 
   const [selected, setSelected] = useState<SoRow | null>(null);
   // Server-side sort, formatted "<col>:<dir>" for the backend whitelist
@@ -2060,12 +2027,13 @@ export function MfgSalesOrdersListV2() {
           <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
         )}
         {!searchTransition.resultsAreStale && <div className="pb-24">
-          <PaginationFooter
+          <ListPager
             page={page}
             pageSize={pageSize}
             total={total}
-            onPrev={() => setPageParam(page - 1)}
-            onNext={() => setPageParam(page + 1)}
+            noun="orders"
+            onPageChange={setPageParam}
+            onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
           />
         </div>}
       </div>
@@ -2139,12 +2107,13 @@ export function MfgSalesOrdersListV2() {
               label: "Reset layout",
             }}
           />
-          {!searchTransition.resultsAreStale && <PaginationFooter
+          {!searchTransition.resultsAreStale && <ListPager
             page={page}
             pageSize={pageSize}
             total={total}
-            onPrev={() => setPageParam(page - 1)}
-            onNext={() => setPageParam(page + 1)}
+            noun="orders"
+            onPageChange={setPageParam}
+            onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
           />}
         </>
       ) : (
@@ -2176,12 +2145,13 @@ export function MfgSalesOrdersListV2() {
           ) : searchTransition.resultsAreStale ? (
             <SearchPendingPanel label={searchTransition.statusText} />
           ) : <><CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
-          <PaginationFooter
+          <ListPager
             page={page}
             pageSize={pageSize}
             total={total}
-            onPrev={() => setPageParam(page - 1)}
-            onNext={() => setPageParam(page + 1)}
+            noun="orders"
+            onPageChange={setPageParam}
+            onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
           /></>}
         </>
       )}

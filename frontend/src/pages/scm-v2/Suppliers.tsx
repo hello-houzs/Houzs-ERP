@@ -37,6 +37,8 @@ import {
 } from '../../vendor/scm/components/SupplyCategoryPicker';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { SearchProgress } from '../../components/SearchProgress';
+import { ListPager } from '../../components/ListPager';
+import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { useDebouncedSearchTerm, useSearchResultTransition } from '../../hooks/useServerSearch';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './Suppliers.module.css';
@@ -75,7 +77,7 @@ export const Suppliers = () => {
   const [page, setPage] = useState(0);
   const [creating, setCreating] = useState(false);
 
-  const PAGE_SIZE = 50;
+  const [pageSize, setPageSize] = useLocalStorage<number>('scm:perpage:suppliers', 50);
   // Debounce the search box so each keystroke doesn't fire a server round-trip.
   const { requestTerm: debouncedSearch } = useDebouncedSearchTerm(search);
 
@@ -118,7 +120,7 @@ export const Suppliers = () => {
 
   const { data, isLoading, isFetching, isPlaceholderData, error } = useSuppliersPaged({
     page,
-    pageSize: PAGE_SIZE,
+    pageSize: pageSize,
     status: status === 'all' ? undefined : status,
     q: debouncedSearch.trim() || undefined,
     // '__all__' → omit (no filter); '__mixed__' → send + pool so the server
@@ -328,12 +330,13 @@ export const Suppliers = () => {
           selectable={{ selectedKeys: selectedIds, onToggle: toggle, onToggleAll: toggleAll }}
         />
 
-        {!searchTransition.resultsAreStale && <PaginationFooter
+        {!searchTransition.resultsAreStale && <ListPager
           page={page}
-          pageSize={PAGE_SIZE}
+          pageSize={pageSize}
           total={total}
-          onPrev={() => setPage((p) => Math.max(0, p - 1))}
-          onNext={() => setPage((p) => p + 1)}
+          noun="suppliers"
+          onPageChange={setPage}
+          onPageSizeChange={(n) => { setPageSize(n); setPage(0); }}
         />}
       </div>
 
@@ -374,39 +377,6 @@ const StatusChip = ({
     {children}
   </button>
 );
-
-/* Pagination footer — "Showing X–Y of N" + Prev/Next, mirroring the other
-   scm-v2 list pages (PurchaseOrdersListV2 etc.). Server-side paging, so N is
-   the grand total across all pages. */
-const PaginationFooter = ({
-  page,
-  pageSize,
-  total,
-  onPrev,
-  onNext,
-}: {
-  page: number;
-  pageSize: number;
-  total: number;
-  onPrev: () => void;
-  onNext: () => void;
-}) => {
-  const from = total === 0 ? 0 : page * pageSize + 1;
-  const to = Math.min((page + 1) * pageSize, total);
-  const atStart = page === 0;
-  const atEnd = (page + 1) * pageSize >= total;
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-[12px] text-ink-secondary">
-        {total === 0 ? 'No suppliers' : `Showing ${from}${to > from ? `–${to}` : ''} of ${total}`}
-      </span>
-      <div className="flex gap-2">
-        <Button variant="secondary" onClick={onPrev} disabled={atStart}>Prev</Button>
-        <Button variant="secondary" onClick={onNext} disabled={atEnd}>Next</Button>
-      </div>
-    </div>
-  );
-};
 
 /* ════════════════════════════════════════════════════════════════════════
    Batch edit modal (Commander 2026-06-19 — HOOKKA parity)
