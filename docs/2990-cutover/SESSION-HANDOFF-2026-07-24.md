@@ -67,8 +67,13 @@ See `git log origin/main` for the full list; the notable ones:
 - **#1165 — MERGED (mig 0188).** Per-company UNIQUE on `accounts`/`product_models`/`product_dept_configs`/`pwp_codes`. I had flagged it to review the SQL first; it got merged anyway. It re-adds accounting FKs `NOT VALID` (cannot fail on existing rows; `backend-postgres` CI passed). ⚠️ **VERIFY `APPLIED 0188...` shows in the deploy log** (Actions → deploy on main) — the deploy was still PENDING at session end (a background poll was checking). If that deploy failed, it BLOCKS ALL later migrations — fix before anything else.
 - `chore/diag-*` (supplier reachability, migration completeness, DO payments, pos-role-access, amendment-apply) — read-only diagnostics, merged/safe. Re-runnable from Actions.
 
+## Status at true session end (all landed + verified)
+- **#1174 MERGED + DEPLOYED** (deploy 30064648326 = success). Order lines now show CODE + variant everywhere.
+- **mig 0188 CONFIRMED APPLIED on prod** — deploy log: `APPLIED 0188_percompany_natural_key_masters.sql (11 statements)`, deploy success, zero migration errors. The accounting-FK change is safe/live.
+- #1167 (pricing UI), #1164 (StatePicker), #1179 (processing-date) all merged + in that deploy.
+
 ## First thing next session should do
-1. Confirm `APPLIED 0188` in the latest successful deploy (see #1165 above). 2. Merge #1174 when green + confirm state. 3. Then work the owner decisions below.
+Everything mergeable this session is merged + deployed. Next session works the **owner decisions** (① 12 SO delivered status · DO COD payments · #104 Sales Director POS perms · #103 Outstanding page · add-company account-book template) and the **known gaps** (supplier-404 backend root cause, retire the dead `processing_date` column, confirm the exact SELLING&COST component, run the price backfill dry-run, pricing phase 3). Prune the lingering worktrees.
 
 ## Migration integrity (the go-live evidence)
 Diags ran vs prod (2990 source vs Houzs company_2). **Counts: every doc type
