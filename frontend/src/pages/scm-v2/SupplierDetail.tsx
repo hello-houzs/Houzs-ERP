@@ -362,7 +362,7 @@ export const SupplierDetail = () => {
   return (
     <div>
       {/* ── Header (shared PageHeader — full-bleed, design-system) ── */}
-      <PageHeader
+      <PageHeader back
         eyebrow="Supplier"
         title={`${supplier.code} — ${supplier.name}`}
         description="Supplier scorecard, SKU mappings and recent purchase order history."

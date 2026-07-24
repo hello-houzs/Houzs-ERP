@@ -684,7 +684,7 @@ export const SalesOrderDetailListing = () => {
   return (
     <div>
       {/* ── Header — shared PageHeader (full-bleed, design-system) ─── */}
-      <PageHeader
+      <PageHeader back
         eyebrow="Reports"
         title="Sales Order Details"
         description="Line-item view — one row per sales-order line, with the order header repeated on every line."

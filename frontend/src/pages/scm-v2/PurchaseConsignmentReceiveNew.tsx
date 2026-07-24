@@ -22,8 +22,8 @@
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowRightLeft, ListChecks, Plus, Save, Trash2, X, ChevronDown } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowRightLeft, ListChecks, Plus, Save, Trash2, X, ChevronDown } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
 import {
@@ -421,14 +421,11 @@ export const PurchaseConsignmentReceiveNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Procurement"
         title={`New Purchase Consignment Receive${po?.po_number ? ` · ${po.po_number}` : ''}`}
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/purchase-consignment-receives" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Purchase Consignment Receives</span>
-            </Link>
             <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-receives/from-pc-order')}>
               <ArrowRightLeft {...ICON} /> From Purchase Consignment Order
             </Button>
@@ -837,8 +834,8 @@ export const PurchaseConsignmentReceiveNew = () => {
         </div>
       </section>
 
-      {/* Totals card aligned right */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      {/* Totals card aligned right — lg:pr-32 clears the fixed FAB cluster. */}
+      <div className="lg:pr-32" style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <section className={styles.card} style={{ maxWidth: 360, width: '100%' }}>
           <div className={styles.cardBody}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-14)', marginBottom: 'var(--space-2)' }}>

@@ -64,6 +64,12 @@ const cover = (childQty: number, parentQty: number): EdgeKind =>
 const uniq = (xs: Array<string | null | undefined>) =>
   [...new Set(xs.filter((x): x is string => !!x))];
 
+/* A PO's "From SOs: …" note records source SO doc numbers with the company
+   prefix stripped ("2990-SO-2606-033" → "SO-2606-033"); Houzs docs have no
+   prefix and pass through unchanged. Strip a leading "<digits>-" so the token
+   matches what the note actually contains. */
+const stripCompanyPrefix = (docNo: string): string => docNo.replace(/^\d+-/, '');
+
 /* Resolve the set of Sales Order doc_nos the anchor document descends from.
    Every by-id / by-anchor read is scoped to the ACTIVE company via
    scopeToCompany (same idiom the sibling SCM routes use), so a caller in
@@ -340,6 +346,60 @@ async function buildConsignmentFlow(sb: any, c: Context<any>, type: NodeType, id
   return orphan([rootPco]);
 }
 
+/* ── GET /document-flow/candidate-pos/:soDocNo ──────────────────────────────
+   ADVISORY, READ-ONLY. For an SO whose purchase leg was never linked
+   (purchase_order_items.so_item_id NULL — every PO raised before the MRP-linked
+   flow of 2026-07-09), surface the live POs that MIGHT cover it, matched by
+   material_code ALONE. This writes NOTHING and creates NO link: a pre-MRP PO was
+   a shared stock buy (one PO, qty N, feeding several SOs), so the true SO⇄PO
+   attribution was never recorded and cannot be safely inferred. The map shows
+   these as "Not linked from this SO" so the office can reconcile by hand without
+   the graph ever asserting a guess as fact.
+
+   Registered BEFORE the '/:type/:id' catch-all so 'candidate-pos' is not parsed
+   as a NodeType. Company-scoped both ends: gated on SO ownership, and the PO
+   read itself is scopeToCompany'd. */
+documentFlow.get('/candidate-pos/:soDocNo', async (c) => {
+  const sb = c.get('supabase');
+  const soDocNo = c.req.param('soDocNo');
+  const cid = activeCompanyId(c);
+
+  // Ownership gate — never resolve candidates for an SO another company owns.
+  if (cid != null) {
+    const { data: so } = await sb.from('mfg_sales_orders')
+      .select('doc_no').eq('doc_no', soDocNo).eq('company_id', cid).maybeSingle();
+    if (!so) return c.json({ candidates: [] });
+  }
+
+  // The SO's own item codes (doc_no already company-verified above).
+  const { data: soItems } = await sb.from('mfg_sales_order_items')
+    .select('item_code').eq('doc_no', soDocNo);
+  const codes = uniq((soItems ?? []).map((r: any) => r.item_code));
+  if (codes.length === 0) return c.json({ candidates: [] });
+
+  // UNLINKED PO lines (so_item_id NULL) carrying any of those codes.
+  const { data: poItems } = await sb.from('purchase_order_items')
+    .select('purchase_order_id')
+    .in('material_code', codes)
+    .is('so_item_id', null);
+  const poIds = uniq((poItems ?? []).map((r: any) => r.purchase_order_id));
+  if (poIds.length === 0) return c.json({ candidates: [] });
+
+  // Live (non-CANCELLED) POs only, company-scoped, newest first.
+  const { data: pos } = await scopeToCompany(
+    sb.from('purchase_orders')
+      .select('id, po_number, status, po_date')
+      .in('id', poIds)
+      .neq('status', 'CANCELLED'),
+    c,
+  );
+  const candidates = ((pos ?? []) as any[])
+    .map((p) => ({ id: p.id, poNumber: p.po_number, status: p.status, poDate: p.po_date }))
+    .sort((a, b) =>
+      (b.poDate ?? '').localeCompare(a.poDate ?? '') || b.poNumber.localeCompare(a.poNumber));
+  return c.json({ candidates });
+});
+
 documentFlow.get('/:type/:id', async (c) => {
   const sb = c.get('supabase');
   const type = c.req.param('type') as NodeType;
@@ -544,12 +604,43 @@ documentFlow.get('/:type/:id', async (c) => {
   }
 
   // ── 5. POs (purchase chain) ─────────────────────────────────────────────
+  // Two linkage sources, both real:
+  //   (a) so_item_id — the MRP-linked flow (2026-07-09 onward). Per-item, exact.
+  //   (b) the PO's "From SOs: …" note — how a PO records its source SO(s) at
+  //       creation. It is the ONLY link for POs raised before so_item_id existed
+  //       (a shared stock buy stamps every SO it was raised for), and it is an
+  //       authoritative record, not a guess — so note-linked POs are surfaced as
+  //       REAL nodes, and their GRN/PI chain expands through the header FKs below
+  //       exactly like a so_item_id-linked PO's does.
   const poItemLinks = soItemIds.length
     ? (await sb.from('purchase_order_items').select('id, purchase_order_id, so_item_id, qty').in('so_item_id', soItemIds)).data ?? []
     : [];
-  const poIds = uniq((poItemLinks as any[]).map((l) => l.purchase_order_id));
   const poItemMeta = new Map<string, { poId: string; qty: number }>();
   for (const l of (poItemLinks as any[])) poItemMeta.set(l.id, { poId: l.purchase_order_id, qty: Number(l.qty ?? 0) });
+
+  /* (b) Note-recorded links. The note drops the company prefix ("2990-SO-2606-033"
+     is written "SO-2606-033"), so match on the prefix-stripped token. Company-
+     scoped: only the active company's POs are scanned. `noteEdges` collects the
+     SO→PO pairs the note asserts so the value edge is drawn even though these POs
+     carry no so_item_id. */
+  const bareTokens = rootSos.map((d) => stripCompanyPrefix(d)).filter(Boolean);
+  const noteEdges: Array<{ soDoc: string; poId: string }> = [];
+  const notePoIds: string[] = [];
+  if (cid != null && bareTokens.length) {
+    const { data: notedPos } = await sb.from('purchase_orders')
+      .select('id, notes').eq('company_id', cid).not('notes', 'is', null);
+    for (const p of (notedPos ?? []) as any[]) {
+      const note = String(p.notes ?? '');
+      let matched = false;
+      for (let i = 0; i < rootSos.length; i++) {
+        const t = bareTokens[i];
+        if (t && note.includes(t)) { noteEdges.push({ soDoc: rootSos[i]!, poId: p.id }); matched = true; }
+      }
+      if (matched) notePoIds.push(p.id);
+    }
+  }
+
+  const poIds = uniq([...(poItemLinks as any[]).map((l) => l.purchase_order_id), ...notePoIds]);
   if (poIds.length) {
     const { data: pos } = await sb.from('purchase_orders').select('id, po_number, status').in('id', poIds);
     for (const p of (pos ?? []) as any[]) {
@@ -564,6 +655,11 @@ documentFlow.get('/:type/:id', async (c) => {
       const set = poToSo.get(l.purchase_order_id) ?? new Set<string>();
       set.add(soDoc);
       poToSo.set(l.purchase_order_id, set);
+    }
+    for (const { soDoc, poId } of noteEdges) {
+      const set = poToSo.get(poId) ?? new Set<string>();
+      set.add(soDoc);
+      poToSo.set(poId, set);
     }
     for (const [poId, soDocs] of poToSo) for (const soDoc of soDocs) addEdge(keyOf('so', soDoc), keyOf('po', poId), 'value');
   }

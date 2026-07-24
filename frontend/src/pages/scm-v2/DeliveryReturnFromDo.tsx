@@ -28,9 +28,9 @@
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState, type CSSProperties } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { writeScmHandoff } from '../../lib/scmHandoffStorage';
-import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from 'lucide-react';
+import { ArrowRight, X, CheckSquare, Square } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
 import { useReturnableDoLines, type DoRemainingLine } from '../../vendor/scm/lib/delivery-return-queries';
@@ -314,14 +314,11 @@ export const DeliveryReturnFromDo = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title="Pick Delivery Order lines to return"
         actions={
           <>
-            <Link to="/scm/delivery-returns" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Delivery Returns</span>
-            </Link>
             <div className={styles.actions}>
               <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-returns')}>
                 <X {...ICON} /> Cancel

@@ -23,7 +23,7 @@ import { useMemo, useState, type CSSProperties } from 'react';
 // HOUZS VENDOR — Link + useSearchParams live on 'react-router-dom' in
 // react-router v6 (the version Houzs ships). Only the import specifier changed.
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Save, X, CheckSquare, Square, Filter } from 'lucide-react';
+import { Save, X, CheckSquare, Square, Filter } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { fmtDateOrDash, fmtMoneyCenti } from '@2990s/shared';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
@@ -538,21 +538,18 @@ export const PurchaseOrderFromSo = () => {
 
   return (
     <div className="space-y-4">
+      {/* Explicit back target, not history-back: this picker is reachable from
+          a PO being edited, from New PO, and from the list, and each entry
+          point has its own correct destination (carried over verbatim from the
+          action-rail link this replaced). */}
       <PageHeader
+        back={targetPoId ? `/scm/purchase-orders/${targetPoId}?edit=1`
+          : cameFromNewPage ? '/scm/purchase-orders/new'
+          : '/scm/purchase-orders'}
         eyebrow="Procurement"
         title={`Pick Sales Orders for this PO${targetPoNumber ? ` · ${targetPoNumber}` : ''}`}
         actions={
           <div className={styles.actions}>
-            <Link
-              to={targetPoId ? `/scm/purchase-orders/${targetPoId}?edit=1`
-                : cameFromNewPage ? '/scm/purchase-orders/new'
-                : '/scm/purchase-orders'}
-              className={styles.backBtn}
-            >
-              <ArrowLeft {...ICON} />
-              {' '}
-              <span>{targetPoId ? 'Back to PO' : cameFromNewPage ? 'Back to New PO' : 'Purchase Orders'}</span>
-            </Link>
             <Button
               variant="ghost" size="md"
               onClick={() => navigate(

@@ -28,8 +28,8 @@
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Plus, Save, Trash2, X, ArrowRightLeft, ChevronDown } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Plus, Save, Trash2, X, ArrowRightLeft, ChevronDown } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
 import { activeOptions, buildVariantSummary, fmtDateOrDash, isServiceLine, maintPickerValues } from '@2990s/shared';
@@ -676,14 +676,11 @@ export const GrnNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Procurement"
         title={`New Goods Receipt${po?.po_number ? ` · ${po.po_number}` : ''}`}
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/grns" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Goods Receipts</span>
-            </Link>
             {/* Bulk / multi-PO picker that FEEDS this form. */}
             <Button variant="ghost" size="md" onClick={goToFromPo}>
               <ArrowRightLeft {...ICON} /> From Purchase Order
@@ -1286,8 +1283,9 @@ export const GrnNew = () => {
         </div>
       </section>
 
-      {/* Totals card aligned right — identical to New PO / New Purchase Invoice. */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      {/* Totals card aligned right — identical to New PO / New Purchase Invoice.
+          lg:pr-32 clears the fixed FAB cluster. */}
+      <div className="lg:pr-32" style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <section className={styles.card} style={{ maxWidth: 360, width: '100%' }}>
           <div className={styles.cardBody}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-14)', marginBottom: 'var(--space-2)' }}>

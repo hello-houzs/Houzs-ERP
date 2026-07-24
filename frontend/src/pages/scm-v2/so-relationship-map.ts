@@ -1,6 +1,13 @@
-// so-relationship-map — the ONE builder for the Sales Order's 5-node
-// Relationship Map chain (Customer PO → Sales Order → Delivery Order → GRN →
-// Sales Invoice) and for what each node does when it is clicked.
+// so-relationship-map — the ONE builder for the Sales Order's 7-node
+// Relationship Map and for what each node does when it is clicked. Two chains,
+// both rooted at the Sales Order (owner 2026-07-23, verbatim):
+//   sales    : Customer PO → Sales Order → Delivery Order → Sales Invoice
+//   purchase : Sales Order → Purchase Order → GRN → Purchase Invoice
+//
+// Pre-MRP SOs (< 2026-07-09) carry no linked PO. For those the PO node falls
+// back to ADVISORY candidates matched by item code (owner 2026-07-23) — shown as
+// "Not linked", tap to list them. Read-only: never presented as, nor written as,
+// a real link.
 //
 // Why it exists: the chain + its click handling were written twice — once in
 // SalesOrderDetailV2 (the read-only page) and once in SalesOrderDetail (the
@@ -20,7 +27,7 @@ import { useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth/AuthContext';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
-import { useDocumentFlow, type FlowNode } from '../../vendor/scm/lib/flow-queries';
+import { useDocumentFlow, useCandidatePos, type FlowNode } from '../../vendor/scm/lib/flow-queries';
 import type { ChainNode } from '../../components/scm-v2/DocumentRelationshipMapModal';
 
 /** The header columns the chain reads. Loose on purpose — the two SO detail
@@ -83,12 +90,32 @@ export function useSoRelationshipMap(salesOrder: SoRelationshipHeader | null): {
   const doNodes = useMemo(() => flowNodesOf(flow.data, 'do'), [flow.data]);
   const siNodes = useMemo(() => flowNodesOf(flow.data, 'si'), [flow.data]);
   const grnNodes = useMemo(() => flowNodesOf(flow.data, 'grn'), [flow.data]);
+  // The PURCHASE leg — owner 2026-07-23: "sales order-> purchase order ->
+  // good receipt note(GRN) -> purchase invoice". document-flow has always
+  // returned these nodes (purchase_order_items.so_item_id → grns →
+  // purchase_invoices); the chain just never showed them.
+  const poNodes = useMemo(() => flowNodesOf(flow.data, 'po'), [flow.data]);
+  const piNodes = useMemo(() => flowNodesOf(flow.data, 'pi'), [flow.data]);
+
+  /* Pre-MRP SOs (2026-07-09) have no linked PO leg. When the flow has loaded
+     and returned no PO node, ask the backend for ADVISORY candidates matched by
+     item code — read-only, never a stored link (owner 2026-07-23 chose this over
+     auto-linking because a pre-MRP PO was a shared stock buy and the true SO⇄PO
+     attribution can't be safely inferred). Gated so a linked SO never fires the
+     request. */
+  const flowLoaded = !flow.isLoading && flow.data != null;
+  const candQ = useCandidatePos(flowLoaded && poNodes.length === 0 ? docNo : null);
+  const candidatePos = useMemo(() => candQ.data?.candidates ?? [], [candQ.data]);
 
   /* GRN sits behind the procurement guard — App.tsx mounts /scm/grns/:id as
      <ScmGuard area="scm.procurement.grn"> with NO allowSales — so mirror that
      route gate here rather than handing a salesperson a node that navigates
      straight into <Forbidden>. Same OR-shape as the Guard itself. */
   const canOpenGrn = can('scm.access') || pageAccess('scm.procurement.grn') !== 'none';
+  // Same gate shape for the PO / PI nodes (/scm/purchase-orders/:id and
+  // /scm/purchase-invoices/:id guard on their own areas, no allowSales).
+  const canOpenPo = can('scm.access') || pageAccess('scm.procurement.po') !== 'none';
+  const canOpenPi = can('scm.access') || pageAccess('scm.procurement.pi') !== 'none';
 
   const poRef = (
     salesOrder?.po_doc_no ||
@@ -129,24 +156,8 @@ export function useSoRelationshipMap(salesOrder: SoRelationshipHeader | null): {
               : 'Tap to view all',
         state: doNodes.length > 0 ? 'done' : 'pending',
       },
-      {
-        type: 'GRN',
-        doc:
-          grnNodes.length === 0
-            ? 'Not created'
-            : grnNodes.length === 1
-              ? grnNodes[0]!.label
-              : `${grnNodes.length} GRNs`,
-        meta:
-          grnNodes.length === 0
-            ? 'After delivery'
-            : !canOpenGrn
-              ? 'Procurement document'
-              : grnNodes.length === 1
-                ? 'Tap to open'
-                : 'Tap to list',
-        state: grnNodes.length > 0 ? 'done' : 'pending',
-      },
+      /* Node 3 closes the SALES row — the owner's first chain, verbatim
+         (2026-07-23): Sales Order → Delivery Order → Sales Invoice. */
       {
         type: 'Sales Invoice',
         doc:
@@ -163,8 +174,72 @@ export function useSoRelationshipMap(salesOrder: SoRelationshipHeader | null): {
               : 'Tap to view all',
         state: siNodes.length > 0 ? 'done' : 'pending',
       },
+      /* Nodes 4-6 = the PURCHASE row, the owner's second chain: Sales Order →
+         Purchase Order → GRN → Purchase Invoice. It hangs off the SO because
+         that is where the supplier order is raised from. */
+      {
+        type: 'Purchase Order',
+        doc:
+          poNodes.length === 1
+            ? poNodes[0]!.label
+            : poNodes.length > 1
+              ? `${poNodes.length} purchase orders`
+              : candidatePos.length > 0
+                ? 'Not linked'
+                : 'Not created',
+        meta:
+          poNodes.length > 0
+            ? !canOpenPo
+              ? 'Procurement document'
+              : poNodes.length === 1
+                ? 'Tap to open'
+                : 'Tap to list'
+            : candidatePos.length > 0
+              // Advisory only — the link was never recorded (see hook).
+              ? `${candidatePos.length} candidate${candidatePos.length > 1 ? 's' : ''} — tap`
+              : 'On supplier order',
+        // Candidates are a GUESS, not a link, so the node stays 'pending' (grey)
+        // — only a real PO node paints it done.
+        state: poNodes.length > 0 ? 'done' : 'pending',
+      },
+      {
+        type: 'GRN',
+        doc:
+          grnNodes.length === 0
+            ? 'Not created'
+            : grnNodes.length === 1
+              ? grnNodes[0]!.label
+              : `${grnNodes.length} GRNs`,
+        meta:
+          grnNodes.length === 0
+            ? 'On supplier delivery'
+            : !canOpenGrn
+              ? 'Procurement document'
+              : grnNodes.length === 1
+                ? 'Tap to open'
+                : 'Tap to list',
+        state: grnNodes.length > 0 ? 'done' : 'pending',
+      },
+      {
+        type: 'Purchase Invoice',
+        doc:
+          piNodes.length === 0
+            ? 'Not created'
+            : piNodes.length === 1
+              ? piNodes[0]!.label
+              : `${piNodes.length} invoices`,
+        meta:
+          piNodes.length === 0
+            ? 'On supplier billing'
+            : !canOpenPi
+              ? 'Procurement document'
+              : piNodes.length === 1
+                ? 'Tap to open'
+                : 'Tap to list',
+        state: piNodes.length > 0 ? 'done' : 'pending',
+      },
     ];
-  }, [salesOrder, poRef, doNodes, siNodes, grnNodes, canOpenGrn]);
+  }, [salesOrder, poRef, doNodes, siNodes, grnNodes, poNodes, piNodes, candidatePos, canOpenGrn, canOpenPo, canOpenPi]);
 
   const onNodeClick = useCallback(
     (n: ChainNode): boolean => {
@@ -186,6 +261,68 @@ export function useSoRelationshipMap(salesOrder: SoRelationshipHeader | null): {
             : `/scm/sales-invoices?q=${encodeURIComponent(salesOrder?.doc_no ?? '')}`,
         );
         return true;
+      }
+      if (n.type === 'Purchase Order' && poNodes.length > 0) {
+        if (!canOpenPo) {
+          void notify({
+            title: 'Purchase Orders are not open to you',
+            body:
+              `This order is purchased on ${poNodes.map((p) => p.label).join(', ')}. ` +
+              `Opening a PO needs Procurement access — ask an admin if you need it.`,
+          });
+          return false;
+        }
+        if (poNodes.length === 1) {
+          navigate(`/scm/purchase-orders/${poNodes[0]!.id}`);
+          return true;
+        }
+        /* Several POs, one slot — the PO list searches its own refs (supplier /
+           PO no), not an SO doc no, so name them instead (GRN idiom). */
+        void notify({
+          title: 'Purchased on more than one PO',
+          body:
+            `This order is purchased on ${poNodes.map((p) => p.label).join(', ')}. ` +
+            `Open Purchase Orders to view them.`,
+        });
+        return false;
+      }
+      /* No linked PO, but advisory candidates exist (pre-MRP SO). Name them for
+         manual reconciliation — explicitly a GUESS, never presented as the link.
+         Stays on the map (returns false); no navigation, since which PO (if any)
+         actually covers this SO was never recorded. */
+      if (n.type === 'Purchase Order' && candidatePos.length > 0) {
+        void notify({
+          title: 'No purchase order linked to this sale',
+          body:
+            `This sale predates linked purchasing, so its PO was never recorded ` +
+            `against it. By item code, these live purchase orders MIGHT cover it — ` +
+            `verify before relying on any:\n\n` +
+            candidatePos.map((p) => `• ${p.poNumber}${p.status ? ` (${p.status})` : ''}`).join('\n') +
+            `\n\nOpen Purchase Orders to check.`,
+        });
+        return false;
+      }
+      if (n.type === 'Purchase Invoice' && piNodes.length > 0) {
+        if (!canOpenPi) {
+          void notify({
+            title: 'Purchase Invoices are not open to you',
+            body:
+              `The supplier billed this order on ${piNodes.map((p) => p.label).join(', ')}. ` +
+              `Opening a PI needs Procurement access — ask an admin if you need it.`,
+          });
+          return false;
+        }
+        if (piNodes.length === 1) {
+          navigate(`/scm/purchase-invoices/${piNodes[0]!.id}`);
+          return true;
+        }
+        void notify({
+          title: 'Billed on more than one invoice',
+          body:
+            `The supplier billed this order on ${piNodes.map((p) => p.label).join(', ')}. ` +
+            `Open Purchase Invoices to view them.`,
+        });
+        return false;
       }
       if (n.type === 'GRN' && grnNodes.length > 0) {
         if (!canOpenGrn) {
@@ -217,7 +354,7 @@ export function useSoRelationshipMap(salesOrder: SoRelationshipHeader | null): {
       }
       return false;
     },
-    [navigate, notify, showCustomerPo, salesOrder?.doc_no, doNodes, siNodes, grnNodes, canOpenGrn],
+    [navigate, notify, showCustomerPo, salesOrder?.doc_no, doNodes, siNodes, grnNodes, poNodes, piNodes, candidatePos, canOpenGrn, canOpenPo, canOpenPi],
   );
 
   return { nodes, onNodeClick };

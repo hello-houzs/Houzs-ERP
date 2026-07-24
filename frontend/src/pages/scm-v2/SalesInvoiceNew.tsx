@@ -22,8 +22,8 @@ import { newIdempotencyKey, useIdempotencyKey } from '../../lib/idempotency';
 import { readScmHandoff, removeScmHandoff } from '../../lib/scmHandoffStorage';
 import { completePaymentRetryDraft, paymentRetryNavigationState, writePaymentRetryHandoff } from '../../lib/paymentRetryHandoff';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { DateField } from '../../vendor/scm/components/DateField';
@@ -442,7 +442,7 @@ export const SalesInvoiceNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title={createdInvoice
           ? `Complete Sales Invoice ${createdInvoice.number}`
@@ -452,9 +452,6 @@ export const SalesInvoiceNew = () => {
           : undefined}
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/sales-invoices" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Sales Invoices</span>
-            </Link>
             {/* Pull lines from a Delivery Order — mirrors the purchase-side New forms. */}
             {!createdInvoice && (
               <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices/from-do')}>

@@ -19,8 +19,8 @@
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Save, Trash2, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Plus, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
 import { useCreatePurchaseConsignmentOrder } from '../../vendor/scm/lib/purchase-consignment-order-queries';
@@ -341,14 +341,11 @@ export const PurchaseConsignmentOrderNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Procurement"
         title="New Purchase Consignment Order"
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/purchase-consignment-orders" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Purchase Consignment Orders</span>
-            </Link>
             <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-orders')}>
               <X {...ICON} /> Cancel
             </Button>
@@ -833,8 +830,8 @@ export const PurchaseConsignmentOrderNew = () => {
         </div>
       </section>
 
-      {/* Totals card aligned right */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      {/* Totals card aligned right — lg:pr-32 clears the fixed FAB cluster. */}
+      <div className="lg:pr-32" style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <section className={styles.card} style={{ maxWidth: 360, width: '100%' }}>
           <div className={styles.cardBody}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-14)', marginBottom: 'var(--space-2)' }}>

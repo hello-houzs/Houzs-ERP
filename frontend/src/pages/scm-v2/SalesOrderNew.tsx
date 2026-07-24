@@ -1624,7 +1624,7 @@ export const SalesOrderNew = () => {
           SO, "Create" stays primary. The buttons stay CLICKABLE even when
           fields are missing (only blocked while a save is in flight) — onSave
           validates and tells the operator EXACTLY what's missing. */}
-      <PageHeader
+      <PageHeader back
         eyebrow="Sales order"
         title={createdDocNo ? `Complete Sales Order ${createdDocNo}` : 'New Sales Order'}
         description={createdDocNo

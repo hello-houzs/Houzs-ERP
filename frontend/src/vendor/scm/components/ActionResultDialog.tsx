@@ -40,10 +40,16 @@ export type ActionResultDialogProps = {
    *  alongside a "Stay here"; otherwise a single OK button. */
   primaryLabel?: string;
   onPrimary?: () => void;
+  /** Optional middle action between "Stay here" and the primary (owner
+   *  2026-07-23: "Need a button to new purchase invoice" — the batch-entry
+   *  loop wants a one-click "start the next document" without detouring
+   *  through the list). Ghost-styled so the primary keeps the emphasis. */
+  secondaryLabel?: string;
+  onSecondary?: () => void;
   onClose: () => void;
 };
 
-export const ActionResultDialog = ({ title, body, primaryLabel, onPrimary, onClose }: ActionResultDialogProps) => (
+export const ActionResultDialog = ({ title, body, primaryLabel, onPrimary, secondaryLabel, onSecondary, onClose }: ActionResultDialogProps) => (
   <div style={backdrop} onClick={onClose} role="presentation">
     <div style={card} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
       <h2 style={titleStyle}>{title}</h2>
@@ -52,6 +58,9 @@ export const ActionResultDialog = ({ title, body, primaryLabel, onPrimary, onClo
         {primaryLabel && onPrimary ? (
           <>
             <button type="button" style={ghostBtn} onClick={onClose}>Stay here</button>
+            {secondaryLabel && onSecondary && (
+              <button type="button" style={ghostBtn} onClick={onSecondary}>{secondaryLabel}</button>
+            )}
             <button type="button" style={primaryBtn} onClick={onPrimary}>{primaryLabel}</button>
           </>
         ) : (

@@ -105,20 +105,38 @@ export function DocumentRelationshipMapModal({
   nodes: ChainNode[];
   onNodeClick?: (node: ChainNode) => void;
 }) {
-  // Canvas layout — top row: nodes 0..2. Bottom row: nodes 3..4 branching
-  // down from the current DO. Kept as a fixed pixel layout so the graph
-  // reads at any modal width.
+  // Canvas layout — fixed pixel positions so the graph reads at any modal
+  // width. Two shapes:
+  //   5 nodes (DO / SI / DR pages, the original Nick 2026-07-08 chain):
+  //     top row nodes 0..2, bottom row 3..4 branching down from the DO.
+  //   7 nodes (SO pages) — the owner's two chains, verbatim (2026-07-23):
+  //     sales    : Sales Order → Delivery Order → Sales Invoice   (top row)
+  //     purchase : Sales Order → Purchase Order → GRN → Purchase Invoice
+  //   Both start at the SALES ORDER, so the purchase row hangs off it.
   const row1Top = 40;
   const row2Top = 190;
   const x0 = 12;
   const xStep = 176;
-  const positions = [
-    { left: x0 + xStep * 0, top: row1Top },
-    { left: x0 + xStep * 1, top: row1Top },
-    { left: x0 + xStep * 2, top: row1Top },
-    { left: x0 + xStep * 2, top: row2Top },
-    { left: x0 + xStep * 3, top: row2Top },
-  ];
+  const twoChain = nodes.length >= 7;
+  const positions = twoChain
+    ? [
+        // Sales chain: Customer PO → SO → DO → SI
+        { left: x0 + xStep * 0, top: row1Top },
+        { left: x0 + xStep * 1, top: row1Top },
+        { left: x0 + xStep * 2, top: row1Top },
+        { left: x0 + xStep * 3, top: row1Top },
+        // Purchase chain, dropping from the SO: PO → GRN → PI
+        { left: x0 + xStep * 1, top: row2Top },
+        { left: x0 + xStep * 2, top: row2Top },
+        { left: x0 + xStep * 3, top: row2Top },
+      ]
+    : [
+        { left: x0 + xStep * 0, top: row1Top },
+        { left: x0 + xStep * 1, top: row1Top },
+        { left: x0 + xStep * 2, top: row1Top },
+        { left: x0 + xStep * 2, top: row2Top },
+        { left: x0 + xStep * 3, top: row2Top },
+      ];
 
   const nodeCard = (n: ChainNode, opts: { left: number; top: number }) => {
     const cur = n.state === "current";
@@ -207,13 +225,13 @@ export function DocumentRelationshipMapModal({
         }}
       >
         <span className="absolute left-3 top-2 font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
-          Upstream
+          {twoChain ? "Sales chain" : "Upstream"}
         </span>
         <span
           className="absolute font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted"
-          style={{ left: 360, top: 168 }}
+          style={twoChain ? { left: x0 + xStep, top: 168 } : { left: 360, top: 168 }}
         >
-          Generated after delivery
+          {twoChain ? "Purchase chain" : "Generated after delivery"}
         </span>
 
         <svg
@@ -240,16 +258,44 @@ export function DocumentRelationshipMapModal({
             strokeWidth="2"
             markerEnd="url(#arrowP)"
           />
+          {/* 7-node only: DO → Sales Invoice closes the SALES row. */}
+          {twoChain && (
+            <line
+              x1={x0 + xStep * 2 + 150}
+              y1={row1Top + 42}
+              x2={x0 + xStep * 3}
+              y2={row1Top + 42}
+              stroke="var(--primary, #16695f)"
+              strokeWidth="2"
+              markerEnd="url(#arrowP)"
+            />
+          )}
+          {/* Branch drop: 7-node hangs the PURCHASE row off the SO (col 1);
+              5-node keeps the original drop off the DO (col 2). */}
           <line
-            x1={x0 + xStep * 2 + 74}
+            x1={x0 + xStep * (twoChain ? 1 : 2) + 74}
             y1={row1Top + 88}
-            x2={x0 + xStep * 2 + 74}
+            x2={x0 + xStep * (twoChain ? 1 : 2) + 74}
             y2={row2Top}
             stroke="var(--border-strong, #b3b8ac)"
             strokeWidth="2"
             strokeDasharray="4 4"
             markerEnd="url(#arrowM)"
           />
+          {/* 7-node only: PO → GRN (the 5-node shape has nothing at col 1). */}
+          {twoChain && (
+            <line
+              x1={x0 + xStep + 148}
+              y1={row2Top + 40}
+              x2={x0 + xStep * 2}
+              y2={row2Top + 40}
+              stroke="var(--border-strong, #b3b8ac)"
+              strokeWidth="2"
+              strokeDasharray="4 4"
+              markerEnd="url(#arrowM)"
+            />
+          )}
+          {/* Last hop of the bottom row — GRN → PI (7-node) / GRN → SI (5). */}
           <line
             x1={x0 + xStep * 2 + 148}
             y1={row2Top + 40}
@@ -286,7 +332,7 @@ export function DocumentRelationshipMapModal({
           </defs>
         </svg>
 
-        {nodes.slice(0, 5).map((n, i) => nodeCard(n, positions[i]!))}
+        {nodes.slice(0, positions.length).map((n, i) => nodeCard(n, positions[i]!))}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-muted">

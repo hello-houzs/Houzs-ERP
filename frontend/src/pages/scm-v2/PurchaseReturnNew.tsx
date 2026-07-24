@@ -26,8 +26,8 @@
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowRightLeft, Plus, Save, Trash2, X, ChevronDown } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowRightLeft, Plus, Save, Trash2, X, ChevronDown } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { activeOptions, buildVariantSummary, maintPickerValues } from '@2990s/shared';
 import {
@@ -320,14 +320,11 @@ export const PurchaseReturnNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Procurement"
         title={`New Purchase Return ${sourceTitle}`}
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/purchase-returns" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Purchase Returns</span>
-            </Link>
             {/* Pull lines from a Goods Receipt — routes to the GRN list where the
                 user right-clicks "Convert to PR" (no dedicated picker page). */}
             <Button variant="ghost" size="md" onClick={() => navigate('/scm/grns')}>
@@ -662,8 +659,9 @@ export const PurchaseReturnNew = () => {
         </div>
       </section>
 
-      {/* Totals card aligned right — identical to New PO / New GRN / New PI. */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      {/* Totals card aligned right — identical to New PO / New GRN / New PI.
+          lg:pr-32 clears the fixed FAB cluster. */}
+      <div className="lg:pr-32" style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <section className={styles.card} style={{ maxWidth: 360, width: '100%' }}>
           <div className={styles.cardBody}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-14)', marginBottom: 'var(--space-2)' }}>

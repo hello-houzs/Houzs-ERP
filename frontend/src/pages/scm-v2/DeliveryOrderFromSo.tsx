@@ -25,9 +25,9 @@
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState, type CSSProperties } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { writeScmHandoff } from '../../lib/scmHandoffStorage';
-import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from 'lucide-react';
+import { ArrowRight, X, CheckSquare, Square } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
 import { useDeliverableSoLines, type DeliverableSoLine } from '../../vendor/scm/lib/delivery-order-queries';
@@ -306,14 +306,11 @@ export const DeliveryOrderFromSo = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title="Pick Sales Order lines to deliver"
         actions={
           <>
-            <Link to="/scm/delivery-orders" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Delivery Orders</span>
-            </Link>
             <div className={styles.actions}>
               <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-orders')}>
                 <X {...ICON} /> Cancel

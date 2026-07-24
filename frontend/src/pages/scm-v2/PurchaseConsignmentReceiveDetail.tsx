@@ -319,15 +319,11 @@ export const PurchaseConsignmentReceiveDetail = () => {
   return (
     <div className="space-y-4">
       {/* ── Header ──────────────────────────────────────────────── */}
-      <PageHeader
+      <PageHeader back
         eyebrow="Procurement"
         title={`${grn.grn_number} — ${grn.supplier?.name ?? grn.supplier?.code ?? '—'}`}
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/purchase-consignment-receives" className={styles.backBtn}>
-              <ArrowLeft {...ICON} />
-              <span>Back</span>
-            </Link>
             <div className={styles.totalRail}>
               <span className={styles.totalRailLabel}>Total</span>
               <span className={styles.totalRailValue}>{fmtRm(grandTotal, grn.currency)}</span>
