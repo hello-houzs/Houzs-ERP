@@ -143,7 +143,9 @@ function composeDefaultProjectName(p: {
   const isSolo = (p.eventTypeSlug || "").toLowerCase() === "solo";
   const orgSlot = isSolo ? "SOLO" : organizer;
   const head: string[] = [];
-  if (state) head.push(state);
+  // State leads UPPERCASE (owner 2026-07-24) — states are now stored Title Case
+  // but the bar convention is all-caps, matching non-solo names. Same as desktop.
+  if (state) head.push(state.toUpperCase());
   if (brand) head.push(`[${brand}]`);
   if (orgSlot) head.push(orgSlot);
   const left = head.join(" ");
