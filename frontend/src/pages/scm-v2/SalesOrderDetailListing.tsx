@@ -425,10 +425,9 @@ const buildColumns = (canFinance: boolean): DataGridColumn<SoDetailListingRow>[]
     },
     /* 27 */ {
       /* "Processing Date" = internal_expected_dd (renamed app-wide PR #121/#140;
-         SO New/Detail/OrderInfoCard read+write it under this label). The raw
-         processing_date column is dead — nothing writes it — so read
-         internal_expected_dd here. Duplicate "Internal DD" column removed.
-         Commander 2026-05-28. */
+         SO New/Detail/OrderInfoCard read+write it under this label; the legacy
+         snapshot column was dropped in mig 0189). Key kept for saved column
+         layouts. Duplicate "Internal DD" column removed. Commander 2026-05-28. */
       key: 'processing_date', label: 'Processing Date', width: 130, sortable: true,
       accessor: (r) => { const v = opt(r, 'internal_expected_dd'); return v ? compactDate(v) : '—'; },
       searchValue: (r) => opt(r, 'internal_expected_dd'),

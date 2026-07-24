@@ -88,7 +88,6 @@ type BoardRow = {
   balance_centi_live: number | null;
   local_total_centi: number | null;
   so_date: string | null;
-  processing_date: string | null;
   customer_delivery_date: string | null;
   amended_delivery_date: string | null;
   effective_delivery_date: string | null;

@@ -811,7 +811,7 @@ export const DeliveryPlanning = () => {
       // ── default-hidden from here down (drawer order) ──
       'branding', 'address', 'postcode', 'building_type', 'possession_date',
       'house_type', 'replacement_disposal', 'referral', 'warehouse',
-      'so_date', 'processing_date', 'amend_date_from_customer', 'amend_reason',
+      'so_date', 'amend_date_from_customer', 'amend_reason',
       'internal_expected_dd', 'time_range', 'time_confirmed', 'arrival_at', 'departure_at',
       'driver_ic', 'driver_contact', 'driver_2', 'helper_1', 'helper_2',
     ];
@@ -955,13 +955,6 @@ export const DeliveryPlanning = () => {
       searchValue: (o) => o.so_date ?? '',
       sortFn: (a, b) => String(a.so_date ?? '').localeCompare(String(b.so_date ?? '')),
       filterType: 'date', dateValue: (o) => o.so_date,
-    },
-    {
-      key: 'processing_date', label: 'Processing', width: 120, sortable: true, defaultHidden: true,
-      accessor: (o) => fmtDateOrDash(o.processing_date),
-      searchValue: (o) => o.processing_date ?? '',
-      sortFn: (a, b) => String(a.processing_date ?? '').localeCompare(String(b.processing_date ?? '')),
-      filterType: 'date', dateValue: (o) => o.processing_date,
     },
     {
       key: 'customer_delivery_date', label: 'Cust. Date', width: 130, sortable: true,

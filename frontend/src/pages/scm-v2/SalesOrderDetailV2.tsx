@@ -90,9 +90,8 @@ type SoHeader = {
   customer_type: string | null;
   building_type: string | null;
   venue: string | null;
-  processing_date: string | null;
-  // The real processing-date column the lock reads (PR #140 label rename); the
-  // detail payload returns it alongside the legacy processing_date snapshot.
+  // The processing-date column the lock reads (PR #140 renamed only the label;
+  // the legacy processing_date snapshot column was dropped in mig 0189).
   internal_expected_dd?: string | null;
   proceeded_at?: string | null;
   // Server-derived SO-lock / amendment flags (see the /:docNo detail handler).
@@ -983,8 +982,8 @@ function SalesOrderDetailV2ReadOnly() {
                 />
                 <Field
                   label="Processing date"
-                  value={fmtDate(salesOrder.internal_expected_dd ?? salesOrder.processing_date)}
-                  muted={!(salesOrder.internal_expected_dd ?? salesOrder.processing_date)}
+                  value={fmtDate(salesOrder.internal_expected_dd)}
+                  muted={!salesOrder.internal_expected_dd}
                 />
                 <Field
                   label="Delivery date"
@@ -1121,8 +1120,8 @@ function SalesOrderDetailV2ReadOnly() {
                 <KeyDateRow k="SO date" v={fmtDate(salesOrder.so_date)} />
                 <KeyDateRow
                   k="Processing"
-                  v={fmtDate(salesOrder.internal_expected_dd ?? salesOrder.processing_date)}
-                  muted={!(salesOrder.internal_expected_dd ?? salesOrder.processing_date)}
+                  v={fmtDate(salesOrder.internal_expected_dd)}
+                  muted={!salesOrder.internal_expected_dd}
                 />
                 <KeyDateRow
                   k="Delivery"

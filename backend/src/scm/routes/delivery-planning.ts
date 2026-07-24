@@ -456,7 +456,7 @@ deliveryPlanning.get('/', async (c) => {
     company_id: number | null;
     phone: string | null; branding: string | null; status: string | null; delivery_state: string | null;
     customer_state: string | null; customer_country: string | null;
-    customer_delivery_date: string | null; internal_expected_dd: string | null; processing_date: string | null;
+    customer_delivery_date: string | null; internal_expected_dd: string | null;
     so_date: string | null; address1: string | null; address2: string | null;
     postcode: string | null; building_type: string | null;
     local_total_centi: number | null; balance_centi: number | null;
@@ -479,7 +479,7 @@ deliveryPlanning.get('/', async (c) => {
          query ("column mfg_sales_orders.id does not exist") → soErr → the board 500s
          with load_failed. The SO's identity on this board is its doc_no; every join
          below keys on doc_no / so_doc_no, never an id. */
-      .select('doc_no, company_id, debtor_code, debtor_name, phone, branding, status, delivery_state, customer_state, customer_country, customer_delivery_date, amend_date_from_customer, amended_delivery_date, amend_reason, internal_expected_dd, processing_date, so_date, address1, address2, postcode, building_type, local_total_centi, balance_centi, possession_date, house_type, replacement_disposal, referral')
+      .select('doc_no, company_id, debtor_code, debtor_name, phone, branding, status, delivery_state, customer_state, customer_country, customer_delivery_date, amend_date_from_customer, amended_delivery_date, amend_reason, internal_expected_dd, so_date, address1, address2, postcode, building_type, local_total_centi, balance_centi, possession_date, house_type, replacement_disposal, referral')
       .neq('status', 'DRAFT')
       .neq('status', 'CANCELLED')
       .order('customer_delivery_date', { ascending: true, nullsFirst: false })
@@ -487,10 +487,10 @@ deliveryPlanning.get('/', async (c) => {
   );
   if (soErr) return c.json({ error: 'load_failed', reason: soErr.message }, 500);
   /* Only SOs that actually need delivering — they carry a date signal
-     (customer_delivery_date OR internal_expected_dd / processing_date). Filtered
+     (customer_delivery_date OR internal_expected_dd). Filtered
      in JS (not a PostgREST .or()) to keep the paginated query's row type clean. */
   const soRows = (soRowsRaw ?? []).filter(
-    (r) => r.customer_delivery_date != null || r.internal_expected_dd != null || r.processing_date != null,
+    (r) => r.customer_delivery_date != null || r.internal_expected_dd != null,
   );
   const docNos = soRows.map((r) => String(r.doc_no ?? '')).filter(Boolean);
 
@@ -819,7 +819,7 @@ deliveryPlanning.get('/', async (c) => {
     const remaining = remainingByDoc.get(docNo) ?? 0;
     const status = String(r.status ?? '').toUpperCase();
     const customerDD = r.customer_delivery_date ?? null;
-    const internalDD = r.internal_expected_dd ?? r.processing_date ?? null;
+    const internalDD = r.internal_expected_dd ?? null;
     /* Amendment dates. The ORIGINAL customer_delivery_date is never overwritten;
        the amended date (when set) is what we now commit to. EFFECTIVE date =
        amended_delivery_date ?? customer_delivery_date — it drives days_left AND
@@ -907,7 +907,6 @@ deliveryPlanning.get('/', async (c) => {
       })(),
       // dates
       so_date: r.so_date ?? null,
-      processing_date: r.processing_date ?? null,
       // ORIGINAL date (the customer's pick — never overwritten) stays here.
       customer_delivery_date: customerDD,
       // Amendment dates: the customer's requested new date and the date WE
@@ -1072,7 +1071,6 @@ deliveryPlanning.get('/', async (c) => {
             };
           })(),
           so_date: null,
-          processing_date: null,
           // The trigger date maps into the board date fields so it lands in the
           // schedule / Days-Left column exactly like an SO's effective date.
           customer_delivery_date: leg.date,
@@ -1227,7 +1225,6 @@ deliveryPlanning.get('/', async (c) => {
           return { decision: g.decision, remaining_centi: g.remainingCenti, collect_on_delivery_centi: g.collectOnDeliveryCenti, reason: 'DP job — no order balance' };
         })(),
         so_date: null,
-        processing_date: null,
         customer_delivery_date: date,
         amend_date_from_customer: null,
         amended_delivery_date: date,
@@ -1346,7 +1343,6 @@ deliveryPlanning.get('/', async (c) => {
             return { decision: g.decision, remaining_centi: g.remainingCenti, collect_on_delivery_centi: g.collectOnDeliveryCenti, reason: 'PMS project — no order balance' };
           })(),
           so_date: null,
-          processing_date: null,
           customer_delivery_date: leg.date,
           amend_date_from_customer: null,
           amended_delivery_date: leg.date,

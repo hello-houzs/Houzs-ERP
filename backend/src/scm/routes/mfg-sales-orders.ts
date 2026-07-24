@@ -249,7 +249,7 @@ async function soHasDownstream(sb: any, soDocNo: string): Promise<{ error: strin
    overrides are all rejected with 409 so_locked_processing. Status transitions
    (deliver / cancel flow), payments, PO/DO conversions and reads stay open.
    The UI's "Processing Date" lives in internal_expected_dd (PR #140 renamed
-   only the label); legacy processing_date is honoured as a fallback. */
+   only the label; the legacy processing_date column was dropped in mig 0189). */
 const SO_PROCESSING_LOCKED_RESPONSE = {
   error: 'so_locked_processing',
   reason: 'Processing date has passed — this Sales Order is locked. (Locked orders are what we PO to the supplier.)',
@@ -370,10 +370,10 @@ export function scopeSoItemToDocument<T>(
 }
 
 function soProcessingLocked(
-  header: { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null; status?: string | null } | null | undefined,
+  header: { internal_expected_dd?: string | null; proceeded_at?: string | null; status?: string | null } | null | undefined,
 ): boolean {
   if (!header) return false;
-  const proc = header.internal_expected_dd ?? header.processing_date ?? null;
+  const proc = header.internal_expected_dd ?? null;
   if (!proc) return false;
   const procYmd = String(proc).slice(0, 10);            // 'YYYY-MM-DD' (date or timestamp)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(procYmd)) return false;
@@ -402,9 +402,9 @@ function soProcessingLocked(
    soProcessingLocked directly instead of re-querying. */
 async function soProcessingLockBlocked(sb: any, docNo: string): Promise<typeof SO_PROCESSING_LOCKED_RESPONSE | null> {
   const { data } = await sb.from('mfg_sales_orders')
-    .select('internal_expected_dd, processing_date, proceeded_at, status')
+    .select('internal_expected_dd, proceeded_at, status')
     .eq('doc_no', docNo).maybeSingle();
-  return soProcessingLocked(data as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null; status?: string | null } | null)
+  return soProcessingLocked(data as { internal_expected_dd?: string | null; proceeded_at?: string | null; status?: string | null } | null)
     ? SO_PROCESSING_LOCKED_RESPONSE
     : null;
 }
@@ -887,7 +887,7 @@ const HEADER =
      can show category-level margins without per-item rollups. */
   'mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, service_cost_centi, ' +
   'total_cost_centi, total_revenue_centi, total_margin_centi, margin_pct_basis, line_count, ' +
-  'currency, status, remark2, remark3, remark4, note, processing_date, sales_exemption_expiry, ' +
+  'currency, status, remark2, remark3, remark4, note, sales_exemption_expiry, ' +
   /* PR #35 + #46 — extended PO + POS handover fields */
   'customer_id, customer_po, customer_po_id, customer_po_date, customer_po_image_b64, customer_so_no, hub_id, hub_name, ' +
   /* Task #121 — customer_country snapshot auto-derived from customer_state
@@ -2461,7 +2461,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
      Reuses the SAME soProcessingLocked helper the edit endpoints use + the
      doCount/siCount already computed above for the hard-lock signal. */
   const amendProcessingLocked = soProcessingLocked(
-    h.data as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null },
+    h.data as { internal_expected_dd?: string | null; proceeded_at?: string | null },
   );
   const amendHardLocked = (doCount ?? 0) > 0 || (siCount ?? 0) > 0;
   const amendSoStatus = String((h.data as { status?: string | null }).status ?? '').toUpperCase();
@@ -6084,7 +6084,7 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
      follower side effect. `reserveLineWrites` is the one explicit exception:
      the desktop composite-save uses it to acquire a CAS token before lines. */
   const beforeCols = map.map(([, snake]) => snake)
-    .concat(['status', 'processing_date', 'version', 'edit_lease_token', 'edit_lease_expires_at'])
+    .concat(['status', 'version', 'edit_lease_token', 'edit_lease_expires_at'])
     .join(', ');
   const { data: before, error: beforeError } = await sb.from('mfg_sales_orders').select(beforeCols).eq('doc_no', docNo).maybeSingle();
   if (beforeError) return c.json({ error: 'load_failed', reason: beforeError.message }, 500);
@@ -6314,7 +6314,6 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
     const proc = body['internalExpectedDd'];
     const origProc =
       ((before as unknown as Record<string, unknown> | null)?.['internal_expected_dd'] as string | null)
-      ?? ((before as unknown as Record<string, unknown> | null)?.['processing_date'] as string | null)
       ?? null;
     if (proc !== undefined && norm(proc) === '' && origProc) {
       if (!hasHouzsPerm(c, 'scm.so.remove_processing_date')) {
@@ -6333,8 +6332,8 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
      the payments ledger and PO/DO conversions do NOT come through this PATCH
      and stay open. Sits AFTER the cancelled/downstream-agnostic validations
      above but before any write. (`before` carries internal_expected_dd via
-     the map + processing_date appended above.) */
-  if (soProcessingLocked(before as unknown as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null } | null)) {
+     the map above.) */
+  if (soProcessingLocked(before as unknown as { internal_expected_dd?: string | null; proceeded_at?: string | null } | null)) {
     /* Field-scoped (Loo 2026-06-13) — only a genuine change to a production-
        schedule date column is rejected; customer / address / payment header
        fields stay editable in the Proceed lane. `before` carries every patched
@@ -6934,11 +6933,11 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   /* PR-E — pull customer_delivery_date alongside debtor/agent/venue so a
      line added later still inherits the SO header's delivery date by
      default. Client can override by sending lineDeliveryDate explicitly. */
-  const { data: header } = await sb.from('mfg_sales_orders').select('debtor_code, debtor_name, agent, branding, venue, customer_delivery_date, customer_state, internal_expected_dd, processing_date, proceeded_at, status, customer_id').eq('doc_no', docNo).maybeSingle();
+  const { data: header } = await sb.from('mfg_sales_orders').select('debtor_code, debtor_name, agent, branding, venue, customer_delivery_date, customer_state, internal_expected_dd, proceeded_at, status, customer_id').eq('doc_no', docNo).maybeSingle();
   if (!header) return c.json({ error: 'not_found' }, 404);
   /* Owner 2026-06-12 — processing-date lock: no line ADD once a CONFIRMED-or-later
      SO's processing day has passed (already PO'd to the supplier). */
-  if (soProcessingLocked(header as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null; status?: string | null })) {
+  if (soProcessingLocked(header as { internal_expected_dd?: string | null; proceeded_at?: string | null; status?: string | null })) {
     return c.json(SO_PROCESSING_LOCKED_RESPONSE, 409);
   }
   /* Commander 2026-05-31 — a line added later inherits the SO state's warehouse
@@ -10647,7 +10646,7 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
   // + status) plus salesperson_id for the ownership scope check below, plus the
   // amendable header columns for the header-change snapshot / date checks.
   const { data: soRow } = await scopeToCompany(sb.from('mfg_sales_orders')
-    .select('doc_no, status, revision, internal_expected_dd, processing_date, proceeded_at, salesperson_id, ' +
+    .select('doc_no, status, revision, internal_expected_dd, proceeded_at, salesperson_id, ' +
       'customer_delivery_date, customer_state, postcode')
     .eq('doc_no', docNo), c).maybeSingle();
   if (!soRow) return c.json({ error: 'not_found' }, 404);
@@ -10670,7 +10669,7 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
 
   // Guard 2 — an amendment only makes sense once the SO is processing-locked;
   // an unlocked SO is still directly editable, so no amendment is needed.
-  if (!soProcessingLocked(soRow as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null; status?: string | null })) {
+  if (!soProcessingLocked(soRow as { internal_expected_dd?: string | null; proceeded_at?: string | null; status?: string | null })) {
     return c.json({
       error: 'not_locked_no_amendment_needed',
       reason: 'This Sales Order is not processing-locked yet — edit it directly instead of raising an amendment.',

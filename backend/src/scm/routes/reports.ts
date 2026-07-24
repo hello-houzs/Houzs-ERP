@@ -119,7 +119,7 @@ reports.get('/sales-order-detail-listing', async (c) => {
           doc_no, so_date, debtor_code, debtor_name, agent, branding, venue, ref,
           po_doc_no, phone, address1, address2, address3, address4,
           currency, status, remark2, remark3, remark4, note,
-          processing_date, sales_exemption_expiry, approval_code,
+          sales_exemption_expiry, approval_code,
           local_total_centi, balance_centi, deposit_centi,
           mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi, service_centi,
           mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, service_cost_centi,
