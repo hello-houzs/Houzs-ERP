@@ -86,7 +86,7 @@ All under `backend/src/scm/routes/mfg-purchase-orders.ts`, mounted at
 | GET | `/:id` | `:693` | Header + items + `has_children`. |
 | GET | `/:id/linked` | `:859` | Downstream GRNs / PIs / PRs (three parallel reads). |
 | GET | `/:id/revisions` | `:896` | `po_revisions` snapshots for the Revisions tab. |
-| POST | `/` | `:911` | Create (`asDraft: true` → DRAFT, else SUBMITTED). |
+| POST | `/` | `:911` | Create (`asDraft: true` → DRAFT, else SUBMITTED). SO-sourced lines (carrying `soItemId`, e.g. the desktop New-PO-from-SO flow) are capped at the SO line's remaining (`qty - po_qty_picked`): over-convert → 409 `qty_exceeds_remaining` unless `confirmOverConvert: true` (pre-write guard, marks idempotency no-write). Manual lines (no `soItemId`) unaffected. |
 | POST | `/from-sos` | `:2139` | Batch convert whole SOs; groups by supplier, can emit N POs. |
 | POST | `/:id/convert-from-so` | `:2694` | Append SO lines onto an existing PO. |
 | PATCH | `/:id` | `:2219` | Header edit. |
