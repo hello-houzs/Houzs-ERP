@@ -31,7 +31,7 @@ async function seedAdmin(): Promise<{ bearer: string; userId: number }> {
     `INSERT INTO roles (name, description, permissions, scope_to_pic)
      VALUES (?, ?, ?, 0)`,
   )
-    .bind(`role_admin_${Math.random().toString(36).slice(2)}`, "test", JSON.stringify(["*"]))
+    .bind(`bd admin ${Math.random().toString(36).slice(2)}`, "test", JSON.stringify(["*"]))
     .run();
   const roleId = role.meta.last_row_id as number;
 
