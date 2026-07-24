@@ -537,7 +537,7 @@ export function summarizeFairPnl(rows: readonly FairPnlSummaryRow[], rate: FairC
 
 // ── Filter helpers ───────────────────────────────────────────────────────────
 export interface FairFilters {
-  venue?: string | null;        // venue_id (uuid)
+  venue?: string | null;        // venue TEXT (venue_id is a dead scm.venues FK)
   state?: string | null;        // customer_state
   project?: number | null;      // project_id (int)
   branding?: string | null;

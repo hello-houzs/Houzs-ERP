@@ -126,6 +126,8 @@ export const StockCard = () => {
      small summary views with their own collapse toggle. */
   type MovementRow = InventoryMovement & { runningBalance: number };
   const movementColumns = useMemo<DataGridColumn<MovementRow>[]>(() => {
+    // SHORT code-name only ("KL WAREHOUSE") — the ONE canonical warehouse label
+    // (owner 2026-07-24). Not a code+name concat, not the long `name`.
     const whName = (id: string) => {
       const wh = warehouses.find((w) => w.id === id);
       return wh ? wh.code : '—';

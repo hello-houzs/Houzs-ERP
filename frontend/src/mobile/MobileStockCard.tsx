@@ -60,8 +60,9 @@ export function MobileStockCard({
   const lotsQ = useInventoryLots(productCode, { warehouseId, includeClosed });
 
   const warehouses = warehousesQ.data ?? [];
-  // Movements carry only warehouse_id; map it to the warehouse CODE the
-  // desktop Warehouse column shows.
+  // Movements carry only warehouse_id; map it to the SHORT code-name ("KL
+  // WAREHOUSE") the desktop Warehouse column now shows — the ONE canonical
+  // warehouse label (owner 2026-07-24), not a code+name concat.
   const whName = (id: string) => {
     const w = warehouses.find((x) => x.id === id);
     return w ? w.code : "—";
