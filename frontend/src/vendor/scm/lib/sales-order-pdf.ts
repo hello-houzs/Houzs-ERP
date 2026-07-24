@@ -89,7 +89,6 @@ type SoHeader = {
      Consignment Order reuse path (no such columns) simply omits them. */
   sales_location?: string | null;
   customer_po?: string | null;
-  processing_date?: string | null;
   customer_delivery_date?: string | null;
   internal_expected_dd?: string | null;
   ship_to_address?: string | null;
@@ -365,9 +364,9 @@ export async function renderSalesOrderInto(
 
   // ── Resolve processing + delivery dates (folded into ORDER DETAILS below).
   /* Owner 2026-06-12 — Processing Date lives in internal_expected_dd (PR #140
-     renamed only the LABEL, not the column); legacy processing_date is null on
-     UI-edited SOs. Read the UI column first, legacy second. */
-  const processingDate = header.internal_expected_dd ?? header.processing_date ?? null;
+     renamed only the LABEL; the legacy processing_date column was dropped in
+     mig 0189). */
+  const processingDate = header.internal_expected_dd ?? null;
   const deliveryDate = header.customer_delivery_date ?? null;
 
   // ── BILL TO + ORDER DETAILS (unified Hookka-tidy info block) ──────

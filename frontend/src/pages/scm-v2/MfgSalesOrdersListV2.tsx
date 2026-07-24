@@ -121,7 +121,6 @@ type SoRow = {
   customer_country: string | null;
   current_doc_no: string | null;
   stock_remark?: string;
-  processing_date: string | null;
   internal_expected_dd: string | null;
   customer_delivery_date: string | null;
   // ── Phase 2 FINANCE: cost / margin / per-category subtotals + deposit. The
@@ -1639,10 +1638,10 @@ export function MfgSalesOrdersListV2() {
       width: "140px",
       defaultHidden: true,
       disableSort: true,
-      getValue: (r) => r.internal_expected_dd ?? r.processing_date ?? "",
+      getValue: (r) => r.internal_expected_dd ?? "",
       render: (r) => (
         <span className="text-[12.5px] text-ink-secondary">
-          {fmtDate(r.internal_expected_dd ?? r.processing_date)}
+          {fmtDate(r.internal_expected_dd)}
         </span>
       ),
     },

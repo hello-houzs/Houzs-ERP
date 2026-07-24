@@ -112,7 +112,6 @@ type SoHeader = {
   address4: string | null;
   city: string | null;
   postcode: string | null;
-  processing_date: string | null;
   customer_delivery_date: string | null;
   internal_expected_dd: string | null;
   /* proceeded_at — when the salesperson proceeded the order (server-stamped).
@@ -878,7 +877,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             {/* Order info */}
             <div className="card"><div className="card-h"><span className="card-t">Order info</span></div><div className="card-b">
               <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Building type" value={val(h.building_type)} /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Venue" value={val(h.venue ?? h.venue_id)} /></div></div>
-              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Processing date" value={dl(h.internal_expected_dd ?? h.processing_date)} mono /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Delivery date" value={dl(h.customer_delivery_date)} mono /></div></div>
+              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Processing date" value={dl(h.internal_expected_dd)} mono /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Delivery date" value={dl(h.customer_delivery_date)} mono /></div></div>
               <RoField label="Sales location" value={val(h.sales_location ?? h.customer_state)} />
               {/* Note — a non-empty note is emphasised as an amber callout (desktop
                   SalesOrderDetailV2 parity), reusing THIS screen's own amber family

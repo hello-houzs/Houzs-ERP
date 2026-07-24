@@ -67,7 +67,6 @@ function harness(options: { raceBeforeCas?: boolean; followerApplied?: boolean }
       phone: '+60123456789',
       address2: null,
       internal_expected_dd: null,
-      processing_date: null,
       proceeded_at: null,
       edit_lease_token: null,
       edit_lease_expires_at: null,

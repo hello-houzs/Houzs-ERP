@@ -74,7 +74,6 @@ export type PlanningOrder = {
   balance_centi_live: number | null;
   local_total_centi: number;
   so_date: string | null;
-  processing_date: string | null;
   /* The customer's ORIGINAL delivery date — never overwritten (migration 0199). */
   customer_delivery_date: string | null;
   /* Amendment dates (migration 0199): the customer's requested NEW date and the

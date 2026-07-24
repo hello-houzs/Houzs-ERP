@@ -56,7 +56,6 @@ export type SoDetailListingRow = Record<string, unknown> & {
   remark4: string | null;
   remark2: string | null;
   remark3: string | null;
-  processing_date: string | null;
   sales_exemption_expiry: string | null;
   customer_delivery_date: string | null;
   /** Live paid total summed from mfg_sales_order_payments (replaces legacy paid_centi). */
