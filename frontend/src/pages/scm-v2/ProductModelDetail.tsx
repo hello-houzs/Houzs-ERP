@@ -348,7 +348,7 @@ export const ProductModelDetail = ({
   return (
     <div className="space-y-4">
       {/* Header --------------------------------------------------------- */}
-      <PageHeader
+      <PageHeader back
         eyebrow="Product Model"
         title={model.model_code}
         description={model.name}

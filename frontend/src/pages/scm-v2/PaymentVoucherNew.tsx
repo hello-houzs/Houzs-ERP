@@ -20,8 +20,8 @@
 // ----------------------------------------------------------------------------
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, Save, Trash2, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { ChevronDown, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { useCreatePaymentVoucher } from '../../vendor/scm/lib/payment-voucher-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
@@ -243,14 +243,11 @@ export const PaymentVoucherNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Finance"
         title="New Payment Voucher"
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/payment-vouchers" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Payment Vouchers</span>
-            </Link>
             <Button variant="ghost" size="md" onClick={() => navigate('/scm/payment-vouchers')}>
               <X {...ICON} /> Cancel
             </Button>

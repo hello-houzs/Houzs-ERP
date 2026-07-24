@@ -162,6 +162,9 @@ export const PurchaseInvoiceDetail = () => {
   /* Memoised so the edit-mode seed + cost-recompute effects don't re-fire on
      every render (detail.data?.items is a fresh array each time otherwise). */
   const items = useMemo(() => (detail.data?.items ?? []) as PiItemRow[], [detail.data?.items]);
+  // OUR delivery order(s) this purchase covers (owner 2026-07-23 "要的") —
+  // server-resolved through the so_item_id chain; empty for stock POs.
+  const customerDos = detail.data?.customerDos ?? [];
 
   /* ── Whole-line editor data (T12) — the SAME lookups Create uses so PoLineCard
      renders identically in Edit. Bindings come from the PI's supplier; allSkus is
@@ -599,6 +602,7 @@ export const PurchaseInvoiceDetail = () => {
         onField={setHeaderField}
         locked={isLocked}
         isEditing={isEditing}
+        customerDos={customerDos}
       />
 
       {/* ── Line items ──────────────────────────────────────────── */}
@@ -733,7 +737,7 @@ export const PurchaseInvoiceDetail = () => {
    ════════════════════════════════════════════════════════════════════════ */
 
 const SupplierCard = ({
-  pi, draft, onField, locked, isEditing = true,
+  pi, draft, onField, locked, isEditing = true, customerDos = [],
 }: {
   pi: any;
   /** Draft header values (page-owned). In View these mirror the saved PI. */
@@ -743,6 +747,8 @@ const SupplierCard = ({
   locked: boolean;
   /** View → Edit gate. When false the card renders read-only display text. */
   isEditing?: boolean;
+  /** OUR delivery order(s) this purchase covers (so_item_id chain). */
+  customerDos?: Array<{ id: string; do_number: string }>;
 }) => {
   const suppliersQ = useSuppliers();
   const suppliers = suppliersQ.data ?? [];
@@ -777,6 +783,14 @@ const SupplierCard = ({
             <InfoCell label="Supplier Invoice Ref" value={pi.supplier_invoice_ref || null} />
             <InfoCell label="Invoice Date" value={pi.invoice_date ? fmtDateOrDash(pi.invoice_date) : null} />
             <InfoCell label="Due Date" value={pi.due_date ? fmtDateOrDash(pi.due_date) : null} />
+            {/* Owner 2026-07-23: "PI need show Do number" — the source GRN and
+                the supplier's delivery-note (DO) ref recorded on it. Manual
+                PIs have no GRN, so both cells fall back to the dash. */}
+            <InfoCell label="Source GRN" value={pi.grn?.grn_number || null} />
+            <InfoCell label="Supplier DO #" value={pi.grn?.delivery_note_ref || null} />
+            {/* Owner 2026-07-23 ("要的") — OUR delivery to the customer this
+                purchase covers. Dash for stock POs (no so_item linkage). */}
+            <InfoCell label="Customer DO" value={customerDos.length ? customerDos.map((d) => d.do_number).join(', ') : null} />
             <div style={{ gridColumn: 'span 2' }}>
               <InfoCell label="Notes" value={pi.notes || null} />
             </div>

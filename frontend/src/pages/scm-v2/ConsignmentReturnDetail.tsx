@@ -365,15 +365,12 @@ export const ConsignmentReturnDetail = () => {
   return (
     <div className="space-y-4" style={isCancelled ? { filter: 'grayscale(0.7)' } : undefined}>
       {/* ── Header ── */}
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title={`${header.return_number} — ${header.debtor_name}`}
         description={`Return date ${fmtDateOrDash(header.return_date)} · ${header.line_count} ${header.line_count === 1 ? 'line' : 'lines'}${header.customer_so_no ? ` · Customer Ref ${header.customer_so_no}` : ''}`}
         actions={
           <>
-          <Link to="/scm/consignment-returns" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /><span>Back</span>
-          </Link>
           <div className={styles.actions}>
           <div className={styles.totalRail}>
             <span className={styles.totalRailLabel}>Returned</span>

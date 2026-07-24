@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ShieldAlert } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { ArrowLeft, ShieldAlert } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TopNavbar } from "./TopNavbar";
@@ -180,6 +181,14 @@ interface PageHeaderProps {
    *  every page in the app, so shrinking the default here would silently
    *  reskin all of them. Only pass this where the owner approved it. */
   titleSize?: "default" | "sm";
+  /** Round ← back button above the eyebrow — the same circular affordance
+   *  DetailLayout's sticky chrome renders. OPT-IN, like `titleSize`: the owner
+   *  wants it on pages you click INTO, not on lists (2026-07-23: "每个页面点开
+   *  之后需要有这样红色标记的返回button" then "只需要在details page才需要，
+   *  在list page不用"), and PageHeader can't tell a list from a detail on its
+   *  own. Pass `back` on New / Detail / From-X pages; a string routes to that
+   *  path instead of history-back (mirrors DetailLayout's `backTo`). */
+  back?: boolean | string;
 }
 
 export function PageHeader({
@@ -192,10 +201,20 @@ export function PageHeader({
   eyebrowMeta,
   dense,
   titleSize = "default",
+  back,
 }: PageHeaderProps) {
   const secondary = secondaryActions ?? [];
   const hasSecondary = secondary.length > 0;
   const hasActions = !!actions || !!primaryAction || hasSecondary;
+
+  const navigate = useNavigate();
+  // Opt-in back affordance (see the `back` prop doc) — detail-type pages only.
+  const showBack = back === true || typeof back === "string";
+  function goBack() {
+    if (typeof back === "string") navigate(back);
+    else if (window.history.length > 1) navigate(-1);
+    else navigate("/");
+  }
 
   /* Publish where this pinned header ENDS, as `--page-header-offset` on <html>.
      Anything that scrolls a target into view has to clear it, and until now each
@@ -276,6 +295,17 @@ export function PageHeader({
           never squeeze the title to a per-character column — the rail wraps
           to its own row instead (container is md:flex-wrap). */}
       <div className="min-w-0 md:flex-1 md:basis-72">
+        {showBack && (
+          <button
+            type="button"
+            onClick={goBack}
+            aria-label="Back"
+            title="Back"
+            className="mb-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-ink-muted transition-all hover:-translate-x-0.5 hover:border-accent/50 hover:text-accent sm:mb-2"
+          >
+            <ArrowLeft size={14} strokeWidth={2.2} />
+          </button>
+        )}
         {eyebrow && (
           <div className="mb-1.5 flex items-center gap-2 sm:mb-2">
             <span className="h-px w-5 bg-accent sm:w-6" />

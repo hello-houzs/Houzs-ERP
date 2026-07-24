@@ -341,15 +341,12 @@ export const ConsignmentNoteDetail = () => {
   return (
     <div className="space-y-4" style={isCancelled ? { filter: 'grayscale(0.7)' } : undefined}>
       {/* ── Header ── */}
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title={`${header.do_number} — ${header.debtor_name}`}
         description={`Date ${fmtDateOrDash(header.do_date)} · ${header.line_count} ${header.line_count === 1 ? 'line' : 'lines'}${header.customer_so_no ? ` · Customer Ref ${header.customer_so_no}` : ''}`}
         actions={
           <>
-          <Link to="/scm/consignment-notes" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /><span>Back</span>
-          </Link>
           <div className={styles.actions}>
           <div className={styles.totalRail}>
             <span className={styles.totalRailLabel}>Total</span>

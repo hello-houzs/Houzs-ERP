@@ -458,6 +458,7 @@ POST,/api/scm/delivery-returns/from-do,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,
 POST,/api/scm/delivery-returns/from-dos,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.sales.returns"")",supabaseAuth,,,YES,DECLARED_GATE,backend/src/scm/routes/delivery-returns.ts
 GET,/api/scm/delivery-returns/returnable-do-lines,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.sales.returns"")",supabaseAuth,,,NO,DECLARED_GATE,backend/src/scm/routes/delivery-returns.ts
 GET,/api/scm/document-flow/:type/:id,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth + requireScmAccess,supabaseAuth,,,NO,DECLARED_GATE,backend/src/scm/routes/document-flow.ts
+GET,/api/scm/document-flow/candidate-pos/:soDocNo,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,auth + requireScmAccess,supabaseAuth,,,NO,DECLARED_GATE,backend/src/scm/routes/document-flow.ts
 GET,/api/scm/dp-orders,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.transportation.drivers"")",supabaseAuth,,,NO,DECLARED_GATE,backend/src/scm/routes/dp-orders.ts
 POST,/api/scm/dp-orders,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.transportation.drivers"")",supabaseAuth,,,YES,DECLARED_GATE,backend/src/scm/routes/dp-orders.ts
 PATCH,/api/scm/dp-orders/:id,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.transportation.drivers"")",supabaseAuth,,,YES,DECLARED_GATE,backend/src/scm/routes/dp-orders.ts

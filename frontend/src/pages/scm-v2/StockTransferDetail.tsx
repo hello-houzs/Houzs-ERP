@@ -15,9 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import {
-  ArrowLeft, ArrowRight, History, X, Ban,
-} from 'lucide-react';
+import { ArrowRight, History, X, Ban } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
@@ -131,16 +129,13 @@ export const StockTransferDetail = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Warehouse"
         title={t.transfer_no}
         description={`Created ${fmtDateTime(t.created_at)}${t.posted_at ? ` · Posted ${fmtDateTime(t.posted_at)}` : ''}${t.cancelled_at ? ` · Cancelled ${fmtDateTime(t.cancelled_at)}` : ''}`}
         actions={
           <>
             {status && <StatusPill docType="stockTransfer" status={status} />}
-            <Link to="/scm/stock-transfers" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Stock Transfers</span>
-            </Link>
             <div className={styles.actions}>
               {/* History drawer toggle. Same header seat on every detail page,
                   and unconditional: a cancelled transfer is exactly when

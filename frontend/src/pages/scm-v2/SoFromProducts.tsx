@@ -25,8 +25,8 @@
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, X, Sparkles, CheckSquare, Square, PlayCircle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { X, Sparkles, CheckSquare, Square, PlayCircle } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { fmtDateOrDash } from '@2990s/shared';
 import { useMfgProducts, type MfgProductRow } from '../../vendor/scm/lib/mfg-products-queries';
@@ -352,14 +352,11 @@ export const SoFromProducts = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title="Generate SO from Products"
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/sales-orders" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Sales Orders</span>
-            </Link>
             <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-orders')}>
               <X {...ICON} /> Done
             </Button>

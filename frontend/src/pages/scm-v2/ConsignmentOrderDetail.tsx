@@ -481,16 +481,12 @@ export const ConsignmentOrderDetail = () => {
   return (
     <div className="space-y-4">
       {/* ── Header ──────────────────────────────────────────────── */}
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title={`${header.doc_no} — ${header.debtor_name}`}
         description={`Date ${fmtDateOrDash(header.so_date)} · ${header.line_count} ${header.line_count === 1 ? 'line' : 'lines'}${header.customer_so_no ? ` · Customer Ref ${header.customer_so_no}` : ''}`}
         actions={
           <>
-          <Link to="/scm/consignment-orders" className={styles.backBtn}>
-            <ArrowLeft {...ICON} />
-            <span>Back</span>
-          </Link>
           <div className={styles.actions}>
           <div className={styles.totalRail}>
             <span className={styles.totalRailLabel}>Total</span>
