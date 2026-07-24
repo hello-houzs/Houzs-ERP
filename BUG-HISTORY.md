@@ -1,5 +1,12 @@
 ## 2026-07-24
 
+### [LOW] Sales Report DO tab didn't show the linked SO's amount (only its cost)
+- **Symptom.** Owner 2026-07-24: "DO 那边怎么没有给我看到 SO amount" — the Delivery Orders tab of the Sales Report showed SO *cost* (`total_so_cost_centi`) but not the SO's *amount*, so you couldn't see the sale value against the delivery.
+- **Root cause (traced).** `FairDoRow` never carried the SO amount — the DO stage builder (`scm/routes/reports.ts` `stage==='do'`) already has the linked SO header `h` in scope (used for margins) but only emitted its cost.
+- **Fix.** Backend: add `so_amount_centi: h ? fairSoMoney(h).amount_centi : null` to each DO row — the SAME computation the SO tab uses for its Amount column, so the two stages reconcile per SO. Frontend: add `so_amount_centi` to `FairDoRow` and an `SO Amount` column to the desktop DO table (after Qty, joining the money group), updating all four count sites (th, td, `cols` 4→5, tfoot inserts an empty cell after Qty). Verified: `tsc` clean both sides; DO header = body = tfoot cell counts (13 base).
+- **The class, for next time.** When a stage row already resolves the linked header for one purpose (margin), emitting the header's other useful fields is nearly free — check what the header carries before saying "not available".
+- **Ref:** #<PR>. Owner request 2026-07-24; pairs with the Branding-column PR.
+
 ### [LOW] Sales Report (desktop) SO + DO tables were missing the Branding column that mobile already shows
 - **Symptom.** Owner 2026-07-24: the Sales Report (FairReport) has a Branding *filter* but no Branding *column* per line on the desktop SO and DO tables — "怎么我没有看到 branding 的 line". Mobile (`MobileFairReport.tsx`) already renders `<BrandPill brand={r.branding}/>` on every card; desktop did not, so the two surfaces disagreed.
 - **Root cause (traced).** `branding` is part of `FairDims` (shared by every row type incl. `FairSoRow`/`FairDoRow`), so the data was already present in each row — it just was never given a column in the desktop tables. Classic desktop/mobile drift (the recurring class in `CLAUDE.md` "Desktop and mobile are one product").
