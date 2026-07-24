@@ -227,13 +227,18 @@ export async function loadSupplierRecord(
 
 /** Everything a purchasing-doc PDF needs, fetched in one parallel round.
  *  `supplier` = the FULL master record (fax / attention / payment_terms …)
- *  that the PO detail endpoint's 7-field embed omits; null on any failure. */
+ *  that the PO detail endpoint's 7-field embed omits; null on any failure.
+ *  `fabricMap` = internal→supplier external colour code; `fabricDescMap` =
+ *  internal→fabric_description. Supplier PDFs feed BOTH to `docVariantLine`
+ *  so their fabric segment prints the ONE unified format `CG-001 Pearl
+ *  (KN390-1)` — the same composer the customer docs use (owner 2026-07-24). */
 export async function loadSupplierDocData(
   supplierId: string | null | undefined,
   items: SupplierDocLine[],
 ): Promise<{
   skuMap: Map<string, string>;
   fabricMap: Map<string, string>;
+  fabricDescMap: Map<string, string>;
   supplier: SupplierRecord | null;
 }> {
   // Binding lookup only for lines that never snapshotted a supplier_sku
@@ -241,12 +246,14 @@ export async function loadSupplierDocData(
   const missing = items
     .filter((it) => !(it.supplier_sku ?? '').trim())
     .map((it) => it.material_code);
-  const [skuMap, fabricMap, supplier] = await Promise.all([
+  const fabricCodes = collectFabricCodes(items);
+  const [skuMap, fabricMap, fabricDescMap, supplier] = await Promise.all([
     loadSupplierSkuMap(supplierId, missing),
-    loadFabricSupplierMap(collectFabricCodes(items)),
+    loadFabricSupplierMap(fabricCodes),
+    loadFabricDescriptionMap(fabricCodes),
     loadSupplierRecord(supplierId),
   ]);
-  return { skuMap, fabricMap, supplier };
+  return { skuMap, fabricMap, fabricDescMap, supplier };
 }
 
 /**
@@ -257,40 +264,27 @@ export function supplierCodeFor(it: SupplierDocLine, skuMap: Map<string, string>
   return (it.supplier_sku ?? '').trim() || skuMap.get(it.material_code) || '—';
 }
 
-/**
- * Specs / variant summary where fabric segments show the SUPPLIER's colour
- * code with our internal code alongside — `supplierColour (ourCode)` — when a
- * fabric_trackings mapping exists; otherwise our code as-is.
- */
-export function specsLine(it: SupplierDocLine, fabricMap: Map<string, string>): string {
-  const v = it.variants;
-  if (!v || typeof v !== 'object') return '';
-  let mapped: Record<string, unknown> = v;
-  for (const key of FABRIC_VARIANT_KEYS) {
-    const raw = v[key];
-    if (typeof raw === 'string') {
-      const sup = fabricMap.get(raw.trim());
-      if (sup) {
-        if (mapped === v) mapped = { ...v }; // clone once, on demand
-        mapped[key] = `${sup} (${raw.trim()})`;
-      }
-    }
-  }
-  // labelled: supplier docs (PO / GRN / PI) prefix the fabric segment "Fabric: ".
-  return buildVariantSummary(it.item_group ?? null, mapped, { labelled: true });
-}
+/* ── Unified document variant line (Commander 2026-06-16; owner 2026-07-24) ──
+   ONE shared composer so EVERY document — customer (SO / DO / DR / SI /
+   Consignment) AND supplier-facing (PO / GRN / PI / PR) — renders the line
+   description identically: `buildVariantSummary` with each fabric code shown
+   as the ONE unified format `CG-001 Pearl (KN390-1)` (internal code + our
+   description, the SUPPLIER's external code appended LAST in parens).
 
-/* ── Customer-facing document variant line (Commander 2026-06-16) ───────────
-   ONE shared composer so EVERY customer document — SO, DO, DR, SI, Consignment
-   Note/Return — renders the line description identically: buildVariantSummary
-   with each fabric code shown as "internal (external) — description". This is
-   what unifies the supply-chain docs (the supplier docs keep specsLine, which
-   leads with the SUPPLIER's code per the owner's "supplier acts on their own
-   code" rule). */
+   Owner ruling 2026-07-24: the supplier-facing docs no longer recompose the
+   fabric "supplier-code-first" (the retired `specsLine` prepended `KN390-1
+   (CG-001)`, which — once the read-side also stamped `variants.fabricSupplierCode`
+   in #1209 — printed the fabric TWICE, "KN390-1 (CG-001) CG-001 Pearl
+   (KN390-1)"). The supplier's own item code lives ONLY in the Supplier-Code
+   column, never duplicated into the fabric line. Supplier docs pass
+   `{ labelled: true }` so the fabric segment keeps its "Fabric: " prefix. */
 export function docVariantLine(
   item: { item_group?: string | null; variants?: Record<string, unknown> | null },
   fabricExtMap: Map<string, string>,
   fabricDescMap: Map<string, string>,
+  /* labelled — prefix the fabric segment with "Fabric: " on supplier-facing
+     docs (PO / GRN / PI / PR). Default off → customer docs unchanged. */
+  opts?: { labelled?: boolean },
 ): string {
   const v = item.variants;
   if (!v || typeof v !== 'object') return '';
@@ -322,7 +316,7 @@ export function docVariantLine(
       }
     }
   }
-  return buildVariantSummary(item.item_group ?? null, mapped);
+  return buildVariantSummary(item.item_group ?? null, mapped, opts);
 }
 
 /** Load BOTH fabric maps (supplier external colour + our description) for a set
