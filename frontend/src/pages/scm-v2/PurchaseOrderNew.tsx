@@ -34,6 +34,7 @@ import {
   type OutstandingSoItem,
 } from '../../vendor/scm/lib/suppliers-queries';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { serviceConfirm } from '../../vendor/scm/lib/dialog-service';
 import { readScmHandoff, removeScmHandoff, writeScmHandoff } from '../../lib/scmHandoffStorage';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { activeOptions, maintPickerValues } from '@2990s/shared';
@@ -630,27 +631,62 @@ export const PurchaseOrderNew = () => {
       soItemId:       l.soItemId ?? null,
     }));
 
-    create.mutate(
-      {
-        idempotencyKey: idemKey,
-        supplierId,
-        currency,
-        poDate,
-        expectedAt,
-        /* Mig 0026 — supplier-revised header delivery dates. */
-        supplierDeliveryDate2: supplierDeliveryDate2 || undefined,
-        supplierDeliveryDate3: supplierDeliveryDate3 || undefined,
-        supplierDeliveryDate4: supplierDeliveryDate4 || undefined,
-        notes: notes || undefined,
-        purchaseLocationId,
-        items,
-        asDraft,
-      },
-      {
-        onSuccess: (res) => navigate(`/scm/purchase-orders/${res.id}`),
-        onError:   (err) => notify({ title: 'Save failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' }),
-      },
-    );
+    const basePayload = {
+      idempotencyKey: idemKey,
+      supplierId,
+      currency,
+      poDate,
+      expectedAt,
+      /* Mig 0026 — supplier-revised header delivery dates. */
+      supplierDeliveryDate2: supplierDeliveryDate2 || undefined,
+      supplierDeliveryDate3: supplierDeliveryDate3 || undefined,
+      supplierDeliveryDate4: supplierDeliveryDate4 || undefined,
+      notes: notes || undefined,
+      purchaseLocationId,
+      items,
+      asDraft,
+    };
+
+    /* Over-convert soft-warn -> confirm -> replay (mirror of the confirmShortStock
+       "ship anyway?" gate in authedFetch). SO-sourced lines are capped server-side
+       at the source SO line's remaining qty; the backend returns 409
+       qty_exceeds_remaining. On confirm we replay the SAME create with
+       confirmOverConvert set — the server marked that 409 no-write, so the
+       idempotency key re-runs instead of replaying the rejection. */
+    const runCreate = (confirmOverConvert = false) => {
+      create.mutate(
+        confirmOverConvert ? { ...basePayload, confirmOverConvert } : basePayload,
+        {
+          onSuccess: (res) => navigate(`/scm/purchase-orders/${res.id}`),
+          onError: async (err) => {
+            const e = err as { status?: number; body?: string } | null;
+            if (
+              !confirmOverConvert && e?.status === 409 &&
+              typeof e.body === 'string' && e.body.includes('"qty_exceeds_remaining"')
+            ) {
+              let detail = 'One line orders more than its Sales Order still needs.';
+              try {
+                const b = JSON.parse(e.body.slice(e.body.indexOf('{'))) as
+                  { soItemId?: string; requested?: number; remaining?: number };
+                const ln = lines.find((l) => l.soItemId === b.soItemId);
+                const code = ln?.materialCode || ln?.materialName || 'This line';
+                detail = `${code}: ordering ${b.requested}, but this Sales Order line only needs ${b.remaining} more.`;
+              } catch { /* keep the generic fallback */ }
+              const proceed = await serviceConfirm({
+                title: 'Ordering more than this Sales Order needs',
+                body: `${detail}\n\nCreate the Purchase Order anyway? The extra quantity will be ordered beyond what the Sales Order requires.`,
+                confirmLabel: 'Create anyway',
+                danger: true,
+              });
+              if (proceed) runCreate(true);
+              return;
+            }
+            notify({ title: 'Save failed', body: `${err instanceof Error ? err.message : 'Something went wrong.'}`, tone: 'error' });
+          },
+        },
+      );
+    };
+    runCreate();
   };
 
   return (

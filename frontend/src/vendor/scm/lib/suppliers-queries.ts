@@ -902,6 +902,11 @@ export function useCreatePurchaseOrder() {
       /** Draft/Confirmed — opt-in DRAFT save (status DRAFT, no SO-quota advance,
           invisible to MRP supply). Omitted/false → SUBMITTED, as before. */
       asDraft?: boolean;
+      /** Over-convert override (owner 2026-07-24). SO-sourced lines are capped at
+          the source SO line's remaining qty (409 qty_exceeds_remaining); set this
+          after the operator confirms to raise a PO beyond what the SO still needs.
+          Mirrors confirmShortStock. Only the New-PO-from-SO flow sends it. */
+      confirmOverConvert?: boolean;
     }) =>
       authedFetch<{ id: string; poNumber: string }>(`/mfg-purchase-orders`,
         idempotentInit(idempotencyKey, {
