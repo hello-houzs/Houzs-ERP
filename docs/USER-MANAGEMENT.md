@@ -70,6 +70,30 @@ One ACTIVE account per position, password `houzs1234`, emails `<slug>@example.my
 (`super_admin@…`, `sales_director@…`, `purchasing@…`, etc.). Driver/Helper route to the
 driver mobile portal. Remove with `seed-user-management.mjs --remove-tests`.
 
+## POS role (2990 tablet) — derived from the position
+The 2990 POS gates its own behaviour (view-all sales, Quick-Pick curation,
+passcode login) on the `role` field of the caller's GET /api/scm/staff row — the
+2990 role vocabulary, NOT the Houzs page matrix. Since owner ruling 2026-07-24
+(HANDOFF #104: "我要2990s的直接跟houzs的") that role is **derived from the
+member's POSITION at read time** (`scm/lib/pos-staff-role.ts`, applied to every
+/staff read in `scm/routes/staff.ts`):
+
+| positions.slug | POS role | POS effect |
+|---|---|---|
+| super_admin | super_admin | view-all + curator (email login) |
+| sales_director | sales_director | view-all + curator (email login) |
+| sales_manager | outlet_manager | view-all + passcode login ("管理级") |
+| sales_executive | sales_executive | own orders, passcode login |
+| sales_person / sales_trainee | sales | own orders, passcode login |
+| any other position | stored scm.staff.role (inert) | owner: non-sales members don't use POS |
+
+`scm.staff.role` in the DB stays untouched (mig 0066 stamps 'sales' on every
+member and that remains true) — the derivation happens only on the read
+surface, so changing someone's Position in User Management changes their POS
+powers immediately, with nothing to re-sync. PIN issuance (Members → Set PIN)
+remains the real gate for tablet login; the PIN-login endpoint additionally
+requires a sales-side position (routes/pos.ts).
+
 ## Key files
 - `backend/src/services/pageAccess.ts` — levels, PAGES catalogue, loaders (role + position)
 - `backend/src/services/auth.ts` — hydrateAuthUser (position → page_access)

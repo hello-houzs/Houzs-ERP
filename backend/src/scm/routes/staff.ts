@@ -20,6 +20,7 @@ import { supabaseAuth } from "../middleware/auth";
 import { requireHouzsPerm, hasHouzsPerm } from "../lib/houzs-perms";
 import { activeCompanyId, houzsCompanyId, mirrorCompanyId } from "../lib/companyScope";
 import { filterStaffToCompany } from "../lib/staffCompanyScope";
+import { derivePosRole } from "../lib/pos-staff-role";
 import { isSalesUser } from "../../services/pmsAccess";
 import type { Env, Variables } from "../env";
 
@@ -40,12 +41,16 @@ const SCM_SYSTEM_STAFF_ID = "00000000-0000-4000-8000-000000000001";
 
 // Dual-read camelCase ?? snake_case — the PostgREST driver may camelCase result
 // columns; cover both so we never read undefined.
-function toStaffRow(r: Record<string, unknown>) {
+function toStaffRow(r: Record<string, unknown>, positionSlug?: string | null) {
   return {
     id: r.id,
     staffCode: r.staffCode ?? r.staff_code ?? "",
     name: r.name,
-    role: r.role,
+    /* POS-role derivation (owner 2026-07-24, HANDOFF #104): the role the POS
+       gates on FOLLOWS the member's User-Management position; the stored
+       scm.staff.role (stamped 'sales' on every member by mig 0066) is only the
+       fallback for unmapped/unlinked rows. See lib/pos-staff-role.ts. */
+    role: derivePosRole(positionSlug, r.role),
     showroomId: r.showroomId ?? r.showroom_id ?? null,
     venueId: r.venueId ?? r.venue_id ?? null,
     /* SHOWROOM PARKING (migration 0148) — the warehouse this person is parked
@@ -107,6 +112,58 @@ async function loadGrantsByUserId(
     // the HOUZS-base default for linked rows.
   }
   return map;
+}
+
+/**
+ * positions.slug per Houzs user id, for POS-role derivation (pos-staff-role.ts).
+ * Same degrade contract as loadGrantsByUserId directly above: an absent table
+ * (pre-migration / D1 test mirror) or a read blip yields an EMPTY map — every
+ * row then falls back to its stored scm.staff.role, which is exactly the
+ * pre-derivation behaviour. Never throws the roster.
+ */
+async function loadPositionSlugsByUserId(
+  env: Env,
+  userIds: number[],
+): Promise<Map<number, string>> {
+  const map = new Map<number, string>();
+  if (userIds.length === 0) return map;
+  try {
+    const placeholders = userIds.map(() => "?").join(",");
+    const res = await env.DB.prepare(
+      `SELECT u.id AS user_id, p.slug AS position_slug
+         FROM users u
+         JOIN positions p ON p.id = u.position_id
+        WHERE u.id IN (${placeholders})`,
+    )
+      .bind(...userIds)
+      .all<{ user_id: number | string; position_slug: string | null }>();
+    for (const row of res.results ?? []) {
+      const uid = Number(row.user_id);
+      if (!Number.isInteger(uid) || !row.position_slug) continue;
+      map.set(uid, String(row.position_slug));
+    }
+  } catch {
+    // users / positions absent or transient error — empty map = stored roles.
+  }
+  return map;
+}
+
+/** Serialise rows with the POS role derived from each member's position. The
+ *  single serialisation path for every staff read (GET / , /by-ids, /pickable)
+ *  so the POS can never see a position-blind role from one endpoint and a
+ *  derived one from another. */
+async function toStaffRowsWithDerivedRoles(
+  env: Env,
+  rows: Array<Record<string, unknown>>,
+) {
+  const linkedIds = Array.from(
+    new Set(rows.map(rowUserId).filter((n): n is number => n != null)),
+  );
+  const slugByUserId = await loadPositionSlugsByUserId(env, linkedIds);
+  return rows.map((r) => {
+    const uid = rowUserId(r);
+    return toStaffRow(r, uid == null ? null : slugByUserId.get(uid) ?? null);
+  });
 }
 
 // The shared scoping pass: filter a raw staff-row set to the caller's ACTIVE
@@ -178,9 +235,9 @@ staff.get("/", async (c) => {
     return c.json({ error: "load_failed", reason: error.message }, 500);
   }
   const rows = (data ?? []) as Array<Record<string, unknown>>;
-  if (wantAll) return c.json({ staff: rows.map(toStaffRow) });
+  if (wantAll) return c.json({ staff: await toStaffRowsWithDerivedRoles(c.env, rows) });
   const { scoped } = await scopeStaffRowsToActiveCompany(c, rows);
-  return c.json({ staff: scoped.map(toStaffRow) });
+  return c.json({ staff: await toStaffRowsWithDerivedRoles(c.env, scoped) });
 });
 
 // GET /by-ids?ids=<uuid>,<uuid>,... — bulk name lookup for KNOWN IDs.
@@ -212,7 +269,12 @@ staff.get("/by-ids", async (c) => {
     if (/relation .* does not exist/i.test(error.message)) return c.json({ staff: [] });
     return c.json({ error: "load_failed", reason: error.message }, 500);
   }
-  return c.json({ staff: ((data ?? []) as Array<Record<string, unknown>>).map(toStaffRow) });
+  return c.json({
+    staff: await toStaffRowsWithDerivedRoles(
+      c.env,
+      (data ?? []) as Array<Record<string, unknown>>,
+    ),
+  });
 });
 
 // GET /pickable — the salesperson SELECTION list, scoped to the ACTIVE company.
@@ -259,7 +321,7 @@ staff.get("/pickable", async (c) => {
      default so the PaymentsTable "Collected By" picker + any other
      legitimate all-staff caller still gets the full active roster. */
   if (!onlySales) {
-    return c.json({ staff: scoped.map(toStaffRow) });
+    return c.json({ staff: await toStaffRowsWithDerivedRoles(c.env, scoped) });
   }
 
   const linkedIds = Array.from(
@@ -292,7 +354,7 @@ staff.get("/pickable", async (c) => {
   } catch {
     // users / positions / departments absent (pre-migration / D1 test
     // mirror) — degrade to no-filter rather than blanking the picker.
-    return c.json({ staff: scoped.map(toStaffRow) });
+    return c.json({ staff: await toStaffRowsWithDerivedRoles(c.env, scoped) });
   }
 
   const salesOnly = scoped.filter((r) => {
@@ -306,7 +368,7 @@ staff.get("/pickable", async (c) => {
       permissions_set: null,
     } as any);
   });
-  return c.json({ staff: salesOnly.map(toStaffRow) });
+  return c.json({ staff: await toStaffRowsWithDerivedRoles(c.env, salesOnly) });
 });
 
 /* ── SHOWROOM PARKING (owner 2026-07-19, migration 0148) ────────────────────
