@@ -28,7 +28,7 @@ import type { Env } from "../types";
 import type { AuthUser } from "../services/auth";
 import { hasPermission } from "../services/permissions";
 import { sendEmail } from "../services/email";
-import { getBranding } from "../services/branding";
+import { getBranding, getBrandingForCompany } from "../services/branding";
 import { validateMailAttachments } from "../lib/mail-attachments";
 import { isSalesDirectorUser } from "../services/pmsAccess";
 import { activeCompanyId, activeCompanySql } from "../scm/lib/companyScope";
@@ -49,12 +49,10 @@ const app = new Hono<{ Bindings: Env }>();
 // ---------------------------------------------------------------------------
 
 // Recipient-address -> company CODE mapping for inbound tagging. EXTENSIBLE:
-// add 2990's inbound address(es) / domain here so their mail is tagged company
-// 2. Anything unmatched defaults to HOUZS (the base company). The 2990 mail
-// address is not known yet (2026-07), so no 2990 rule is wired.
-//
-// >>> ADD 2990 HERE: push a rule returning "2990" once the address is known,
-//     e.g. { match: (a) => a.endsWith("@<2990-domain>"), code: "2990" }
+// add a company's inbound address(es) / domain here so their mail is tagged to
+// that company. Anything unmatched defaults to HOUZS (the base company).
+// Literals are correct HERE (pre-auth path, no request context to resolve a
+// company from) — everywhere else the domain comes from Branding.
 const RECIPIENT_COMPANY_RULES: Array<{
   match: (addr: string) => boolean;
   code: string;
@@ -64,7 +62,11 @@ const RECIPIENT_COMPANY_RULES: Array<{
     match: (a) => a.endsWith("@houzscentury.com") || a === "hello@houzscentury.com",
     code: "HOUZS",
   },
-  // TODO(multi-company): add 2990 recipient address(es)/domain here -> "2990".
+  // 2990's inbound domain (hello@2990shome.com et al).
+  {
+    match: (a) => a.endsWith("@2990shome.com"),
+    code: "2990",
+  },
 ];
 
 // Resolve the owning company CODE for one inbound email from its recipients
@@ -1566,8 +1568,18 @@ app.post("/addresses", async (c) => {
   if (!address || !EMAIL_RE.test(address)) {
     return c.json({ error: "invalid email address" }, 400);
   }
-  // Enforce the company domain from Branding (not a literal).
-  const domain = await brandingDomain(c.env);
+  // Enforce the ACTIVE company's domain from its Branding (not a literal, and
+  // not the HOUZS row — a 2990 mailbox must be on 2990's own domain). The
+  // frontend picker (MailboxesTab) validates against the same company-aware
+  // /api/branding, so both surfaces agree.
+  const branding = await getBrandingForCompany(c.env, activeCompanyId(c));
+  const domain = (branding.email.split("@")[1] || "").trim().toLowerCase();
+  if (!domain) {
+    return c.json(
+      { error: "Set this company's email in Settings -> Branding first; it defines the mailbox domain." },
+      400,
+    );
+  }
   if (!address.endsWith(`@${domain}`)) {
     return c.json({ error: `address must end with @${domain}` }, 400);
   }
@@ -1930,6 +1942,9 @@ app.post("/threads/:id/reply", async (c) => {
   // the operator's chosen mailbox (owner ask: replies come FROM the mailbox, not
   // no-reply@) — sendEmail wraps it with the Branding company display name.
   // replyTo is the same mailbox so the customer's reply lands back on it.
+  // companyCode follows the SENDING mailbox's domain (not the session's active
+  // company) so a hello@2990shome.com reply reads "2990's Home", and a
+  // cron-drained retry renders the same identity.
   const result = await sendEmail(c.env, {
     to,
     subject,
@@ -1938,6 +1953,7 @@ app.post("/threads/:id/reply", async (c) => {
     purpose: "generic",
     from: fromAddress || undefined,
     replyTo: fromAddress || undefined,
+    companyCode: companyCodeForRecipient([fromAddress]),
     attachments: attachments.map((a) => ({
       filename: a.filename,
       content: a.contentBase64.replace(/^data:[^;]+;base64,/, ""),
@@ -2051,7 +2067,8 @@ app.post("/compose", async (c) => {
   const htmlBody = `<p>${escapeHtml(text).replace(/\n/g, "<br/>")}</p>`;
 
   // From = the operator's chosen mailbox (owner ask), not no-reply@. replyTo is
-  // the same so the recipient's reply lands back on it.
+  // the same so the recipient's reply lands back on it. companyCode follows the
+  // mailbox's domain so the display name matches the sending company.
   const result = await sendEmail(c.env, {
     to,
     subject,
@@ -2060,6 +2077,7 @@ app.post("/compose", async (c) => {
     purpose: "generic",
     from: fromAddress || undefined,
     replyTo: fromAddress || undefined,
+    companyCode: companyCodeForRecipient([fromAddress]),
     attachments: attachments.map((a) => ({
       filename: a.filename,
       content: a.contentBase64.replace(/^data:[^;]+;base64,/, ""),

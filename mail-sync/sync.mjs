@@ -36,7 +36,7 @@
 //   MAIL_INBOUND_URL     the ERP worker, e.g.
 //                        https://autocount-sync-api.houzs-erp.workers.dev/api/mail-center/inbound
 //
-// Optional multi-account override (used when IMAP_ACCOUNTS is set):
+// Optional extra accounts (MERGED with the IMAP_USER/IMAP_PASSWORD pair):
 //   IMAP_ACCOUNTS        JSON array of accounts, e.g.
 //                          [{"user":"hello@houzscentury.com","password":"app-pw"},
 //                           {"user":"sales@houzscentury.com","password":"app-pw"}]
@@ -64,9 +64,9 @@ const SINCE_DAYS = Number(process.env.SINCE_DAYS || 3) || 3;
 
 // Resolve the account list. DEFAULT path is the single shared hello@ mailbox
 // (IMAP_USER / IMAP_PASSWORD) — enough for the free-alias model. The optional
-// IMAP_ACCOUNTS (JSON [{user,password}, …]) overrides it for a future split into
-// separate accounts. Returns a normalised, de-duplicated (by lowercased user)
-// list of {user,password}.
+// IMAP_ACCOUNTS (JSON [{user,password}, …]) ADDS further accounts (e.g. another
+// company's hello@2990shome.com); the two sources MERGE, de-duplicated by
+// lowercased user. Returns a normalised list of {user,password}.
 function resolveAccounts() {
   const raw = (process.env.IMAP_ACCOUNTS || "").trim();
   let list = [];
@@ -90,15 +90,17 @@ function resolveAccounts() {
       user: String((a && (a.user ?? a.email)) || "").trim(),
       password: String((a && (a.password ?? a.pass)) || ""),
     }));
-  } else {
-    // Back-compat single-account path.
-    list = [
-      {
-        user: (process.env.IMAP_USER || "").trim(),
-        password: process.env.IMAP_PASSWORD || "",
-      },
-    ];
   }
+
+  // MERGE the legacy single-account pair (IMAP_USER / IMAP_PASSWORD) rather
+  // than letting IMAP_ACCOUNTS override it: adding another company's mailbox
+  // (hello@2990shome.com) then needs ONE new secret, not re-entering the
+  // existing hello@houzscentury.com app password into IMAP_ACCOUNTS. A blank
+  // pair is dropped by the empties filter below; a double listing is de-duped.
+  list.push({
+    user: (process.env.IMAP_USER || "").trim(),
+    password: process.env.IMAP_PASSWORD || "",
+  });
 
   // Drop empties + de-dup by lowercased user (a repeated address is harmless via
   // Message-ID dedup, but skipping it saves a needless IMAP login).
