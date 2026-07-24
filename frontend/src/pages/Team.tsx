@@ -466,7 +466,8 @@ export function Team() {
 // ──────────────────────────────────────────────────────────
 // Windowed card grid — renders only the rows scrolled into view
 // ──────────────────────────────────────────────────────────
-// The default Members view is a responsive card grid. Rendering EVERY card
+// The Members card-grid view (owner 2026-07-24: the DEFAULT is the LIST view;
+// the grid stays one toggle away). Rendering EVERY card
 // unvirtualized freezes the page once the workspace grows (10× users). This
 // windows the grid the same way the desktop DataTable and MobileVirtualList do:
 // a CAPTURING window scroll listener (scroll events don't bubble) measures the
@@ -673,7 +674,10 @@ function MembersTab({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   // Card grid (reference look) vs. dense table. Grid is the default.
-  const [view, setView] = useIdentityPreference("team:view", "grid", enumPreference(["grid", "list"] as const));
+  /* Owner 2026-07-24: Members opens in the LIST view by default ("team member
+     - default view是listing"). Identity-scoped preference still wins, so
+     anyone who explicitly picked the grid keeps it. */
+  const [view, setView] = useIdentityPreference("team:view", "list", enumPreference(["grid", "list"] as const));
   // Grid ordering (the table view has its own column sort).
   const [gridSort, setGridSort] = useIdentityPreference(
     "team:gridSort",
