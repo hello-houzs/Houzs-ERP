@@ -28,7 +28,7 @@ async function seedUser(opts: {
      VALUES (?, ?, ?, ?)`
   )
     .bind(
-      `role_${opts.email}`,
+      `bd role_${opts.email}`,
       "test role",
       JSON.stringify(opts.permissions),
       opts.scopeToPic ? 1 : 0,
