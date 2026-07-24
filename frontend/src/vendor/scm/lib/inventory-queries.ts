@@ -79,6 +79,11 @@ export type InventoryBalance = {
   /* showAll=true rows include these */
   warehouse_code?: string;
   warehouse_name?: string;
+  /* R6 (owner 2026-07-24) — the balance's warehouse is a CONSIGNMENT location
+     (stock held but not owned). Stamped by /inventory/breakdown so the drawer
+     can show consignment QUANTITY separately and exclude it from inventory
+     VALUE. Display-only; no costing/AP path depends on it. */
+  is_consignment?: boolean;
   category?: 'ACCESSORY' | 'BEDFRAME' | 'SOFA' | 'MATTRESS' | 'SERVICE';
   size_label?: string | null;
   value_sen?: number;
@@ -101,15 +106,33 @@ export type InventoryProductTotal = {
   main_supplier_code: string | null;
   main_supplier_name: string | null;
   main_supplier_price_centi: number | null;
-  /* Commander 2026-05-29 — live stock picture (computed server-side):
-     reserve = open SO demand by delivery window; available = stock − reserved;
-     incoming = outstanding PO supply; oldest_lot_at = age of the stock. */
-  reserve_7d: number;
-  reserve_14d: number;
+  /* Owner 2026-07-24 six-column planning model (computed server-side, GET
+     /inventory/products). committed_scheduled + unscheduled_qty == the whole
+     open net-of-delivered SO demand (reserved_total):
+       incoming_qty        = outstanding PO qty arriving within ~30 days
+       incoming_pos        = the covering PO(s) + ETA behind incoming_qty (drill)
+       committed_scheduled = open SO demand that HAS a delivery date
+       unscheduled_qty     = open SO demand with NO delivery date
+       available_qty       = stock + incoming_qty − committed_scheduled
+       surplus_qty         = available_qty − unscheduled_qty
+       oldest_lot_at       = oldest open FIFO lot → age of the stock */
+  incoming_qty: number;
+  incoming_pos: InventoryIncomingPo[];
+  committed_scheduled: number;
+  unscheduled_qty: number;
   reserved_total: number;
   available_qty: number;
-  incoming_qty: number;
+  surplus_qty: number;
   oldest_lot_at: string | null;
+};
+
+/* One incoming purchase-order line feeding a SKU's Incoming (≤30-day) figure —
+   the PO number bringing the stock and its effective ETA (mig 0180 revised
+   date). Surfaced in the Balances row drill so "Incoming +6" names WHICH PO. */
+export type InventoryIncomingPo = {
+  po_number: string;
+  eta: string | null;
+  qty: number;
 };
 
 export type InventoryMovement = {
@@ -203,14 +226,17 @@ export function useUpdateWarehouse() {
    from the source inventory-queries.ts.
    ════════════════════════════════════════════════════════════════════════ */
 
-/* PR #38 — AutoCount-style: one row per SKU, totals across all warehouses */
-export function useInventoryProductTotals(opts?: { search?: string; category?: string }) {
+/* PR #38 — AutoCount-style: one row per SKU, totals across all warehouses.
+   ask A (2026-07-24): optional warehouseId narrows Stock / Value / demand /
+   incoming to one warehouse. */
+export function useInventoryProductTotals(opts?: { search?: string; category?: string; warehouseId?: string | null }) {
   return useQuery({
     queryKey: ['inventory', 'product-totals', opts ?? {}],
     queryFn: ({ signal }) => {
       const params = new URLSearchParams();
       if (opts?.search) params.set('search', opts.search);
       if (opts?.category && opts.category !== 'all') params.set('category', opts.category);
+      if (opts?.warehouseId) params.set('warehouseId', opts.warehouseId);
       return authedFetch<{ products: InventoryProductTotal[] }>(
         `/inventory/products${params.toString() ? `?${params.toString()}` : ''}`,
         { signal },
