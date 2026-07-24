@@ -30,6 +30,8 @@ import {
   usePostGrn,
   useCancelGrn,
 } from "../../vendor/scm/lib/grn-queries";
+import { useSupplierDetail } from "../../vendor/scm/lib/suppliers-queries";
+import { skuMapFromBindings, supplierCodeFor } from "../../vendor/scm/lib/supplier-doc-data";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { cn } from "../../lib/utils";
@@ -76,6 +78,8 @@ type GrnItem = {
   id: string;
   material_code?: string | null;
   item_code?: string | null;
+  /* Supplier's own code, snapshotted per line at receipt (backend returns it). */
+  supplier_sku?: string | null;
   description?: string | null;
   description2?: string | null;
   item_group?: string | null;
@@ -296,6 +300,23 @@ function GoodsReceivedDetailV2ReadOnly() {
     { label: grn?.grn_number ?? id ?? "GRN" },
   ]);
 
+  /* Supplier SKU — the supplier's own code, snapshotted per line at receipt.
+     Lines that never snapshotted one (older GRNs) fall back to the live
+     supplier↔material binding — the same two-step the PO detail and the printed
+     GRN use (supplierCodeFor). The binding fetch is skipped when every line
+     already carries a snapshot; useSupplierDetail(null) is disabled. */
+  const needsSkuLookup = useMemo(
+    () => items.some((l) => !(l.supplier_sku ?? "").trim()),
+    [items]
+  );
+  const supplierForSku = useSupplierDetail(
+    needsSkuLookup ? grn?.supplier?.id ?? null : null
+  );
+  const skuByMaterialCode = useMemo(
+    () => skuMapFromBindings(supplierForSku.data?.bindings),
+    [supplierForSku.data]
+  );
+
   const eff = grn ? effectiveOf(grn) : null;
   const stageLabel = grn ? STAGE_LABEL[(grn.status || "").toUpperCase()] ?? grn.status : "";
   const badgeTone = eff ? EFFECTIVE_TONE[eff].tone : "neutral";
@@ -371,6 +392,28 @@ function GoodsReceivedDetailV2ReadOnly() {
             )}
           </div>
         );
+      },
+    },
+    {
+      /* Next to Item: our code and the supplier's code for the same line, the
+         pair the purchaser reconciles against the supplier's delivery note. */
+      key: "supplierSku",
+      label: "Supplier SKU",
+      width: "132px",
+      getValue: (l) => {
+        const code = supplierCodeFor(
+          { material_code: (l.material_code || l.item_code) ?? "", supplier_sku: l.supplier_sku },
+          skuByMaterialCode
+        );
+        return code === "—" ? "" : code;
+      },
+      render: (l) => {
+        const code = supplierCodeFor(
+          { material_code: (l.material_code || l.item_code) ?? "", supplier_sku: l.supplier_sku },
+          skuByMaterialCode
+        );
+        if (code === "—") return <span className="text-ink-muted">—</span>;
+        return <span className="font-mono text-[12px] text-ink-secondary">{code}</span>;
       },
     },
     {
