@@ -360,18 +360,21 @@ const ApAgingTab = () => {
         <table className={styles.table}>
           <thead>
             <tr>
-              <th>Invoice</th><th>Supplier</th><th>Date</th><th>Due</th>
+              {/* Owner 2026-07-24: supplier NAME and CODE are separate columns
+                  on every procurement table, not one combined cell. */}
+              <th>Invoice</th><th>Supplier</th><th>Supplier Code</th><th>Date</th><th>Due</th>
               <th style={{ textAlign: 'right' }}>Outstanding</th>
               <th>Days Overdue</th><th>Bucket</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan={7} className={styles.emptyRow}>No outstanding AP.</td></tr>
+              <tr><td colSpan={8} className={styles.emptyRow}>No outstanding AP.</td></tr>
             ) : rows.map((r) => (
               <tr key={r.invoice_id}>
                 <td><span className={styles.codeChip}>{r.invoice_number}</span></td>
-                <td>{r.supplier_name ?? '—'}{r.supplier_code ? ` (${r.supplier_code})` : ''}</td>
+                <td>{r.supplier_name ?? '—'}</td>
+                <td>{r.supplier_code ? <span className={styles.codeChip}>{r.supplier_code}</span> : '—'}</td>
                 <td>{fmtDateOrDash(r.invoice_date)}</td>
                 <td>{r.due_date ?? '—'}</td>
                 <td style={{ textAlign: 'right', fontWeight: 700 }}>{fmt(r.outstanding_centi)}</td>
