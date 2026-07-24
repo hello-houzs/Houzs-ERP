@@ -649,6 +649,32 @@ function siTransitionReject(prev: string, next: string): string {
 }
 
 // ── List ────────────────────────────────────────────────────────────────
+/* Stamp the linked SO's dates onto SI list rows for the quick-view drawer:
+   so_internal_expected_dd (the "Processing date" — mfg_sales_orders.
+   internal_expected_dd, the one true user date since the legacy
+   processing_date column was dropped, mig 0189) and so_customer_delivery_date
+   (fallback for pre-snapshot SIs whose own customer_delivery_date is null).
+   One batched read keyed by so_doc_no; mutates rows in place, same style as
+   gateSiFinance. Called on BOTH list paths (legacy + paginated). */
+async function stampSoDates(sb: any, rows: unknown): Promise<void> {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  const list = rows as Array<Record<string, unknown>>;
+  const soDocNos = [...new Set(list.map((r) => r.so_doc_no as string | null).filter((d): d is string => !!d))];
+  const byDoc = new Map<string, { internal_expected_dd: string | null; customer_delivery_date: string | null }>();
+  if (soDocNos.length > 0) {
+    const { data } = await sb.from('mfg_sales_orders')
+      .select('doc_no, internal_expected_dd, customer_delivery_date').in('doc_no', soDocNos);
+    for (const s of ((data ?? []) as Array<{ doc_no: string | null; internal_expected_dd: string | null; customer_delivery_date: string | null }>)) {
+      if (s.doc_no) byDoc.set(s.doc_no, { internal_expected_dd: s.internal_expected_dd ?? null, customer_delivery_date: s.customer_delivery_date ?? null });
+    }
+  }
+  for (const r of list) {
+    const so = byDoc.get((r.so_doc_no as string | null) ?? '');
+    r.so_internal_expected_dd = so?.internal_expected_dd ?? null;
+    r.so_customer_delivery_date = so?.customer_delivery_date ?? null;
+  }
+}
+
 salesInvoices.get('/', async (c) => {
   const sb = c.get('supabase');
   // Row-level "own / downline chain" scope (scm.staff uuids) — see lib/salesScope.ts.
@@ -671,6 +697,7 @@ salesInvoices.get('/', async (c) => {
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
     const { data, error } = await q;
     if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+    await stampSoDates(sb, data);
     gateSiFinance(data, canViewScmFinance(c));
     return c.json({ salesInvoices: data ?? [] });
   }
@@ -741,6 +768,7 @@ salesInvoices.get('/', async (c) => {
     cancelled: cancelledC.count ?? 0,
   };
 
+  await stampSoDates(sb, data);
   gateSiFinance(data, canViewScmFinance(c));
   return c.json({ salesInvoices: data ?? [], total, page, pageSize, statusCounts });
 });
