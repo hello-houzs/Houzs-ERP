@@ -1,5 +1,12 @@
 ## 2026-07-24
 
+### [HIGH] Sales Orders list STILL down after 0190 - the prod runtime does not read the view as service_role
+- **Symptom.** After 0190 deployed green, the Sales Orders list still failed live with `permission denied for view mfg_sales_orders_with_payment_totals` (verified in-browser post-deploy, both companies).
+- **Root cause (traced).** 0190 re-granted SELECT to `service_role` - the grantee 0084 originally wrote - but the role prod actually queries the view with is the Hyperdrive connection's own database role, whose name lives in the Cloudflare connection string and appears nowhere in the repo. The grant landed on the wrong principal; the 403 never involved service_role.
+- **Fix.** Migration 0191 stops guessing: `scm.suppliers_with_derived_category` was created in the SAME 0084 batch and has never been dropped, so its catalog ACL still holds the exact pre-0189 grantee set. A DO block copies every SELECT grantee from the sibling onto the recreated view, and aligns the view OWNER with the sibling's (a view resolves its base tables with the owner's privileges). Idempotent.
+- **The class, for next time.** When restoring lost grants, never re-type role names from old migration text - the live catalog of an untouched sibling object is the authoritative record of who needs access. Copy from `information_schema.role_table_grants`, and copy the owner too.
+- **Ref:** #<PR>. Follows the 0190 entry below; live verification 2026-07-24 evening.
+
 ### [LOW] SERVICE lines (SVC-DELIVERY etc.) showed a BLANK Stock cell on the SO drill-down instead of READY
 - **Symptom.** Owner 2026-07-24 live testing: expanding a Sales Order row, a SERVICE line (e.g. SVC-DELIVERY) rendered no Stock status at all — an empty cell — while goods lines showed READY / PENDING. Owner: service lines must read READY (a service is inherently available), not blank.
 - **Root cause (traced).** SERVICE lines create no purchase demand, so `mrp.ts` `computeMrp` SKIPS them (the `isServiceLine` filter, spec §4.6). The SO read path derives each line's `stock_state` from that MRP coverage (`cov?.source ?? null`), so a service line's `cov` is always undefined → `stock_state = null`. Independently, the SO-list drill-down `drillStock` had an explicit `if SERVICE return null` guard (rendered a dash). Both agreed on "nothing", which reads as blank — even though the SO create path already stamps `stock_status='READY'` from birth for services (line 4456).
