@@ -77,7 +77,11 @@ export default {
         //   display = IBM Plex Serif + Noto Serif SC (标题·思源宋体)
         //   mono    = IBM Plex Mono                  (金额/编号)
         // Web fonts loaded via @import url() in src/index.css.
-        body: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
+        // Owner 2026-07-24 ("统一掉"): ONE face system-wide - the system
+        // stack, matching the digits change and 2990's long-standing call.
+        // Plex Sans / Noto Sans SC dropped from the lead; CJK falls through
+        // to the OS face (YaHei / PingFang).
+        body: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
         // Nick 2026-07-09 "整个系统页面都要 C 字体": Ink & Petrol admin
         // rhythm wants sans titles, not display serif. Point `font-display`
         // at the same IBM Plex Sans stack as body so every V2 list / detail
@@ -86,7 +90,7 @@ export default {
         // the CSS-module page rhythm we just switched via --font-title.
         // `font-serif` stays on IBM Plex Serif for the rare place that
         // deliberately opts into serif (`className="font-serif"`).
-        display: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
+        display: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
         // Codes / IDs / eyebrow labels (金额/编号 role) — SYSTEM stack, owner
         // override 2026-07-24: Plex Mono's dotted zero read wrong ("系统的0可以
         // 用第二张照片的0吗"), and our self-hosted Plex subsets carry no plain-

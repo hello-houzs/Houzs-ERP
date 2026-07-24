@@ -151,7 +151,11 @@
      stack by glyph coverage, so latin chars get IBM Plex and CJK chars get
      Noto SC automatically. The font import lives in src/index.css (live app)
      and .design-sync/tailwind-src.css (design-sync bundle). */
-  --font-system:  "IBM Plex Sans", "Noto Sans SC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Owner 2026-07-24 ("那是不是應該統一掉呢"): ONE face system-wide - the
+     native system stack, same call 2990 made. IBM Plex Sans / Noto Sans SC
+     dropped from the lead so text and digits stop being two different faces;
+     CJK falls through to the OS face (YaHei / PingFang), exactly like 2990. */
+  --font-system:  system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   /* Body / paragraphs / general UI text */
   --font-sans:    var(--font-system);
   /* Titles / headings — Plex Serif display face for detail-page heros.
