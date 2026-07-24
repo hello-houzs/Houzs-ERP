@@ -30,9 +30,9 @@
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState, type CSSProperties } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { writeScmHandoff } from '../../lib/scmHandoffStorage';
-import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from 'lucide-react';
+import { ArrowRight, X, CheckSquare, Square } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
 import { useInvoiceableDoLines, type DoRemainingLine } from '../../vendor/scm/lib/sales-invoice-queries';
@@ -309,14 +309,11 @@ export const SalesInvoiceFromDo = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title="Pick Delivery Order lines to invoice"
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/sales-invoices" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Sales Invoices</span>
-            </Link>
             <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices')}>
               <X {...ICON} /> Cancel
             </Button>

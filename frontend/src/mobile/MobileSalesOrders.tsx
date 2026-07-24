@@ -126,31 +126,37 @@ function rangeToDates(range: Range): { from?: string; to?: string } {
   return { from: ymd(new Date(y, base, 1)), to: ymd(new Date(y, base + 1, 0)) };
 }
 
-/* Status filter → picks by raw SO status. Real SO statuses are DRAFT / CONFIRMED
-   / CANCELLED (see lib/status-pill.ts SO map + lib/so-status.ts); older data /
-   sibling ERPs may spell the active state SUBMITTED, so the active buckets match
-   either spelling and nothing taps into a dead filter (the old blind cycle's
-   bug: it filtered on "Submitted", which no SO row carried). `match: null` = All. */
-type StatusFilter = "all" | "draft" | "submitted" | "confirmed" | "cancelled";
-const STATUS_FILTERS: { key: StatusFilter; label: string; match: string[] | null }[] = [
-  { key: "all",       label: "All",       match: null },
-  { key: "draft",     label: "Draft",     match: ["draft"] },
-  { key: "submitted", label: "Submitted", match: ["submitted", "confirmed"] },
-  { key: "confirmed", label: "Confirmed", match: ["confirmed", "submitted"] },
-  { key: "cancelled", label: "Cancelled", match: ["cancelled"] },
+/* Status filter → the endpoint's exact `status` value. One entry per backend
+   vocabulary status (mfg-sales-orders.ts SO_STATUSES) in lifecycle order —
+   desktop parity (MfgSalesOrdersListV2 SO_STATUS_TABS). Every status is listed
+   with its live server count so the buckets always sum to All and no order can
+   hide inside an unlisted status (the old three-bucket sheet hid
+   READY_TO_SHIP / DELIVERED / ... exactly like the desktop strip did). The old
+   "Submitted" entry is gone: it was a legacy spelling no live row carries and
+   both chips resolved to CONFIRMED anyway. "other" (the server's catch-all for
+   legacy/unknown spellings) is only offered when its count is non-zero. */
+type StatusFilter =
+  | "all" | "draft" | "confirmed" | "in_production" | "ready_to_ship"
+  | "shipped" | "delivered" | "invoiced" | "closed" | "on_hold"
+  | "cancelled" | "other";
+const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "draft", label: "Draft" },
+  { key: "confirmed", label: "Confirmed" },
+  { key: "in_production", label: "In Production" },
+  { key: "ready_to_ship", label: "Ready to Ship" },
+  { key: "shipped", label: "Shipped" },
+  { key: "delivered", label: "Delivered" },
+  { key: "invoiced", label: "Invoiced" },
+  { key: "closed", label: "Closed" },
+  { key: "on_hold", label: "On Hold" },
+  { key: "cancelled", label: "Cancelled" },
 ];
-/* Status chip → the endpoint's exact `status` value (DRAFT/CONFIRMED/CANCELLED),
-   or null for All. Real SO rows only ever carry those three; the old two-way
-   submitted⇄confirmed match existed only to cover a legacy "SUBMITTED" spelling
-   that no live row uses, so both chips resolve to CONFIRMED server-side. */
+/* Status key → the endpoint's exact `status` param (uppercase vocabulary
+   value, incl. the OTHER catch-all the backend filters as not-in-vocabulary),
+   or null for All. */
 function statusToParam(s: StatusFilter): string | null {
-  switch (s) {
-    case "draft": return "DRAFT";
-    case "submitted":
-    case "confirmed": return "CONFIRMED";
-    case "cancelled": return "CANCELLED";
-    default: return null; // all
-  }
+  return s === "all" ? null : s.toUpperCase();
 }
 
 /** Sales Orders list — 1:1 with the owner's mobile prototype (`#so-list`), wired
@@ -209,7 +215,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
     if (debouncedQ) p.set("q", debouncedQ);
     return p.toString();
   };
-  type SoListPage = { salesOrders?: SoRow[]; total?: number; page?: number; pageSize?: number; aggregates?: { revenueCenti: number; outstandingCenti: number; paidCenti: number } };
+  type SoListPage = { salesOrders?: SoRow[]; total?: number; page?: number; pageSize?: number; statusCounts?: Record<string, number>; aggregates?: { revenueCenti: number; outstandingCenti: number; paidCenti: number } };
   const {
     data, isLoading, isFetching, isPlaceholderData, error, refetch,
     fetchNextPage, hasNextPage, isFetchingNextPage,
@@ -243,6 +249,11 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
      / mid-deploy): sum the rows LOADED SO FAR, excluding cancelled and clamping
      balance to positive (the historical prototype behaviour), and keep "(loaded)". */
   const aggregates = data?.pages[0]?.aggregates;
+  /* Full-set per-status counts (page-0 response) — computed server-side over
+     the WHOLE scope+company set, ignoring the status/period/search filters,
+     exactly like the desktop pills. Absent on an old backend → the sheet
+     simply omits the numbers instead of showing fake zeros. */
+  const statusCounts = data?.pages[0]?.statusCounts;
   const summary = useMemo(() => {
     if (aggregates) return { rev: aggregates.revenueCenti, out: aggregates.outstandingCenti, fullSet: true };
     let rev = 0, out = 0;
@@ -630,7 +641,16 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
               </button>
             </div>
             <div className="sheet-scroll" style={{ gap: 8 }}>
-              {STATUS_FILTERS.map(({ key, label }) => {
+              {/* Full vocabulary + live counts (desktop-pill parity). The
+                  "Other" catch-all row appears only when the server counts
+                  rows outside the vocabulary — or while it is the active
+                  filter, so the selection can never vanish from the sheet. */}
+              {[
+                ...STATUS_FILTERS,
+                ...((statusCounts?.other ?? 0) > 0 || status === "other"
+                  ? [{ key: "other" as StatusFilter, label: "Other" }]
+                  : []),
+              ].map(({ key, label }) => {
                 const on = status === key;
                 return (
                   <button
@@ -640,9 +660,16 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
                     style={{ justifyContent: "space-between", ...(on ? { borderColor: "var(--brand)", background: "var(--brand-bg)" } : null) }}
                   >
                     <span className="ml" style={on ? { color: "var(--brand-d)" } : undefined}>{label}</span>
-                    {on && (
-                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--brand-d)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
-                    )}
+                    <span style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
+                      {statusCounts && (
+                        <span className="money" style={{ fontSize: 12, fontWeight: 700, color: on ? "var(--brand-d)" : "var(--mut)" }}>
+                          {statusCounts[key] ?? 0}
+                        </span>
+                      )}
+                      {on && (
+                        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--brand-d)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                      )}
+                    </span>
                   </button>
                 );
               })}

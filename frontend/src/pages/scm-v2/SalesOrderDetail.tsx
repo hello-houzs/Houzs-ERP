@@ -1533,7 +1533,7 @@ export const SalesOrderDetail = () => {
        (a CSS filter doesn't block pointer events). */
     <div className="space-y-4" style={isCancelled ? { filter: 'grayscale(0.7)' } : undefined}>
       {/* ── Header (shared PageHeader — full-bleed, design-system) ── */}
-      <PageHeader
+      <PageHeader back
         eyebrow="Sales Order"
         /* Owner 2026-07-16 — 17px document title (see PageHeader.titleSize).
            Scoped to this page; every other page keeps the default h1. */

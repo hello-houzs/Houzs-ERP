@@ -60,7 +60,13 @@ export function useMfgSalesOrdersPaged(params: { page: number; pageSize: number;
   if (sort) usp.set('sort', sort);
   return useQuery({
     queryKey: ['mfg-sales-orders-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
-    queryFn: ({ signal }) => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; confirmed: number; cancelled: number }; aggregates?: { revenueCenti: number; outstandingCenti: number; paidCenti: number } }>(`/mfg-sales-orders?${usp.toString()}`, { signal }),
+    // statusCounts carries ONE bucket per backend SO_STATUSES entry (lowercase:
+    // draft/confirmed/in_production/ready_to_ship/shipped/delivered/invoiced/
+    // closed/on_hold/cancelled) plus `all` and `other` (legacy/unknown
+    // spellings), summing to `all`. Keys beyond the original four are optional
+    // so a mid-deploy old backend (four-bucket shape) still typechecks — the
+    // pages read every bucket with `?? 0`.
+    queryFn: ({ signal }) => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; confirmed: number; cancelled: number } & Partial<Record<'in_production' | 'ready_to_ship' | 'shipped' | 'delivered' | 'invoiced' | 'closed' | 'on_hold' | 'other', number>>; aggregates?: { revenueCenti: number; outstandingCenti: number; paidCenti: number } }>(`/mfg-sales-orders?${usp.toString()}`, { signal }),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
     retry: retryUnlessClientError,

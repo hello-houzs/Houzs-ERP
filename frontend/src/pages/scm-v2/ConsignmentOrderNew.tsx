@@ -19,8 +19,8 @@
 // ----------------------------------------------------------------------------
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ChevronDown, Plus, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -565,14 +565,11 @@ export const ConsignmentOrderNew = () => {
   return (
     <div className="space-y-4">
       {/* Top bar */}
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title="New Consignment Order"
         actions={
           <>
-            <Link to="/scm/consignment-orders" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Consignment Orders</span>
-            </Link>
             <div className={styles.actions}>
               <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-orders')}>
                 <X {...ICON} /> Cancel

@@ -55,7 +55,9 @@ export function usePurchaseInvoicesPaged(params: { page: number; pageSize: numbe
 }
 export const usePurchaseInvoiceDetail = (id: string | null) => useQuery({
   queryKey: ['purchase-invoice-detail', id],
-  queryFn: () => authedFetch<{ purchaseInvoice: any; items: any[] }>(`/purchase-invoices/${id}`),
+  // customerDos = OUR delivery order(s) this purchase covers, resolved
+  // server-side through the so_item_id chain (back-to-back POs only).
+  queryFn: () => authedFetch<{ purchaseInvoice: any; items: any[]; customerDos?: Array<{ id: string; do_number: string }> }>(`/purchase-invoices/${id}`),
   enabled: Boolean(id), staleTime: 30_000, retry: retryUnlessClientError, retryDelay: 800,
 });
 export const usePostPurchaseInvoice = () => {

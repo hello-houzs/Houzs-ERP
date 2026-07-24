@@ -33,6 +33,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import { Search, Columns3, RotateCcw, Filter, Download, GripVertical, X } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -45,6 +46,7 @@ import {
   readDataGridLayout,
   writeDataGridLayout,
 } from './dataGridLayoutStorage';
+import { subscribeActiveCompany, getActiveCompanySnapshot } from '../../../lib/activeCompany';
 import styles from './DataGrid.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -302,14 +304,29 @@ function DataGridInner<T>({
       return n;
     });
   }, []);
-  const [layout, setLayoutRaw] = useState<Layout>(() => readDataGridLayout(storageKey));
+  /* Per-company column layout (owner 2026-07-24 bug: "在 2990 sales order list
+     点选 column 会影响我在 Houzs 的 column"). storageKey alone keyed every tenant's
+     layout to ONE localStorage entry, so the 2990 and Houzs windows of the same
+     grid trampled each other. Bucket by the tab's active company; when none is
+     resolved (single-company Houzs default) the key is unchanged. Still
+     per-user (localStorage) — never a shared server-side view. */
+  const activeCompany = useSyncExternalStore(
+    subscribeActiveCompany,
+    getActiveCompanySnapshot,
+    getActiveCompanySnapshot,
+  );
+  const scopedStorageKey = activeCompany != null ? `${storageKey}::c${activeCompany}` : storageKey;
+  // Pre-scoping (unscoped) key — read-only fallback so existing columns carry
+  // over on first load; scoped key owns writes, ending the cross-company bleed.
+  const legacyStorageKey = activeCompany != null ? storageKey : undefined;
+  const [layout, setLayoutRaw] = useState<Layout>(() => readDataGridLayout(scopedStorageKey, legacyStorageKey));
   const setLayout = useCallback((updater: (l: Layout) => Layout) => {
     setLayoutRaw((prev) => {
       const next = updater(prev);
-      writeDataGridLayout(storageKey, next);
+      writeDataGridLayout(scopedStorageKey, next);
       return next;
     });
-  }, [storageKey]);
+  }, [scopedStorageKey]);
 
   const [search, setSearch] = useState('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -859,8 +876,8 @@ function DataGridInner<T>({
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
-      // persist final widths
-      setLayoutRaw((prev) => { writeDataGridLayout(storageKey, prev); return prev; });
+      // persist final widths (company-scoped, same key the rest of the grid uses)
+      setLayoutRaw((prev) => { writeDataGridLayout(scopedStorageKey, prev); return prev; });
       resizingRef.current = null;
     };
     window.addEventListener('mousemove', onMove);

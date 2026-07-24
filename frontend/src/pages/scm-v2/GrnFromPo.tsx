@@ -26,7 +26,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { readScmHandoff, writeScmHandoff } from '../../lib/scmHandoffStorage';
-import { ArrowLeft, Save, X, CheckSquare, Square, Filter } from 'lucide-react';
+import { Save, X, CheckSquare, Square, Filter } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
 import {
@@ -543,16 +543,16 @@ export const GrnFromPo = () => {
 
   return (
     <div className="space-y-4">
+      {/* Explicit back target (was the action-rail link): appending to an
+          existing GRN returns to THAT GRN in edit mode, not the list. */}
       <PageHeader
+        back={appendToGrn ? `/scm/grns/${appendToGrn}?edit=1` : '/scm/grns'}
         eyebrow="Procurement"
         title={appendToGrn
           ? `Add PO lines to ${appendGrn?.grn_number ?? 'this GRN'}`
           : 'Pick PO lines for this GRN'}
         actions={
           <div className={styles.actions}>
-            <Link to={appendToGrn ? `/scm/grns/${appendToGrn}?edit=1` : '/scm/grns'} className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>{appendToGrn ? (appendGrn?.grn_number ?? 'Goods Receipt') : 'Goods Receipts'}</span>
-            </Link>
             <Button
               variant="ghost" size="md"
               onClick={() => navigate(appendToGrn ? `/scm/grns/${appendToGrn}?edit=1` : '/scm/grns')}
