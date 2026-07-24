@@ -2,11 +2,14 @@
 // /stock-transfers — move stock between warehouses with a document trail.
 //
 // PR-DRAFT-removal (2026-05-27): DRAFT step removed. POST creates the row
-// as POSTED directly + writes paired OUT@from + IN@to inventory_movements
-// inline. PATCH /:id/post kept as no-op for backward compat.
-// FIFO trigger consumes from source lots and computes cost on the OUT row.
-// We then read OUT.total_cost_sen / OUT.qty back and feed it into the IN as
-// unit_cost_sen so the destination lot opens at the right basis.
+// as POSTED directly. PATCH /:id/post kept as no-op for backward compat.
+//
+// Atomicity (audit R3, 2026-07-24): the paired OUT@from + IN@to for the whole
+// transfer are written by scm.fn_stock_transfer_apply (migration 0192) in ONE
+// transaction — any failure rolls the entire transfer back, so stock is never
+// half-moved. The OUT's FIFO trigger consumes the source lots and stamps its
+// cost; the function reads that back in-txn and opens the IN@to at OUT.total_cost
+// / qty, so the destination lot carries the exact FIFO basis of the source.
 //
 // Endpoints:
 //   GET   /stock-transfers                — list
@@ -23,7 +26,8 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { writeMovements, reverseMovements } from '../lib/inventory-movements';
+import { reverseMovements } from '../lib/inventory-movements';
+import { buildTransferPayload } from '../lib/stock-transfer-atomic';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
@@ -129,11 +133,15 @@ stockTransfers.get('/:id', async (c) => {
   return c.json({ transfer: headerRes.data, lines: linesRes.data ?? [] });
 });
 
-/* ── Movement writer (shared by POST + legacy /post) ─────────────────
-   For each line:
-     1) Insert OUT @from (FIFO trigger fills total_cost_sen).
-     2) Derive IN unit_cost_sen = OUT.total_cost_sen / OUT.qty (weighted avg).
-     3) Insert IN @to with that cost. */
+/* ── Movement writer (POST) ──────────────────────────────────────────
+   Resolves the per-line dye-lot batch (needs the source lots, so it stays
+   here), then hands EVERY line to scm.fn_stock_transfer_apply in ONE RPC.
+   That function does each line's OUT@from + IN@to inside a SINGLE transaction
+   (audit R3): the OUT's FIFO trigger consumes the source lots and stamps its
+   cost, which the function reads back in-txn and carries onto the IN, and any
+   failure rolls the WHOLE transfer back — stock can never be half-moved.
+   Returns [] on success, or a one-element error list so the POST handler
+   auto-cancels the header and returns a non-201. */
 async function writeTransferMovements(
   sb: any,
   header: { id: string; transfer_no: string; from_warehouse_id: string; to_warehouse_id: string },
@@ -187,91 +195,27 @@ async function writeTransferMovements(
     }
   } catch { /* view/column absent pre-0120 — every line stays un-batched (plain FIFO) */ }
 
-  for (const ln of lineList) {
-    if (ln.qty <= 0) continue;
-    // Variant bucket the line moves; '' = unclassified/legacy. FIFO consumes
-    // the OUT@from from THIS variant's oldest batch and re-opens it at IN@to.
-    const variantKey = ln.variant_key ?? '';
-    // Carry the resolved batch only when the source bucket sits in ONE batch
-    // (unambiguous). null → leave un-batched (multi-batch ambiguity or plain stock).
-    const batchNo = batchByBucket.get(`${ln.product_code}::${variantKey}`) ?? null;
-    const { data: outRow, error: outErr } = await sb.from('inventory_movements').insert({
-      ...(companyId != null ? { company_id: companyId } : {}),
-      movement_type:  'OUT',
-      warehouse_id:   header.from_warehouse_id,
-      product_code:   ln.product_code,
-      variant_key:    variantKey,
-      product_name:   ln.product_name,
-      qty:            ln.qty,
-      source_doc_type:'STOCK_TRANSFER',
-      source_doc_id:  header.id,
-      source_doc_no:  header.transfer_no,
-      // Stamp the source dye-lot on the OUT so the FIFO trigger consumes THAT
-      // batch (not any FIFO lot). Only when resolved to a single batch.
-      ...(batchNo ? { batch_no: batchNo } : {}),
-      performed_by:   userId,
-      notes:          `Transfer to warehouse ${header.to_warehouse_id}`,
-    }).select('id, qty').single();
-    if (outErr || !outRow) {
-      movementErrors.push(`OUT ${ln.product_code}: ${outErr?.message ?? 'no data'}`);
-      continue;
-    }
-    /* Audit 2026-06-10 C-1 (CRITICAL) — the FIFO trigger is AFTER INSERT and
-       stamps total_cost_sen via a separate UPDATE, which INSERT…RETURNING can
-       NEVER see (RETURNING shows the row as inserted). Reading the cost off
-       the insert response therefore always read 0, so every transfer opened
-       the destination lot at 0 cost — inventory value silently destroyed on
-       each warehouse move. RE-QUERY the row post-insert (same pattern as
-       restampDoActualCost) so the IN carries the OUT's real consumed cost. */
-    const { data: outCosted } = await sb.from('inventory_movements')
-      .select('qty, total_cost_sen')
-      .eq('id', (outRow as { id: string }).id)
-      .single();
-    const outQty   = Number((outCosted as { qty: number } | null)?.qty ?? ln.qty);
-    const outTotal = Number((outCosted as { total_cost_sen: number | null } | null)?.total_cost_sen ?? 0);
-    const inUnitCost = outQty > 0 ? Math.round(outTotal / outQty) : 0;
-    const inOk = await writeMovements(sb, [{
-      movement_type:  'IN',
-      warehouse_id:   header.to_warehouse_id,
-      product_code:   ln.product_code,
-      variant_key:    variantKey,
-      product_name:   ln.product_name,
-      qty:            ln.qty,
-      unit_cost_sen:  inUnitCost,
-      source_doc_type:'STOCK_TRANSFER',
-      source_doc_id:  header.id,
-      source_doc_no:  header.transfer_no,
-      // Mirror the OUT's batch onto the IN so the dye-lot survives the move
-      // (destination opens a lot tagged with the same batch).
-      ...(batchNo ? { batch_no: batchNo } : {}),
-      performed_by:   userId,
-      notes:          `Transfer from warehouse ${header.from_warehouse_id}`,
-    }], companyId);
-    if (!inOk.ok) {
-      movementErrors.push(`IN ${ln.product_code}: ${inOk.reason ?? 'unknown'}`);
-      /* CRITICAL — the OUT@from already committed (FIFO trigger consumed the
-         source lots). If the IN@to fails we must NOT leave the OUT standing:
-         that silently destroys stock (gone from source, never arrived at dest).
-         Immediately book a compensating IN@from for this line at the OUT's
-         consumed cost so the source bucket is made whole. The POST handler then
-         returns a non-201 because movementErrors is non-empty, so the UI cannot
-         treat this partial transfer as success. */
-      const compIn = await writeMovements(sb, [{
-        movement_type:  'IN',
-        warehouse_id:   header.from_warehouse_id,
-        product_code:   ln.product_code,
-        variant_key:    variantKey,
-        product_name:   ln.product_name,
-        qty:            ln.qty,
-        unit_cost_sen:  inUnitCost,
-        source_doc_type:'STOCK_TRANSFER',
-        source_doc_id:  header.id,
-        source_doc_no:  header.transfer_no,
-        ...(batchNo ? { batch_no: batchNo } : {}),
-        performed_by:   userId,
-        notes:          `Compensating reversal: IN@to failed, restoring source for transfer ${header.transfer_no}`,
-      }], companyId);
-      if (!compIn.ok) movementErrors.push(`COMPENSATE ${ln.product_code}: ${compIn.reason ?? 'unknown'}`);
+  /* Build the atomic payload (pure) and hand ALL lines to the DB function in
+     one transaction. No more per-line OUT/re-read/IN/compensate in JS: if any
+     line fails, fn_stock_transfer_apply rolls the whole transfer back, so a
+     partial failure leaves BOTH warehouses untouched (nothing to compensate).
+     variant_key '' = unclassified; batchNo carried only when the source bucket
+     resolved to a single dye-lot (batchByBucket already collapsed ambiguity). */
+  const payload = buildTransferPayload(lineList, batchByBucket);
+  if (payload.length > 0) {
+    try {
+      const { error: rpcErr } = await sb.rpc('fn_stock_transfer_apply', {
+        p_from_warehouse_id: header.from_warehouse_id,
+        p_to_warehouse_id:   header.to_warehouse_id,
+        p_source_doc_id:     header.id,
+        p_source_doc_no:     header.transfer_no,
+        p_company_id:        companyId ?? null,
+        p_performed_by:      userId,
+        p_lines:             payload,
+      });
+      if (rpcErr) movementErrors.push(`TRANSFER ${header.transfer_no}: ${rpcErr.message ?? 'movement apply failed'}`);
+    } catch (e) {
+      movementErrors.push(`TRANSFER ${header.transfer_no}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   /* Stock Transfer = net-zero across warehouses, but B2C allocation sums all
@@ -360,11 +304,11 @@ stockTransfers.post('/', async (c) => {
   // Write inventory movements (paired OUT/IN) inline.
   const movementErrors = await writeTransferMovements(sb, header, user.id, activeCompanyId(c), c);
 
-  /* If ANY line's movement failed, the transfer did NOT fully complete. We
-     compensated the source side per-line above (so stock isn't destroyed), then
-     auto-cancel the header so it can't masquerade as a posted transfer, and
-     return a non-201 so the UI surfaces the failure instead of silently treating
-     a partial/destroyed transfer as success. */
+  /* If the movement apply failed, the transfer did NOT complete — and because
+     fn_stock_transfer_apply is atomic, NOTHING moved (both warehouses are
+     untouched, no compensation needed). Auto-cancel the header so it can't
+     masquerade as a posted transfer, and return a non-201 so the UI surfaces
+     the failure instead of silently treating it as success. */
   /* Recorded on BOTH outcomes, with the status snapshot telling them apart. The
      auto-cancel path below is the one a reader most needs in the history: stock
      was touched, the transfer did not complete, and the header now says
