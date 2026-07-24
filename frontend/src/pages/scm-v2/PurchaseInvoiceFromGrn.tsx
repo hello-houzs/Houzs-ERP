@@ -22,9 +22,9 @@
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { writeScmHandoff } from '../../lib/scmHandoffStorage';
-import { ArrowLeft, ArrowRight, X } from 'lucide-react';
+import { ArrowRight, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { fmtDateOrDash } from '@2990s/shared';
 import {
@@ -110,14 +110,11 @@ export const PurchaseInvoiceFromGrn = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Procurement"
         title="Bill a Goods-Received Note"
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/purchase-invoices" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Purchase Invoices</span>
-            </Link>
             <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-invoices')}>
               <X {...ICON} /> Cancel
             </Button>

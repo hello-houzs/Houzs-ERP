@@ -14,8 +14,8 @@
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Save, X, ClipboardList } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Save, X, ClipboardList } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -141,14 +141,11 @@ export const StockTakeNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Warehouse"
         title="New Stock Take"
         actions={
           <>
-            <Link to="/scm/stock-takes" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Stock Takes</span>
-            </Link>
             <div className={styles.actions}>
               <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-takes')}>
                 <X {...ICON} /> Cancel

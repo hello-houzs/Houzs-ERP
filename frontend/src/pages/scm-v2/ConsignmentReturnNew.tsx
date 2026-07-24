@@ -22,8 +22,8 @@
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -290,7 +290,7 @@ export const ConsignmentReturnNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title={`New Consignment Return${
           fromConsignmentNote
@@ -299,9 +299,6 @@ export const ConsignmentReturnNew = () => {
         }`}
         actions={
           <>
-            <Link to="/scm/consignment-returns" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Consignment Returns</span>
-            </Link>
             <div className={styles.actions}>
               <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-returns/from-note')}>
                 <ArrowRightLeft {...ICON} /> From Consignment Note

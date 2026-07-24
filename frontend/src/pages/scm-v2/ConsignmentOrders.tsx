@@ -43,6 +43,8 @@ import {
   useConsignmentOrderDetail,
 } from '../../vendor/scm/lib/consignment-order-queries';
 import { SearchProgress } from '../../components/SearchProgress';
+import { ListPager } from '../../components/ListPager';
+import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { useDebouncedSearchTerm, useSearchResultTransition } from '../../hooks/useServerSearch';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { generateSalesOrderPdf } from '../../vendor/scm/lib/sales-order-pdf';
@@ -700,7 +702,7 @@ export const ConsignmentOrders = () => {
      across pages, and the total + aggregate agree). Clear-chip restores. */
   const outstandingOnly = searchParams.get('outstanding') === '1';
 
-  const PAGE_SIZE = 50;
+  const [pageSize, setPageSize] = useLocalStorage<number>('scm:perpage:consignment-orders', 50);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState('');
   // Debounce the search box so each keystroke doesn't fire a server round-trip.
@@ -713,7 +715,7 @@ export const ConsignmentOrders = () => {
 
   const { data, isLoading, isFetching, isPlaceholderData, error } = useConsignmentOrdersPaged({
     page,
-    pageSize: PAGE_SIZE,
+    pageSize: pageSize,
     q: debouncedSearch.trim() || undefined,
     outstanding: outstandingOnly || undefined,
   });
@@ -1118,42 +1120,14 @@ export const ConsignmentOrders = () => {
         }}
       />
 
-      {!searchTransition.resultsAreStale && <PaginationFooter
+      {!searchTransition.resultsAreStale && <ListPager
         page={page}
-        pageSize={PAGE_SIZE}
+        pageSize={pageSize}
         total={total}
         noun="consignment orders"
-        onPrev={() => setPage((p) => Math.max(0, p - 1))}
-        onNext={() => setPage((p) => p + 1)}
+        onPageChange={setPage}
+        onPageSizeChange={(n) => { setPageSize(n); setPage(0); }}
       />}
-    </div>
-  );
-};
-
-/* Pagination footer — "Showing X–Y of N" + Prev/Next, mirroring Suppliers.tsx /
-   the other scm-v2 list pages. Server-side paging, so N is the grand total. */
-const PaginationFooter = ({
-  page, pageSize, total, noun, onPrev, onNext,
-}: {
-  page: number; pageSize: number; total: number; noun: string;
-  onPrev: () => void; onNext: () => void;
-}) => {
-  const from = total === 0 ? 0 : page * pageSize + 1;
-  const to = Math.min((page + 1) * pageSize, total);
-  const atStart = page === 0;
-  const atEnd = (page + 1) * pageSize >= total;
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      gap: 'var(--space-3)', marginTop: 'var(--space-3)',
-    }}>
-      <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-12)' }}>
-        {total === 0 ? `No ${noun}` : `Showing ${from}${to > from ? `–${to}` : ''} of ${total}`}
-      </span>
-      <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-        <Button variant="secondary" size="md" onClick={onPrev} disabled={atStart}>Prev</Button>
-        <Button variant="secondary" size="md" onClick={onNext} disabled={atEnd}>Next</Button>
-      </div>
     </div>
   );
 };

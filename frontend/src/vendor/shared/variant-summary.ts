@@ -56,27 +56,20 @@ export function buildVariantSummary(
   // Supplier code (owner rule 2026-07-24, "orders 全部也是要补回去 ... 显示两个
   // code BF-01（PC151-01)"): when the line carries variants.fabricSupplierCode
   // (the supplier's own code for our internal fabric, stamped READ-side by the
-  // SO/PO/DO/SI detail endpoints), show the internal code with the supplier code
-  // in parentheses — "BF-01 (PC151-01)" — the SAME pairing the fabric PICKER and
-  // the PDFs already show. Read off variants (the file's convention: new fields
+  // SO/PO/DO/SI detail endpoints), append the supplier code in parens at the
+  // END of the fabric segment — "CG-001 Pearl (KN390-1)" (format ruling below). Read off variants (the file's convention: new fields
   // read off variants, missing -> old behaviour), so a line with no supplier code
   // is unchanged. Distinct-only: a supplier code equal to the internal code adds
   // no parens.
   const fabricCodeRaw = str(variants.fabricCode);
   const fabricSupplierCode = str(variants.fabricSupplierCode);
-  const fabricCodeShown = fabricCodeRaw && fabricSupplierCode && fabricSupplierCode !== fabricCodeRaw
-    ? `${fabricCodeRaw} (${fabricSupplierCode})`
-    : fabricCodeRaw;
-  // When the code is enriched with the supplier parens, a colour part that
-  // LEADS with the bare code (colour labels are often "CG-002 Sand") would
-  // repeat it - the bare-vs-richer dedupe below can't see through the parens
-  // (owner 2026-07-24: "CG-002 (KN390-2) CG-002 Sand"). Strip the redundant
-  // prefix so the pair reads "CG-002 (KN390-2) Sand".
-  const stripCodePrefix = (part: string): string =>
-    fabricCodeShown !== fabricCodeRaw && part.startsWith(`${fabricCodeRaw} `)
-      ? part.slice(fabricCodeRaw.length + 1)
-      : part;
-  const fabricParts = [fabricCodeShown, stripCodePrefix(str(variants.colorCode)), stripCodePrefix(str(variants.colourLabel))];
+  // Owner format ruling 2026-07-24 (second pass): the supplier code's parens
+  // go at the END of the whole fabric segment - "CG-001 Pearl (KN390-1)" -
+  // NEVER inline after the bare code ("CG-001 (KN390-1) CG-001 Pearl" was the
+  // duplicated mess, and "CG-001 (KN390-1) Pearl" was still the wrong order).
+  // So the parts are composed BARE (the original dedupe rules all hold) and
+  // the parens are appended to the finished segment below.
+  const fabricParts = [fabricCodeRaw, str(variants.colorCode), str(variants.colourLabel)];
   // Dedupe — when the colour label/code is just the fabric code again (e.g.
   // BF-07 whose colour label is also "BF-07"), don't repeat it ("BF-07 BF-07").
   // GRN / PI / PR / Stock-Adjustment editors store the fabric under fabricColor;
@@ -103,9 +96,15 @@ export function buildVariantSummary(
       || q.endsWith(` ${p}`)
     )),
   );
-  const fabric = [...new Set(dedupedFabric)].join(' ')
+  let fabric = [...new Set(dedupedFabric)].join(' ')
     || str(variants.fabricColor)
     || (str(variants.fabricLabel) ? `${str(variants.fabricLabel)} COLOUR KIV` : '');
+  // Supplier code (owner rule 2026-07-24): appended LAST, in parens, when the
+  // line carries a distinct variants.fabricSupplierCode - "CG-001 Pearl
+  // (KN390-1)". A line with no supplier code is unchanged.
+  if (fabric && fabricSupplierCode && fabricSupplierCode !== fabricCodeRaw) {
+    fabric = `${fabric} (${fabricSupplierCode})`;
+  }
   if (fabric) segments.push(opts?.labelled ? `Fabric: ${fabric}` : fabric);
 
   // 2026-06-04 — POS handover sofa lines carry the leg pick as sofaLegHeight

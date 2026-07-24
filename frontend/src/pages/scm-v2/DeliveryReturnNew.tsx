@@ -20,8 +20,8 @@
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowRightLeft, ArrowLeft, ChevronDown, Save, X } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowRightLeft, ChevronDown, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { DateField } from '../../vendor/scm/components/DateField';
@@ -294,14 +294,11 @@ export const DeliveryReturnNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title={`New Delivery Return${doDocNo ? ` — from ${doDocNo}` : ''}`}
         actions={
           <>
-            <Link to="/scm/delivery-returns" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Delivery Returns</span>
-            </Link>
             <div className={styles.actions}>
               {/* Pull lines from a Delivery Order — mirrors New GRN's "From Purchase Order". */}
               <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-returns/from-do')}>

@@ -17,9 +17,9 @@
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState, type CSSProperties } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { writeScmHandoff } from '../../lib/scmHandoffStorage';
-import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from 'lucide-react';
+import { ArrowRight, X, CheckSquare, Square } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
 import { useReturnableNoteLines, type ReturnableNoteLine } from '../../vendor/scm/lib/consignment-return-queries';
@@ -292,14 +292,11 @@ export const ConsignmentReturnFromNote = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Supply Chain"
         title="Pick Consignment Note lines to return"
         actions={
           <>
-            <Link to="/scm/consignment-returns" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Consignment Returns</span>
-            </Link>
             <div className={styles.actions}>
               <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-returns')}>
                 <X {...ICON} /> Cancel

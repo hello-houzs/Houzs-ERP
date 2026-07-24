@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -32,6 +33,7 @@ import { TableSkeleton } from "./Skeleton";
 import { ColumnsPanel, ColumnsPanelButton } from "./ColumnsPanel";
 import { UdfCell } from "./UdfCell";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { subscribeActiveCompany, getActiveCompanySnapshot } from "../lib/activeCompany";
 import { useUdf, type UseUdfResult } from "../hooks/useUdf";
 import { downloadCSV, toCSV, type CSVColumn } from "../lib/csv";
 import { SearchScopeHint } from "./SearchScopeHint";
@@ -478,8 +480,29 @@ export function DataTable<T>({
   );
   const effectiveLoading = Boolean(loading || searchBusy);
   const rowActionsDisabled = effectiveLoading || Boolean(error);
-  const idKey = layoutFamily || tableId || "_";
-  const legacyIdKey = layoutFamily && tableId && layoutFamily !== tableId ? tableId : undefined;
+  /* Per-company column prefs (owner 2026-07-24 bug: "在 2990 sales order list
+     点选 column 会影响我在 Houzs 的 column"). The table id alone keyed every
+     company's columns to the SAME localStorage entry, so the 2990 window and the
+     Houzs window — two tenants of the same list — trampled each other's choice.
+     Bucket the key by the tab's active company so each tenant keeps its own
+     private layout. Still per-USER (localStorage), never a shared server view. */
+  const activeCompany = useSyncExternalStore(
+    subscribeActiveCompany,
+    getActiveCompanySnapshot,
+    getActiveCompanySnapshot,
+  );
+  const baseIdKey = layoutFamily || tableId || "_";
+  /* When a company is resolved, prefix it. When NONE is (single-company Houzs,
+     the historical default) the key is byte-identical to before — those installs
+     are unchanged, and the layoutFamily/tableId migration below still applies. */
+  const idKey = activeCompany != null ? `c${activeCompany}:${baseIdKey}` : baseIdKey;
+  /* Company-scoped keys fall back to the pre-scoping UNSCOPED key, so a user's
+     existing columns carry over on first load instead of resetting to defaults
+     (both tenants start from the shared value, then diverge as each writes its
+     own bucket — nothing writes back to the shared key, so the bleed stops). */
+  const legacyIdKey = activeCompany != null
+    ? baseIdKey
+    : (layoutFamily && tableId && layoutFamily !== tableId ? tableId : undefined);
   const legacyStorageKey = (part: string) => legacyIdKey ? `dt:${part}:${legacyIdKey}` : undefined;
   const [hiddenList, setHiddenList] = useLocalStorage<string[]>(
     `dt:hidden:${idKey}`,

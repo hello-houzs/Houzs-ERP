@@ -29,8 +29,8 @@
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Save, Trash2, X, ChevronDown, ArrowRightLeft } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Save, Trash2, X, ChevronDown, ArrowRightLeft } from 'lucide-react';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
@@ -491,14 +491,11 @@ export const PurchaseInvoiceNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Procurement"
         title={`New Purchase Invoice${!isManual && grn?.grn_number ? ` · ${grn.grn_number}` : ''}`}
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/purchase-invoices" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Purchase Invoices</span>
-            </Link>
             {/* Keep the GRN→Invoice path: jump to the multi-GRN-line picker. */}
             {isManual && (
               <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-invoices/from-grn')}>
@@ -903,8 +900,11 @@ export const PurchaseInvoiceNew = () => {
         </div>
       </section>
 
-      {/* Totals card aligned right — identical to New PO / New GRN. */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      {/* Totals card aligned right — identical to New PO / New GRN.
+          lg:pr-32 pulls it clear of the fixed bottom-right FAB cluster
+          ("+" + Assistant disc + Back-to-top park out to ~144px), which
+          otherwise covers the amounts when scrolled to the bottom. */}
+      <div className="lg:pr-32" style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <section className={styles.card} style={{ maxWidth: 360, width: '100%' }}>
           <div className={styles.cardBody}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-14)', marginBottom: 'var(--space-2)' }}>
@@ -925,6 +925,11 @@ export const PurchaseInvoiceNew = () => {
           body={dialog.body}
           primaryLabel={dialog.goTo ? 'Open PI' : undefined}
           onPrimary={dialog.goTo ? () => { const g = dialog.goTo!; setDialog(null); navigate(g); } : undefined}
+          /* Owner 2026-07-23: "Need a button to new purchase invoice" — the
+             billing loop keys one PI per GRN back-to-back, so success offers a
+             straight jump to the from-GRN picker for the next note. */
+          secondaryLabel={dialog.goTo ? 'New Purchase Invoice' : undefined}
+          onSecondary={dialog.goTo ? () => { setDialog(null); navigate('/scm/purchase-invoices/from-grn'); } : undefined}
           onClose={() => setDialog(null)}
         />
       )}

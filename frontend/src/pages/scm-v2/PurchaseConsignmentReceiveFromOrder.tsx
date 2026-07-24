@@ -16,9 +16,9 @@
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState, type CSSProperties } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { writeScmHandoff } from '../../lib/scmHandoffStorage';
-import { ArrowLeft, ArrowRight, X, CheckSquare, Square } from 'lucide-react';
+import { ArrowRight, X, CheckSquare, Square } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { useOutstandingPcOrderLines, type OutstandingPcOrderLine } from '../../vendor/scm/lib/purchase-consignment-receive-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
@@ -254,14 +254,11 @@ export const PurchaseConsignmentReceiveFromOrder = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Procurement"
         title="Pick PC Order lines to receive"
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/purchase-consignment-receives" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Purchase Consignment Receives</span>
-            </Link>
             <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-receives')}>
               <X {...ICON} /> Cancel
             </Button>

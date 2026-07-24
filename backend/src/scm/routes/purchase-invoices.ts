@@ -63,6 +63,11 @@ const ITEM =
   'gap_inches, divan_height_inches, divan_price_sen, leg_height_inches, leg_price_sen, ' +
   'custom_specials, line_suffix, special_order_price_sen, unit_cost_centi, created_at';
 
+/* Compact non-null string dedupe (document-flow idiom) — the customer-DO
+   resolve below walks id lists hop by hop. */
+const uniq = (xs: Array<string | null | undefined>) =>
+  [...new Set(xs.filter((x): x is string => !!x))];
+
 /* The PI's identity for an audit row written from a LINE handler, which has the
    line in hand but not the parent. Best-effort by design: the writer is
    fail-open, so an unresolved doc number costs the row its human key and
@@ -471,7 +476,7 @@ const PI_STATUS_BUCKETS: Record<string, string[]> = {
 
 purchaseInvoices.get('/', async (c) => {
   const sb = c.get('supabase');
-  const SELECT = `${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number)`;
+  const SELECT = `${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number, delivery_note_ref)`;
 
   /* Opt-in server-side pagination + search + sort + status-counts (mirrors the
      SO list in mfg-sales-orders.ts). The PRESENCE of `page` switches paging on;
@@ -650,7 +655,9 @@ purchaseInvoices.get('/outstanding-grn-items', async (c) => {
 purchaseInvoices.get('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   const [h, i] = await Promise.all([
-    sb.from('purchase_invoices').select(`${HEADER}, supplier:suppliers(id, code, name)`).eq('id', id).maybeSingle(),
+    /* grn embed (owner 2026-07-23: "PI need show Do number") — the source GRN's
+       doc no + the supplier's delivery-note ref surface on the PI detail. */
+    sb.from('purchase_invoices').select(`${HEADER}, supplier:suppliers(id, code, name), grn:grns(id, grn_number, delivery_note_ref)`).eq('id', id).maybeSingle(),
     sb.from('purchase_invoice_items').select(ITEM).eq('purchase_invoice_id', id).order('created_at'),
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
@@ -668,7 +675,38 @@ purchaseInvoices.get('/:id', async (c) => {
       (r) => r.item_group as string | null | undefined,
     ),
   );
-  return c.json({ purchaseInvoice: h.data, items });
+
+  /* Customer DO(s) — owner 2026-07-23 ("要的", following "PI need show Do
+     number"): which of OUR deliveries this purchase covers. Chain: PI line →
+     grn_item → purchase_order_item → so_item → delivery_order_item →
+     delivery_order (the same so_item_id linkage document-flow walks).
+     Back-to-back purchases only — a stock-replenishment PO carries no
+     so_item_id and resolves to nothing. Auxiliary enrichment: a failed hop
+     logs + degrades to [] rather than 500ing the whole detail page. */
+  let customerDos: Array<{ id: string; do_number: string }> = [];
+  try {
+    const grnItemIds = uniq(((i.data ?? []) as Array<{ grn_item_id?: string | null }>).map((r) => r.grn_item_id));
+    if (grnItemIds.length) {
+      const { data: gis } = await sb.from('grn_items').select('purchase_order_item_id').in('id', grnItemIds);
+      const poiIds = uniq(((gis ?? []) as Array<{ purchase_order_item_id: string | null }>).map((r) => r.purchase_order_item_id));
+      if (poiIds.length) {
+        const { data: pois } = await sb.from('purchase_order_items').select('so_item_id').in('id', poiIds);
+        const soItemIds = uniq(((pois ?? []) as Array<{ so_item_id: string | null }>).map((r) => r.so_item_id));
+        if (soItemIds.length) {
+          const { data: dois } = await sb.from('delivery_order_items').select('delivery_order_id').in('so_item_id', soItemIds);
+          const doIds = uniq(((dois ?? []) as Array<{ delivery_order_id: string | null }>).map((r) => r.delivery_order_id));
+          if (doIds.length) {
+            const { data: dos } = await sb.from('delivery_orders').select('id, do_number').in('id', doIds).order('do_number');
+            customerDos = (dos ?? []) as Array<{ id: string; do_number: string }>;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('[pi detail] customer-DO resolve failed', { id, error: e });
+  }
+  return c.json({ purchaseInvoice: h.data, items, customerDos });
 });
 
 // ── Linked docs (Smart Buttons fan-out) ─────────────────────────────

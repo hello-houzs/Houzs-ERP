@@ -122,10 +122,16 @@ export function decodeDataGridLayout(raw: string): DecodedDataGridLayout {
   }
 }
 
-export function readDataGridLayout(key: string): DataGridLayout {
+export function readDataGridLayout(key: string, legacyKey?: string): DataGridLayout {
   if (typeof window === "undefined") return { ...DEFAULT_DATA_GRID_LAYOUT };
   try {
-    const raw = window.localStorage.getItem(key);
+    // `legacyKey` is the pre-company-scoping key (owner 2026-07-24): when the
+    // company-scoped entry is still empty, seed from the old shared value so a
+    // user's existing columns carry over instead of resetting. Read-only — the
+    // scoped key owns writes from here, so the shared value stops being touched
+    // and the cross-company bleed ends.
+    const raw = window.localStorage.getItem(key)
+      ?? (legacyKey ? window.localStorage.getItem(legacyKey) : null);
     if (!raw) return { ...DEFAULT_DATA_GRID_LAYOUT };
     const decoded = decodeDataGridLayout(raw);
     if (decoded.valid && decoded.legacy) {

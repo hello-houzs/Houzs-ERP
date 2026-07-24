@@ -17,9 +17,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import {
-  ArrowLeft, History, Save, X, Trash2, Send, Ban, AlertTriangle, Search, Wand2, Undo2,
-} from 'lucide-react';
+import { History, Save, X, Trash2, Send, Ban, AlertTriangle, Search, Wand2, Undo2 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
@@ -321,16 +319,13 @@ export const StockTakeDetail = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Warehouse"
         title={t.take_no}
         description={`Created ${fmtDateTime(t.created_at)}${t.posted_at ? ` · Posted ${fmtDateTime(t.posted_at)}` : ''}${t.cancelled_at ? ` · Cancelled ${fmtDateTime(t.cancelled_at)}` : ''}`}
         actions={
           <>
             {status && <StatusPill docType="stockTake" status={status} />}
-            <Link to="/scm/stock-takes" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Stock Takes</span>
-            </Link>
             <div className={styles.actions}>
               {/* History drawer toggle. Same header seat on every detail page,
                   and unconditional: a cancelled or posted take is exactly when

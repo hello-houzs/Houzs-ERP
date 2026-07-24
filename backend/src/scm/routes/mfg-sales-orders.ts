@@ -81,6 +81,7 @@ import {
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr, phoneSearchOrParts } from '../lib/postgrest-search';
 import { paginateAll } from '../lib/paginate-all';
+import { soConvertedPoNumbers } from '../lib/so-converted-po';
 import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-time';
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
@@ -1384,6 +1385,10 @@ mfgSalesOrders.get('/', async (c) => {
         .from('mfg_sales_orders')
         .select('doc_no, delivery_state, amended_delivery_date')
         .in('doc_no', docNos)).data ?? [])();
+    /* PO No. column (owner 2026-07-24): the system Purchase Order numbers this
+       SO was converted into. Its own SO-line→PO-item→PO chain, independent of
+       every other enrichment above, so it rides the same concurrent wave. */
+    const convertedPoProm = soConvertedPoNumbers(sb, docNos);
 
     /* Order deterministically so the FIRST line per doc_no is the earliest
        one created (matches the detail endpoint's `.order('created_at')`). We
@@ -1639,10 +1644,17 @@ mfgSalesOrders.get('/', async (c) => {
     }
     const planningToday = todayMyt();
 
+    // PO No. — SO doc_no → system PO numbers it was converted into (see wave).
+    const convertedPoByDoc = await convertedPoProm;
+
     for (const r of rows) {
       const docNo = r.doc_no ?? '';
       const perGroup = agg.get(docNo);
       (r as Record<string, unknown>).item_categories = [...(cats.get(docNo) ?? [])].sort();
+      /* The PO numbers this SO produced (empty array when none). The FE joins
+         them for the "PO No." column — the column the operator expected to be
+         the system PO, not the customer's hand-typed po_doc_no. */
+      (r as Record<string, unknown>).converted_po_nos = convertedPoByDoc.get(docNo) ?? [];
       (r as Record<string, unknown>).has_children = downstreamDocNos.has(docNo);
       const dDelivered = deliveredTotal.get(docNo) ?? 0;
       const dRemaining = remainingTotal.get(docNo) ?? 0;

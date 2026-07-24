@@ -20,7 +20,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 // HOUZS VENDOR — Link lives on 'react-router-dom' in react-router v6 (the
 // version Houzs ships). Only the import specifier changed.
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Save, Trash2, X, ArrowRightLeft } from 'lucide-react';
+import { Plus, Save, Trash2, X, ArrowRightLeft } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
 import {
@@ -655,14 +655,11 @@ export const PurchaseOrderNew = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Procurement"
         title="New Purchase Order"
         actions={
           <div className={styles.actions}>
-            <Link to="/scm/purchase-orders" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Purchase Orders</span>
-            </Link>
             {/* PR — Commander 2026-05-27: parity with PO list — quick swap into
                 the SO-driven flow without bouncing back to the list page. */}
             <Button variant="ghost" size="md" onClick={goToFromSo}>
@@ -1355,8 +1352,8 @@ export const PurchaseOrderNew = () => {
         </div>
       </section>
 
-      {/* Totals card aligned right */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      {/* Totals card aligned right — lg:pr-32 clears the fixed FAB cluster. */}
+      <div className="lg:pr-32" style={{ display: 'flex', justifyContent: 'flex-end' }}>
         <section className={styles.card} style={{ maxWidth: 360, width: '100%' }}>
           <div className={styles.cardBody}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-14)', marginBottom: 'var(--space-2)' }}>

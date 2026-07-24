@@ -40,6 +40,8 @@ import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
 import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
+import { ListPager } from "../../components/ListPager";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
@@ -121,6 +123,11 @@ type SoRow = {
   customer_country: string | null;
   current_doc_no: string | null;
   stock_remark?: string;
+  /** System Purchase Order numbers this SO was converted into (empty when
+   *  none). Server-derived via the SO-line→PO-item→PO chain. Drives the "PO
+   *  No." column — the operator wants the system PO here, not the customer's
+   *  hand-typed po_doc_no (which 2990 never fills). */
+  converted_po_nos?: string[] | null;
   internal_expected_dd: string | null;
   customer_delivery_date: string | null;
   // ── Phase 2 FINANCE: cost / margin / per-category subtotals + deposit. The
@@ -834,43 +841,6 @@ function TotalRow({
   );
 }
 
-// ─── Pagination footer ──────────────────────────────────────────────────────
-
-function PaginationFooter({
-  page,
-  pageSize,
-  total,
-  onPrev,
-  onNext,
-}: {
-  page: number;
-  pageSize: number;
-  total: number;
-  onPrev: () => void;
-  onNext: () => void;
-}) {
-  const from = total === 0 ? 0 : page * pageSize + 1;
-  const to = Math.min((page + 1) * pageSize, total);
-  const atStart = page === 0;
-  const atEnd = (page + 1) * pageSize >= total;
-  return (
-    <div className="mt-4 flex items-center justify-between gap-3">
-      <span className="text-[12px] text-ink-muted">
-        Showing {from}
-        {to > from ? `–${to}` : ""} of {total}
-      </span>
-      <div className="flex items-center gap-2">
-        <Button variant="secondary" onClick={onPrev} disabled={atStart}>
-          Prev
-        </Button>
-        <Button variant="secondary" onClick={onNext} disabled={atEnd}>
-          Next
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 // Table column key → backend sort-whitelist column. Only the mismatched key
 // ("amount" → "local_total_centi") needs a map; doc_no / so_date / debtor_name
 // / status already match the backend names 1:1. Columns not in this map that
@@ -1081,7 +1051,9 @@ export function MfgSalesOrdersListV2() {
   // fixed 50 (backend caps at 100). Both feed the server-pagination hook so
   // search / status counts / sort span the FULL set, not the visible page.
   const page = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
-  const pageSize = 50;
+  // Per-page is now the operator's choice (owner 2026-07-24), persisted per
+  // list. Backend caps at 100, so the options stay ≤100.
+  const [pageSize, setPageSize] = useLocalStorage<number>("scm:perpage:sales-orders", 50);
 
   const [selected, setSelected] = useState<SoRow | null>(null);
   // Server-side sort, formatted "<col>:<dir>" for the backend whitelist
@@ -1484,15 +1456,35 @@ export function MfgSalesOrdersListV2() {
     //    slim default view. disableSort because the SO list is server-sorted
     //    and these keys aren't in the backend sort whitelist.
     {
+      /* NB: the key stays "po_doc_no" for historical reasons — it is what
+         users (incl. the owner) already have persisted as a shown/ordered
+         column, so keeping it means this now-populated column lands where they
+         left it. The CONTENT changed (owner 2026-07-24): it used to show the
+         customer's hand-typed PO # (`po_doc_no`, never filled for 2990); it now
+         shows the SYSTEM Purchase Order(s) this SO was converted into
+         (`converted_po_nos`, server-derived). Not default-hidden any more —
+         "sales order list 没有显示 PO No" was exactly this column reading empty. */
       key: "po_doc_no",
-      label: "PO Doc No.",
-      width: "130px",
-      defaultHidden: true,
+      label: "PO No.",
+      width: "150px",
       disableSort: true,
-      getValue: (r) => r.po_doc_no ?? "",
-      render: (r) => (
-        <span className="font-mono text-[12px] text-ink-secondary">{r.po_doc_no || "—"}</span>
-      ),
+      getValue: (r) => (r.converted_po_nos ?? []).join(", "),
+      render: (r) => {
+        const pos = r.converted_po_nos ?? [];
+        if (pos.length === 0) return <span className="text-ink-muted">—</span>;
+        return (
+          <div className="flex flex-wrap gap-1">
+            {pos.map((n) => (
+              <span
+                key={n}
+                className="rounded bg-primary-soft px-1.5 py-0.5 font-mono text-[11px] font-semibold text-primary-ink"
+              >
+                {n}
+              </span>
+            ))}
+          </div>
+        );
+      },
     },
     {
       key: "phone",
@@ -2069,12 +2061,13 @@ export function MfgSalesOrdersListV2() {
           <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
         )}
         {!searchTransition.resultsAreStale && <div className="pb-24">
-          <PaginationFooter
+          <ListPager
             page={page}
             pageSize={pageSize}
             total={total}
-            onPrev={() => setPageParam(page - 1)}
-            onNext={() => setPageParam(page + 1)}
+            noun="orders"
+            onPageChange={setPageParam}
+            onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
           />
         </div>}
       </div>
@@ -2148,12 +2141,13 @@ export function MfgSalesOrdersListV2() {
               label: "Reset layout",
             }}
           />
-          {!searchTransition.resultsAreStale && <PaginationFooter
+          {!searchTransition.resultsAreStale && <ListPager
             page={page}
             pageSize={pageSize}
             total={total}
-            onPrev={() => setPageParam(page - 1)}
-            onNext={() => setPageParam(page + 1)}
+            noun="orders"
+            onPageChange={setPageParam}
+            onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
           />}
         </>
       ) : (
@@ -2185,12 +2179,13 @@ export function MfgSalesOrdersListV2() {
           ) : searchTransition.resultsAreStale ? (
             <SearchPendingPanel label={searchTransition.statusText} />
           ) : <><CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
-          <PaginationFooter
+          <ListPager
             page={page}
             pageSize={pageSize}
             total={total}
-            onPrev={() => setPageParam(page - 1)}
-            onNext={() => setPageParam(page + 1)}
+            noun="orders"
+            onPageChange={setPageParam}
+            onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
           /></>}
         </>
       )}

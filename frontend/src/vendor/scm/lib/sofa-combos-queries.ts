@@ -23,6 +23,12 @@ export type SofaComboRule = {
   customerId: string | null;
   supplierId: string | null;
   pricesByHeight: Record<string, number | null>;
+  /* Selling / PWP maps — the backend has returned these all along; the type
+     dropped them, which is exactly why the master card went all-dash (owner
+     2026-07-24 "爆掉了"): the card showed the COST map, which is ALLOWED to be
+     all-null, while the combo's real (selling) prices sat unread. */
+  sellingPricesByHeight?: Record<string, number | null> | null;
+  pwpPricesByHeight?: Record<string, number | null> | null;
   label: string | null;
   effectiveFrom: string;
   deletedAt: string | null;

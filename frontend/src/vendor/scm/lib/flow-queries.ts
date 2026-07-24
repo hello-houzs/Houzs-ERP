@@ -37,3 +37,19 @@ export const useDocumentFlow = (type: FlowNodeType | null, id: string | null) =>
     staleTime: 30_000,
     retry: retryUnlessClientError,
   });
+
+/* Advisory candidate POs for an SO with NO linked purchase leg (pre-MRP orders,
+   see the backend route). Read-only: matched by material_code, never a stored
+   link. Pass a null docNo to disable — the map only asks when its PO node is
+   empty, so a normal linked SO never fires this request. */
+export type CandidatePo = { id: string; poNumber: string; status: string | null; poDate: string | null };
+export const useCandidatePos = (soDocNo: string | null) =>
+  useQuery({
+    queryKey: ['candidate-pos', soDocNo],
+    queryFn: () => authedFetch<{ candidates: CandidatePo[] }>(
+      `/document-flow/candidate-pos/${encodeURIComponent(soDocNo!)}`,
+    ),
+    enabled: Boolean(soDocNo),
+    staleTime: 30_000,
+    retry: retryUnlessClientError,
+  });

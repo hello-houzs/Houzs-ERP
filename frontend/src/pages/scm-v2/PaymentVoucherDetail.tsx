@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, History, Pencil, Plus, Save, Send, Ban, Trash2, X } from 'lucide-react';
+import { ChevronDown, History, Pencil, Plus, Save, Send, Ban, Trash2, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { fmtDateOrDash } from '@2990s/shared';
 import {
@@ -308,14 +308,11 @@ export const PaymentVoucherDetail = () => {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader back
         eyebrow="Finance"
         title={pv.pv_number}
         actions={
           <div className={styles.actions} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-            <Link to="/scm/payment-vouchers" className={styles.backBtn}>
-              <ArrowLeft {...ICON} /> <span>Payment Vouchers</span>
-            </Link>
             <StatusPill docType="pv" status={pv.status} />
             {/* History drawer toggle. Same header seat on every detail page, and
                 ungated: whoever may open the voucher may see who changed it. */}

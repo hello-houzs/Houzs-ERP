@@ -187,7 +187,7 @@ export const WarehouseRacks = () => {
 
   return (
     <div>
-      <PageHeader
+      <PageHeader back
         eyebrow="Inventory"
         title="Warehouse"
         description="Rack overview, stock in / out and the full movement ledger for the selected warehouse."

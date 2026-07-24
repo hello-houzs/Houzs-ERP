@@ -33,6 +33,8 @@ import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
 import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
+import { ListPager } from "../../components/ListPager";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
@@ -699,43 +701,6 @@ function TotalRow({
   );
 }
 
-// ─── Pagination footer ──────────────────────────────────────────────────────
-
-function PaginationFooter({
-  page,
-  pageSize,
-  total,
-  onPrev,
-  onNext,
-}: {
-  page: number;
-  pageSize: number;
-  total: number;
-  onPrev: () => void;
-  onNext: () => void;
-}) {
-  const from = total === 0 ? 0 : page * pageSize + 1;
-  const to = Math.min((page + 1) * pageSize, total);
-  const atStart = page === 0;
-  const atEnd = (page + 1) * pageSize >= total;
-  return (
-    <div className="mt-4 flex items-center justify-between gap-3">
-      <span className="text-[12px] text-ink-muted">
-        Showing {from}
-        {to > from ? `–${to}` : ""} of {total}
-      </span>
-      <div className="flex items-center gap-2">
-        <Button variant="secondary" onClick={onPrev} disabled={atStart}>
-          Prev
-        </Button>
-        <Button variant="secondary" onClick={onNext} disabled={atEnd}>
-          Next
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 // Table column key → backend sort-whitelist column. The DO backend whitelist is
 // { do_date, do_number, debtor_name, status, customer_delivery_date } — only the
 // delivery_date column key differs from its backend name; every other sortable
@@ -854,7 +819,7 @@ export function MfgDeliveryOrdersListV2() {
   // fixed 50 (backend caps at 100). Server-side paging + search + counts + sort
   // span the FULL scoped set, not just the visible page.
   const page = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
-  const pageSize = 50;
+  const [pageSize, setPageSize] = useLocalStorage<number>("scm:perpage:delivery-orders", 50);
 
   const [selected, setSelected] = useState<DoRow | null>(null);
   // Multi-select for batch PDF export. The Set owns the ticked DO ids; the
@@ -1691,12 +1656,12 @@ export function MfgDeliveryOrdersListV2() {
           <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
         )}
         {!searchTransition.resultsAreStale && <div className="pb-24">
-          <PaginationFooter
+          <ListPager
             page={page}
             pageSize={pageSize}
             total={total}
-            onPrev={() => setPageParam(page - 1)}
-            onNext={() => setPageParam(page + 1)}
+            onPageChange={setPageParam}
+            onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
           />
         </div>}
       </div>
@@ -1789,12 +1754,12 @@ export function MfgDeliveryOrdersListV2() {
                 label: "Reset layout",
               }}
             />
-            {!searchTransition.resultsAreStale && <PaginationFooter
+            {!searchTransition.resultsAreStale && <ListPager
               page={page}
               pageSize={pageSize}
               total={total}
-              onPrev={() => setPageParam(page - 1)}
-              onNext={() => setPageParam(page + 1)}
+              onPageChange={setPageParam}
+              onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
             />}
           </>
         ) : (
@@ -1826,12 +1791,12 @@ export function MfgDeliveryOrdersListV2() {
             ) : searchTransition.resultsAreStale ? (
               <SearchPendingPanel label={searchTransition.statusText} />
             ) : <><CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
-            <PaginationFooter
+            <ListPager
               page={page}
               pageSize={pageSize}
               total={total}
-              onPrev={() => setPageParam(page - 1)}
-              onNext={() => setPageParam(page + 1)}
+              onPageChange={setPageParam}
+              onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
             /></>}
           </>
         )}

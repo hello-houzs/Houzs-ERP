@@ -34,6 +34,8 @@ import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
 import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
+import { ListPager } from "../../components/ListPager";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
@@ -723,43 +725,6 @@ function TotalRow({
   );
 }
 
-// ─── Pagination footer ──────────────────────────────────────────────────────
-
-function PaginationFooter({
-  page,
-  pageSize,
-  total,
-  onPrev,
-  onNext,
-}: {
-  page: number;
-  pageSize: number;
-  total: number;
-  onPrev: () => void;
-  onNext: () => void;
-}) {
-  const from = total === 0 ? 0 : page * pageSize + 1;
-  const to = Math.min((page + 1) * pageSize, total);
-  const atStart = page === 0;
-  const atEnd = (page + 1) * pageSize >= total;
-  return (
-    <div className="mt-4 flex items-center justify-between gap-3">
-      <span className="text-[12px] text-ink-muted">
-        Showing {from}
-        {to > from ? `–${to}` : ""} of {total}
-      </span>
-      <div className="flex items-center gap-2">
-        <Button variant="secondary" onClick={onPrev} disabled={atStart}>
-          Prev
-        </Button>
-        <Button variant="secondary" onClick={onNext} disabled={atEnd}>
-          Next
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 // Table column key → backend sort-whitelist column. SI backend whitelist is
 // { invoice_date, invoice_number, debtor_name, status, total_centi }; only the
 // `amount` (Total) column key differs from its backend name. Non-whitelisted
@@ -797,7 +762,7 @@ export function SalesInvoicesListV2() {
   const view = (params.get("view") ?? "table") as "table" | "cards";
   const search = params.get("q") ?? "";
   const page = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
-  const pageSize = 50;
+  const [pageSize, setPageSize] = useLocalStorage<number>("scm:perpage:sales-invoices", 50);
 
   const [selected, setSelected] = useState<SiRow | null>(null);
   const [sort, setSort] = useState<string | undefined>(undefined);
@@ -1629,12 +1594,12 @@ export function SalesInvoicesListV2() {
       <div className="md:hidden">
         {error ? <ListErrorPanel message={(error as Error).message} /> : searchTransition.resultsAreStale ? <SearchPendingPanel label={searchTransition.statusText} /> : <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />}
         {!searchTransition.resultsAreStale && <div className="pb-24">
-          <PaginationFooter
+          <ListPager
             page={page}
             pageSize={pageSize}
             total={total}
-            onPrev={() => setPageParam(page - 1)}
-            onNext={() => setPageParam(page + 1)}
+            onPageChange={setPageParam}
+            onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
           />
         </div>}
       </div>
@@ -1702,12 +1667,12 @@ export function SalesInvoicesListV2() {
                 label: "Reset layout",
               }}
             />
-            {!searchTransition.resultsAreStale && <PaginationFooter
+            {!searchTransition.resultsAreStale && <ListPager
               page={page}
               pageSize={pageSize}
               total={total}
-              onPrev={() => setPageParam(page - 1)}
-              onNext={() => setPageParam(page + 1)}
+              onPageChange={setPageParam}
+              onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
             />}
           </>
         ) : (
@@ -1735,12 +1700,12 @@ export function SalesInvoicesListV2() {
               </div>
             </div>
             {error ? <ListErrorPanel message={(error as Error).message} /> : searchTransition.resultsAreStale ? <SearchPendingPanel label={searchTransition.statusText} /> : <><CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
-            <PaginationFooter
+            <ListPager
               page={page}
               pageSize={pageSize}
               total={total}
-              onPrev={() => setPageParam(page - 1)}
-              onNext={() => setPageParam(page + 1)}
+              onPageChange={setPageParam}
+              onPageSizeChange={(n) => { setPageSize(n); setPageParam(0); }}
             /></>}
           </>
         )}
