@@ -111,6 +111,23 @@ export function Settings() {
       {active === "email" && <EmailTab />}
       {active === "branding" && <BrandingTab />}
       {active === "logs" && <ActivityLog />}
+
+      {/* Third-party asset attribution (owner 2026-07-24: keep the Icons8
+          free-licence credit rather than buy a licence). The Assistant
+          launcher's robot face is Icons8's "Nolan" artwork; the free tier
+          requires one visible, clickable link back to icons8.com. A quiet
+          Settings footer is the standard, low-prominence home for it. */}
+      <footer className="mt-10 border-t border-border-subtle pt-3 text-[11px] text-ink-muted">
+        Robot icon by{" "}
+        <a
+          href="https://icons8.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline decoration-dotted underline-offset-2 transition-colors hover:text-accent"
+        >
+          Icons8
+        </a>
+      </footer>
     </div>
   );
 }
