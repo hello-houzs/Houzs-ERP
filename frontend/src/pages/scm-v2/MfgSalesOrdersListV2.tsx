@@ -61,6 +61,7 @@ import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
 import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
+import { ItemGroupPill } from "../../vendor/scm/lib/category-badges";
 import { resolveSoLocation } from "../../lib/soLocation";
 import { useAuth } from "../../auth/AuthContext";
 import { canViewScmCosting, canOperateDeliveryOrders } from "../../auth/salesAccess";
@@ -864,7 +865,34 @@ type DrillItem = {
   qty?: number;
   unit_price_centi?: number;
   total_centi?: number;
+  /* Per-line readiness — all already stamped by GET /mfg-sales-orders/:docNo
+     (the same payload this expansion fetches); the old four-column layout just
+     dropped them on the floor (owner 2026-07-24: "怎么没有每一个 line 的
+     stock status,还有 incoming PO?"). */
+  stock_status?: string | null; // READY | PARTIAL | PENDING (stored)
+  stock_state?: "stock" | "po" | "shortage" | null; // live MRP verdict
+  coverage_po?: string | null; // incoming PO covering this line…
+  coverage_eta?: string | null; // …and its effective ETA
+  shipped_source_pos?: string[]; // actual source PO(s) once shipped
+  delivered_qty?: number | null;
+  remaining_qty?: number | null;
 };
+
+/* 2990-parity stock cell (MfgSalesOrdersList.tsx stockLabelOf + the SO full
+   page's coverage render): fully shipped → DELIVERED; on-hand → READY;
+   partially covered → PARTIAL; else PENDING. SERVICE lines are skipped by the
+   allocator, so their stored PENDING default would be noise — show a dash. */
+function drillStock(l: DrillItem): { label: string; cls: string } | null {
+  if ((l.item_group ?? "").toUpperCase().includes("SERVICE")) return null;
+  const shipped =
+    (l.delivered_qty ?? 0) > 0 && (l.remaining_qty ?? null) === 0;
+  if (shipped) return { label: "DELIVERED", cls: "bg-surface-dim text-ink-muted" };
+  if (l.stock_state === "stock" || l.stock_status === "READY")
+    return { label: "READY", cls: "bg-synced-bg text-synced" };
+  if (l.stock_status === "PARTIAL")
+    return { label: "PARTIAL", cls: "bg-warning-bg text-warning-text" };
+  return { label: "PENDING", cls: "bg-surface-dim text-ink-muted" };
+}
 
 function SoLinesExpansion({ docNo }: { docNo: string }) {
   const detailQ = useMfgSalesOrderDetail(docNo);
@@ -887,56 +915,92 @@ function SoLinesExpansion({ docNo }: { docNo: string }) {
     );
   }
 
+  /* 2990 drill-down parity (owner 2026-07-24): Group, per-line stock status
+     and the covering incoming PO + ETA belong ON the line — the payload has
+     carried them all along. Min-width + horizontal scroll keeps the grid
+     honest on narrow desktop panes. */
+  const grid = "grid grid-cols-[92px_minmax(220px,1fr)_56px_100px_110px_96px_190px] items-start gap-2";
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-surface">
-      <div className="grid grid-cols-[1fr_64px_110px_120px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-        <span>Item</span>
-        <span className="text-right">Qty</span>
-        <span className="text-right">Unit</span>
-        <span className="text-right">Amount</span>
-      </div>
-      {items.map((l, i) => {
-        const amt = l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
-        /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
-           (vendor/shared/line-identity.ts). This drill-down row is the TWIN of
-           the quick-view drawer above in this same file: the drawer was fixed
-           for #616 and this copy, twenty lines away, kept rendering the code on
-           a muted second line for another four weeks. That is the whole reason
-           the rule now lives in one shared module instead of in a comment. */
-        const { primary, secondary } = orderLineIdentity({
-          code: l.item_code,
-          description: l.description,
-          variant:
-            buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
-            (l.description2 ?? ""),
-        });
-        return (
-          <div
-            key={i}
-            className="grid grid-cols-[1fr_64px_110px_120px] items-start gap-2 border-b border-border-subtle px-4 py-2.5 last:border-b-0"
-          >
-            <div className="min-w-0">
-              <div className="text-[12.5px] font-semibold text-ink">
-                {primary || "—"}
-              </div>
-              {secondary && (
-                <div className="mt-0.5 text-[11px] leading-snug text-ink-secondary">
-                  {secondary}
+    <div className="overflow-x-auto rounded-lg border border-border bg-surface">
+      <div className="min-w-[880px]">
+        <div className={cn(grid, "border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted")}>
+          <span>Group</span>
+          <span>Item</span>
+          <span className="text-right">Qty</span>
+          <span className="text-right">Unit</span>
+          <span className="text-right">Amount</span>
+          <span>Stock</span>
+          <span>Incoming PO</span>
+        </div>
+        {items.map((l, i) => {
+          const amt = l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
+          /* Item CODE first, then the variant subtitle; description dropped
+             (owner 2026-07-24) — the shared order-line rule
+             (vendor/shared/line-identity.ts). This drill-down row is the TWIN
+             of the quick-view drawer above in this same file. */
+          const { primary, secondary } = orderLineIdentity({
+            code: l.item_code,
+            description: l.description,
+            variant:
+              buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
+              (l.description2 ?? ""),
+          });
+          const stock = drillStock(l);
+          /* Shipped lines show the ACTUAL source PO(s); unshipped show the
+             MRP-covering PO + effective ETA — same rule as the SO full page. */
+          const incoming =
+            (l.shipped_source_pos?.length ?? 0) > 0
+              ? l.shipped_source_pos!.join(", ")
+              : l.coverage_po
+                ? `${l.coverage_po}${l.coverage_eta ? ` · ETA ${fmtDate(l.coverage_eta)}` : ""}`
+                : null;
+          return (
+            <div
+              key={i}
+              className={cn(grid, "border-b border-border-subtle px-4 py-2.5 last:border-b-0")}
+            >
+              <span><ItemGroupPill group={l.item_group ?? null} /></span>
+              <div className="min-w-0">
+                <div className="text-[12.5px] font-semibold text-ink">
+                  {primary || "—"}
                 </div>
-              )}
+                {secondary && (
+                  <div className="mt-0.5 text-[11px] leading-snug text-ink-secondary">
+                    {secondary}
+                  </div>
+                )}
+              </div>
+              <span className="text-right font-money text-[12px] text-ink-secondary">
+                {l.qty ?? 0}
+              </span>
+              <span className="text-right font-money text-[12px] text-ink-secondary">
+                {fmtRm(l.unit_price_centi ?? 0)}
+              </span>
+              <span className="text-right font-money text-[12px] font-semibold text-ink">
+                {fmtRm(amt)}
+              </span>
+              <span>
+                {stock ? (
+                  <span className={cn("inline-block rounded-full px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wider", stock.cls)}>
+                    {stock.label}
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-ink-muted">—</span>
+                )}
+              </span>
+              <span className="min-w-0">
+                {incoming ? (
+                  <span className="whitespace-nowrap font-mono text-[11px] font-semibold text-accent-ink">
+                    {incoming}
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-ink-muted">—</span>
+                )}
+              </span>
             </div>
-            <span className="text-right font-money text-[12px] text-ink-secondary">
-              {l.qty ?? 0}
-            </span>
-            <span className="text-right font-money text-[12px] text-ink-secondary">
-              {fmtRm(l.unit_price_centi ?? 0)}
-            </span>
-            <span className="text-right font-money text-[12px] font-semibold text-ink">
-              {fmtRm(amt)}
-            </span>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
