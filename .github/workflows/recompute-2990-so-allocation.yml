@@ -1,0 +1,46 @@
+name: Recompute 2990 SO stock allocation (DRY-RUN gated)
+
+# One-shot sweep for migrated 2990 Sales Orders (company_id = 2) whose stock
+# allocation was never computed on import, so their Stock columns are blank.
+# APPLY runs the CANONICAL recomputeSoStockAllocation (the same function every
+# GRN / DO / return triggers) - reuse, not a re-implementation. Idempotent;
+# DRY-RUN unless apply=1.
+#
+# Access path: the recompute talks to Supabase via PostgREST, so this uses the
+# REST creds SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (schema `scm`), NOT the pg
+# DATABASE_URL. Those are Worker secrets today; they must also exist as GitHub
+# Actions secrets for this workflow to run.
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "1 to write, anything else DRY-RUN"
+        required: false
+        default: "0"
+        type: string
+
+concurrency:
+  group: recompute-2990-so-allocation
+  cancel-in-progress: true
+
+jobs:
+  recompute:
+    runs-on: ubuntu-latest
+    environment: Production
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npx tsx scripts/recompute-2990-so-allocation.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          APPLY: ${{ inputs.apply }}
+          NODE_OPTIONS: --dns-result-order=ipv4first
