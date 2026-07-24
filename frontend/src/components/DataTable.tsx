@@ -14,6 +14,8 @@ import {
   Search,
   ArrowUp,
   ArrowDown,
+  ArrowDownAZ,
+  ArrowUpAZ,
   ChevronsUpDown,
   ChevronRight,
   LayoutList,
@@ -63,13 +65,19 @@ export interface Column<T> {
    */
   defaultHidden?: boolean;
   /**
-   * Opt-in per-column value filter (funnel icon in the header). Click
-   * lists the distinct `getValue` results across the loaded rows as
-   * checkboxes; ticking narrows the visible rows client-side. Requires
-   * `getValue`. NB: on server-paginated tables this filters the current
-   * page only — same trade-off as the SCM DataGrid funnels.
+   * @deprecated The funnel now shows on EVERY column that has `getValue`
+   * (owner 2026-07-24: "所有list的headers都需要有filter功能"). This flag is
+   * no longer the gate and is kept only so existing `filterable` call sites
+   * keep compiling. To turn the funnel OFF for one column, use `disableFilter`.
    */
   filterable?: boolean;
+  /**
+   * Opt a `getValue` column OUT of the header filter/sort menu. For columns
+   * whose values are unique per row (a running total, a timestamp) where a
+   * distinct-value checklist is just noise. The column can still be sorted by
+   * clicking its header; only the funnel menu is suppressed.
+   */
+  disableFilter?: boolean;
 }
 
 interface Props<T> {
@@ -568,6 +576,14 @@ export function DataTable<T>({
     colKey: string;
   } | null>(null);
 
+  // ── Header drag-to-reorder (see reorderTo / onHeaderDrag*) ──
+  // `dragCol` is the column being dragged, `dropCol` the header it is hovering
+  // over. Both transient. `draggedRef` swallows the click the browser fires
+  // after a drag gesture so releasing a column never also toggles its sort.
+  const [dragCol, setDragCol] = useState<string | null>(null);
+  const [dropCol, setDropCol] = useState<string | null>(null);
+  const draggedRef = useRef(false);
+
   // Per-column value filters (opt-in `filterable` on the column).
   // Transient — filters are a working gesture, not a saved view, so a
   // reload starts clean. `colFilters[key]` = the set of allowed values;
@@ -589,6 +605,19 @@ export function DataTable<T>({
       const out = { ...prev };
       if (next.length === 0) delete out[colKey];
       else out[colKey] = next;
+      return out;
+    });
+  }
+
+  // Replace a column's whole allow-list at once — the Select all / Invert /
+  // Clear actions in the funnel. An empty list means "no filter" and drops the
+  // key, so the funnel de-highlights and every row shows again. De-duped so a
+  // repeated value can never inflate the stored set.
+  function setColumnFilter(colKey: string, values: string[]) {
+    setColFilters((prev) => {
+      const out = { ...prev };
+      if (values.length === 0) delete out[colKey];
+      else out[colKey] = [...new Set(values)];
       return out;
     });
   }
@@ -761,6 +790,13 @@ export function DataTable<T>({
     return [...always, ...pinnedCols, ...rest];
   }, [visibleColumns, pinnedSet]);
 
+  // Display index of the header being dragged — decides which side of the drop
+  // target the insertion bar is drawn on. -1 when no drag is in flight.
+  const dragIndex = useMemo(
+    () => (dragCol ? displayColumns.findIndex((c) => c.key === dragCol) : -1),
+    [displayColumns, dragCol]
+  );
+
   // The contiguous run of sticky (frozen) columns at the front: every
   // alwaysVisible column plus any pinned column. They render with
   // `position: sticky` and cumulative `left` offsets. We treat the
@@ -924,6 +960,50 @@ export function DataTable<T>({
     setPinned((prev) =>
       prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
     );
+  }
+
+  // ── Column reorder ─────────────────────────────────────────
+  // Shared by the Columns drawer and by dragging a header directly. Moves
+  // `key` to `targetKey`'s slot in the persisted order. The stored order
+  // covers EVERY movable column, hidden ones included, so a hidden column
+  // keeps its place and reappears where the user left it.
+  //
+  // Index-before-removal (not after) is deliberate: it matches the drawer's
+  // long-standing behaviour, so the two gestures can never disagree.
+  const reorderTo = useCallback(
+    (key: string, targetKey: string) => {
+      if (key === targetKey) return;
+      const next = allColumns.filter((c) => !c.alwaysVisible).map((c) => c.key);
+      const from = next.indexOf(key);
+      const to = next.indexOf(targetKey);
+      if (from < 0 || to < 0) return;
+      next.splice(from, 1);
+      next.splice(to, 0, key);
+      setOrder(next);
+    },
+    [allColumns, setOrder]
+  );
+
+  /* A header can be picked up unless it is `alwaysVisible` — those are pinned
+     to the front by contract and "can't be reordered past" (see the Column
+     type), so letting one be dragged would promise a move we won't honour. */
+  const canDragHeader = (c: Column<T>) => !c.alwaysVisible;
+
+  /* Refuse drops ACROSS the pinned/unpinned divide. Pinned columns are hoisted
+     to the front at render time (displayColumns), so dropping an unpinned
+     column onto a pinned one would faithfully rewrite the stored order and
+     then still render in the old place — a gesture that silently does nothing
+     is worse than one that visibly declines. Within a group, order is honoured
+     verbatim, so those drops are allowed. */
+  const canDropHeader = (c: Column<T>) =>
+    !!dragCol &&
+    dragCol !== c.key &&
+    canDragHeader(c) &&
+    pinnedSet.has(dragCol) === pinnedSet.has(c.key);
+
+  function endHeaderDrag() {
+    setDragCol(null);
+    setDropCol(null);
   }
 
   function handleExport() {
@@ -1379,7 +1459,7 @@ export function DataTable<T>({
         hidden={effectiveHidden}
         onToggle={toggleColumn}
         onResetVisibility={resetVisibility}
-        onReorder={setOrder}
+        onReorder={reorderTo}
         onResetOrder={resetOrder}
         udf={udfTable ? udf : undefined}
         udfTableLabel={udfTableLabel || udfTable}
@@ -1461,7 +1541,50 @@ export function DataTable<T>({
                     <th
                       key={c.key}
                       style={cellStyle}
-                      onClick={() => sortable && onHeaderClick(c)}
+                      /* Drag the header itself to reorder. HTML5 DnD, same as
+                         the Columns drawer. The resize strip preventDefaults
+                         its mousedown, which stops a drag from starting there,
+                         so resizing the edge still resizes. */
+                      draggable={canDragHeader(c)}
+                      onDragStart={(e) => {
+                        if (!canDragHeader(c)) return;
+                        draggedRef.current = true;
+                        setDragCol(c.key);
+                        // Firefox refuses to start a drag with no payload.
+                        e.dataTransfer.effectAllowed = "move";
+                        try {
+                          e.dataTransfer.setData("text/plain", c.key);
+                        } catch {
+                          // Locked-down dataTransfer — the drag still works in
+                          // Chromium, which reads our React state instead.
+                        }
+                      }}
+                      onDragOver={(e) => {
+                        if (!canDropHeader(c)) return;
+                        // Without preventDefault the browser refuses the drop.
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        if (dropCol !== c.key) setDropCol(c.key);
+                      }}
+                      onDragLeave={() => {
+                        if (dropCol === c.key) setDropCol(null);
+                      }}
+                      onDrop={(e) => {
+                        if (!canDropHeader(c)) return;
+                        e.preventDefault();
+                        if (dragCol) reorderTo(dragCol, c.key);
+                        endHeaderDrag();
+                      }}
+                      onDragEnd={endHeaderDrag}
+                      onClick={() => {
+                        // A drag ends in a click on some browsers; that click
+                        // must not also cycle the sort.
+                        if (draggedRef.current) {
+                          draggedRef.current = false;
+                          return;
+                        }
+                        if (sortable) onHeaderClick(c);
+                      }}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -1480,6 +1603,9 @@ export function DataTable<T>({
                         i === displayColumns.length - 1 && "pr-5",
                         sortable && "cursor-pointer select-none hover:text-primary",
                         active && "text-primary",
+                        // The column being carried dims; everything else stays
+                        // put so the insertion bar is the only thing moving.
+                        dragCol === c.key && "opacity-40",
                         // Delineate the frozen region: a right border on the
                         // last sticky column reads as the freeze line.
                         isLastSticky && "border-r border-border"
@@ -1516,11 +1642,11 @@ export function DataTable<T>({
                                 )}
                               </span>
                             )}
-                            {c.filterable && c.getValue && (
+                            {c.getValue && !c.disableFilter && (
                               <button
                                 type="button"
-                                title={`Filter ${c.label}`}
-                                aria-label={`Filter ${c.label}`}
+                                title={`Filter & sort ${c.label}`}
+                                aria-label={`Filter & sort ${c.label}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -1564,6 +1690,22 @@ export function DataTable<T>({
                         }}
                         className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize touch-none select-none opacity-0 transition-opacity hover:bg-primary/40 group-hover/th:opacity-100"
                       />
+                      {/* Insertion bar — where the carried column will land.
+                          Owner 2026-07-24 asked for a BOLD line ("加粗线条"),
+                          drawn on the side the column is arriving FROM so it
+                          sits between the two headers it will separate.
+                          Absolutely positioned (not a background tint) because
+                          `cn` is a plain join: a conditional bg-* class would
+                          race the th's own bg-surface-dim. */}
+                      {dropCol === c.key && canDropHeader(c) && (
+                        <span
+                          aria-hidden
+                          className={cn(
+                            "pointer-events-none absolute top-0 z-20 h-full w-[3px] rounded-full bg-primary",
+                            dragIndex >= 0 && dragIndex < i ? "right-0" : "left-0"
+                          )}
+                        />
+                      )}
                     </th>
                   );
                 })}
@@ -1975,10 +2117,12 @@ export function DataTable<T>({
           Portalled to <body> so it escapes the table's overflow clip
           and sticky-header stacking context. Acts on the clicked
           column. Closes on outside click / Esc / scroll (effect above). */}
-      {/* ── Column filter popover (opt-in `filterable`) ──────────────
-          Portalled to <body> like the header menu. Lists the distinct
-          getValue results across the LOADED rows (pre-filter, so unticking
-          works) with live counts; ticking narrows rows client-side. */}
+      {/* ── Column filter + sort popover ─────────────────────────────
+          On EVERY `getValue` column (owner 2026-07-24). Portalled to <body>
+          like the header menu. Top: sort A→Z / Z→A. Then a live search over
+          the distinct getValue results across the LOADED rows (pre-filter, so
+          unticking works), Select all / Invert / Clear, and the value checklist
+          with counts. Ticking narrows rows client-side. */}
       {filterMenu &&
         (() => {
           const col = allColumns.find((c) => c.key === filterMenu.colKey);
@@ -1996,45 +2140,131 @@ export function DataTable<T>({
           const shown = q
             ? values.filter(([v]) => v.toLowerCase().includes(q))
             : values;
+          const shownValues = shown.map(([v]) => v);
           const selected = new Set(colFilters[col.key] ?? []);
+          const canSort = !col.disableSort;
+          const sortActive = sort?.key === col.key ? sort.dir : null;
+
+          // Select all / Invert operate on the CURRENTLY SHOWN values (i.e.
+          // respect an active search), leaving any selection outside the
+          // search untouched — so you can search "KL", tick those, clear the
+          // search, search "Selangor", tick those, and keep both.
+          const selectAll = () =>
+            setColumnFilter(col.key, [...selected, ...shownValues]);
+          const invert = () => {
+            const shownSet = new Set(shownValues);
+            const keptOutsideSearch = [...selected].filter((v) => !shownSet.has(v));
+            const flippedWithinSearch = shownValues.filter((v) => !selected.has(v));
+            setColumnFilter(col.key, [...keptOutsideSearch, ...flippedWithinSearch]);
+          };
+
+          const sortBtn =
+            "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-surface-dim disabled:cursor-not-allowed disabled:text-ink-muted disabled:hover:bg-transparent";
           return createPortal(
             <div
-              className="fixed z-[120] w-[230px] overflow-hidden rounded-md border border-border bg-surface shadow-slab"
-              style={{ top: filterMenu.y, left: Math.max(8, Math.min(filterMenu.x, window.innerWidth - 238)) }}
+              className="fixed z-[120] w-[236px] overflow-hidden rounded-md border border-border bg-surface shadow-slab"
+              style={{ top: filterMenu.y, left: Math.max(8, Math.min(filterMenu.x, window.innerWidth - 244)) }}
               onClick={(e) => e.stopPropagation()}
               onContextMenu={(e) => e.preventDefault()}
             >
-              <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
+              <div className="border-b border-border-subtle px-3 py-2">
                 <span className="text-[10px] font-bold uppercase tracking-brand text-ink-secondary">
-                  Filter · {col.label || col.key}
+                  {col.label || col.key}
                 </span>
+              </div>
+
+              {/* Sort */}
+              <div className="border-b border-border-subtle py-1">
                 <button
                   type="button"
+                  className={cn(sortBtn, sortActive === "asc" && "text-primary")}
+                  disabled={!canSort}
+                  onClick={() => {
+                    applySort(col, "asc");
+                    setFilterMenu(null);
+                  }}
+                >
+                  <ArrowDownAZ size={13} className="shrink-0 text-ink-muted" />
+                  Sort A → Z
+                </button>
+                <button
+                  type="button"
+                  className={cn(sortBtn, sortActive === "desc" && "text-primary")}
+                  disabled={!canSort}
+                  onClick={() => {
+                    applySort(col, "desc");
+                    setFilterMenu(null);
+                  }}
+                >
+                  <ArrowUpAZ size={13} className="shrink-0 text-ink-muted" />
+                  Sort Z → A
+                </button>
+                {/* Pin — owner 2026-07-24 "需要pin到headers". Freezes the
+                    column to the left so it stays put while the rest scrolls
+                    horizontally. alwaysVisible columns are frozen already, so
+                    the toggle is meaningless there and is left out. */}
+                {!col.alwaysVisible && (
+                  <button
+                    type="button"
+                    className={cn(sortBtn, pinnedSet.has(col.key) && "text-primary")}
+                    onClick={() => {
+                      togglePin(col.key);
+                      setFilterMenu(null);
+                    }}
+                  >
+                    {pinnedSet.has(col.key) ? (
+                      <PinOff size={13} className="shrink-0 text-ink-muted" />
+                    ) : (
+                      <Pin size={13} className="shrink-0 text-ink-muted" />
+                    )}
+                    {pinnedSet.has(col.key) ? "Unpin from left" : "Pin to left"}
+                  </button>
+                )}
+              </div>
+
+              {/* Search */}
+              <div className="border-b border-border-subtle px-3 py-1.5">
+                <input
+                  autoFocus
+                  value={filterQuery}
+                  onChange={(e) => setFilterQuery(e.target.value)}
+                  placeholder="Search values…"
+                  className="w-full rounded border border-border bg-bg px-2 py-1 text-[12px] outline-none focus:border-primary"
+                />
+              </div>
+
+              {/* Bulk actions */}
+              <div className="flex items-center gap-1 border-b border-border-subtle px-2 py-1.5 text-[11px] font-semibold">
+                <button
+                  type="button"
+                  onClick={selectAll}
+                  disabled={shownValues.length === 0}
+                  className="rounded px-1.5 py-0.5 text-accent hover:bg-surface-dim disabled:text-ink-muted/50 disabled:hover:bg-transparent"
+                >
+                  Select all
+                </button>
+                <span className="text-ink-muted">·</span>
+                <button
+                  type="button"
+                  onClick={invert}
+                  disabled={shownValues.length === 0}
+                  className="rounded px-1.5 py-0.5 text-accent hover:bg-surface-dim disabled:text-ink-muted/50 disabled:hover:bg-transparent"
+                >
+                  Invert
+                </button>
+                <span className="text-ink-muted">·</span>
+                <button
+                  type="button"
+                  onClick={() => setColumnFilter(col.key, [])}
                   disabled={selected.size === 0}
-                  onClick={() =>
-                    setColFilters((prev) => {
-                      const out = { ...prev };
-                      delete out[col.key];
-                      return out;
-                    })
-                  }
-                  className="text-[11px] font-semibold text-accent disabled:text-ink-muted/50"
+                  className="rounded px-1.5 py-0.5 text-accent hover:bg-surface-dim disabled:text-ink-muted/50 disabled:hover:bg-transparent"
                 >
                   Clear
                 </button>
               </div>
-              {values.length > 8 && (
-                <div className="border-b border-border-subtle px-3 py-1.5">
-                  <input
-                    autoFocus
-                    value={filterQuery}
-                    onChange={(e) => setFilterQuery(e.target.value)}
-                    placeholder="Search values…"
-                    className="w-full rounded border border-border bg-bg px-2 py-1 text-[12px] outline-none focus:border-primary"
-                  />
-                </div>
-              )}
-              <div className="max-h-[260px] overflow-y-auto py-1">
+
+              {/* Value checklist */}
+              <div className="max-h-[240px] overflow-y-auto py-1">
                 {shown.length === 0 && (
                   <div className="px-3 py-2 text-[12px] text-ink-muted">No values</div>
                 )}

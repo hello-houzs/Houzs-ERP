@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, GripVertical, Plus, Trash2, Columns3 } from "lucide-react";
+import { ArrowDownAZ, Check, GripVertical, Plus, Trash2, Columns3 } from "lucide-react";
 import { Panel } from "./Panel";
 import { Button } from "./Button";
 import type { UseUdfResult, UdfFieldType } from "../hooks/useUdf";
+import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useDialog } from "../hooks/useDialog";
 import { useToast } from "../hooks/useToast";
 import { cn } from "../lib/utils";
@@ -11,9 +12,12 @@ import { cn } from "../lib/utils";
  * Unified columns panel — replaces the old dropdown "Columns" chooser
  * AND the separate "Fields" (UDF) button. Two sections:
  *
- *   1. Columns — reorderable + show/hide. Drag a row by its handle to
- *      move it. Hidden columns still appear in the list; toggle them
- *      back on via the checkbox.
+ *   1. Columns — reorderable + show/hide. The list is either in TABLE ORDER
+ *      (drag a row by its handle to move it) or A-Z (for finding a column in
+ *      a wide table); the header toggle switches between them and only table
+ *      order can be dragged. Columns can also be dragged directly by their
+ *      table header — same rule, see DataTable's `reorderTo`. Hidden columns
+ *      still appear in the list; toggle them back on via the checkbox.
  *   2. Custom Fields (when udf is provided) — add, delete. Renaming
  *      isn't exposed here; the backend `key` is stable by design.
  *
@@ -35,7 +39,11 @@ interface Props {
   hidden: Set<string>;
   onToggle: (key: string) => void;
   onResetVisibility: () => void;
-  onReorder: (nextOrder: string[]) => void;
+  /** Move `key` into `targetKey`'s slot. Deliberately NOT "here is the whole
+   *  new order": dragging a table header does the same job, and both gestures
+   *  must apply ONE rule (DataTable's `reorderTo`) instead of each computing
+   *  its own and drifting apart. */
+  onReorder: (key: string, targetKey: string) => void;
   onResetOrder: () => void;
   /** Optional UDF integration. When provided, the Custom Fields section
    *  shows up and its add/delete wire through to the hook. */
@@ -67,46 +75,55 @@ export function ColumnsPanel({
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [overKey, setOverKey] = useState<string | null>(null);
 
+  /* Owner 2026-07-24 wanted the picker A-Z so a column is easy to FIND (#1169),
+     and drag-to-reorder (#1004) so the table can be arranged. Those two cannot
+     share one list: reordering a list that is displayed in someone else's order
+     is a gesture with no meaning. #1169 shipped the A-Z sort over the top of the
+     drag and the drag has been broken since — it read the drop position out of
+     the STORAGE order while the operator was pointing at an ALPHABETICAL one,
+     so the column landed somewhere unrelated and the drawer, still A-Z, looked
+     like nothing had happened.
+
+     So the list has two explicit modes. "Table order" mirrors the table and is
+     the only one that can be dragged; "A-Z" is for finding a column and hides
+     the grips rather than offering a handle that lies. Default is table order —
+     drag is the thing that breaks silently; hunting a column isn't. */
+  const [azSort, setAzSort] = useLocalStorage<boolean>("dt:cols-drawer-az", false);
+  const canReorder = !azSort;
+
   function handleDragStart(key: string) {
     setDragKey(key);
   }
   function handleDragOver(e: React.DragEvent, key: string) {
+    if (!canReorder) return;
     e.preventDefault();
     if (key !== overKey) setOverKey(key);
   }
   function handleDrop(targetKey: string) {
-    if (!dragKey || dragKey === targetKey) {
-      setDragKey(null);
-      setOverKey(null);
-      return;
-    }
-    const order = options.map((o) => o.key);
-    const from = order.indexOf(dragKey);
-    const to = order.indexOf(targetKey);
-    if (from < 0 || to < 0) return;
-    order.splice(from, 1);
-    order.splice(to, 0, dragKey);
-    onReorder(order);
+    const from = dragKey;
     setDragKey(null);
     setOverKey(null);
+    if (!canReorder || !from) return;
+    onReorder(from, targetKey);
   }
   function handleDragEnd() {
     setDragKey(null);
     setOverKey(null);
   }
 
-  // Owner 2026-07-24: the picker lists columns A-Z by label so a column is
-  // easy to find. This sorts the DISPLAYED list only. Drag-to-reorder and the
-  // show/hide toggles still operate on `options` (the user's real storage
-  // order) and on `opt.key`, so the table's column order and the user's saved
-  // reorder/visibility are never changed by this sort.
   const displayOptions = useMemo(
     () =>
-      [...options].sort((a, b) =>
-        a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" })
-      ),
-    [options]
+      azSort
+        ? [...options].sort((a, b) =>
+            a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" })
+          )
+        : options,
+    [options, azSort]
   );
+
+  // Where the carried row currently sits, so the insertion line can be drawn
+  // on the side it is arriving from. -1 when no drag is in flight.
+  const dragIndex = dragKey ? displayOptions.findIndex((o) => o.key === dragKey) : -1;
 
   return (
     <Panel
@@ -125,6 +142,21 @@ export function ColumnsPanel({
             Table Columns
           </h3>
           <div className="flex items-center gap-2 text-[10px]">
+            {/* Which order the list below is in. Table order is draggable;
+                A-Z is for finding a column in a wide table. */}
+            <button
+              onClick={() => setAzSort((prev) => !prev)}
+              title={
+                azSort
+                  ? "Listing A-Z. Switch to table order to drag columns into place."
+                  : "Listing in table order — drag to rearrange. Switch to A-Z to find a column."
+              }
+              className="inline-flex items-center gap-1 text-ink-muted underline-offset-2 hover:text-accent hover:underline"
+            >
+              {azSort ? <ArrowDownAZ size={11} /> : <GripVertical size={11} />}
+              {azSort ? "A-Z" : "Table order"}
+            </button>
+            <span className="text-ink-muted">·</span>
             <button
               onClick={onResetVisibility}
               className="text-ink-muted underline-offset-2 hover:text-accent hover:underline"
@@ -150,30 +182,62 @@ export function ColumnsPanel({
           {options.length === 0 && (
             <div className="px-3 py-4 text-[11px] text-ink-muted">No reorderable columns.</div>
           )}
-          {displayOptions.map((opt) => {
+          {displayOptions.map((opt, index) => {
             const visible = !hidden.has(opt.key);
             const isDragging = dragKey === opt.key;
             const isDropTarget = overKey === opt.key && dragKey && dragKey !== opt.key;
+            /* Owner 2026-07-24: "拖拽的时候可以有个加粗线条" — a BOLD insertion
+               line, drawn on the edge the row is arriving from, so the drop
+               lands exactly where the line sits. A background tint only says
+               "this row" and leaves above-or-below to guesswork. */
+            const dropAbove = dragIndex >= 0 && dragIndex > index;
             return (
               <div
                 key={opt.key}
-                draggable
-                onDragStart={() => handleDragStart(opt.key)}
+                draggable={canReorder}
+                onDragStart={(e) => {
+                  handleDragStart(opt.key);
+                  // Firefox refuses to start a drag with no payload.
+                  e.dataTransfer.effectAllowed = "move";
+                  try {
+                    e.dataTransfer.setData("text/plain", opt.key);
+                  } catch {
+                    // Locked-down dataTransfer — Chromium reads our state.
+                  }
+                }}
                 onDragOver={(e) => handleDragOver(e, opt.key)}
-                onDrop={() => handleDrop(opt.key)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  handleDrop(opt.key);
+                }}
                 onDragEnd={handleDragEnd}
                 className={cn(
-                  "flex items-center gap-2 px-2 py-2 transition-colors",
+                  "relative flex items-center gap-2 px-2 py-2 transition-colors",
                   isDragging && "opacity-50",
                   isDropTarget && "bg-accent-soft/40"
                 )}
               >
-                <span
-                  className="cursor-grab text-ink-muted hover:text-ink active:cursor-grabbing"
-                  title="Drag to reorder"
-                >
-                  <GripVertical size={14} />
-                </span>
+                {isDropTarget && (
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "pointer-events-none absolute inset-x-0 z-10 h-[3px] rounded-full bg-primary",
+                      dropAbove ? "-top-px" : "-bottom-px"
+                    )}
+                  />
+                )}
+                {/* No grip in A-Z mode: a handle you can't drag is a lie. The
+                    spacer keeps both modes on the same left edge. */}
+                {canReorder ? (
+                  <span
+                    className="cursor-grab text-ink-muted hover:text-ink active:cursor-grabbing"
+                    title="Drag to reorder"
+                  >
+                    <GripVertical size={14} />
+                  </span>
+                ) : (
+                  <span className="w-[14px] shrink-0" aria-hidden />
+                )}
                 <button
                   onClick={() => onToggle(opt.key)}
                   className={cn(

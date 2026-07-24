@@ -304,9 +304,17 @@ describe("DataTable column width persistence", () => {
     );
 
     const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index) ?? "");
-    expect(keys).toHaveLength(8);
-    expect(keys.every((key) => key.endsWith(":sales-order-lines"))).toBe(true);
+    // The guarantee: nothing is keyed by the DOCUMENT (that would grow
+    // localStorage without bound, one entry per SO ever opened) — every
+    // per-table preference is keyed by the layout FAMILY instead.
     expect(keys.some((key) => key.includes("SO-2026-000123"))).toBe(false);
+    // `dt:cols-drawer-az` is the one deliberate exception: how the Columns
+    // drawer LISTS columns (table order vs A-Z) is a habit that belongs to the
+    // operator, not to a table, so it is a single global key. Anything else
+    // appearing outside the family is a regression.
+    const perTable = keys.filter((key) => key !== "dt:cols-drawer-az");
+    expect(perTable).toHaveLength(8);
+    expect(perTable.every((key) => key.endsWith(":sales-order-lines"))).toBe(true);
   });
 
   it("migrates the current document's valid legacy preferences into its family", () => {
@@ -583,5 +591,222 @@ describe("DataTable server search feedback", () => {
     );
     expect(screen.getByText("Searches across all pages you can access")).toBeTruthy();
     expect(screen.queryByText(/0 records/)).toBeNull();
+  });
+});
+
+describe("DataTable column reorder", () => {
+  /* Four columns whose LABELS sort A-Z into a different order than the table
+     order (Alpha, Delta, Charlie, Bravo). That gap is the whole point: PR #1169
+     sorted the Columns drawer A-Z on top of the drag added in #1004, and the
+     drop then read its target index out of the STORAGE order while the operator
+     was pointing at the ALPHABETICAL one — so the column landed somewhere the
+     operator never pointed. Anything that re-introduces that mismatch fails
+     these tests. */
+  const reorderCols: Column<Row>[] = [
+    { key: "a", label: "Alpha", render: (r) => r.name },
+    { key: "d", label: "Delta", render: (r) => r.name },
+    { key: "c", label: "Charlie", render: (r) => r.name },
+    { key: "b", label: "Bravo", render: (r) => r.name },
+  ];
+
+  const headerLabels = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll("thead th")).map((th) => th.textContent?.trim());
+
+  /** jsdom has no drag machinery — hand the events the dataTransfer they need. */
+  function dragOnto(source: Element, target: Element) {
+    const dataTransfer = { effectAllowed: "", dropEffect: "", setData: vi.fn(), getData: vi.fn() };
+    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragOver(target, { dataTransfer });
+    fireEvent.drop(target, { dataTransfer });
+    fireEvent.dragEnd(source, { dataTransfer });
+  }
+
+  it("moves a column to where it was dropped when a header is dragged", () => {
+    setViewport(1280);
+    const { container } = render(
+      <DataTable
+        tableId="reorder-header"
+        rows={rows.slice(0, 2)}
+        columns={reorderCols}
+        getRowKey={(row) => row.id}
+      />,
+    );
+    expect(headerLabels(container)).toEqual(["Alpha", "Delta", "Charlie", "Bravo"]);
+
+    const th = (label: string) =>
+      Array.from(container.querySelectorAll("thead th")).find(
+        (el) => el.textContent?.trim() === label,
+      )!;
+    // Carry the last column onto the first — it should land in first place.
+    dragOnto(th("Bravo"), th("Alpha"));
+
+    expect(headerLabels(container)).toEqual(["Bravo", "Alpha", "Delta", "Charlie"]);
+  });
+
+  it("does not also cycle the sort when a header drag ends in a click", () => {
+    setViewport(1280);
+    const sortable: Column<Row>[] = reorderCols.map((c) => ({ ...c, getValue: (r: Row) => r.name }));
+    const { container } = render(
+      <DataTable
+        tableId="reorder-no-sort"
+        rows={rows.slice(0, 2)}
+        columns={sortable}
+        getRowKey={(row) => row.id}
+      />,
+    );
+    const th = (label: string) =>
+      Array.from(container.querySelectorAll("thead th")).find(
+        (el) => el.textContent?.trim().startsWith(label),
+      )!;
+
+    dragOnto(th("Bravo"), th("Alpha"));
+    // Chromium delivers this click after the drag; it must be swallowed.
+    fireEvent.click(th("Bravo"));
+
+    // useLocalStorage persists the initial null state as the string "null", so
+    // assert the PARSED value: no sort is active. (A swallowed click leaves it
+    // null; a leaked one would have written {key:"b",dir:"asc"}.)
+    expect(JSON.parse(localStorage.getItem("dt:sort:reorder-no-sort") ?? "null")).toBeNull();
+  });
+
+  it("drops a drawer row where the operator pointed, not at its storage index", () => {
+    setViewport(1280);
+    const { container } = render(
+      <DataTable
+        tableId="reorder-drawer"
+        rows={rows.slice(0, 2)}
+        columns={reorderCols}
+        getRowKey={(row) => row.id}
+      />,
+    );
+    fireEvent.click(screen.getByTitle(/^Columns —/));
+    // The drawer opens in table order, so what is listed is what is dragged.
+    expect(screen.getByText("Table order")).toBeTruthy();
+
+    // Scope to the drawer's draggable rows — the label text also appears in
+    // the table header, so an unscoped getByText would be ambiguous.
+    const drawerRow = (label: string) =>
+      Array.from(document.querySelectorAll("div[draggable='true']")).find(
+        (el) => el.textContent?.includes(label),
+      )!;
+    dragOnto(drawerRow("Bravo"), drawerRow("Alpha"));
+
+    expect(headerLabels(container)).toEqual(["Bravo", "Alpha", "Delta", "Charlie"]);
+  });
+
+  it("cannot be dragged while the drawer is listing A-Z", () => {
+    setViewport(1280);
+    render(
+      <DataTable
+        tableId="reorder-az"
+        rows={rows.slice(0, 2)}
+        columns={reorderCols}
+        getRowKey={(row) => row.id}
+      />,
+    );
+    fireEvent.click(screen.getByTitle(/^Columns —/));
+    // Table order → A-Z. The grips go with it rather than offering a handle
+    // that can't honour the drop, and every row's draggable turns off.
+    expect(document.querySelectorAll("[title='Drag to reorder']").length).toBe(4);
+    fireEvent.click(screen.getByText("Table order"));
+
+    expect(screen.getByText("A-Z")).toBeTruthy();
+    expect(document.querySelectorAll("[title='Drag to reorder']").length).toBe(0);
+    expect(document.querySelectorAll("div[draggable='true']").length).toBe(0);
+  });
+});
+
+describe("DataTable header filter + sort menu", () => {
+  // status repeats (Open/Closed); name is unique per row. Both have getValue,
+  // so both must expose the funnel now (owner 2026-07-24: every header).
+  const openFunnel = (label: string) => {
+    const btn = screen.getByTitle(`Filter & sort ${label}`);
+    fireEvent.click(btn);
+  };
+  const rowCount = (container: HTMLElement) =>
+    container.querySelectorAll("tbody tr[data-vrow]").length;
+
+  it("shows a funnel on every getValue column, not only filterable ones", () => {
+    setViewport(1280);
+    render(
+      <DataTable tableId="filter-ubiquity" rows={rows.slice(0, 6)} columns={columns} getRowKey={(r) => r.id} />,
+    );
+    // Neither column sets `filterable`, yet both are funnellable.
+    expect(screen.getByTitle("Filter & sort Order")).toBeTruthy();
+    expect(screen.getByTitle("Filter & sort Status")).toBeTruthy();
+  });
+
+  it("narrows rows to the ticked value and restores them on Clear", () => {
+    setViewport(1280);
+    const { container } = render(
+      <DataTable tableId="filter-narrow" rows={rows.slice(0, 6)} columns={columns} getRowKey={(r) => r.id} />,
+    );
+    expect(rowCount(container)).toBe(6);
+
+    openFunnel("Status");
+    fireEvent.click(screen.getByRole("checkbox", { name: /Open/ }));
+    // rows: id 1..6 → status Closed,Open,Closed,Open,Closed,Open → 3 Open.
+    expect(rowCount(container)).toBe(3);
+
+    fireEvent.click(screen.getByText("Clear"));
+    expect(rowCount(container)).toBe(6);
+  });
+
+  it("Select all ticks every shown value; Invert flips the selection", () => {
+    setViewport(1280);
+    const { container } = render(
+      <DataTable tableId="filter-bulk" rows={rows.slice(0, 6)} columns={columns} getRowKey={(r) => r.id} />,
+    );
+
+    openFunnel("Status");
+    fireEvent.click(screen.getByText("Select all"));
+    // Both values allowed = every row visible.
+    expect(rowCount(container)).toBe(6);
+    const boxes = () => screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes().every((b) => b.checked)).toBe(true);
+
+    // Invert with all selected → none selected → no filter → all rows show.
+    fireEvent.click(screen.getByText("Invert"));
+    expect(boxes().every((b) => !b.checked)).toBe(true);
+    expect(rowCount(container)).toBe(6);
+  });
+
+  it("search limits the checklist without touching values outside it", () => {
+    setViewport(1280);
+    render(
+      <DataTable tableId="filter-search" rows={rows.slice(0, 6)} columns={columns} getRowKey={(r) => r.id} />,
+    );
+    openFunnel("Status");
+    // Tick Closed, then search "Open" and Select-all the search — Closed must
+    // survive because it is outside the current search.
+    fireEvent.click(screen.getByRole("checkbox", { name: /Closed/ }));
+    fireEvent.change(screen.getByPlaceholderText("Search values…"), { target: { value: "Open" } });
+    expect(screen.queryByRole("checkbox", { name: /Closed/ })).toBeNull();
+    expect(screen.getByRole("checkbox", { name: /Open/ })).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Select all"));
+    // Clear the search box; both Closed and Open should now be ticked.
+    fireEvent.change(screen.getByPlaceholderText("Search values…"), { target: { value: "" } });
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes.every((b) => b.checked)).toBe(true);
+  });
+
+  it("Sort A→Z / Z→A order the rows and persist the direction", () => {
+    setViewport(1280);
+    const { container } = render(
+      <DataTable tableId="filter-sort" rows={rows.slice(0, 6)} columns={columns} getRowKey={(r) => r.id} />,
+    );
+    const firstName = () =>
+      container.querySelector("tbody tr[data-vrow] td")?.textContent?.trim();
+
+    openFunnel("Order");
+    fireEvent.click(screen.getByText("Sort Z → A"));
+    expect(JSON.parse(localStorage.getItem("dt:sort:filter-sort") ?? "null")).toEqual({
+      key: "name",
+      dir: "desc",
+    });
+    // "Order 6" sorts last ascending, first descending (string compare puts
+    // "Order 6" after "Order 1".."Order 5" but the reverse leads with 6).
+    expect(firstName()).toBe("Order 6");
   });
 });
