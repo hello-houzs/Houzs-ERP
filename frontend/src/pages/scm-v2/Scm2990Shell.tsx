@@ -29,6 +29,7 @@ import { PromptProvider } from '../../vendor/scm/components/PromptDialog';
 import { ChoiceProvider } from '../../vendor/scm/components/ChoiceDialog';
 import { registerDialogService } from '../../vendor/scm/lib/dialog-service';
 import { rememberScmListReturn } from '../../lib/scmListReturn';
+import { prefetchDocCreate } from '../../lib/prefetch-routes';
 
 /** Registers the live confirm + notify fns with the module-level dialog-service
  *  bridge so non-React callers (authedFetch's short-stock gate, query onError
@@ -50,6 +51,10 @@ function ScmListReturnTracker() {
   const location = useLocation();
   useEffect(() => {
     rememberScmListReturn(location.pathname, location.search);
+    // Warm this list's "New" form chunk while the operator reads the list, so the
+    // New button doesn't cold-load its lazy chunk and flash the skeleton. No-op on
+    // detail/create pages (no `<path>/new` chunk exists for them).
+    prefetchDocCreate(location.pathname);
   }, [location.pathname, location.search]);
   return null;
 }
