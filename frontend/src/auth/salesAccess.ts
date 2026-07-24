@@ -76,6 +76,21 @@ export function isSalesStaff(user: AuthUser | null | undefined): boolean {
 }
 
 /**
+ * May this user CREATE an event (New Project)? Owner 2026-07-24: restricted to
+ * BD staff, the Owner account, and Lim (weisiang329@gmail.com) — NOT other
+ * Super Admins (Nico/Loo) nor anyone else. Mirrored server-side in
+ * backend/src/routes/projects.ts on the New Project POST (this is UX/nav gating;
+ * the backend stays the authority).
+ */
+export function canCreateEvent(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  const role = (user.role_name ?? "").toLowerCase();
+  const position = (user.position_name ?? "").toLowerCase();
+  const email = (user.email ?? "").toLowerCase();
+  return /\bbd\b/.test(role) || position === "owner" || email === "weisiang329@gmail.com";
+}
+
+/**
  * Non-director sales user — the restricted cohort of the Sales access model
  * (Delivery Returns hidden, Projects Finances hidden, etc.). Directors in the
  * Sales department are explicitly NOT restricted.

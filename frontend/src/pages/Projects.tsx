@@ -100,7 +100,7 @@ import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useRafCoalescedHover } from "../hooks/useRafCoalescedHover";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
-import { isSalesStaff, isDirectorUser, isSalesDirectorUser } from "../auth/salesAccess";
+import { isSalesStaff, isDirectorUser, isSalesDirectorUser, canCreateEvent } from "../auth/salesAccess";
 import { readProjectAccess, projectAccessUnresolved } from "../auth/projectAccess";
 import { PMS_STAGE_LABEL, pmsStageVariant } from "../vendor/scm/lib/pms-status";
 import { ACCESS_RANK } from "../types";
@@ -1011,12 +1011,14 @@ function ProjectsListView() {
   // /projects?new=1. Consume the flag once and strip it so refresh/back don't reopen.
   useEffect(() => {
     if (params.get("new") === "1") {
-      setShowCreate(true);
+      // Only BD / owner / weisiang may open the create modal (owner 2026-07-24);
+      // strip the flag either way so it doesn't linger on the URL.
+      if (canCreateEvent(user)) setShowCreate(true);
       const next = new URLSearchParams(params);
       next.delete("new");
       setParams(next, { replace: true });
     }
-  }, [params, setParams]);
+  }, [params, setParams, user]);
   const [showImport, setShowImport] = useState(false);
   const [showArchived, setShowArchived] = useIdentityPreference("projects:showArchived", false, booleanPreference);
   // Hide projects whose every tasklist section is complete — same
@@ -1391,9 +1393,11 @@ function ProjectsListView() {
             : undefined
         }
         primaryAction={
-          <Button variant="primary" icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
-            New Project
-          </Button>
+          canCreateEvent(user) ? (
+            <Button variant="primary" icon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
+              New Project
+            </Button>
+          ) : undefined
         }
       />
 
