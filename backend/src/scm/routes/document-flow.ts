@@ -70,6 +70,24 @@ const uniq = (xs: Array<string | null | undefined>) =>
    matches what the note actually contains. */
 const stripCompanyPrefix = (docNo: string): string => docNo.replace(/^\d+-/, '');
 
+/* R7 fix — WHOLE-TOKEN match of an SO doc number inside a PO's free-text "From
+   SOs: …" note. A plain substring test (`note.includes('SO-1')`) wrongly links
+   documents whose numbers are substrings of one another: "SO-1" would match the
+   "SO-10" in the note, and "SO-2606-3" would match "SO-2606-33". Doc numbers are
+   made of [A-Za-z0-9-], so we require that neither side of the match is flanked
+   by another doc-number character — i.e. the token stands alone in the note
+   (delimited by ": ", ", ", whitespace, or the string ends). The token is regex-
+   escaped; the match is case-insensitive to mirror how numbers are written. */
+const DOC_TOKEN_CHAR = /[A-Za-z0-9-]/;
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const noteMentionsToken = (note: string, token: string): boolean => {
+  if (!note || !token) return false;
+  // (?<![A-Za-z0-9-]) TOKEN (?![A-Za-z0-9-]) — TOKEN not adjacent to another
+  // doc-number char on either side, so "SO-1" never matches inside "SO-10".
+  const re = new RegExp(`(?<!${DOC_TOKEN_CHAR.source})${escapeRegExp(token)}(?!${DOC_TOKEN_CHAR.source})`, 'i');
+  return re.test(note);
+};
+
 /* Resolve the set of Sales Order doc_nos the anchor document descends from.
    Every by-id / by-anchor read is scoped to the ACTIVE company via
    scopeToCompany (same idiom the sibling SCM routes use), so a caller in
@@ -634,7 +652,7 @@ documentFlow.get('/:type/:id', async (c) => {
       let matched = false;
       for (let i = 0; i < rootSos.length; i++) {
         const t = bareTokens[i];
-        if (t && note.includes(t)) { noteEdges.push({ soDoc: rootSos[i]!, poId: p.id }); matched = true; }
+        if (t && noteMentionsToken(note, t)) { noteEdges.push({ soDoc: rootSos[i]!, poId: p.id }); matched = true; }
       }
       if (matched) notePoIds.push(p.id);
     }

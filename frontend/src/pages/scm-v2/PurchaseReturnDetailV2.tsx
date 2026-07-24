@@ -37,6 +37,7 @@ import {
 } from "../../vendor/scm/lib/purchase-return-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { RelationshipMapButton } from "../../vendor/scm/components/RelationshipMapButton";
 import { cn } from "../../lib/utils";
 
 type PrStatus = "DRAFT" | "POSTED" | "COMPLETED" | "CANCELLED" | string;
@@ -455,6 +456,11 @@ export function PurchaseReturnDetailV2() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {/* R8 — wire the Purchase Return into the /document-flow graph so its
+                convert-from chain (GRN -> PO -> SO) is visible, matching the other
+                purchase-side details (PO / GRN / PI). Reads the real backend graph
+                (type 'pr'), not a hand-built chain. */}
+            <RelationshipMapButton type="pr" id={purchaseReturn.id} style={{ height: 34 }} />
             <Button variant="ghost" icon={<History size={14} />} onClick={goHistory}>History</Button>
             <Button variant="secondary" icon={<Printer size={14} />} onClick={goPrintPdf}>Print PDF</Button>
             {canCancel && <Button variant="danger" icon={<XCircle size={14} />} onClick={doCancel}>Cancel return</Button>}
