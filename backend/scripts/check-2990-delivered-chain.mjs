@@ -43,7 +43,7 @@ try {
   // 1) every DELIVERED SO in the 2990 source
   const { data: srcRows, error: srcErr } = await src
     .from("mfg_sales_orders")
-    .select("doc_no, status, customer_name, delivery_date")
+    .select("doc_no, status")
     .eq("status", "DELIVERED")
     .order("doc_no");
   if (srcErr) {
