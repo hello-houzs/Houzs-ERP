@@ -571,6 +571,13 @@ function DetailDrawer({
                 <MetaItem k="Reference" v={refOf(row)} mono />
                 <MetaItem k="Branding" v={brandOf(row)} />
                 <MetaItem k="Order date" v={fmtDate(row.so_date)} />
+                {/* Owner 2026-07-24 — the quick view showed only the order
+                    date; operators need Processing (internal_expected_dd, the
+                    one true user date since legacy processing_date was
+                    dropped) and Delivery at a glance. Both already ride the
+                    list payload (HEADER). */}
+                <MetaItem k="Processing" v={fmtDate(row.internal_expected_dd)} />
+                <MetaItem k="Delivery" v={fmtDate(row.customer_delivery_date)} />
                 <MetaItem
                   k="Payment"
                   v={row.payment_methods_summary || row.payment_method || "—"}

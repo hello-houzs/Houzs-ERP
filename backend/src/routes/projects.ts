@@ -1698,8 +1698,25 @@ async function canPicProjectBrand(
 
 // ── Create ────────────────────────────────────────────────────
 
+// Event (project) creation is restricted to BD staff, the Owner account, and
+// Lim (weisiang329@gmail.com) — NOT other Super Admins nor anyone else (owner
+// 2026-07-24). This is the authority; the FE hides the New Project button for
+// everyone else. Mirrors frontend auth/salesAccess.canCreateEvent.
+function canCreateEvent(
+  user: { role_name?: string | null; position_name?: string | null; email?: string | null } | null | undefined,
+): boolean {
+  if (!user) return false;
+  const role = (user.role_name ?? "").toLowerCase();
+  const position = (user.position_name ?? "").toLowerCase();
+  const email = (user.email ?? "").toLowerCase();
+  return /\bbd\b/.test(role) || position === "owner" || email === "weisiang329@gmail.com";
+}
+
 app.post("/", requirePermission("projects.write"), async (c) => {
   const user = c.get("user");
+  if (!canCreateEvent(user)) {
+    return c.json({ error: "Only BD, the owner, and weisiang can create events." }, 403);
+  }
   const body = await c.req.json<{
     name?: string;
     event_type_id?: number;

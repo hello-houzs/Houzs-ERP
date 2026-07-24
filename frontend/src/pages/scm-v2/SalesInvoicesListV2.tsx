@@ -70,6 +70,14 @@ type SiRow = {
   delivery_order_id: string | null;
   invoice_date: string;
   due_date: string | null;
+  /** SI's own snapshot of the customer delivery date (may be null on rows
+   *  created before the snapshot column existed). */
+  customer_delivery_date?: string | null;
+  /** Linked SO's Processing date (mfg_sales_orders.internal_expected_dd),
+   *  stamped server-side onto every list row for the quick-view drawer. */
+  so_internal_expected_dd?: string | null;
+  /** Linked SO's delivery date — fallback when the SI's own snapshot is null. */
+  so_customer_delivery_date?: string | null;
   debtor_name: string;
   debtor_code: string | null;
   salesperson_id: string | null;
@@ -480,6 +488,15 @@ function DetailDrawer({
                 <MetaItem k="From DO" v={doOf(row)} mono />
                 <MetaItem k="Customer ref" v={refOf(row)} mono />
                 <MetaItem k="Due date" v={fmtDate(row.due_date)} />
+                {/* Owner 2026-07-24 — Processing (linked SO's
+                    internal_expected_dd) + Delivery must be visible in every
+                    quick view. Delivery prefers the SI's own snapshot, falling
+                    back to the linked SO's date for pre-snapshot rows. */}
+                <MetaItem k="Processing" v={fmtDate(row.so_internal_expected_dd ?? null)} />
+                <MetaItem
+                  k="Delivery"
+                  v={fmtDate(row.customer_delivery_date ?? row.so_customer_delivery_date ?? null)}
+                />
                 <MetaItem k="Location" v={row.sales_location || "—"} />
                 <MetaItem k="Salesperson" v={salespersonName} />
               </dl>

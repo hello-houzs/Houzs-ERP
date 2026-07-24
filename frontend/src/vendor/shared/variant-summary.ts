@@ -20,6 +20,34 @@ const specialsList = (v: unknown): string[] => {
 };
 
 /**
+ * Colour KIV (Loo 2026-06-12): the line committed to a fabric SERIES
+ * (variants.fabricId / fabricLabel — its tier add-on is already charged) but
+ * the COLOUR is confirmed later, so no colour-carrying key is filled yet.
+ * This is the same state buildVariantSummary renders as "<series> COLOUR KIV":
+ * a series commitment with none of fabricCode / colorCode / colourCode /
+ * colourLabel / fabricColor present (the colour keys mirror the fabricCode
+ * axis aliases in so-variant-rule plus the summary's colourLabel/fallbacks).
+ *
+ * A KIV line may SAVE freely — KIV is a legitimate sale-time state. What it
+ * must NOT do is enter production: the Processing-Date gate
+ * (so-save-problems `fabric_colour_kiv`) blocks setting internal_expected_dd
+ * while any non-cancelled line is still KIV (owner rule 2026-07-24 after
+ * SO-2607-016 reached production planning with two KIV sofa lines and the
+ * factory could not proceed).
+ */
+export function isColourKiv(
+  variants: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!variants || typeof variants !== 'object') return false;
+  const committedSeries = str(variants.fabricId) || str(variants.fabricLabel);
+  if (!committedSeries) return false;
+  const colourConfirmed =
+    str(variants.fabricCode) || str(variants.colorCode) || str(variants.colourCode)
+    || str(variants.colourLabel) || str(variants.fabricColor);
+  return !colourConfirmed;
+}
+
+/**
  * Build a one-line human summary of a line's variants.
  *
  * Format rules (see task spec, Commander 2026-05-28):

@@ -71,6 +71,27 @@ PostgREST aggregate over the base table (JS-reduce fallback if aggregates are
 disabled). `?status=OTHER` filters to exactly that catch-all bucket; every real
 status stays an exact match.
 
+### Processing-Date save gates (aggregated `validation_failed`)
+
+Setting or changing the Processing Date (`internal_expected_dd` — the UI's
+"Processing Date"; the `processing_date` column is a dead legacy snapshot) runs
+EVERY gate and reports all failures at once (`so-save-problems.ts` →
+`{ error: 'validation_failed', problems: [...] }`, HTTP 422; rendered by the
+shared `SaveProblemsList`/`humanApiError` on desktop + mobile):
+
+| Gate | Code | Rule |
+|------|------|------|
+| Variants complete | `variants_incomplete` | every non-cancelled line's category-mandatory axes filled (`so-variant-rule`) |
+| Colour KIV | `fabric_colour_kiv` | **no line may still be colour-KIV** (series committed via `fabricId`/`fabricLabel`, no `fabricCode` — `isColourKiv` in `variant-summary.ts`). Owner rule 2026-07-24 after SO-2607-016: a Processing Date means every line is a fully-confirmed maintained selection. Fires only when the date is genuinely SET or CHANGED — unrelated edits to an old KIV order, and clearing the date, never block. Also enforced on line-ADD / line-EDIT against an already-dated SO (409). |
+| 30% deposit | `processing_date_unpaid` | ≥30% of order total collected (`order-rules`) |
+| Date sanity | `processing_date_past` / `delivery_date_past` / `processing_after_delivery` | no fresh past dates (unchanged past dates grandfathered); processing ≤ delivery |
+
+Related short-circuit gates: Processing + Delivery all-or-nothing
+(`processing_delivery_must_pair`), remove-date is super-admin only
+(`processing_date_remove_forbidden`), and the processing-date LOCK once the day
+elapses (`so-field-policy`). POS "Proceed" stamps `proceeded_at` only — it never
+writes `internal_expected_dd`.
+
 ---
 
 ## 3. Backend (list handler)

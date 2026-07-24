@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Plus, ShoppingCart, Wrench, FolderPlus, X } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { quickActionAccess } from "../auth/salesAccess";
+import { quickActionAccess, canCreateEvent } from "../auth/salesAccess";
 import { cn } from "../lib/utils";
 
 /**
@@ -56,8 +56,8 @@ export function QuickActionsFAB() {
   // Shared with the mobile MobileSalesOrders FAB (auth/salesAccess) so the
   // "New Service Case includes Sales staff" rule lives in one place.
   const { canNewSo, canNewCase } = quickActionAccess(user, can, pageAccess);
-  // New Project — for users who can create events (owner/management/directors).
-  const canNewProject = can("projects.write");
+  // New Project — restricted to BD / owner / weisiang (owner 2026-07-24).
+  const canNewProject = canCreateEvent(user);
 
   const actions: Array<{
     key: "so" | "case" | "project";

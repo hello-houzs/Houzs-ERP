@@ -2321,6 +2321,22 @@ deliveryOrdersMfg.get('/', async (c) => {
       if (s.delivery_order_id) childIds.add(s.delivery_order_id);
     }
   }
+  /* Linked-SO Processing date (mfg_sales_orders.internal_expected_dd — the one
+     true user date since the legacy processing_date column was dropped, mig
+     0189). The DO quick-view drawer shows it next to the DO's own delivery
+     date; one batched read keyed by so_doc_no, same pattern as the DR/SI child
+     reads above. */
+  const soProcByDoc = new Map<string, string | null>();
+  {
+    const soDocNos = [...new Set(rows.map((r) => r.so_doc_no as string | null).filter((d): d is string => !!d))];
+    if (soDocNos.length > 0) {
+      const { data: soRows } = await sb.from('mfg_sales_orders')
+        .select('doc_no, internal_expected_dd').in('doc_no', soDocNos);
+      for (const s of ((soRows ?? []) as Array<{ doc_no: string | null; internal_expected_dd: string | null }>)) {
+        if (s.doc_no) soProcByDoc.set(s.doc_no, s.internal_expected_dd ?? null);
+      }
+    }
+  }
   /* Finance gate — cost / margin / per-category subtotals reach ONLY a
      finance-viewer; stripped from every row otherwise. */
   const showFinance = canViewScmFinance(c);
@@ -2329,6 +2345,7 @@ deliveryOrdersMfg.get('/', async (c) => {
       ...r,
       has_children: childIds.has(r.id),
       lifecycle_state: lifecycleByDo.get(r.id) ?? 'shipped',
+      so_internal_expected_dd: soProcByDoc.get((r.so_doc_no as string | null) ?? '') ?? null,
     };
     if (!showFinance) for (const k of DO_FINANCE_KEYS) delete row[k];
     return row;

@@ -146,7 +146,7 @@ import {
   loadProductAndModel,
   loadProductsAndModels,
 } from '../lib/allowed-options-check';
-import { findIncompleteVariantLines, type VariantOffender } from '../lib/so-variant-check';
+import { findColourKivLines, findIncompleteVariantLines, type ColourKivOffender, type VariantOffender } from '../lib/so-variant-check';
 /* Aggregate ALL Processing-Date/save gate failures into one response instead of
    returning on the first (owner 2026-07-18). Pure — no I/O. */
 import { collectProcessingGateProblems, validationFailedBody } from '../shared/so-save-problems';
@@ -3112,19 +3112,19 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
        aggregated shape at its own site below. All dates are NEW on create, so no
        grandfather originals are passed. Fast-fail, before any PWP claim burns. */
     const todayMY = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+    const linesForVariantCheck = items.map((it) => ({
+      itemCode: String(it.itemCode ?? ''),
+      group:    (it.itemGroup as string | null | undefined) ?? null,
+      variants: (it.variants as Record<string, unknown> | null) ?? null,
+    }));
     const createProblems = collectProcessingGateProblems({
       procDate,
       delivDate,
       todayMY,
-      variantOffenders: procDate
-        ? findIncompleteVariantLines(
-            items.map((it) => ({
-              itemCode: String(it.itemCode ?? ''),
-              group:    (it.itemGroup as string | null | undefined) ?? null,
-              variants: (it.variants as Record<string, unknown> | null) ?? null,
-            })),
-          )
-        : [],
+      variantOffenders: procDate ? findIncompleteVariantLines(linesForVariantCheck) : [],
+      /* Colour-KIV gate (owner 2026-07-24, SO-2607-016) — a create IS a fresh
+         date, so any procDate here is "setting" it: no KIV line may ride in. */
+      kivOffenders: procDate ? findColourKivLines(linesForVariantCheck) : [],
     });
     if (createProblems.length > 0) return c.json(validationFailedBody(createProblems), 422);
     if (items.length > 0) {
@@ -6309,6 +6309,7 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
      wholesale lock / a different action, not "fix this field and re-save" input
      problems, and each carries a distinct HTTP status. */
   let variantOffenders: VariantOffender[] = [];
+  let kivOffenders: ColourKivOffender[] = [];
   let depositFacts: { paidCenti: number; totalCenti: number } | null = null;
 
   /* PR — Commander 2026-05-28 — Server-side variant rule enforcement.
@@ -6327,11 +6328,26 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
       .select('id, item_code, item_group, variants, cancelled')
       .eq('doc_no', docNo);
     // Shared with the POST create path (so-variant-check) — one rule, no drift.
-    variantOffenders = findIncompleteVariantLines(
+    const liveLinesForCheck =
       ((liveItems ?? []) as Array<{ id: string; item_code: string; item_group: string; variants: Record<string, unknown> | null; cancelled: boolean }>)
         .filter((it) => !it.cancelled)
-        .map((it) => ({ id: it.id, itemCode: it.item_code, group: it.item_group, variants: it.variants })),
-    );
+        .map((it) => ({ id: it.id, itemCode: it.item_code, group: it.item_group, variants: it.variants }));
+    variantOffenders = findIncompleteVariantLines(liveLinesForCheck);
+    /* Colour-KIV gate (owner 2026-07-24, SO-2607-016) — only when this PATCH
+       genuinely SETS or CHANGES the Processing Date (unchanged values were
+       dropped by the normalisation above; the compare here is belt-and-braces,
+       mirroring the deposit gate below). An edit that leaves the stored date
+       alone — remarks on an old KIV order — must never trip this, and clearing
+       the date is handled by the non-null condition on this whole block. */
+    {
+      const procPatch = String(body['internalExpectedDd']).slice(0, 10);
+      const origProcPatch = String(
+        ((before as unknown as Record<string, unknown> | null)?.['internal_expected_dd'] as string | null) ?? '',
+      ).slice(0, 10);
+      if (procPatch !== origProcPatch) {
+        kivOffenders = findColourKivLines(liveLinesForCheck);
+      }
+    }
   }
 
   /* HZ-C-02: every real human-editor header mutation carries the token returned
@@ -6498,6 +6514,7 @@ export const patchMfgSalesOrderHeaderHandler = async (c: any) => {
       origProcDate: origProc,
       origDelivDate: origDeliv,
       variantOffenders,
+      kivOffenders,
       deposit: depositFacts,
     });
     if (problems.length > 0) return c.json(validationFailedBody(problems), 422);
@@ -7019,16 +7036,29 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
      shared guard on this added line when the SO carries a Processing Date
      (internal_expected_dd). Same 409 shape the header path returns. */
   if ((header as { internal_expected_dd?: string | null }).internal_expected_dd) {
-    const offenders = findIncompleteVariantLines([{
+    const addedLine = [{
       itemCode: itemCodeStr,
       group: (it.itemGroup as string | null | undefined) ?? null,
       variants: variantsObj as Record<string, unknown> | null,
-    }]);
+    }];
+    const offenders = findIncompleteVariantLines(addedLine);
     if (offenders.length > 0) {
       return c.json({
         error: 'variants_incomplete',
         message: 'Processing Date requires all category-mandatory variants on every line.',
         offenders,
+      }, 409);
+    }
+    /* Colour-KIV (owner 2026-07-24, SO-2607-016) — the header gate blocks
+       SETTING a Processing Date while a line is KIV; this closes the mirror
+       hole of ADDING a KIV line to an SO that already carries one. Same 409
+       shape as the variants gate above. */
+    const kiv = findColourKivLines(addedLine);
+    if (kiv.length > 0) {
+      return c.json({
+        error: 'fabric_colour_kiv',
+        message: `${itemCodeStr} — fabric colour is still KIV. This order already has a Processing Date, so confirm the colour before adding the line.`,
+        offenders: kiv,
       }, 409);
     }
   }
@@ -7609,17 +7639,30 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
     const { data: soHdr } = await sb.from('mfg_sales_orders')
       .select('internal_expected_dd').eq('doc_no', docNo).maybeSingle();
     if ((soHdr as { internal_expected_dd?: string | null } | null)?.internal_expected_dd) {
-      const offenders = findIncompleteVariantLines([{
+      const editedLine = [{
         id: itemId,
         itemCode: itemCodeAfter,
         group: itemGroupAfter,
         variants: variantsAfter as Record<string, unknown> | null,
-      }]);
+      }];
+      const offenders = findIncompleteVariantLines(editedLine);
       if (offenders.length > 0) {
         return c.json({
           error: 'variants_incomplete',
           message: 'Processing Date requires all category-mandatory variants on every line.',
           offenders,
+        }, 409);
+      }
+      /* Colour-KIV (owner 2026-07-24, SO-2607-016) — a line edit must not turn
+         a confirmed fabric back into KIV on an SO that already carries a
+         Processing Date. Same grandfather as the variants gate: only fires
+         when this call actually changed variants / item code. */
+      const kiv = findColourKivLines(editedLine);
+      if (kiv.length > 0) {
+        return c.json({
+          error: 'fabric_colour_kiv',
+          message: `${itemCodeAfter} — fabric colour is still KIV. This order already has a Processing Date, so confirm the colour instead of leaving it KIV.`,
+          offenders: kiv,
         }, 409);
       }
     }

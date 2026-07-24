@@ -34,7 +34,7 @@ import {
   type MfgFabricTier,
 } from '@2990s/shared/mfg-pricing';
 import { missingVariantAxes } from '@2990s/shared/so-variant-rule';
-import { activeOptions, lineIdentity, maintPickerValues, fmtMoneyCenti } from '@2990s/shared';
+import { activeOptions, isColourKiv, lineIdentity, maintPickerValues, fmtMoneyCenti } from '@2990s/shared';
 import {
   useMfgProducts,
   useMaintenanceConfig,
@@ -591,6 +591,11 @@ const SoLineCardInner = ({
     [draft.qty, draft.unitPriceCenti, draft.discountCenti],
   );
 
+  /* Colour KIV (owner 2026-07-24, SO-2607-016) — the line committed to a
+     fabric SERIES but the colour is still open. The Fabrics box already shows
+     the required-red border; this names WHY it is red and what blocks next:
+     the server refuses a Processing Date while any line is still KIV. */
+  const colourKiv = isColourKiv(draft.variants);
   const badge = CATEGORY_BADGE[category] ?? CATEGORY_BADGE.others!;
   /* Drive the configurator off the EFFECTIVE category (resolved above), NOT the
      raw persisted itemGroup — so a scan/backdoor sofa/bedframe draft whose
@@ -890,6 +895,11 @@ const SoLineCardInner = ({
               onChange={(v) => setVariant('legHeight', v)}
             />
           </div>
+          {colourKiv && (
+            <div style={{ fontSize: 'var(--fs-11)', fontWeight: 600, color: 'var(--c-festive-b, #B8331F)' }}>
+              Colour KIV — confirm the colour before a Processing Date can be set.
+            </div>
+          )}
           {/* Computed Total Height marker — Houzs shows this read-only;
               we surface it as a small inline hint instead of a 5th cell. */}
           {computedTotalHeight && (
@@ -951,6 +961,11 @@ const SoLineCardInner = ({
             {/* Empty cell so the 4-col grid stays balanced */}
             <span />
           </div>
+          {colourKiv && (
+            <div style={{ fontSize: 'var(--fs-11)', fontWeight: 600, color: 'var(--c-festive-b, #B8331F)' }}>
+              Colour KIV — confirm the colour before a Processing Date can be set.
+            </div>
+          )}
           <SpecialOrders
             open={specialsOpen}
             onToggle={() => setSpecialsOpen((o) => !o)}

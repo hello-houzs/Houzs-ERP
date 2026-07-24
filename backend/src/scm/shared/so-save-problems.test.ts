@@ -108,6 +108,75 @@ describe('collectProcessingGateProblems', () => {
     expect(ps).toEqual([]);
   });
 
+  /* Colour-KIV gate (owner rule 2026-07-24, after SO-2607-016 reached
+     production planning with two KIV sofa lines): a Processing Date may not be
+     set or changed while any non-cancelled line's fabric colour is still KIV. */
+  describe('fabric_colour_kiv', () => {
+    it('KIV line + a Processing Date being set -> rejected, naming the line + series', () => {
+      const ps = collectProcessingGateProblems({
+        procDate: '2099-01-10',
+        delivDate: '2099-02-10',
+        todayMY: '2026-07-24',
+        kivOffenders: [{ itemCode: 'SOFA-XAMMAR-L', fabricLabel: 'EZ' }],
+      });
+      expect(ps).toHaveLength(1);
+      expect(ps[0]).toMatchObject({ code: 'fabric_colour_kiv', line: 'SOFA-XAMMAR-L', field: 'Fabrics' });
+      expect(ps[0]!.message).toBe(
+        'SOFA-XAMMAR-L — fabric colour is still KIV (EZ). Confirm the colour before setting the Processing Date.',
+      );
+    });
+
+    it('KIV line + a save that does NOT touch the Processing Date -> allowed', () => {
+      // Routes only pass kivOffenders when the date genuinely changes, but even
+      // if one slips through, no procDate on this save means no block — editing
+      // remarks on an old KIV order must still work.
+      const ps = collectProcessingGateProblems({
+        procDate: null,
+        delivDate: null,
+        todayMY: '2026-07-24',
+        kivOffenders: [{ itemCode: 'SOFA-XAMMAR-L', fabricLabel: 'EZ' }],
+      });
+      expect(ps).toEqual([]);
+    });
+
+    it('resolved colour (no KIV offenders) + a Processing Date -> allowed', () => {
+      const ps = collectProcessingGateProblems({
+        procDate: '2099-01-10',
+        delivDate: '2099-02-10',
+        todayMY: '2026-07-24',
+        variantOffenders: [],
+        kivOffenders: [],
+      });
+      expect(ps).toEqual([]);
+    });
+
+    it('a KIV line also missing the fabricCode axis reports ONE problem (KIV wins), other axes still report', () => {
+      const ps = collectProcessingGateProblems({
+        procDate: '2099-01-10',
+        delivDate: '2099-02-10',
+        todayMY: '2026-07-24',
+        variantOffenders: [
+          { itemCode: 'SOFA-XAMMAR-L', group: 'sofa', missing: ['seatHeight', 'fabricCode'] },
+        ],
+        kivOffenders: [{ itemCode: 'SOFA-XAMMAR-L', fabricLabel: 'EZ' }],
+      });
+      expect(codes(ps)).toEqual(['variants_incomplete', 'fabric_colour_kiv']);
+      expect(ps[0]!.field).toBe('Seat Height'); // the bare fabricCode axis is suppressed, not the others
+    });
+
+    it('a series-less KIV offender still reads as a sentence', () => {
+      const ps = collectProcessingGateProblems({
+        procDate: '2099-01-10',
+        delivDate: '2099-02-10',
+        todayMY: '2026-07-24',
+        kivOffenders: [{ itemCode: 'SOFA-KATRIN-3S' }],
+      });
+      expect(ps[0]!.message).toBe(
+        'SOFA-KATRIN-3S — fabric colour is still KIV. Confirm the colour before setting the Processing Date.',
+      );
+    });
+  });
+
   it('treats a total <= 0 order as deposit-satisfied (free order)', () => {
     const ps = collectProcessingGateProblems({
       procDate: '2099-01-10',
