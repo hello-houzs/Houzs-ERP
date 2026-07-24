@@ -341,6 +341,47 @@ export function useCogsEntries(opts?: { warehouseId?: string; productCode?: stri
   });
 }
 
+/* Reserved-but-unshipped — one row per OPEN FIFO lot with the READY SO demand
+   claiming it (GET /inventory/reservations). `reserved_since` is the reserving
+   SO's created_at (no allocation timestamp exists — an honest proxy for the age
+   of the claim). status FREE = no order claims the lot yet. */
+export type InventoryReservationClaim = {
+  doc_no: string;
+  so_created_at: string | null;
+  qty_ready: number;
+};
+export type InventoryReservation = {
+  warehouse_id: string;
+  warehouse_code: string | null;
+  warehouse_name: string | null;
+  product_code: string;
+  product_name: string | null;
+  variant_key: string;
+  batch_no: string | null;
+  qty_remaining: number;
+  unit_cost_sen: number;
+  received_at: string | null;
+  status: 'RESERVED' | 'FREE';
+  reserved_by: InventoryReservationClaim[];
+  reserved_since: string | null;
+};
+
+export function useInventoryReservations(opts?: { warehouseId?: string; productCode?: string }) {
+  return useQuery({
+    queryKey: ['inventory', 'reservations', opts ?? {}],
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams();
+      if (opts?.warehouseId) params.set('warehouseId', opts.warehouseId);
+      if (opts?.productCode) params.set('productCode', opts.productCode);
+      return authedFetch<{ reservations: InventoryReservation[] }>(
+        `/inventory/reservations${params.toString() ? `?${params.toString()}` : ''}`,
+        { signal },
+      ).then((r) => r.reservations);
+    },
+    staleTime: 30_000,
+  });
+}
+
 export function useInventoryMovements(opts?: {
   warehouseId?: string;
   productCode?: string;

@@ -18,6 +18,8 @@
 //                                                ?warehouseId&productCode (Stage 2 sofa batch view)
 //   GET   /inventory/cogs                     — COGS stream (consumption flat list)
 //   GET   /inventory/value                    — inventory valuation (qty × cost)
+//   GET   /inventory/reservations             — open lots + the READY SO demand
+//                                                claiming them (reserved vs free)
 //
 // The manual stock ADJUSTMENT write (POST /inventory/adjustments) lives in its
 // own router (routes/inventory-adjustments.ts) so it can be gated on the
@@ -35,6 +37,7 @@ import {
 } from '../lib/companyScope';
 import { canonicalizeMyState } from '../lib/canonical-state';
 import { enrichVariantKeyRowsWithFabricSupplierCode } from '../lib/fabric-supplier-code';
+import { computeVariantKey, type VariantAttrs } from '../shared';
 import type { Env, Variables } from '../env';
 
 export const inventory = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -955,4 +958,131 @@ inventory.get('/buckets/:productCode', async (c) => {
     .filter((b) => b.qty > 0)
     .sort((a, b) => (a.batch_no ?? '').localeCompare(b.batch_no ?? '') || a.variant_key.localeCompare(b.variant_key));
   return c.json({ buckets });
+});
+
+/* ── Reserved-but-unshipped visibility ───────────────────────────────────
+   Every OPEN FIFO lot (qty_remaining > 0) alongside the READY sales-order
+   demand that claims it — so the owner can see, for a lot sitting unshipped,
+   WHICH SO reserved it vs which stock is free (no order). Read-only; no
+   schema change.
+
+   Matching mirrors the allocator (so-stock-allocation.ts):
+     • BATCHED lot (batch_no present, e.g. sofa) — a READY line claims it only
+       when its allocated_batch_no equals the lot's batch_no and the item_code
+       matches. This is a TRUE lot-level pin.
+     • UN-BATCHED lot — allocation is bucket-level (warehouse + item_code +
+       variant_key), never lot-pinned, so every READY line on that bucket is
+       listed as a claimant of every open lot in it. Faithful to how the
+       allocator actually reserves: the bucket is the unit, not the lot.
+
+   No allocation timestamp exists in the schema, so "reserved since" is the
+   reserving SO's created_at — an honest proxy for the age of the claim, not a
+   fabricated allocation time. ?warehouseId / ?productCode narrow the scan. */
+inventory.get('/reservations', async (c) => {
+  const sb = c.get('supabase');
+  const warehouseId = c.req.query('warehouseId');
+  const productCode = c.req.query('productCode');
+
+  // 1. Open lots (company-scoped) — the stock actually sitting on the shelf.
+  const { data: lotRows, error: lotErr } = await paginateAll<{
+    product_code: string; product_name: string | null; variant_key: string | null;
+    warehouse_id: string; batch_no: string | null; qty_remaining: number | null;
+    unit_cost_sen: number | null; received_at: string | null;
+  }>((from, to) => {
+    let q = sb.from('v_inventory_lots_open')
+      .select('product_code, product_name, variant_key, warehouse_id, batch_no, qty_remaining, unit_cost_sen, received_at')
+      .gt('qty_remaining', 0);
+    q = scopeToCompany(q, c); // open lots are per-company (view exposes company_id, mig 0106)
+    if (warehouseId) q = q.eq('warehouse_id', warehouseId);
+    if (productCode) q = q.eq('product_code', productCode);
+    return q.order('received_at', { ascending: true }).range(from, to);
+  });
+  if (lotErr) return c.json({ error: 'load_failed', reason: lotErr.message }, 500);
+  const lots = lotRows ?? [];
+
+  // 2. READY SO demand (company-scoped) — the lines the allocator flipped to
+  //    READY because stock exists for them. allocated_batch_no is forward-compat
+  //    (mig 0121): fall back to a batch-less select if the column is absent.
+  const SO_DONE = new Set(['DELIVERED', 'INVOICED', 'CLOSED', 'CANCELLED', 'SHIPPED']);
+  type ReadyLine = {
+    id: string; doc_no: string; item_code: string; item_group: string | null;
+    variants: VariantAttrs | null; warehouse_id: string | null;
+    stock_qty_ready: number | null; allocated_batch_no?: string | null;
+    so: { created_at: string | null; status: string | null } | Array<{ created_at: string | null; status: string | null }> | null;
+  };
+  const READY_SELECT = 'id, doc_no, item_code, item_group, variants, warehouse_id, stock_qty_ready, allocated_batch_no, so:mfg_sales_orders!inner(created_at, status)';
+  const READY_SELECT_NOBATCH = 'id, doc_no, item_code, item_group, variants, warehouse_id, stock_qty_ready, so:mfg_sales_orders!inner(created_at, status)';
+  let readyRows: ReadyLine[] = [];
+  {
+    const pull = (select: string) => paginateAll<ReadyLine>((from, to) => scopeToCompany(sb
+      .from('mfg_sales_order_items')
+      .select(select)
+      .eq('stock_status', 'READY')
+      .eq('cancelled', false), c)
+      .range(from, to) as unknown as PromiseLike<{ data: ReadyLine[] | null; error: { message: string; code?: string } | null }>);
+    let res = await pull(READY_SELECT);
+    if (res.error && /allocated_batch_no|column .* does not exist/i.test(res.error.message ?? '')) {
+      res = await pull(READY_SELECT_NOBATCH);
+    }
+    if (res.error) return c.json({ error: 'load_failed', reason: res.error.message }, 500);
+    readyRows = (res.data ?? []).filter((r) => {
+      const so = Array.isArray(r.so) ? r.so[0] : r.so;
+      return so != null && !SO_DONE.has((so.status ?? '').toUpperCase());
+    });
+  }
+
+  // 3. Index READY demand two ways to mirror the allocator's two match paths.
+  type Claim = { docNo: string; soCreatedAt: string | null; qtyReady: number };
+  const byBatch = new Map<string, Claim[]>();   // key: `${batch_no}|${item_code}`
+  const byBucket = new Map<string, Claim[]>();  // key: `${warehouse_id}|${item_code}|${variant_key}`
+  for (const r of readyRows) {
+    const so = Array.isArray(r.so) ? r.so[0] : r.so;
+    const claim: Claim = { docNo: r.doc_no, soCreatedAt: so?.created_at ?? null, qtyReady: Number(r.stock_qty_ready ?? 0) };
+    const bn = r.allocated_batch_no ?? null;
+    if (bn) {
+      const k = `${bn}|${r.item_code}`;
+      (byBatch.get(k) ?? byBatch.set(k, []).get(k)!).push(claim);
+    }
+    const vk = computeVariantKey(r.item_group ?? null, r.variants ?? null);
+    const bk = `${r.warehouse_id ?? ''}|${r.item_code}|${vk}`;
+    (byBucket.get(bk) ?? byBucket.set(bk, []).get(bk)!).push(claim);
+  }
+
+  const { data: whs } = await sb.from('warehouses').select('id, code, name');
+  const whMap = new Map((whs ?? []).map((w: { id: string; code: string; name: string }) => [w.id, w]));
+
+  // 4. One row per open lot, tagged RESERVED (claimed by ≥1 READY SO) or FREE.
+  const reservations = lots.map((l) => {
+    const vk = l.variant_key ?? '';
+    const claims = l.batch_no
+      ? (byBatch.get(`${l.batch_no}|${l.product_code}`) ?? [])
+      : (byBucket.get(`${l.warehouse_id}|${l.product_code}|${vk}`) ?? []);
+    // Collapse to one entry per SO doc; reserved-since = earliest claiming SO.
+    const byDoc = new Map<string, Claim>();
+    for (const cl of claims) {
+      const cur = byDoc.get(cl.docNo);
+      if (cur) cur.qtyReady += cl.qtyReady;
+      else byDoc.set(cl.docNo, { ...cl });
+    }
+    const reservedBy = [...byDoc.values()].sort((a, b) => (a.soCreatedAt ?? '').localeCompare(b.soCreatedAt ?? ''));
+    const reservedSince = reservedBy.length > 0 ? reservedBy[0].soCreatedAt : null;
+    const w = whMap.get(l.warehouse_id);
+    return {
+      warehouse_id: l.warehouse_id,
+      warehouse_code: w?.code ?? null,
+      warehouse_name: w?.name ?? null,
+      product_code: l.product_code,
+      product_name: l.product_name,
+      variant_key: vk,
+      batch_no: l.batch_no,
+      qty_remaining: Number(l.qty_remaining ?? 0),
+      unit_cost_sen: Number(l.unit_cost_sen ?? 0),
+      received_at: l.received_at,
+      status: reservedBy.length > 0 ? 'RESERVED' : 'FREE',
+      reserved_by: reservedBy.map((x) => ({ doc_no: x.docNo, so_created_at: x.soCreatedAt, qty_ready: x.qtyReady })),
+      reserved_since: reservedSince,
+    };
+  });
+
+  return c.json({ reservations });
 });
