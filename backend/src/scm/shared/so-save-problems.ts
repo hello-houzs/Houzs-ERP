@@ -39,6 +39,14 @@ export type VariantOffenderLike = {
   missing: readonly string[];
 };
 
+/** Offender shape produced by findColourKivLines — structural for the same
+ *  reason as VariantOffenderLike. A line here committed to a fabric SERIES
+ *  (fabricLabel, e.g. "EZ") but its COLOUR is still KIV (no fabricCode). */
+export type ColourKivOffenderLike = {
+  itemCode: string;
+  fabricLabel?: string;
+};
+
 /** Canonical axis key → human label for the given category ('legHeight' →
  *  'Leg Height'). Falls back to the raw key if the axis isn't in the rule. */
 const axisLabel = (group: string, key: string): string => {
@@ -62,6 +70,14 @@ export type ProcessingGateFacts = {
   /** Lines whose category-mandatory variants aren't filled — exactly what the
    *  routes get from findIncompleteVariantLines. */
   variantOffenders?: readonly VariantOffenderLike[];
+  /** Lines whose fabric colour is still KIV (findColourKivLines). Owner rule
+   *  2026-07-24 (after SO-2607-016): the moment an SO carries a Processing
+   *  Date, every line must be a fully-confirmed maintained selection — a
+   *  colour-KIV line blocks the date. Routes must pass this ONLY when the save
+   *  genuinely SETS or CHANGES internal_expected_dd (the offenders are ignored
+   *  when procDate is null, and clearing the date never blocks), so editing
+   *  e.g. a remark on an old KIV order still works. */
+  kivOffenders?: readonly ColourKivOffenderLike[];
   /** Deposit-vs-total for the 30% gate, SAME unit on both sides (centi on the
    *  server). Omit / null when the gate doesn't apply on this path (the
    *  consignment mirror has no deposit gate). The shortfall is reported only
@@ -81,14 +97,41 @@ export function collectProcessingGateProblems(facts: ProcessingGateFacts): SaveP
   // 1. Category-mandatory variants — one problem per (line, missing axis) so the
   //    UI can name the exact line AND the exact field to fill. Mirrors the
   //    routes' findIncompleteVariantLines → 409 variants_incomplete.
+  //    A line that is colour-KIV also reads as "fabricCode missing" here; the
+  //    KIV problem below explains that state better ("confirm the colour", not
+  //    "Fabrics is required"), so the bare fabricCode axis is suppressed for
+  //    those lines to avoid double-reporting the same field.
+  const kivLines = new Set((facts.kivOffenders ?? []).map((o) => o.itemCode));
   for (const off of facts.variantOffenders ?? []) {
     for (const key of off.missing) {
+      if (key === 'fabricCode' && kivLines.has(off.itemCode)) continue;
       const label = axisLabel(off.group, key);
       out.push({
         code: 'variants_incomplete',
         message: `${off.itemCode} — ${label} is required`,
         line: off.itemCode,
         field: label,
+      });
+    }
+  }
+
+  // 1b. Colour KIV — the line committed to a fabric SERIES with the colour
+  //     confirmed later (variants carry fabricId/fabricLabel, no fabricCode).
+  //     Owner rule 2026-07-24 (verbatim intent: "如果它一有 processing date,
+  //     就一定要有我们维护里面的选项,不能这样子随便选,要不然我们过不到单"),
+  //     after SO-2607-016 reached production planning with two KIV sofa lines
+  //     and the factory could not proceed. Only fires when a Processing Date is
+  //     actually being set on this save — the routes additionally pass
+  //     kivOffenders only when the date genuinely changes, so an unrelated edit
+  //     to an old KIV order (or clearing the date) is never blocked.
+  if (facts.procDate) {
+    for (const off of facts.kivOffenders ?? []) {
+      const series = (off.fabricLabel ?? '').trim();
+      out.push({
+        code: 'fabric_colour_kiv',
+        message: `${off.itemCode} — fabric colour is still KIV${series ? ` (${series})` : ''}. Confirm the colour before setting the Processing Date.`,
+        line: off.itemCode,
+        field: 'Fabrics',
       });
     }
   }
