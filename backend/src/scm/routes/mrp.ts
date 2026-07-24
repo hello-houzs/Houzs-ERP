@@ -855,6 +855,75 @@ export function mrpLineCoverage(result: MrpResult): Map<string, SoLineCoverage> 
   return map;
 }
 
+/* One floating-coverage assignment, seen from the PURCHASE side: a PO's supply
+   is currently covering this outstanding Sales-Order line. Advisory only. */
+export type PoCoverageAssignment = {
+  soItemId: string;      // mfg_sales_order_items.id (lets the UI deep-link the SO)
+  soDocNo: string;       // Sales Order document number (clickable target)
+  itemCode: string;      // the SKU the coverage matched on
+  variantLabel: string | null;
+  deliveryDate: string | null; // the covered SO LINE's delivery date (owner ask)
+  debtorName: string | null;
+  warehouseName: string | null;
+  qty: number;           // the SO line's still-to-fulfil qty (advisory)
+};
+
+/* Reverse of mrpLineCoverage: group the SAME floating allocation by the COVERING
+   PO number, so a purchase document (PO / GRN / PI) can show which outstanding
+   Sales-Order line(s) its supply is currently floating-assigned to, and that SO
+   line's delivery date — matched by SKU (coverage is computed per
+   (warehouse, code, variant) bucket, so an assignment's itemCode always equals
+   the covering PO line's material_code).
+
+   ADVISORY, NOT A BINDING. This is linkage A (pooled, read-time, evaporates on
+   delivery), never a stored PO↔SO link — the owner raises POs against the PO,
+   not the SO ("我拿货是根据PO而不是看SO"). One source of truth with the MRP page
+   and the SO drill-down: all three read computeMrp's single allocation.
+
+   LIMITATION (stated, not hidden): MrpLine/SofaSet record only the FIRST
+   (earliest-ETA) covering PO of a split line, so a line fed by multiple POs is
+   attributed to just one of them here — an under-attribution, never a wrong
+   attribution. */
+export function mrpReverseCoverage(result: MrpResult): Map<string, PoCoverageAssignment[]> {
+  const map = new Map<string, PoCoverageAssignment[]>();
+  const push = (po: string | null, a: PoCoverageAssignment): void => {
+    if (!po) return;
+    const arr = map.get(po) ?? [];
+    arr.push(a);
+    map.set(po, arr);
+  };
+  for (const sku of result.skus) {
+    for (const l of sku.lines) {
+      if (l.source !== 'po' || !l.poNumber) continue;
+      push(l.poNumber, {
+        soItemId: l.soItemId,
+        soDocNo: l.soDocNo,
+        itemCode: sku.itemCode,
+        variantLabel: sku.variantLabel,
+        deliveryDate: l.deliveryDate,
+        debtorName: l.debtorName,
+        warehouseName: sku.warehouseName,
+        qty: l.qty,
+      });
+    }
+  }
+  // Sofa SETS aren't in skus[].lines — a set with a covering PO is an assignment.
+  for (const s of result.sofaSets) {
+    if (!s.poNumber) continue;
+    push(s.poNumber, {
+      soItemId: s.soItemId,
+      soDocNo: s.soDocNo,
+      itemCode: s.itemCode,
+      variantLabel: s.variantLabel,
+      deliveryDate: s.deliveryDate,
+      debtorName: s.debtorName,
+      warehouseName: s.warehouseName,
+      qty: s.qty,
+    });
+  }
+  return map;
+}
+
 mrp.get('/', async (c) => {
   const sb = c.get('supabase');
   const category = c.req.query('category');

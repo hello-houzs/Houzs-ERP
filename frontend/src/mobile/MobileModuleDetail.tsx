@@ -5,6 +5,7 @@ import { lineIdentity, orderLineIdentity } from "@2990s/shared";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
 import { formatPhone } from "@2990s/shared/phone";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
+import { usePoSoCoverage } from "../vendor/scm/lib/flow-queries";
 import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -1243,6 +1244,50 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
   );
 }
 
+/* Advisory floating "assigned Sales Order" for a purchase document, mobile twin
+   of the desktop DocumentTraceability strip. Same backend read
+   (/po-so-coverage/:type/:id), same one-logic-layer answer: which outstanding SO
+   line(s) this PO/GRN/PI's supply is currently pooled against (matched by SKU) +
+   that SO line's delivery date. ADVISORY — a read-time MRP pool, not a hard PO↔SO
+   binding (the owner buys against the PO, not the SO). Display-only on mobile
+   (the phone shell is a screen machine, not a router) — the desktop strip is the
+   clickable surface; the information shown is identical. */
+const COVERAGE_TYPE: Record<string, "po" | "grn" | "pi"> = {
+  "mfg-purchase-orders": "po",
+  grns: "grn",
+  "purchase-invoices": "pi",
+};
+function PoSoCoverageMobile({ moduleKey, id }: { moduleKey: string; id: string }) {
+  const type = COVERAGE_TYPE[moduleKey] ?? null;
+  const covQ = usePoSoCoverage(type, type ? id : null);
+  if (!type) return null;
+  const covered = (covQ.data?.skus ?? []).filter((sk) => sk.assignments.length > 0);
+  // Fail-soft: while loading, on error, or with nothing to show, render nothing
+  // (the document-relationship graph is a desktop-only surface on this screen).
+  if (covQ.isLoading || covQ.isError || covered.length === 0) return null;
+  return (
+    <>
+      <Eyebrow>Assigned Sales Order · advisory</Eyebrow>
+      <div style={cardStyle}>
+        <div style={{ fontSize: 10, color: "#9aa093", padding: "7px 0 3px" }}>
+          Floating MRP coverage — matched by SKU, not a hard PO link.
+        </div>
+        {covered.map((sk) => (
+          <div key={sk.itemCode} style={{ padding: "7px 0", borderTop: "1px solid #f0f1ec" }}>
+            <div style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: "#5c6152", marginBottom: 4 }}>{sk.itemCode}</div>
+            {sk.assignments.map((a) => (
+              <div key={a.soItemId} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, padding: "2px 0" }}>
+                <span style={{ fontWeight: 600, color: "#2c3327" }}>{a.soDocNo}</span>
+                <span style={{ color: "#767b6e", fontFamily: "monospace" }}>{a.deliveryDate ? dmy(a.deliveryDate) : "no date"}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: DocMap; row: any; moduleKey: string; onBack: () => void; onEdit?: () => void; onPOD?: () => void }) {
   const id = docId(row);
   const qc = useQueryClient();
@@ -1346,6 +1391,8 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
                 return <LineItem key={s(it?.id) || i} name={l.name} sub={l.sub} qty={l.qty} unitCenti={l.unitCenti} amountCenti={l.amountCenti} />;
               }) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>No line items.</div>)}
             </div>
+
+            <PoSoCoverageMobile moduleKey={moduleKey} id={id} />
           </div>
         )}
       </div>

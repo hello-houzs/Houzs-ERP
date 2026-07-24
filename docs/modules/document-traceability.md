@@ -36,20 +36,47 @@ conflicting "assigned to" SOs.
 
 ## 2. What shipped (cleanly derivable)
 
-### 2.1 PO / GRN / PI traceability strip — uses linkage **B**
+### 2.1 PO / GRN / PI traceability strip — uses linkage **B** AND linkage **A**
 `frontend/src/components/DocumentTraceability.tsx`, rendered above the per-line
 `DocumentLinesExpansion` in each of `PurchaseOrdersListV2` / `GoodsReceivedListV2`
-/ `PurchaseInvoicesListV2` (the `Xxx LinesExpansion` wrappers).
+/ `PurchaseInvoicesListV2` (the `Xxx LinesExpansion` wrappers). The mobile twin
+is `PoSoCoverageMobile` in `frontend/src/mobile/MobileModuleDetail.tsx`, injected
+under Line items on the PO / GRN / PI document detail (display-only).
 
-- Reuses the EXISTING `useDocumentFlow(type, id)` hook (`vendor/scm/lib/flow-queries.ts`)
-  → `GET /api/scm/document-flow/:type/:id`. No new backend endpoint.
-- Renders the resolved **Sales Order / Delivery Order / Sales Invoice** documents
-  the anchor descends from (anchor node excluded; empty stages omitted).
-- The endpoint is already **read-only and company-scoped** server-side
-  (`activeCompanyId` gate on the root SOs; `scopeToCompany` on every anchor read).
-- Honesty: this is the DOCUMENT RELATIONSHIP (linkage B), NOT a physical-unit
-  claim. GRN → PO → SO → DO/SI and PI → GRN → PO → SO → DO/SI both resolve
-  through B's stored FKs; the DO/SI simply appear once they exist.
+The strip now shows TWO clearly-labelled reads side by side:
+
+- **Assigned Sales Order · advisory (floating MRP coverage)** — linkage **A**,
+  the REVERSE of `computeMrp` (see §2.4). Per SKU, the outstanding SO line(s)
+  this document's supply is pooled against + that SO line's delivery date. SO
+  chips are clickable on desktop (→ `/scm/sales-orders/:docNo`). This is what
+  replaced the frustrating "Not yet linked to a Sales Order" empty state for a
+  floating PO.
+- **Document relationship** — linkage **B**, the resolved
+  **Sales Order / Delivery Order / Sales Invoice** the anchor descends from via
+  `useDocumentFlow(type, id)` → `GET /api/scm/document-flow/:type/:id` (anchor
+  node excluded; empty stages omitted). Read-only + company-scoped server-side.
+- Honesty: B is the DOCUMENT RELATIONSHIP (stored FKs), NOT a physical-unit
+  claim; A is a live pool that shifts and evaporates on delivery. When only B
+  exists it shows alone; when neither exists the strip now reads
+  **"Floating stock — not yet assigned to a Sales Order."**, never a blank.
+
+### 2.4 PO "assigned SO + delivery date" as a FLOATING view — uses linkage **A**
+Shipped (was deferred in §3.1). `backend/src/scm/routes/po-so-coverage.ts`
+(`GET /po-so-coverage/:type/:id`, `type ∈ po|grn|pi`), mounted on the coarse SCM
+read gate beside `/document-flow` (same sensitivity class — SO doc no, delivery
+date, customer name, qty, warehouse; **no cost, no margin**). It reuses the ONE
+allocation via a new `mrpReverseCoverage(result)` in `mrp.ts` (sibling of
+`mrpLineCoverage`, grouped by covering PO number), so this view, the MRP page and
+the SO drill-down can never disagree. The route resolves GRN→PO and PI→GRN→PO,
+reads the PO's own line SKUs so an un-covered SKU still shows (as "not yet
+assigned"), and calls `computeMrp` with `includeUndated: true`, `companyId =
+activeCompanyId(c)`.
+
+STATED LIMITATIONS (advisory, by design): coverage exists for OUTSTANDING demand
+only, so a fully-received GRN/PI often has an empty A-view and falls back to the
+B relationship; and `MrpLine`/`SofaSet` record only the FIRST (earliest-ETA)
+covering PO of a split line, so a multi-PO line is under-attributed (never
+mis-attributed). Labelled ADVISORY throughout — it is NOT a hard PO↔SO binding.
 
 ### 2.2 SO-side Q2 — SERVICE lines read READY
 Read path, `mfg-sales-orders.ts` `GET /:docNo` and `/:docNo/items`: a service
@@ -80,6 +107,12 @@ PO. The SI / DO / DR maps do not pass amendments and are unchanged.
 ## 3. What was STOP-and-reported (not built — would require fabricating a linkage or new persistence)
 
 ### 3.1 PO "assigned to SO + that SO line's delivery date" as a FLOATING view
+**SHIPPED 2026-07-24 — see §2.4.** The owner confirmed the floating semantics are
+what he wants, LABELLED advisory. The original deferral reasoning is kept below
+for the record; it was resolved by (a) showing A and B side by side, each
+labelled, rather than collapsing them into one "assigned to", and (b) accepting
+the multi-PO under-attribution as a stated advisory limitation.
+
 The floating coverage (A) is derivable-by-inversion of `computeMrp`'s existing
 output (group `MrpLine.poNumber` → SO lines; no re-implementation of allocation),
 and `computeMrp` already requires `companyId`. BUT:
