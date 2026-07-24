@@ -676,7 +676,11 @@ function composeDefaultProjectName(p: {
   const orgSlot = isSolo ? "SOLO" : organizer;
 
   const head: string[] = [];
-  if (state) head.push(state);
+  // State leads the name UPPERCASE (owner 2026-07-24): the 2026-07-22 canonical
+  // migration stores states Title Case ("Selangor"), but the event-name/bar
+  // convention is all-caps ("SELANGOR [AKEMI] SOLO @ …") to match the older
+  // UPPERCASE-stored names still on non-solo projects.
+  if (state) head.push(state.toUpperCase());
   if (brand) head.push(`[${brand}]`);
   if (orgSlot) head.push(orgSlot);
   const left = head.join(" ");
