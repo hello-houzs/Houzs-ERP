@@ -14,10 +14,16 @@
 //
 // TWO layouts, driven by the `country` prop:
 //   • Country pinned (Warehouse / Supplier edit — country is a separate field)
-//     → a flat <select> of just that country's states. The country field already
-//       narrowed the scope, so no per-country grouping / search box is shown.
+//     → a flat <select> of just that country's states.
 //   • Country empty (create-supplier / Venue / SO forms) → the grouped-by-country
-//     <select> plus the search box.
+//     <select>.
+//   Both desktop layouts sit under a visible type-to-search box; only `compact`
+//   (mobile, native OS picker) is select-only.
+//
+// STYLING: the default select + search box are bordered to match the sibling
+// City / Country / Postcode selects (see StatePicker.module.css) — the owner's
+// 2026-07-24 fix for the picker reading as a bare borderless control. A caller
+// may still pass `selectClassName` (e.g. mobile "fld-i") to restyle the select.
 //
 // The value MUST live in scm.my_localities. While the seed is loading or empty
 // the control stays DISABLED ("Loading…" / "No states seeded") — never a
@@ -34,6 +40,7 @@ import {
   countryForState,
   distinctStates,
 } from '../lib/localities-queries';
+import styles from './StatePicker.module.css';
 
 const PRIMARY_COUNTRY = 'Malaysia' as const;
 const UNGROUPED = 'Other' as const;
@@ -132,8 +139,7 @@ export const StatePicker = ({
       value={value}
       onChange={(e) => handlePick(e.target.value)}
       disabled={controlsDisabled}
-      className={selectClassName}
-      style={selectClassName ? undefined : { width: '100%', padding: '6px 8px', boxSizing: 'border-box' }}
+      className={selectClassName ?? styles.select}
     >
       <option value="">
         {localities.isLoading ? 'Loading…' : isEmpty ? 'No states seeded' : placeholder}
@@ -159,21 +165,24 @@ export const StatePicker = ({
     </select>
   );
 
-  /* Compact and country-pinned layouts are select-only. Only the full
-     country-empty layout carries the type-to-search box. */
-  if (compact || isCountryPinned) {
-    return <div className={className} style={style}>{selectEl}</div>;
+  const wrapCls = className ? `${styles.wrap} ${className}` : styles.wrap;
+
+  /* Compact (mobile native picker) is select-only. Every desktop layout —
+     country-pinned AND country-empty — carries the type-to-search box above
+     the select, so the search is consistently visible on every surface. */
+  if (compact) {
+    return <div className={wrapCls} style={style}>{selectEl}</div>;
   }
 
   return (
-    <div className={className} style={style}>
+    <div className={wrapCls} style={style}>
       <input
         type="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="Search state…"
         disabled={controlsDisabled}
-        style={{ width: '100%', marginBottom: 6, padding: '6px 8px', boxSizing: 'border-box' }}
+        className={styles.search}
       />
       {selectEl}
     </div>

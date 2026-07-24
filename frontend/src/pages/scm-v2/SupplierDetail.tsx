@@ -3035,6 +3035,7 @@ const SupplierInfoCard = ({
               <StatePicker
                 country={form.country}
                 value={form.state}
+                selectClassName={styles.fieldSelect}
                 onChange={(v, derivedCountry) => {
                   setF('state', v);
                   if (derivedCountry && derivedCountry !== form.country) setF('country', derivedCountry);
