@@ -20,6 +20,7 @@ import { useAuth } from "../auth/AuthContext";
 // below already calls the new name.
 import { useAnnouncementUnread } from "./useAnnouncementUnread";
 import { useToast } from "../hooks/useToast";
+import { validatePasswordStrength } from "../lib/passwordStrength";
 import {
   requestBrowserNotificationPermission,
   setBrowserNotificationPreference,
@@ -102,7 +103,7 @@ import "./mobile.css";
  *      Orders/Sales MTD + Open cases until those sources exist.
  * ------------------------------------------------------------------ */
 
-type Screen = "home" | "personal" | "notif" | "language" | "help" | "team";
+type Screen = "home" | "personal" | "notif" | "language" | "help" | "team" | "security";
 
 // The owner's directory (People > User Management) can carry a staff code
 // under any of these keys depending on backend vintage. We read-through them
@@ -274,6 +275,9 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
       />
     );
   }
+  if (screen === "security") {
+    return <SecurityScreen onBack={() => setScreen("home")} />;
+  }
 
   // ── Home ──
   const name = user?.name || myRow?.name || "—";
@@ -344,6 +348,7 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
         <div className="ey" style={{ color: "#767b6e", margin: "18px 2px 9px" }}>Account</div>
         <div className="card" style={{ overflow: "hidden" }}>
           <Item icon="users" label="Personal details" onClick={() => setScreen("personal")} first />
+          <Item icon="lock" label="Password" onClick={() => setScreen("security")} />
           <Item
             icon="mega"
             label="Notifications"
@@ -403,6 +408,7 @@ const ROW_ICONS: Record<string, React.ReactNode> = {
   mega: (<><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" /><path d="M16 8a4 4 0 0 1 0 8" /></>),
   list: (<path d="M5 4h14M5 9h14M5 14h14M5 19h9" />),
   shield: (<><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6Z" /><path d="m9 12 2 2 4-4" /></>),
+  lock: (<><rect x="4" y="10" width="16" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>),
   inbox: (<><path d="M22 12h-5.5l-2 3h-5l-2-3H2" /><path d="M5.4 5.6 2 12v5a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5l-3.4-6.4A2 2 0 0 0 16.8 4.5H7.2a2 2 0 0 0-1.8 1.1Z" /></>),
   mail: (<><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></>),
   cast: (<><path d="M4.9 19.1a10 10 0 0 1 0-14.2M7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M19.1 4.9a10 10 0 0 1 0 14.2" /><circle cx="12" cy="12" r="1.6" /></>),
@@ -563,6 +569,67 @@ function PersonalScreen({ onBack, myRow }: { onBack: () => void; myRow: MemberRo
           </div>
         </>
       )}
+    </SubScreen>
+  );
+}
+
+// ── Password & security — self-service change password (mirrors the desktop
+// Profile page's PasswordSection). The screen the header comment promised but
+// was never built: owner ask "change password on every channel". Backend POST
+// /api/auth/me/password { current, next } verifies the current password and
+// signs out other sessions on success (see routes/auth.ts). Same strength
+// validation as desktop (validatePasswordStrength). ──
+function SecurityScreen({ onBack }: { onBack: () => void }) {
+  const { user } = useAuth();
+  const toast = useToast();
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    setErr(null);
+    const strength = validatePasswordStrength(next, user?.email);
+    if (!strength.ok) { setErr(strength.error || "Password is too weak."); return; }
+    if (next !== confirm) { setErr("Passwords don't match."); return; }
+    setSubmitting(true);
+    try {
+      await api.post("/api/auth/me/password", { current, next });
+      setCurrent(""); setNext(""); setConfirm("");
+      toast.success("Password updated — other sessions signed out");
+      onBack();
+    } catch (e: any) {
+      setErr(e?.message || "Something went wrong. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const canSubmit = !!current && !!next && !!confirm && !submitting;
+
+  return (
+    <SubScreen title="Password" sub="Change your password" onBack={onBack}>
+      <div style={{ background: "#fff", border: "1px solid var(--line)", borderRadius: 14, padding: 14 }}>
+        <div style={kvLabel}>Current password</div>
+        <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" style={pwInput} />
+        <div style={{ ...kvLabel, marginTop: 14 }}>New password</div>
+        <input type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" style={pwInput} />
+        <div style={{ ...kvLabel, marginTop: 14 }}>Confirm new password</div>
+        <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" style={pwInput} />
+        {err && <div style={{ fontSize: 11.5, color: "#b23a3a", marginTop: 10 }}>{err}</div>}
+        <button
+          type="button"
+          onClick={submit}
+          disabled={!canSubmit}
+          style={{ width: "100%", marginTop: 14, background: "var(--teal)", color: "#fff", border: "none", borderRadius: 11, padding: "12px", fontSize: 13.5, fontWeight: 700, fontFamily: "inherit", cursor: canSubmit ? "pointer" : "default", opacity: canSubmit ? 1 : 0.6 }}
+        >
+          {submitting ? "Updating…" : "Update password"}
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: "#9aa093", marginTop: 11, lineHeight: 1.5, padding: "0 2px" }}>
+        Requires your current password. You'll stay signed in here; other devices will be signed out.
+      </div>
     </SubScreen>
   );
 }
@@ -838,6 +905,7 @@ function KV({ label, value, span, mono }: { label: string; value: string; span?:
 const pgrid2: React.CSSProperties = { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 };
 const sectionLabel: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, letterSpacing: ".13em", textTransform: "uppercase", color: "var(--muted)", margin: "0 2px 8px" };
 const kvLabel: React.CSSProperties = { fontSize: 8.5, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093" };
+const pwInput: React.CSSProperties = { width: "100%", marginTop: 6, border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", fontFamily: "inherit", fontSize: 14, color: "var(--ink)", outline: "none" };
 const tinyBtn: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: "var(--teal)", background: "#fff", border: "1px solid var(--line)", borderRadius: 9, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit" };
 const emptyState: React.CSSProperties = { textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" };
 const emptyStateSmall: React.CSSProperties = { fontSize: 12.5, color: "#9aa093", background: "#fff", border: "1px dashed var(--line)", borderRadius: 12, padding: "14px", textAlign: "center" };
