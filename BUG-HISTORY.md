@@ -1,5 +1,11 @@
 ## 2026-07-24
 
+### [LOW] Fabric line read "CG-002 (KN390-2) CG-002 Sand" - the supplier-parens enrichment made the colour label's leading code show twice
+- **Symptom.** Owner 2026-07-24 with screenshot: an SO drill line showed `CG-002 (KN390-2) CG-002 Sand` - the fabric code twice.
+- **Root cause (traced).** Colour labels often lead with the fabric code ("CG-002 Sand"). Before the supplier-code parens (#1174), the bare-vs-richer dedupe dropped the bare `CG-002` because the richer label starts with it. Once the code renders as `CG-002 (KN390-2)`, NEITHER part leads with the other, so both survive and the code doubles.
+- **Fix.** In `variant-summary.ts` (BOTH byte-identical copies): when the code is parens-enriched, strip the bare-code prefix off the colour parts before dedupe - the pair now reads `CG-002 (KN390-2) Sand`. No-op when there is no supplier code (the label keeps its own leading code and the old rule still drops the bare one).
+- **The class, for next time.** A dedupe keyed on "one string leads with the other" breaks the moment either side gets enriched. When enriching one part of a joined summary, re-run the duplication cases with the OTHER parts still bare.
+- **Ref:** #<PR>. Owner screenshot 2026-07-24.
 ### [MEDIUM] SO list drill-down showed no per-line stock status, no incoming PO/ETA, and no Group - the payload carried all of it and the component dropped it
 - **Symptom.** Owner 2026-07-24 with 2990 screenshots for comparison: expanding an SO row on the Sales Orders list showed only ITEM/QTY/UNIT/AMOUNT. No per-line stock status, no "which incoming PO supplies this line + ETA" (2990 shows `PO-2606-001 · ETA 21/6/2026` per line), no Group pill - "我怎么知道是什么东西还没好? incoming PO 是哪一个 PO、几时到呢?"
 - **Root cause (traced).** `SoLinesExpansion` (MfgSalesOrdersListV2.tsx) fetches `GET /mfg-sales-orders/:docNo` - the SAME endpoint that already stamps every line with `stock_status` (READY/PARTIAL/PENDING), the live MRP verdict `stock_state`, `coverage_po`/`coverage_eta` (the covering incoming PO + effective ETA), and `shipped_source_pos`. The component's `DrillItem` type simply never picked those fields up; the four-column grid predates the readiness enrichment. Not a data gap - a renderer gap.
