@@ -1184,7 +1184,7 @@ mfgSalesOrders.get('/', async (c) => {
   let total = 0;
   let page = 0;
   let pageSize = 50;
-  let statusCounts: { all: number; draft: number; confirmed: number; cancelled: number } | undefined;
+  let statusCounts: Record<string, number> | undefined;
   /* Full-set money KPIs (Revenue / Outstanding / Paid). Pre-pagination the FE
      summed these three view columns over the whole status+search-filtered set;
      paging broke that (the client could only sum the current page → "on this
@@ -1218,7 +1218,13 @@ mfgSalesOrders.get('/', async (c) => {
     if (sortCol !== 'doc_no') q = q.order('doc_no', { ascending: sortAsc });
     if (scopeIds) q = q.in('salesperson_id', scopeIds);
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
-    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    /* status=OTHER → rows whose status is OUTSIDE the known vocabulary (legacy
+       spellings / blanks). It exists so the list's "Other" pill — shown only
+       when such rows exist — can actually be opened; every real status stays
+       the exact-match it always was. */
+    const status = c.req.query('status');
+    const otherStatusOr = `status.is.null,status.not.in.(${[...SO_STATUSES].join(',')})`;
+    if (status) q = status === 'OTHER' ? q.or(otherStatusOr) : q.eq('status', status);
     /* free-text search replaces the legacy `debtor` param in this branch.
        One term matches customer NAME (debtor_name), PHONE, or the SO
        REFERENCE (ref) — plus doc_no / debtor_code / agent / location /
@@ -1241,14 +1247,36 @@ mfgSalesOrders.get('/', async (c) => {
     q = q.range(page * pageSize, page * pageSize + pageSize - 1);
 
     /* Status counts over the SAME scope + company filters but WITHOUT the status
-       filter, search, or pagination. Cheap `head`-only counts against the base
-       table (not the payments view). */
-    const countBase = () => {
-      let cq = sb.from('mfg_sales_orders').select('*', { count: 'exact', head: true });
+       filter, search, or pagination. ONE grouped PostgREST aggregate against the
+       base table (status + count per bucket) replaces the old four head-only
+       counts. The old shape (all/draft/confirmed/cancelled) HID every other live
+       status — READY_TO_SHIP, DELIVERED, ... — so the strip's buckets stopped
+       summing to All the moment an SO advanced past CONFIRMED and orders looked
+       lost (owner 2026-07-24: "ALL 68 but CONFIRMED 35 — where did they go?").
+       If the aggregate errors (aggregates disabled), fall back to paging the
+       status column and reducing in JS — never wrong, worst case slower
+       (precedent: outstanding.ts /summary). */
+    const scopedCountQ = (q0: any): any => {
+      let cq = q0;
       if (scopeIds) cq = cq.in('salesperson_id', scopeIds);
-      cq = scopeToCompany(cq, c);
-      return cq;
+      return scopeToCompany(cq, c);
     };
+    const countsProm = (async (): Promise<Record<string, number>> => {
+      const byStatus: Record<string, number> = {};
+      const bump = (raw: string | null | undefined, n: number) => {
+        const key = String(raw ?? '').toUpperCase() || 'UNKNOWN';
+        byStatus[key] = (byStatus[key] ?? 0) + n;
+      };
+      const agg = await scopedCountQ(sb.from('mfg_sales_orders').select('status, cnt:doc_no.count()'));
+      if (!agg.error) {
+        for (const r of (agg.data ?? []) as Array<{ status: string | null; cnt: number }>) bump(r.status, Number(r.cnt ?? 0));
+        return byStatus;
+      }
+      const fb = await paginateAll<{ status: string | null }>((cfrom, cto) =>
+        scopedCountQ(sb.from('mfg_sales_orders').select('status')).range(cfrom, cto));
+      for (const r of (fb.data ?? [])) bump(r.status, 1);
+      return byStatus;
+    })();
 
     /* Full-set money KPIs — sum local_total_centi / balance_centi_live /
        paid_total_centi over the SAME scope + company + status + search (+
@@ -1274,7 +1302,7 @@ mfgSalesOrders.get('/', async (c) => {
         .select('local_total_centi, balance_centi, balance_centi_live, paid_total_centi');
       if (scopeIds) moneyQ = moneyQ.in('salesperson_id', scopeIds);
       moneyQ = scopeToCompany(moneyQ, c);
-      if (status) moneyQ = moneyQ.eq('status', status);
+      if (status) moneyQ = status === 'OTHER' ? moneyQ.or(otherStatusOr) : moneyQ.eq('status', status);
       if (search) {
         const ms = escapeForOr(search);
         if (ms) moneyQ = moneyQ.or(`doc_no.ilike.%${ms}%,debtor_name.ilike.%${ms}%,debtor_code.ilike.%${ms}%,agent.ilike.%${ms}%,sales_location.ilike.%${ms}%,ref.ilike.%${ms}%,branding.ilike.%${ms}%`);
@@ -1284,28 +1312,28 @@ mfgSalesOrders.get('/', async (c) => {
       return moneyQ.range(mfrom, mto);
     });
 
-    /* One concurrent wave. The page rows, the four status counts and the
+    /* One concurrent wave. The page rows, the grouped status counts and the
        full-set money KPIs are mutually independent — each keys off scopeIds +
        the same filter params, none reads the page result — yet they were paying
        three sequential DB round-trips. Fire them together; only the per-doc
        enrichment below actually needs the page rows, so it still follows. */
-    const [res, allC, draftC, confirmedC, cancelledC, moneyRes] = await Promise.all([
-      q,
-      countBase(),
-      countBase().eq('status', 'DRAFT'),
-      countBase().eq('status', 'CONFIRMED'),
-      countBase().eq('status', 'CANCELLED'),
-      moneyProm,
-    ]);
+    const [res, byStatus, moneyRes] = await Promise.all([q, countsProm, moneyProm]);
     data = res.data;
     error = res.error;
     total = res.count ?? (res.data?.length ?? 0);
-    statusCounts = {
-      all: allC.count ?? 0,
-      draft: draftC.count ?? 0,
-      confirmed: confirmedC.count ?? 0,
-      cancelled: cancelledC.count ?? 0,
-    };
+    /* Every status in the vocabulary gets a bucket (lowercase keys, the wire
+       shape the tabs read), plus `other` for anything OUTSIDE it (legacy
+       spellings, blanks) — so the visible buckets ALWAYS sum to `all` and no
+       order can silently fall between tabs again. */
+    const bucket = (k: string) => byStatus[k] ?? 0;
+    const allCount = Object.values(byStatus).reduce((s, n) => s + n, 0);
+    statusCounts = { all: allCount };
+    let known = 0;
+    for (const s of SO_STATUSES) {
+      statusCounts[s.toLowerCase()] = bucket(s);
+      known += bucket(s);
+    }
+    statusCounts.other = allCount - known;
 
     if (moneyRes.error) return c.json({ error: 'load_failed', reason: moneyRes.error.message }, 500);
     let revenueCenti = 0, outstandingCenti = 0, paidCenti = 0;

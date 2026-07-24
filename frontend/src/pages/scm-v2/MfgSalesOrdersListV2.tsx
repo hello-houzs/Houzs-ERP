@@ -150,7 +150,39 @@ type SoRow = {
   deposit_centi?: number;
 };
 
-type StatusTab = "all" | "draft" | "confirmed" | "cancelled";
+/* Every status the backend vocabulary carries (mfg-sales-orders.ts
+   SO_STATUSES), in lifecycle order — the strip shows ALL of them with live
+   counts so the buckets always sum to All and no order can look lost inside a
+   hidden status (owner 2026-07-24: "ALL 68 but CONFIRMED 35 — where did they
+   go?"). `other` is the server's catch-all for legacy/unknown spellings and
+   only earns a pill when its count is non-zero. */
+type StatusTab =
+  | "all"
+  | "draft"
+  | "confirmed"
+  | "in_production"
+  | "ready_to_ship"
+  | "shipped"
+  | "delivered"
+  | "invoiced"
+  | "closed"
+  | "on_hold"
+  | "cancelled"
+  | "other";
+
+const SO_STATUS_TABS: Array<{ value: StatusTab; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "draft", label: "Draft" },
+  { value: "confirmed", label: "Confirmed" },
+  { value: "in_production", label: "In Production" },
+  { value: "ready_to_ship", label: "Ready to Ship" },
+  { value: "shipped", label: "Shipped" },
+  { value: "delivered", label: "Delivered" },
+  { value: "invoiced", label: "Invoiced" },
+  { value: "closed", label: "Closed" },
+  { value: "on_hold", label: "On Hold" },
+  { value: "cancelled", label: "Cancelled" },
+];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1071,12 +1103,7 @@ export function MfgSalesOrdersListV2() {
   const total = data?.total ?? 0;
   // Status tab counts come from the server over the FULL scoped set (not the
   // page), so the pills stay correct while paging / searching.
-  const counts = data?.statusCounts ?? {
-    all: 0,
-    draft: 0,
-    confirmed: 0,
-    cancelled: 0,
-  };
+  const counts: Record<string, number> = data?.statusCounts ?? { all: 0 };
 
   // KPI money stats — the backend paginated contract returns `aggregates` with
   // FULL-SET revenue/outstanding/paid sums (computed server-side over the same
@@ -1872,11 +1899,18 @@ export function MfgSalesOrdersListV2() {
       : ([] satisfies Column<SoRow>[])),
   ];
 
+  /* One pill per vocabulary status, each carrying its FULL-set count (see
+     SO_STATUS_TABS). "Other" (legacy/unknown status spellings) appears only
+     when the server reports a non-zero count for it — or while it is the
+     active filter, so the selected pill can never vanish from under the user. */
   const statusPillOptions: Array<{ value: StatusTab; label: string }> = [
-    { value: "all", label: `All · ${counts.all}` },
-    { value: "draft", label: `Draft · ${counts.draft}` },
-    { value: "confirmed", label: `Confirmed · ${counts.confirmed}` },
-    { value: "cancelled", label: `Cancelled · ${counts.cancelled}` },
+    ...SO_STATUS_TABS.map(({ value, label }) => ({
+      value,
+      label: `${label} · ${counts[value] ?? 0}`,
+    })),
+    ...((counts.other ?? 0) > 0 || status === "other"
+      ? [{ value: "other" as StatusTab, label: `Other · ${counts.other ?? 0}` }]
+      : []),
   ];
 
   const onPullToRefresh = async () => {
