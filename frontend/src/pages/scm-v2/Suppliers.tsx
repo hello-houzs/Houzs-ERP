@@ -20,6 +20,7 @@ import { PageHeader } from '../../components/Layout';
 import { cn } from '../../lib/utils';
 import { formatPhone } from '@2990s/shared/phone';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
+import { StatePicker } from '../../vendor/scm/components/StatePicker';
 import {
   useSuppliersPaged,
   useCreateSupplier,
@@ -693,7 +694,17 @@ const SupplierFields = ({
     </div>
     <p className={styles.eyebrow} style={{ marginTop: 'var(--space-3)' }}>Address</p>
     <div className={styles.formGrid}>
-      <Field label="State" value={(form.state as string) ?? ''} onChange={(v) => onChange('state', v)} />
+      {/* Task #102 — State is the shared my_localities-backed StatePicker
+          (grouped by country, type-to-search), never free text. Matches the
+          full Supplier edit form so both supplier surfaces behave identically. */}
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>State</span>
+        <StatePicker
+          value={(form.state as string) ?? ''}
+          onChange={(v) => onChange('state', v)}
+          selectClassName={styles.fieldSelect}
+        />
+      </label>
       <Field label="Area" value={(form.area as string) ?? ''} onChange={(v) => onChange('area', v)} />
       <Field label="Postcode" value={(form.postcode as string) ?? ''} onChange={(v) => onChange('postcode', v)} />
       <Field label="City" value={(form.city as string) ?? ''} onChange={(v) => onChange('city', v)} />

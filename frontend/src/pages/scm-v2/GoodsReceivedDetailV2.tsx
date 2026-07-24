@@ -3,7 +3,7 @@
 // Received value + qty landed, tinted green once posted.
 
 import { lazy, Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
-import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -85,6 +85,9 @@ type GrnItem = {
   unit_price_centi?: number;
   line_total_centi?: number;
   warehouse_code?: string | null;
+  /* Per-line delivery date (mig 0101) — the ETA the supplier's shipment landed
+     under. Nullable; falls back to the header receive date when unset. */
+  delivery_date?: string | null;
   /* Landed-cost allocation (Phase 1-A) — freight (MYR sen) allocated to this line. */
   allocated_charge_centi?: number | null;
 };
@@ -339,17 +342,17 @@ function GoodsReceivedDetailV2ReadOnly() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.material_code || l.item_code || "",
-      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+      /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
          (vendor/shared/line-identity.ts). Swept on SHAPE, not vocabulary: this
          was the pre-#647 SalesOrderDetailV2 cell exactly (bold description, then
          the code and `· description2` on one muted line). The WAREHOUSE pill is
          not a duplicate and stays; its row now renders when the pill or the
          variant is present. The code still BINDS via getValue above. */
       render: (l) => {
-        const { primary, secondary } = lineIdentity({
+        const { primary, secondary } = orderLineIdentity({
           code: l.material_code || l.item_code,
           description: l.description,
-          variant: l.description2,
+          variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),
         });
         return (
           <div className="min-w-0">
@@ -392,6 +395,18 @@ function GoodsReceivedDetailV2ReadOnly() {
         const full = ordered > 0 && rec >= ordered;
         return <span className={cn("font-money text-[13px] font-semibold", full ? "text-synced" : "text-ink")}>{rec}</span>;
       },
+    },
+    {
+      key: "eta",
+      label: "ETA",
+      width: "96px",
+      align: "right",
+      getValue: (l) => l.delivery_date ?? "",
+      render: (l) => (
+        <span className="font-mono text-[12px] text-ink-secondary">
+          {l.delivery_date ? fmtDate(l.delivery_date) : "—"}
+        </span>
+      ),
     },
     {
       key: "unit",

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { lineIdentity } from "@2990s/shared";
+import { orderLineIdentity } from "@2990s/shared";
 import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
 import {
   useMfgDeliveryOrderDetail,
@@ -259,10 +259,10 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {items.length ? items.map((it) => {
                 const on = !!ticked[it.id];
-                // Description ONCE, code dropped, VARIANT (description2) kept —
+                // Item CODE + variant (description2); description dropped —
                 // mirror DeliveryOrderDetailV2's
-                // `lineIdentity({ code, description, variant: l.description2 })`.
-                const ident = lineIdentity({ code: it.item_code, description: it.description, variant: it.description2 });
+                // `orderLineIdentity({ code, description, variant: l.description2 })`.
+                const ident = orderLineIdentity({ code: it.item_code, description: it.description, variant: it.description2 });
                 return (
                   <div
                     key={it.id}
@@ -277,7 +277,7 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                         </svg>
                       )}
                     </span>
-                    {/* Description ONCE, code NOT displayed, VARIANT KEPT — the
+                    {/* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the
                         shared rule (vendor/shared/line-identity.ts). Desktop and
                         mobile are ONE logic layer, so this POD row follows the
                         DO detail exactly. The variant (a 2-seater vs a 3-seater)

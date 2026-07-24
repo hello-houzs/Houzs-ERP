@@ -25,16 +25,25 @@ if (!src || !dst) {
    staging environment, and blocking it would push operators into editing the
    script, which is worse.
 
-   Known limit, inherited from the sibling and worth naming rather than hiding:
-   the project ref is HARDCODED and substring-matched, so this FAILS OPEN for
-   any future production project. It stops the accident we have actually had;
-   it is not a security control. */
-const PROD_REF = "anogrigyjbduyzclzjgn";
-if (dst.includes(PROD_REF) && process.env.ACK_PROD_WIPE !== "yes") {
+   FAIL CLOSED: the old guard hardcoded the prod project ref and substring-matched
+   it, which fails OPEN the moment prod moves projects (it has). So treat ANY
+   non-loopback TARGET as production and require an explicit acknowledgement. A
+   prod SOURCE stays allowed — it is a read-only copy-from, the normal way to seed
+   staging, and blocking it would push operators into editing the script. */
+const dstIsLoopback = (() => {
+  try {
+    return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(
+      new URL(dst).hostname.toLowerCase(),
+    );
+  } catch {
+    return false;
+  }
+})();
+if (!dstIsLoopback && process.env.ACK_PROD_WIPE !== "yes") {
   console.error(
-    `REFUSING: the TARGET is PROD (${PROD_REF}). This script TRUNCATEs every public\n` +
-      "table in the target before copying. If you truly mean to overwrite production,\n" +
-      "set ACK_PROD_WIPE=yes.",
+    "REFUSING: the TARGET is a non-local database. This script TRUNCATEs every\n" +
+      "public table in the target before copying. Any remote target requires\n" +
+      "ACK_PROD_WIPE=yes (a hardcoded prod-ref check fails open when prod moves).",
   );
   process.exit(1);
 }

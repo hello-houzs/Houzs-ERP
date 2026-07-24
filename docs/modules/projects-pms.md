@@ -216,9 +216,16 @@ Two things happen here that are easy to miss:
    checklist item). With the desktop My Pending checkbox on, the desktop card
    tags the card with these titles INSTEAD of the project's section chip, so a
    logistic caller is not shown someone else's `CONTRACT` stage (owner report
-   2026-07-22, Syu). Mobile has no My Pending mode — its card keeps the chips
-   below the meta line (crew callers). Directors / attending / approver lanes
-   carry no titles and keep the section chip.
+   2026-07-22, Syu). Mobile has its own My Pending mode since 2026-07-23: a
+   "My pending" chip on the MobilePMS list (every role) wires the same
+   `my_pending=1` lanes, and the card keeps the title chips below the meta
+   line. Director rows tag their duties the same
+   way (`Approve Stock Out Transfer` / `Set Sales PIC` / `Set Sales Attending`,
+   owner report 2026-07-23, Peter — each chip's predicate mirrors its lane
+   exactly), and a SALES PIC caller's attending-lane rows append
+   `Set Sales Attending` after their label titles. Only the
+   `projects.approve`-holder and standalone agreement lanes still fall back to
+   the section chip.
 4. **Sales Director "My Pending" is exactly three duties** (owner 2026-07-23):
    approve submitted Stock Out Transfer Records (`STOCK_OUT_AWAITING_APPROVAL`),
    set the Sales PIC (`SALES_PIC_EMPTY` — `pic_id` NULL, dangling, or the
@@ -230,6 +237,29 @@ Two things happen here that are easy to miss:
    rows on 2026-07-23). The same CONTRACT gate applies to the Sales PIC's own
    attending lane. All in the `pendingOr` block, `services/projects.ts` around
    `:1447`.
+5. **My Pending follows the timeline** (owner 2026-07-23): when any pending
+   lane is active and no explicit `sort_by` is given, the list orders
+   soonest event first (`start_date ASC`, nulls last) instead of the
+   newest-first dashboard default — it is a work queue. A completed,
+   N/A'd, or submitted-for-review task drops its row server-side the
+   moment it changes state; nothing "done" ever lingers in My Pending.
+
+### Setup & Dismantle crew editor — outsourced providers
+
+`PhaseCrewEditor` (`Projects.tsx`, around `:8994`) edits the `setup_crew` /
+`dismantle_crew` / `service_crew` JSON blobs (stored verbatim in TEXT columns;
+the backend never reshapes them). Below the per-lorry crew grid, an **Outsourced
+trips** row (owner 2026-07-23) offers three provider buttons on Setup &
+Dismantle: **Outsource** and **Lalamove** both open a name·phone·plate box;
+**Grab** opens a Helper 1 / Helper 2 picker drawn from the full staff helper
+list (`/api/fleet/staff`, role/type `helper`). Each add appends an
+`OutsourcedEntry` to `outsourced.entries` carrying a `provider`
+(`outsource` | `lalamove` | `grab`); Grab entries store `helper1` / `helper2`
+instead of name/phone/plate (a legacy Grab row with name/phone/plate still
+renders — the chip falls back). Service / Exchange keeps the older single
+**Outsourced** checkbox (it has its own per-lorry Grab/Lalamove `provider`
+dropdown). Because the picked helper names land in the crew JSON, a Grab-assigned
+helper still matches the `assigned_to_me` / calendar `setup_crew` name arm.
 
 ### The calendar handler
 

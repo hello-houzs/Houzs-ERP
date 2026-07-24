@@ -108,8 +108,8 @@ const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "pending_review", label: "Review" },
   { value: "under_verification", label: "Verification" },
   { value: "pending_solution", label: "Solution" },
-  { value: "pending_supplier_pickup", label: "Supplier Pickup" },
-  { value: "pending_item_ready", label: "Item Ready" },
+  { value: "pending_supplier_pickup", label: "Supplier Pickup / Return" },
+  { value: "pending_item_ready", label: "Pending Item Ready" },
   { value: "pending_delivery_service", label: "Delivery / Service" },
   { value: "completed", label: "Completed" },
 ];
@@ -258,7 +258,7 @@ const VIEW_HEADER: Record<
   },
   cases: {
     title: "Service Cases",
-    description: "After-sales service request workflow.",
+    description: "Service & Warranty Requests — Managed end-to-end.",
   },
   metrics: {
     title: "Quality Metrics",
@@ -1043,6 +1043,19 @@ function CasesView({
 // that stage, click again to clear back to All. Counts come from the
 // shared `/api/assr/summary` aggregate (stage_funnel = archived-excluded
 // totals + breach counts); a wide window captures long-open cases.
+// One-line captions under the Stage-funnel filter cards (Nick
+// 2026-07-23: 每个 stage 下面加 description, e.g. Verification → QC
+// issue inspection). Same wording as the detail Workflow funnel.
+const STAGE_FUNNEL_DESC: Record<string, string> = {
+  pending_review: "New case — first review",
+  under_verification: "Inspect & verify the issue",
+  pending_solution: "Decide fix & assign supplier",
+  pending_supplier_pickup: "Item with supplier for repair",
+  pending_item_ready: "Repair done — QC check",
+  pending_delivery_service: "Schedule return delivery",
+  completed: "Closed & rated",
+};
+
 type StageFunnelRow = { stage: string; total: number; breached: number };
 type AssrSummary = {
   total?: number;
@@ -1143,10 +1156,11 @@ function StageStatStrip({
         </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           {[
-            { value: "ALL" as StageFilter, label: "All", total: allTotal, breached: 0 },
+            { value: "ALL" as StageFilter, label: "All", desc: "All stages", total: allTotal, breached: 0 },
             ...stages.map((s) => ({
               value: s.value as StageFilter,
               label: s.label,
+              desc: STAGE_FUNNEL_DESC[s.value] ?? "",
               total: byStage.get(s.value)?.total ?? 0,
               breached: byStage.get(s.value)?.breached ?? 0,
             })),
@@ -1199,6 +1213,11 @@ function StageStatStrip({
                 >
                   {s.label}
                 </span>
+                {s.desc && (
+                  <span className="mt-0.5 block text-[10px] leading-tight text-ink-muted">
+                    {s.desc}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -3235,7 +3254,9 @@ function DetailContent({
         c ? (
           <span className="text-[13.5px] text-ink-secondary">
             Customer <b className="font-semibold text-ink">{c.customer_name || "—"}</b>
-            {" · "}Stage <b className="font-semibold text-accent">{caseStageLabel(c.stage)}</b>
+            {/* Sub-status implies its stage (Nick 2026-07-23: supplier
+                pending return 应该出现在 stage) — show it when present. */}
+            {" · "}Stage <b className="font-semibold text-accent">{caseSubStatus(c)?.label ?? caseStageLabel(c.stage)}</b>
             {c.doc_no ? <> {" · "}<span className="font-mono text-[12.5px] text-ink-secondary">{c.doc_no}</span></> : null}
             {c.ref_no ? <> {" · "}Ref <span className="font-mono text-[12.5px]">{c.ref_no}</span></> : null}
           </span>
@@ -3974,7 +3995,7 @@ function DetailContent({
               c={c}
               priorityMap={priorityMap}
               stageId="pending_item_ready"
-              title="Item Ready"
+              title="Pending Item Ready"
               summary={
                 c.inspection_result
                   ? `QC: ${c.inspection_result}${c.items_ready_at ? ` · ready ${formatDate(c.items_ready_at)}` : ""}`
@@ -4192,7 +4213,18 @@ function DetailContent({
                 onSave={(v) => patch({ sales_agent: v })}
                 placeholder="Sales rep"
               />
-              <SoNoSearchEdit value={c.doc_no} onSave={(v) => patch({ doc_no: v })} />
+              {/* SO + Ref side by side — mirrors the read view's twin
+                  chips (Nick 2026-07-23). Ref No is a plain editable
+                  field (the SO re-match fills it only on SO change). */}
+              <div className="grid grid-cols-2 gap-2">
+                <SoNoSearchEdit value={c.doc_no} onSave={(v) => patch({ doc_no: v })} />
+                <InlineEdit
+                  label="Ref No"
+                  value={c.ref_no}
+                  onSave={(v) => patch({ ref_no: v })}
+                  placeholder="e.g. DLPG 0285"
+                />
+              </div>
               <InlineEdit
                 label="Phone"
                 value={c.phone}
@@ -4229,7 +4261,6 @@ function DetailContent({
                 onSave={(v) => patch({ customer_email: v })}
                 placeholder="customer@example.com"
               />
-              <FieldRow label="Ref No" mono>{c.ref_no || "—"}</FieldRow>
               <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
             </>
             ) : (
@@ -5094,14 +5125,16 @@ const VERIFICATION_OPTIONS = [
 // 5-cell status summary bar. The full accordion + resolution-driven flow
 // filtering land in later PRs; this PR only refreshes the header strip.
 
-const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
-  { id: "pending_review",              short: "Review",       long: "Review" },
-  { id: "under_verification",          short: "Verification", long: "Verification" },
-  { id: "pending_solution",            short: "Solution",     long: "Solution" },
-  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup / Return" },
-  { id: "pending_item_ready",          short: "Item Ready",   long: "Item Ready" },
-  { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service" },
-  { id: "completed",                   short: "Completed",    long: "Completed" },
+// desc — one-line caption under each funnel dot (Nick 2026-07-23:
+// 在 stage funnel 每个 stage 加上 description).
+const DETAIL_STAGES: { id: AssrStage; short: string; long: string; desc: string }[] = [
+  { id: "pending_review",              short: "Review",       long: "Review",                  desc: "New case — first review" },
+  { id: "under_verification",          short: "Verification", long: "Verification",            desc: "Inspect & verify the issue" },
+  { id: "pending_solution",            short: "Solution",     long: "Solution",                desc: "Decide fix & assign supplier" },
+  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup / Return", desc: "Item with supplier for repair" },
+  { id: "pending_item_ready",          short: "Pending Item Ready", long: "Pending Item Ready", desc: "Repair done — QC check" },
+  { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service",      desc: "Schedule return delivery" },
+  { id: "completed",                   short: "Completed",    long: "Completed",               desc: "Closed & rated" },
 ];
 
 // `resolutionRoute` — which side of the flow a resolution method routes to —
@@ -5341,6 +5374,9 @@ function WorkflowCard({
                   )}
                 >
                   {s.short}
+                </span>
+                <span className="mt-0.5 px-0.5 text-center text-[7.5px] leading-tight text-ink-muted/80">
+                  {s.desc}
                 </span>
                 {current && subStatus && (
                   <span className="mt-1 rounded-full bg-accent-soft/60 px-1.5 py-0.5 text-center text-[8.5px] font-semibold uppercase tracking-wide leading-snug text-accent">

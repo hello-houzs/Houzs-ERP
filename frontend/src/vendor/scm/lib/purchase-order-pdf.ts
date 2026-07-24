@@ -44,6 +44,7 @@ import {
 } from '@2990s/shared/so-line-display';
 import { drawSofaLayout } from './sofa-layout-pdf';
 import { COMPANY, amountInWordsMyr, drawInfoColumns, ensurePdfCjkFont, fmtDocDate, fmtDocStamp } from './pdf-common';
+import { supplierBlock } from './pdf-party-blocks';
 import {
   loadSupplierDocData,
   supplierCodeFor,
@@ -281,25 +282,29 @@ async function renderPurchaseOrderInto(
   const singleSourceSo = (!lineSoDocs.length && noteSoDocs && !noteSoDocs.includes(',')) ? noteSoDocs : '';
 
   y = drawInfoColumns(doc, y,
-    {
-      title: 'SUPPLIER',
-      rows: [
-        ['Company', s.name],
-        ['Address', supplierAddressLines.join(', ')],
-        // formatPhone like every other document. This was the one generator
-        // printing a supplier phone raw, so the same stored number read
-        // "+60123456789" on a PO and "+60 12-345 6789" on the SO beside it.
-        ['Tel', formatPhone(s.phone ?? sFull.mobile ?? '') || (s.phone ?? sFull.mobile)],
-        ['Fax', sFull.fax],
-        ['Attn', sFull.attention ?? s.contact_person],
-      ],
-    },
+    /* Canonical supplier block — Company, Code, Address, Tel, Fax, Email,
+       Attn, Terms — via the shared helper. formatPhone the tel like every
+       other document (this was the one generator printing a supplier phone
+       raw, so the same stored number read "+60123456789" on a PO and
+       "+60 12-345 6789" on the SO beside it). Terms migrates to the LEFT
+       column so every purchasing doc self-contains the negotiated credit
+       window; the RIGHT PO DETAILS column drops its Terms row to avoid the
+       duplication. */
+    supplierBlock({
+      name: s.name,
+      code: s.code,
+      address: supplierAddressLines.join(', '),
+      phone: formatPhone(s.phone ?? sFull.mobile ?? '') || (s.phone ?? sFull.mobile),
+      fax: sFull.fax,
+      email: s.email ?? sFull.email,
+      attention: sFull.attention ?? s.contact_person,
+      paymentTerms: sFull.payment_terms ?? header.supplier?.payment_terms ?? null,
+    }),
     {
       title: 'PO DETAILS',
       rows: [
         ['PO No', header.po_number],
         ['Your Ref No', yourRef],
-        ['Terms', sFull.payment_terms ?? header.supplier?.payment_terms ?? ''],
         ['Date', fmtDocDate(header.po_date)],
         /* Migration 0180 — print the EFFECTIVE (latest revised) delivery date. */
         ['Delivery Date', (() => {

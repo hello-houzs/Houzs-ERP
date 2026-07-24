@@ -98,6 +98,7 @@ export type FairDoRow = FairDims & {
   so_no: string | null;
   status: string | null;
   qty: number;
+  so_amount_centi: number | null;   // linked SO's amount (matches the SO tab)
   total_so_cost_centi: number;
   total_do_cost_centi: number;
   do_cost_is_legacy: boolean;
@@ -284,8 +285,15 @@ export function fairReportErrorInfo(error: unknown): { denied: boolean; message:
 
 // ── per-order detail (quick-view drawer) ─────────────────────────────────────
 export type FairDetailLine = {
+  item_group: string | null;
   item_code: string | null;
   description: string | null;
+  /* description2 + variants carry the variant summary so this line shows the
+     same "code / SEAT / LEG / fabric" subtitle as every other order-line surface
+     (owner 2026-07-24). variants also carries the READ-stamped fabricSupplierCode
+     → the fabric renders "BF-01 (PC151-01)". */
+  description2: string | null;
+  variants: Record<string, unknown> | null;
   qty: number | null;
   unit_price_centi: number | null;
   amount_centi: number | null;

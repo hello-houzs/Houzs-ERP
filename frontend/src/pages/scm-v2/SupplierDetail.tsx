@@ -32,6 +32,7 @@ import {
 import { MaintenanceTab, type MaintenanceSection } from './Products';
 import { SofaComboTab } from '../../vendor/scm/components/SofaComboTab';
 import { FabricTracking } from './FabricTracking';
+import { setActiveCompanyId } from '../../lib/activeCompany';
 import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
 import { StatCard } from '../../components/StatCard';
@@ -81,6 +82,31 @@ import styles from './SupplierDetail.module.css';
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
 const LG_ICON = { size: 20, strokeWidth: 1.75 } as const;
+
+/* CROSS-COMPANY MISS — when the supplier lives in another company the user is
+   allowed to see, the backend answers { error: 'in_other_company', companyId,
+   companyCode, message } instead of a bare not_found, so we can offer to switch
+   rather than paint the alarming "could no longer be found" (owner ask,
+   2026-07-24; backend detailMissResponse). The raw JSON is stashed on err.body
+   by the SCM fetch layer (authed-fetch). */
+type OtherCompanyMiss = { companyId: number; companyCode: string | null; message: string };
+function readOtherCompanyMiss(err: unknown): OtherCompanyMiss | null {
+  const body = (err as { body?: unknown } | null)?.body;
+  if (typeof body !== 'string') return null;
+  try {
+    const j = JSON.parse(body) as { error?: unknown; companyId?: unknown; companyCode?: unknown; message?: unknown };
+    if (j.error !== 'in_other_company') return null;
+    const companyId = Number(j.companyId);
+    if (!Number.isInteger(companyId) || companyId <= 0) return null;
+    return {
+      companyId,
+      companyCode: typeof j.companyCode === 'string' ? j.companyCode : null,
+      message: typeof j.message === 'string' ? j.message : 'This supplier belongs to another company.',
+    };
+  } catch {
+    return null;
+  }
+}
 
 /* KPI tone — the StatCard tone vocabulary (was .kpiValueOk / Warn / Bad). */
 type KpiTone = 'default' | 'success' | 'warning' | 'error';
@@ -303,16 +329,32 @@ export const SupplierDetail = () => {
   }
 
   if (detail.isError || !supplier) {
+    const otherCo = detail.isError ? readOtherCompanyMiss(detail.error) : null;
     return (
       <div className="space-y-4">
         <Link to="/scm/suppliers" className={BACK_LINK_CLASS}>
           <ArrowLeft {...ICON} />
           <span>Back to Suppliers</span>
         </Link>
-        <div className="flex flex-col gap-1 rounded-md border border-err/40 bg-err/10 px-4 py-3 text-[13px] text-err">
-          <strong>Supplier not found or failed to load.</strong>
-          {detail.error instanceof Error ? ` ${detail.error.message}` : null}
-        </div>
+        {otherCo ? (
+          /* Not gone — just in another company. Offer the switch instead of the
+             red "not found" wall (owner ask 2026-07-24). Switching writes this
+             tab's company then reloads, the pattern the top-bar switcher uses. */
+          <div className="flex flex-col items-start gap-2 rounded-md border border-border bg-surface px-4 py-3 text-[13px] text-ink-secondary">
+            <span>{otherCo.message}</span>
+            <Button
+              variant="primary"
+              onClick={() => { setActiveCompanyId(otherCo.companyId); window.location.reload(); }}
+            >
+              Switch to {otherCo.companyCode ?? 'that company'}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1 rounded-md border border-err/40 bg-err/10 px-4 py-3 text-[13px] text-err">
+            <strong>Supplier not found or failed to load.</strong>
+            {detail.error instanceof Error ? ` ${detail.error.message}` : null}
+          </div>
+        )}
       </div>
     );
   }
@@ -2993,6 +3035,7 @@ const SupplierInfoCard = ({
               <StatePicker
                 country={form.country}
                 value={form.state}
+                selectClassName={styles.fieldSelect}
                 onChange={(v, derivedCountry) => {
                   setF('state', v);
                   if (derivedCountry && derivedCountry !== form.country) setF('country', derivedCountry);
@@ -4123,12 +4166,12 @@ const smallInputStyle: React.CSSProperties = {
    Address pickers — Country / City / Postcode.
 
    State picker moved out to the shared `StatePicker` component
-   (frontend/src/vendor/scm/components/StatePicker.tsx) which supports the
-   MY-default + Others-expander + Search UX the owner asked for after finding
-   the `(legacy)` sneak-through. All three pickers here read exclusively from
-   scm.my_localities — no `(legacy)` fallback options, no free-text fallback
-   for empty lists. A value that isn't in the seeded set must be added via
-   the Localities Maintenance UI first.
+   (frontend/src/vendor/scm/components/StatePicker.tsx). Task #102 made it one
+   consistent selector — states grouped by country (MY first) with type-to-search,
+   no "Others" toggle, no free-text escape. All three pickers here read
+   exclusively from scm.my_localities — no `(legacy)` fallback options, no
+   free-text fallback for empty lists. A value that isn't in the seeded set must
+   be added via the Localities Maintenance UI first.
    ════════════════════════════════════════════════════════════════════════ */
 
 /* CountrySelect — dropdown of every country present in scm.my_localities.

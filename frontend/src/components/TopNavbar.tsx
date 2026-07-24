@@ -1,18 +1,18 @@
-import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Check,
-  ChevronRight,
   ChevronsUpDown,
+  ExternalLink,
   LogOut,
   UserRound,
   UserRoundCog,
 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { useBreadcrumbs } from "../hooks/useBreadcrumbs";
+import { usePresence } from "../hooks/usePresence";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
-import { PresenceIndicator } from "./PresenceIndicator";
+import { WorkspaceTabs } from "./WorkspaceTabs";
 import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 import { api } from "../api/client";
@@ -26,76 +26,38 @@ import {
 import { clearAllScmHandoffs } from "../lib/scmHandoffStorage";
 
 /**
- * Desktop-only sticky top navbar. Hosts breadcrumb (left), search +
- * notifications + profile avatar (right). Hidden below lg; the mobile
- * top bar in Layout owns its own reduced chrome.
+ * Desktop-only sticky top chrome — ONE 52px bar (top-chrome redesign 2b,
+ * owner handoff 2026-07-23). Left: the WorkspaceTabs strip inline. Right:
+ * search (Ctrl+K) · company switcher icon · notification bell (red dot) ·
+ * divider · avatar + name/role with the online state as a green corner dot.
  *
- * Breadcrumb source of truth: BreadcrumbContext. DetailLayout pushes
- * its crumbs via useSetBreadcrumbs; for plain list pages we fall back
- * to a route-derived single crumb.
+ * The breadcrumb row is GONE — the page name lives once, in the PageHeader
+ * title right under this bar (no dead band). DetailLayout still publishes
+ * crumbs to BreadcrumbContext; nothing renders them here today.
+ * Hidden below lg; the mobile chrome is untouched.
+ *
+ * Every lg sticky below parks at top-[52px]: Layout PageHeader, DetailLayout,
+ * the two SCM V2 doc bars — change this bar's height, change them all.
  */
 export function TopNavbar() {
   const { user } = useAuth();
-  const { crumbs } = useBreadcrumbs();
-  const location = useLocation();
-
-  // When the active page hasn't set its own breadcrumb, build a
-  // single-crumb label from the current route so the navbar never
-  // looks empty.
-  const shown =
-    crumbs.length > 0 ? crumbs : [{ label: labelForPath(location.pathname) }];
 
   return (
-    <header className="sticky top-0 z-30 hidden h-12 items-center gap-3 border-b border-border bg-surface/95 px-5 backdrop-blur-sm lg:flex">
-      {/* ── Breadcrumb ───────────────────────────────────────── */}
-      <nav
-        aria-label="Breadcrumb"
-        className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-[12px]"
-      >
-        {shown.map((item, i) => {
-          const isLast = i === shown.length - 1;
-          return (
-            <Fragment key={`${item.label}-${i}`}>
-              {i > 0 && (
-                <ChevronRight
-                  size={12}
-                  strokeWidth={2}
-                  className="shrink-0 text-ink-muted/50"
-                />
-              )}
-              {item.to && !isLast ? (
-                <Link
-                  to={item.to}
-                  className="shrink-0 truncate rounded px-1 py-0.5 font-medium text-ink-secondary transition-colors hover:bg-bg/60 hover:text-accent"
-                >
-                  {item.label}
-                </Link>
-              ) : (
-                <span
-                  className={cn(
-                    "min-w-0 truncate px-1 py-0.5",
-                    // Current page reads petrol — matches the design's
-                    // breadcrumb (last crumb #16695f/600).
-                    isLast ? "font-semibold text-primary" : "text-ink-secondary"
-                  )}
-                  aria-current={isLast ? "page" : undefined}
-                >
-                  {item.label}
-                </span>
-              )}
-            </Fragment>
-          );
-        })}
-      </nav>
+    <header className="sticky top-0 z-30 hidden h-[52px] items-center border-b border-border bg-surface pl-3.5 pr-2 lg:flex">
+      {/* Workspace tabs (left; scrolls in place on overflow). */}
+      <WorkspaceTabs />
 
-      {/* ── Right rail: company · search · online · bell · profile ───── */}
-      <div className="flex shrink-0 items-center gap-2">
+      {/* Utility cluster (right): company / search / bell / profile — the
+          company pill leads, as it always has (owner screenshot 2026-07-23). */}
+      <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-4">
         <CompanySwitcher />
-        <GlobalSearchTrigger collapsed={false} />
+        <div className="w-[220px]">
+          <GlobalSearchTrigger tone="inset" />
+        </div>
         {user && (
           <>
-            <PresenceIndicator />
-            <NotificationBell collapsed direction="down" align="end" />
+            <NotificationBell collapsed direction="down" align="end" tone="navbar" unread="dot" />
+            <span aria-hidden className="mx-0.5 h-6 w-px bg-border-subtle" />
             <ProfileMenu />
           </>
         )}
@@ -216,10 +178,14 @@ function CompanySwitcher() {
 
   return (
     <div ref={wrapRef} className="relative">
+      {/* Owner 2026-07-23 (on the 2b handoff): KEEP the labelled pill, not the
+          icon-only compression the mock drew — with one window per company,
+          the visible company NAME in the bar is load-bearing context. Height
+          tuned to the 34px cluster; everything else is the pre-2b trigger. */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 rounded-md border border-border bg-bg/40 px-2 py-1 text-[11.5px] font-medium text-ink-secondary transition-colors hover:bg-bg/60 hover:text-accent"
+        className="flex h-[34px] items-center gap-1.5 rounded-md border border-border bg-bg/40 px-2.5 text-[11.5px] font-medium text-ink-secondary transition-colors hover:bg-bg/60 hover:text-accent"
         aria-haspopup="listbox"
         aria-expanded={open}
         title={active ? "Switch company" : "No company selected — choose one"}
@@ -243,197 +209,52 @@ function CompanySwitcher() {
           {companies.map((co) => {
             const isActive = co.id === activeId;
             return (
-              <button
-                key={co.id}
-                type="button"
-                role="option"
-                aria-selected={isActive}
-                onClick={() => pick(co.id)}
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-bg/60",
-                  isActive ? "font-semibold text-primary" : "text-ink-secondary",
-                )}
-              >
-                <Check
-                  size={13}
-                  strokeWidth={2.5}
-                  className={cn("shrink-0", isActive ? "text-primary" : "text-transparent")}
-                />
-                <span className="min-w-0 flex-1 truncate">{co.name}</span>
-                <span className="shrink-0 text-[9.5px] uppercase tracking-wide text-ink-muted">
-                  {co.code}
-                </span>
-              </button>
+              <div key={co.id} className="flex items-stretch">
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={isActive}
+                  onClick={() => pick(co.id)}
+                  className={cn(
+                    "flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 pr-1.5 text-left text-[12px] transition-colors hover:bg-bg/60",
+                    isActive ? "font-semibold text-primary" : "text-ink-secondary",
+                  )}
+                >
+                  <Check
+                    size={13}
+                    strokeWidth={2.5}
+                    className={cn("shrink-0", isActive ? "text-primary" : "text-transparent")}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{co.name}</span>
+                  <span className="shrink-0 text-[9.5px] uppercase tracking-wide text-ink-muted">
+                    {co.code}
+                  </span>
+                </button>
+                {/* Side-by-side windows (owner ask 2026-07-23): boot a fresh
+                    window straight into this company via the ?company= seed
+                    (see lib/activeCompany.ts). Each window keeps its own
+                    company for its whole lifetime, so this one is untouched —
+                    which is also why this button never needs pick()'s
+                    unsaved-changes confirm. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    window.open(`/?company=${co.id}`, "_blank", "noopener,noreferrer");
+                  }}
+                  title={`Open ${co.name} in a new window`}
+                  aria-label={`Open ${co.name} in a new window`}
+                  className="shrink-0 px-2.5 text-ink-muted/70 transition-colors hover:bg-bg/60 hover:text-accent"
+                >
+                  <ExternalLink size={12.5} strokeWidth={2} />
+                </button>
+              </div>
             );
           })}
         </div>
       )}
     </div>
   );
-}
-
-// ── Route → label fallback ─────────────────────────────────
-// Quick mapping for pages that don't push breadcrumbs themselves.
-// Keeps the navbar from rendering as an empty strip.
-const ROUTE_LABELS: Array<[RegExp, string]> = [
-  [/^\/$/, "Overview"],
-  [/^\/orders\/.+$/, "Sales Order"],
-  [/^\/orders$/, "Sales Orders"],
-  [/^\/delivery-orders$/, "Delivery Orders"],
-  [/^\/delivery\/.+$/, "Delivery"],
-  [/^\/logistics$/, "Logistics"],
-  [/^\/trips\/.+$/, "Trip"],
-  [/^\/lorries\/.+$/, "Lorry"],
-  [/^\/staff\/.+$/, "Staff"],
-  [/^\/po\/.+$/, "Purchase Order"],
-  [/^\/po$/, "Purchase Orders"],
-  [/^\/creditors\/.+$/, "Creditor"],
-  [/^\/assr\/.+$/, "Service Case"],
-  [/^\/assr$/, "Service Cases"],
-  [/^\/my-cases\/.+$/, "My Case"],
-  [/^\/my-cases$/, "My Cases"],
-  [/^\/projects\/.+$/, "Project"],
-  [/^\/projects$/, "Projects"],
-  [/^\/sales$/, "Sales"],
-  [/^\/team$/, "Team"],
-  [/^\/gamification$/, "Engagement"],
-  [/^\/settings$/, "Settings"],
-  [/^\/profile$/, "Profile"],
-  [/^\/mail-center\/.+$/, "Mail Center"],
-  [/^\/mail-center$/, "Mail Center"],
-  [/^\/agents$/, "Agent Console"],
-  [/^\/system-health$/, "System Health"],
-  [/^\/reports\/fair-report$/, "Sales Report"],
-  // The Supply Chain hub is a single-segment route, so it never reaches the
-  // /scm/* segment table below (which needs a 2nd segment). Curate it here —
-  // without this entry labelForPath title-cased the slug to a bare "Scm".
-  [/^\/scm$/, "Supply Chain"],
-];
-
-// SCM V2 routes ship dozens of /scm/* pages — hand-rolling a regex per page
-// bloats the list. Instead the second URL segment picks the label from this
-// table: [plural, singular] where plural covers the listing (and its
-// action children like /new or /from-*) and singular covers the detail
-// page (a trailing entity id). Kept as one central table so adding a new
-// SCM route only means one map entry, not two regex lines.
-const SCM_SEGMENT_LABELS: Record<string, [string, string]> = {
-  // Sales chain
-  "sales-orders": ["Sales Orders", "Sales Order"],
-  "delivery-orders": ["Delivery Orders", "Delivery Order"],
-  "sales-invoices": ["Sales Invoices", "Sales Invoice"],
-  "delivery-returns": ["Delivery Returns", "Delivery Return"],
-  "amendments": ["Amendments", "Amendment"],
-  // Procurement chain
-  "purchase-orders": ["Purchase Orders", "Purchase Order"],
-  "purchase-invoices": ["Purchase Invoices", "Purchase Invoice"],
-  "purchase-returns": ["Purchase Returns", "Purchase Return"],
-  "grns": ["Goods Received Notes", "Goods Received Note"],
-  "mrp": ["MRP", "MRP"],
-  "suppliers": ["Suppliers", "Supplier"],
-  // Warehouse / stock
-  "warehouses": ["Warehouses", "Warehouse"],
-  "inventory": ["Inventory", "Inventory"],
-  "stock-adjustments": ["Stock Adjustments", "Stock Adjustment"],
-  "stock-transfers": ["Stock Transfers", "Stock Transfer"],
-  "stock-takes": ["Stock Takes", "Stock Take"],
-  // Products
-  "products": ["Products", "Product"],
-  "categories": ["Categories", "Category"],
-  "product-models": ["Product Models", "Product Model"],
-  "fabric-tracking": ["Fabric Tracking", "Fabric Tracking"],
-  // Finance
-  "accounting": ["Accounting", "Accounting"],
-  "outstanding": ["Outstanding", "Outstanding"],
-  "unbilled-deliveries": ["Not Billed", "Delivered, Not Yet Billed"],
-  "payment-vouchers": ["Payment Vouchers", "Payment Voucher"],
-  "currencies": ["Currencies", "Currency"],
-  // Transportation
-  "drivers": ["Drivers", "Driver"],
-  "delivery-planning": ["Delivery Planning", "Delivery Planning"],
-  "delivery-planning-regions": ["Delivery Planning Regions", "Delivery Planning Regions"],
-  "fleet": ["Fleet", "Fleet"],
-  "lorry-capacity": ["Lorry Capacity", "Lorry Capacity"],
-  // Consignment (sale side)
-  "consignment-orders": ["Consignment Orders", "Consignment Order"],
-  "consignment-notes": ["Consignment Notes", "Consignment Note"],
-  "consignment-returns": ["Consignment Returns", "Consignment Return"],
-  // Consignment (purchase side)
-  "purchase-consignment-orders": ["Purchase Consignment Orders", "Purchase Consignment Order"],
-  "purchase-consignment-receives": ["Purchase Consignment Receives", "Purchase Consignment Receive"],
-  "purchase-consignment-returns": ["Purchase Consignment Returns", "Purchase Consignment Return"],
-  // Section hubs — the Level-2 sub-group landing pages (ScmSubgroupHub). Their
-  // slug is the singular group id and the label mirrors the NAV_TABS group
-  // header the hub itself renders as its title (no detail child → singular ==
-  // plural). Without these, /scm/<group> title-cased the slug to "Scm".
-  "sales-order": ["Sales Order", "Sales Order"],
-  "consignment": ["Consignment", "Consignment"],
-  "procurement": ["Procurement", "Procurement"],
-  "transportation": ["Transportation", "Transportation"],
-  "warehouse": ["Warehouse", "Warehouse"],
-  "finance": ["Finance", "Finance"],
-  // Misc
-  "maintenance": ["Maintenance", "Maintenance"],
-};
-
-// /scm/reports/<report-slug> — its own table since these live one level
-// deeper (segs[2] is the report slug).
-const SCM_REPORT_LABELS: Record<string, string> = {
-  "sales-order-detail-listing": "SO Detail Listing",
-  "delivery-order-detail-listing": "DO Detail Listing",
-  "sales-invoice-detail-listing": "SI Detail Listing",
-  "delivery-return-detail-listing": "DR Detail Listing",
-};
-
-// /scm/hr/<leaf-slug> — HR sits one level deeper too (segs[2] is the leaf) and
-// has no /scm/hr hub page, so like reports it gets its own table. Labels mirror
-// the NAV_TABS HR leaves. Without this, /scm/hr/* title-cased "scm" to "Scm".
-const SCM_HR_LABELS: Record<string, string> = {
-  "commission": "Commission",
-  "settings": "HR Settings",
-};
-
-// Path segments that are actions/children rather than entity IDs — used to
-// keep the plural label on /scm/<x>/new, /scm/<x>/from-so, etc. Anything
-// not in this set (and not obviously an action prefix) is treated as an
-// entity id → singular label.
-const SCM_ACTION_SEGMENTS = new Set([
-  "new",
-  "guided",
-  "maintenance",
-  "generate",
-  "stock-card",
-]);
-
-function isScmActionSegment(seg: string): boolean {
-  if (SCM_ACTION_SEGMENTS.has(seg)) return true;
-  if (seg.startsWith("from-")) return true;
-  return false;
-}
-
-function labelForPath(pathname: string): string {
-  for (const [re, label] of ROUTE_LABELS) {
-    if (re.test(pathname)) return label;
-  }
-  const segs = pathname.split("/").filter(Boolean);
-  // /scm/* — resolve via the segment tables above.
-  if (segs[0] === "scm" && segs.length >= 2) {
-    if (segs[1] === "reports" && segs[2]) {
-      return SCM_REPORT_LABELS[segs[2]] ?? "Report";
-    }
-    if (segs[1] === "hr" && segs[2]) {
-      return SCM_HR_LABELS[segs[2]] ?? "HR";
-    }
-    const entry = SCM_SEGMENT_LABELS[segs[1]];
-    if (entry) {
-      const [plural, singular] = entry;
-      const isDetail = !!segs[2] && !isScmActionSegment(segs[2]);
-      return isDetail ? singular : plural;
-    }
-    // Unknown /scm/* — fall through to the generic first-segment
-    // uppercase so at least it reads something, not blank.
-  }
-  const seg = segs[0] || "";
-  return seg ? seg[0].toUpperCase() + seg.slice(1) : "";
 }
 
 // ── Profile menu ───────────────────────────────────────────
@@ -449,6 +270,11 @@ function ProfileMenu() {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const activeRoute = location.pathname === "/profile";
+  // 2b: the separate "N online" presence cluster is gone — the online state
+  // rides on the avatar as a green corner dot, and the live count surfaces
+  // through the trigger's title/aria-label.
+  const { members } = usePresence();
+  const onlineCount = members.length;
 
   useEffect(() => {
     if (!open) return;
@@ -493,28 +319,40 @@ function ProfileMenu() {
           "group flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-bg/60",
           (open || activeRoute) && "bg-bg/60",
         )}
-        title={`${user.name || user.email}`}
+        title={
+          onlineCount > 0
+            ? `${user.name || user.email} · ${onlineCount} online`
+            : `${user.name || user.email}`
+        }
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Account menu"
       >
-        <Avatar
-          userId={user.id}
-          hasImage={user.profile_pic_r2_key}
-          name={user.name}
-          email={user.email}
-          size={28}
-        />
-        <div className="hidden min-w-0 xl:block">
+        <span className="relative shrink-0">
+          <Avatar
+            userId={user.id}
+            hasImage={user.profile_pic_r2_key}
+            name={user.name}
+            email={user.email}
+            size={30}
+          />
+          {/* Online state as an avatar badge (2b) — you are online whenever
+              this chrome is rendered; the ring keeps it legible over photos. */}
+          <span
+            aria-hidden
+            className="absolute -bottom-px -right-px h-[9px] w-[9px] rounded-full bg-synced ring-[1.5px] ring-surface"
+          />
+        </span>
+        <div className="min-w-0 max-w-[140px]">
           <div
             className={cn(
-              "truncate text-[11.5px] font-semibold text-ink",
+              "truncate text-[12px] font-semibold leading-tight text-ink",
               !open && "group-hover:text-primary",
             )}
           >
             {user.name || user.email.split("@")[0]}
           </div>
-          <div className="truncate text-[9.5px] text-ink-muted">
+          <div className="truncate text-[10px] leading-tight text-ink-muted">
             {user.role_name}
           </div>
         </div>

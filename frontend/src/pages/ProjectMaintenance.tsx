@@ -402,10 +402,10 @@ function VenueManager() {
       count={q.data?.data?.length}
       description="Picker values for the project Venue field. Optionally tag each venue with a state — picking it on a new project will pre-fill the state."
     >
-      {/* Owner spec 2026-07-23:
-          - StatePicker shows Malaysia states by default, click "Show Others"
-            for CN + SG, Search across all — no more hard-coded MY_STATES.
-          - No `(legacy)` fallback options — a value not in my_localities
+      {/* Owner spec (task #102, 2026-07-24):
+          - StatePicker lists every seeded state grouped by country (MY first),
+            with type-to-search — no hard-coded MY_STATES, no "Others" toggle.
+          - No `(legacy)` / free-text fallback — a value not in my_localities
             must be added via the Localities Maintenance UI first.
           - Country auto-fills from State via StatePicker's derivedCountry
             callback. City + Postcode are optional and scoped to the picked
@@ -1574,19 +1574,27 @@ function BrandManager() {
     }
   }
 
-  async function remove(b: BrandRow) {
+  // Owner 2026-07-23: real delete. The old "Hide from picker" only marked
+  // active=0 and left the row in the list — after the branding seed left
+  // duplicates (Happi.S vs Happi.S Mattress, 2990s vs 2990s Mattress) the
+  // owner needed to actually remove them. project_brands.id is not FK'd
+  // (projects.brand is free text), so a hard delete is safe; ?hard=1 tells
+  // the backend to DELETE rather than deactivate.
+  async function removePermanently(b: BrandRow) {
     if (
       !(await dialog.confirm({
-        title: "Hide brand",
-        message: `Hide "${b.name}" from the picker? Existing projects keep their brand label; you can re-enable later.`,
+        title: "Permanently delete brand",
+        message:
+          `Delete "${b.name}" from this list? This cannot be undone. ` +
+          `Existing projects that reference "${b.name}" keep the text.`,
         danger: true,
-        confirmLabel: "Hide",
+        confirmLabel: "Delete permanently",
       }))
     )
       return;
     try {
-      await api.del(`/api/projects/brands/${b.id}`);
-      toast.success("Brand hidden");
+      await api.del(`/api/projects/brands/${b.id}?hard=1`);
+      toast.success("Brand deleted");
       q.reload();
     } catch (e: any) {
       toast.error(e?.message || "Something went wrong. Please try again.");
@@ -1641,7 +1649,9 @@ function BrandManager() {
             {...handlers}
             className={cn(
               "flex flex-wrap items-center gap-2 px-3 py-2 transition-colors",
-              !b.active && "opacity-50",
+              // Owner 2026-07-23: 50% fade made the 3-dots look disabled and
+              // nobody could tell a hidden brand could be re-shown. Softer.
+              !b.active && "opacity-75",
               isDragging && "opacity-40",
               isDropTarget && "bg-accent-soft/40"
             )}
@@ -1705,16 +1715,16 @@ function BrandManager() {
                 {
                   type: "toggle",
                   icon: b.active ? Eye : EyeOff,
-                  label: b.active ? "Active" : "Hidden",
+                  label: b.active ? "Hide from picker" : "Show in picker",
                   active: !!b.active,
                   onClick: () => patch(b, { active: !b.active }),
                 },
                 {
                   type: "action",
                   icon: Trash2,
-                  label: "Hide from picker",
+                  label: "Delete permanently",
                   danger: true,
-                  onClick: () => remove(b),
+                  onClick: () => removePermanently(b),
                 },
               ]}
             />

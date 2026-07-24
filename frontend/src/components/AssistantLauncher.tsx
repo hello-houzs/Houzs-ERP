@@ -32,7 +32,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Bot } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { canUseAssistant } from "../auth/assistantAccess";
 import { cn } from "../lib/utils";
@@ -192,13 +191,34 @@ export function AssistantLauncher() {
       style={{ right: pos.right, bottom: pos.bottom, touchAction: "none" }}
       className={cn(
         "fixed z-40 inline-flex h-14 w-14 items-center justify-center rounded-full",
-        "bg-accent text-white shadow-slab",
+        // Grey disc (owner 2026-07-23 v3: "背景换成灰色看一下") — quiet neutral
+        // plate under the official bot artwork.
+        "border border-border bg-surface-dim shadow-slab",
         "cursor-grab active:cursor-grabbing select-none touch-none",
-        "transition-transform duration-200 hover:scale-105 active:scale-95",
-        "focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50",
+        "transition-transform duration-200 hover:scale-105 hover:bg-border-subtle active:scale-95",
+        "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
       )}
     >
-      <Bot size={24} strokeWidth={2} />
+      {/* Official icons8 "Nolan" bot PNG (owner 2026-07-23: 一模一样 — the
+          asset itself, per owner instruction; free-tier terms want a visible
+          Icons8 credit in the product OR a paid licence — owner to pick, see
+          PR). The BLINK: the icon's face plate is white, so two white "eyelid"
+          dots parked over the eyes simply flash opaque every ~4.2s. Guarded
+          by prefers-reduced-motion. */}
+      {/* 80% of the 56px disc (owner: icon可以大一点 填满圆形80%) — fixed px
+          because the percentage box resolves against the border-box minus
+          borders and lands at ~77%. */}
+      <span className="pointer-events-none relative inline-flex h-[45px] w-[45px]">
+        <img
+          src="/assistant-bot.png"
+          alt=""
+          draggable={false}
+          className="h-full w-full select-none"
+        />
+        {/* .hz-bot-lid + keyframes live in index.css — bundle-gate bytes. */}
+        <span aria-hidden className="hz-bot-lid" style={{ left: "29.2%", top: "47.8%" }} />
+        <span aria-hidden className="hz-bot-lid" style={{ left: "58.5%", top: "47.8%" }} />
+      </span>
     </button>
   );
 

@@ -314,3 +314,31 @@ select:focus-visible,
 textarea:focus-visible {
   outline-offset: 1px;
 }
+
+/* Assistant launcher bot — eyelid blink (components/AssistantLauncher.tsx).
+   Lives here, not in a JSX <style>, purely to keep the bytes OUT of the
+   initial JS bundle (the 165KB gate). The icon's face plate is white, so a
+   white dot flashing opaque over each eye reads as a blink. */
+.hz-bot-lid {
+  position: absolute;
+  width: 13%;
+  height: 13%;
+  border-radius: 50%;
+  background: #ffffff;
+  opacity: 0;
+  animation: hz-bot-blink 4.2s ease-in-out infinite;
+}
+@keyframes hz-bot-blink {
+  0%, 93%, 100% { opacity: 0; }
+  95%, 97.5%    { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hz-bot-lid { animation: none; }
+}
+
+/* Quick-actions speed-dial entrance (components/QuickActionsFAB.tsx). In CSS,
+   not a JSX <style>, for the same initial-JS bundle-gate reason as above. */
+@keyframes qa-fab-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}

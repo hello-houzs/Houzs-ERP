@@ -47,12 +47,27 @@ export function buildVariantSummary(
   const group = (itemGroup ?? '').toLowerCase();
   const isBedframe = group.includes('bedframe');
 
-  // Fabric segment — fabricCode + colorCode joined by a space. BEDFRAME also
-  // appends the chosen colour NAME (variants.colourLabel, e.g. "BF-01 Sand") so
-  // the SO line shows the picked colour, not just the fabric code (Loo,
-  // 2026-06-03 — "all option selections must show in the SO description").
-  const fabricParts = [str(variants.fabricCode), str(variants.colorCode)];
-  if (isBedframe) fabricParts.push(str(variants.colourLabel));
+  // Fabric segment — fabricCode + colorCode joined by a space. BEDFRAME and
+  // SOFA both append the chosen colour NAME (variants.colourLabel, e.g.
+  // "BF-01 Sand") so the SO line shows the picked colour, not just the fabric
+  // code (owner rule 2026-07-23 extending the 2026-06-03 bedframe rule to
+  // sofa: "all option selections must show in the SO description").
+  //
+  // Supplier code (owner rule 2026-07-24, "orders 全部也是要补回去 ... 显示两个
+  // code BF-01（PC151-01)"): when the line carries variants.fabricSupplierCode
+  // (the supplier's own code for our internal fabric, stamped READ-side by the
+  // SO/PO/DO/SI detail endpoints), show the internal code with the supplier code
+  // in parentheses — "BF-01 (PC151-01)" — the SAME pairing the fabric PICKER and
+  // the PDFs already show. Read off variants (the file's convention: new fields
+  // read off variants, missing -> old behaviour), so a line with no supplier code
+  // is unchanged. Distinct-only: a supplier code equal to the internal code adds
+  // no parens.
+  const fabricCodeRaw = str(variants.fabricCode);
+  const fabricSupplierCode = str(variants.fabricSupplierCode);
+  const fabricCodeShown = fabricCodeRaw && fabricSupplierCode && fabricSupplierCode !== fabricCodeRaw
+    ? `${fabricCodeRaw} (${fabricSupplierCode})`
+    : fabricCodeRaw;
+  const fabricParts = [fabricCodeShown, str(variants.colorCode), str(variants.colourLabel)];
   // Dedupe — when the colour label/code is just the fabric code again (e.g.
   // BF-07 whose colour label is also "BF-07"), don't repeat it ("BF-07 BF-07").
   // GRN / PI / PR / Stock-Adjustment editors store the fabric under fabricColor;
@@ -62,12 +77,22 @@ export function buildVariantSummary(
   // (variants.fabricId/fabricLabel — its tier add-on is already charged) but
   // confirms the colour later, so there's no fabricCode yet. Surface the
   // series + the open colour so the doc line reads the true state.
-  // Houzs 2026-06-23 — drop a colour the fabric code already leads OR ends with
-  // ("A201-7-LIGHT BROWN" + derived "BROWN" → just the code, not "... BROWN BROWN").
+  // Drop a bare part that a RICHER part already leads with (at a token
+  // boundary), so an enriched fabric code "BF-12 (PC151-12)" doesn't get the
+  // bare colour label "BF-12" repeated after it → "BF-12 (PC151-12) BF-12"
+  // (Commander 2026-06-19). Exact repeats still drop via the Set.
   const presentFabric = fabricParts.filter(Boolean);
   const dedupedFabric = presentFabric.filter((p, i) =>
-    !presentFabric.some((q, j) => j !== i && q !== p &&
-      (q.startsWith(`${p} `) || q.startsWith(`${p}(`) || q.endsWith(` ${p}`))),
+    !presentFabric.some((q, j) => j !== i && q !== p && (
+      // a richer part LEADS with the bare part — "BF-12 (PC151-12)" vs "BF-12"
+      q.startsWith(`${p} `) || q.startsWith(`${p}(`)
+      // Houzs 2026-06-23 — or a richer part already ENDS with it: the fabric code
+      // contains the colour ("A201-7-LIGHT BROWN" + derived colour "BROWN") → drop
+      // the redundant trailing colour so the line shows just the code, not
+      // "A201-7-LIGHT BROWN BROWN". A genuinely separate colour ("BF-01" + "Sand")
+      // is NOT a trailing token of the code, so it still shows.
+      || q.endsWith(` ${p}`)
+    )),
   );
   const fabric = [...new Set(dedupedFabric)].join(' ')
     || str(variants.fabricColor)

@@ -2,14 +2,16 @@
 
 > **The cutover is LIVE.** 2990 POS runs entirely on Houzs company_2 as of 2026-07-21.
 > Read `CUTOVER-PLAN.md`, `DATA-FLOW.md`, `FLIP-RUNBOOK.md` for background.
-> Last updated: 2026-07-22 (final flip + post-flip bug sweep landed).
+> Last updated: 2026-07-23 (branding backfill + GL import + multi-company scaling doc).
 
 ## TL;DR
 
 - ✅ **FLIP DONE 2026-07-21.** `HOUZS_OWNS_2990=true` on the Houzs Worker; POS `VITE_BACKEND_TARGET=houzs` baked into the deployed bundle. 2990's own API/backend no longer receives writes from the POS.
 - ✅ **Data / API / POS UI / SSO / owner-rule alignment: DONE.** Every P0 + P1 surfaced by the flip-day bug sweep is fixed + deployed.
-- ⏸️ **Only real data hole left:** `scm.accounts` (GL) for company_2 — held for Ecount export decision.
-- **What to do next:** watch prod for a few clean days on Houzs, then retire 2990's own `apps/api` + `apps/backend`. See §4.
+- ✅ **GL imported 2026-07-23** (PR #1134). 2990's 31-account chart (200-0000 Fixed Assets, 300-0000 Trade Debtor, 310-0000 Inventory, …) imported into `scm.accounts` under `company_id=2`. Post-import verified: company_2 now has **43** accounts (31 imported + **12 pre-existing**, most likely from the P&L-by-company split backfill; their codes are distinct from the 31, which is why the pre-import collision check was clean). company_1 (HOUZS) = 12. The chart is per-company in code (`accounts.company_id NOT NULL` + `/accounts`,`/journal-entries`,`/gl` scopeToCompany). The old "accounts GL hole" is CLOSED. OPEN: owner to eyeball whether the 12 pre-existing company_2 accounts overlap in meaning with the imported chart (codes don't collide; a semantic dedup may be wanted).
+- ✅ **Branding backfilled 2026-07-23** (PR #1133). 235 company_2 rows rewritten to the maintained dropdown (main-category casing/suffix fixes + service/accessory → category brand). Houzs untouched (0 changes — its dropdown has no Accessories/Service brand). See §5.
+- 🧭 **Multi-company scaling answered** (PR #1135, `docs/MULTICOMPANY-SCALING.md`): doc-number tables safe via per-company series prefix; the real landmines before company 3 are 4 natural-key masters (`accounts`, `product_models`, `product_dept_configs`, `pwp_codes`) needing `UNIQUE(company_id, key)`.
+- **What to do next:** watch prod for a few clean days on Houzs, then retire 2990's own `apps/api` + `apps/backend`. See §4. Before onboarding company 3, land the 4 per-company-constraint migrations.
 
 ---
 

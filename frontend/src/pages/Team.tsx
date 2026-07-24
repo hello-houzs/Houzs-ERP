@@ -669,6 +669,7 @@ function MembersTab({
     });
   const [filterRole, setFilterRole] = useState<number | "">("");
   const [filterBrand, setFilterBrand] = useState<string>("");
+  const [filterCompany, setFilterCompany] = useState<number | "">("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   // Card grid (reference look) vs. dense table. Grid is the default.
@@ -769,6 +770,25 @@ function MembersTab({
       }
     } catch (e: any) {
       toast.error(e?.message || "Failed to send reset");
+    }
+  }
+
+  // Admin set / clear a member's POS PIN (backend /api/pos/admin-*-pin/:userId,
+  // users.manage-gated). The admin TYPES the 6-digit PIN — a login credential is
+  // entered into the tool by the person, not stored or defaulted by us. The
+  // member can change it themselves afterwards via the POS.
+  async function setPosPin(u: TeamMember) {
+    const pin = window.prompt(`Set a 6-digit POS PIN for ${u.name || u.email}.\nThey can change it themselves later.`);
+    if (pin == null) return;
+    if (!/^\d{6}$/.test(pin.trim())) {
+      toast.error("PIN must be exactly 6 digits");
+      return;
+    }
+    try {
+      await api.post(`/api/pos/admin-set-pin/${u.id}`, { pin: pin.trim() });
+      toast.success(`POS PIN set for ${u.name || u.email}`);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to set PIN");
     }
   }
 
@@ -944,6 +964,7 @@ function MembersTab({
         (filterStatus === "" || u.status === filterStatus) &&
         (filterRole === "" || u.role_id === filterRole) &&
         (filterBrand === "" || (u.brands ?? []).includes(filterBrand)) &&
+        (filterCompany === "" || (u.company_ids ?? []).includes(filterCompany as number)) &&
         segs.every((k) => segMatch(k, u)) &&
         (q === "" ||
           (u.name || "").toLowerCase().includes(q) ||
@@ -956,6 +977,7 @@ function MembersTab({
     filterStatus,
     filterRole,
     filterBrand,
+    filterCompany,
     quickFilters,
     onlineIds,
     searchQ,
@@ -994,6 +1016,11 @@ function MembersTab({
     });
   if (filterBrand)
     activeFilters.push({ label: filterBrand, clear: () => setFilterBrand("") });
+  if (filterCompany !== "")
+    activeFilters.push({
+      label: companyOpts.find((co) => co.id === filterCompany)?.name ?? "Company",
+      clear: () => setFilterCompany(""),
+    });
   for (const key of quickFilters)
     activeFilters.push({
       label: QUICK_SEGMENTS.find(([k]) => k === key)?.[1] ?? "Segment",
@@ -1006,6 +1033,7 @@ function MembersTab({
     setFilterPos("");
     setFilterRole("");
     setFilterBrand("");
+    setFilterCompany("");
     setQuickFilters(new Set());
   }
 
@@ -1394,6 +1422,7 @@ function MembersTab({
           onOpenMember={(id) => setViewingId(id)}
           onEdit={() => setEditing(viewing)}
           onSendReset={() => sendReset(viewing)}
+          onSetPin={() => setPosPin(viewing)}
           onResendInvite={() => resendInviteForUser(viewing)}
           onToggleStatus={async () => {
             await toggleStatus(viewing);
@@ -1569,6 +1598,27 @@ function MembersTab({
                             {allBrands.map((b) => (
                               <option key={b} value={b}>
                                 {b}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      {companyOpts.length > 1 && (
+                        <div>
+                          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+                            Company
+                          </label>
+                          <select
+                            value={filterCompany}
+                            onChange={(e) =>
+                              setFilterCompany(e.target.value ? Number(e.target.value) : "")
+                            }
+                            className="h-8 w-full cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none hover:border-accent/50 focus:border-primary"
+                          >
+                            <option value="">All companies</option>
+                            {companyOpts.map((co) => (
+                              <option key={co.id} value={co.id}>
+                                {co.name}
                               </option>
                             ))}
                           </select>
@@ -2047,6 +2097,7 @@ function MemberDetail({
   onOpenMember,
   onEdit,
   onSendReset,
+  onSetPin,
   onResendInvite,
   onToggleStatus,
   onRemove,
@@ -2063,6 +2114,7 @@ function MemberDetail({
   onOpenMember: (id: number) => void;
   onEdit: () => void;
   onSendReset: () => void;
+  onSetPin?: () => void;
   onResendInvite: () => void;
   onToggleStatus: () => void | Promise<void>;
   onRemove: () => void | Promise<void>;
@@ -2278,6 +2330,11 @@ function MemberDetail({
               {canManage && user.status !== "invited" && (
                 <button type="button" onClick={onSendReset} className={actionCls}>
                   <KeyRound size={13} /> Reset password
+                </button>
+              )}
+              {canManage && onSetPin && (
+                <button type="button" onClick={onSetPin} className={actionCls}>
+                  <KeyRound size={13} /> Set POS PIN
                 </button>
               )}
               {canManage && user.status === "invited" && (
@@ -2761,13 +2818,19 @@ function EditMemberPanel({
       patch.password = password.trim();
     }
 
-    if (Object.keys(patch).length === 0) {
+    // Save if EITHER the user fields OR the showroom parking changed. The
+    // showroom lives in scm.staff (the separate call below), so an "only the
+    // showroom changed" edit has an EMPTY user patch — the old early-return here
+    // dropped it silently (owner: picked a venue, hit Save, nothing persisted).
+    if (Object.keys(patch).length === 0 && !showroomDirty) {
       onClose();
       return;
     }
     setBusy(true);
     try {
-      await api.patch(`/api/users/${user.id}`, patch);
+      if (Object.keys(patch).length > 0) {
+        await api.patch(`/api/users/${user.id}`, patch);
+      }
       /* Showroom parking lives in scm.staff, not on the user record, so it is a
          second call — made only when it actually changed, and AFTER the user
          patch succeeded. Its failure is surfaced separately rather than being

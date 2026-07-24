@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, GripVertical, Plus, Trash2, Columns3 } from "lucide-react";
 import { Panel } from "./Panel";
 import { Button } from "./Button";
@@ -95,6 +95,19 @@ export function ColumnsPanel({
     setOverKey(null);
   }
 
+  // Owner 2026-07-24: the picker lists columns A-Z by label so a column is
+  // easy to find. This sorts the DISPLAYED list only. Drag-to-reorder and the
+  // show/hide toggles still operate on `options` (the user's real storage
+  // order) and on `opt.key`, so the table's column order and the user's saved
+  // reorder/visibility are never changed by this sort.
+  const displayOptions = useMemo(
+    () =>
+      [...options].sort((a, b) =>
+        a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" })
+      ),
+    [options]
+  );
+
   return (
     <Panel
       open={open}
@@ -137,7 +150,7 @@ export function ColumnsPanel({
           {options.length === 0 && (
             <div className="px-3 py-4 text-[11px] text-ink-muted">No reorderable columns.</div>
           )}
-          {options.map((opt) => {
+          {displayOptions.map((opt) => {
             const visible = !hidden.has(opt.key);
             const isDragging = dragKey === opt.key;
             const isDropTarget = overKey === opt.key && dragKey && dragKey !== opt.key;

@@ -38,6 +38,7 @@ import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import {
   loadLeadTimeBase,
   resolveLeadDays,
@@ -850,6 +851,11 @@ mfgPurchaseOrders.get('/:id', async (c) => {
     };
   });
 
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" (owner 2026-07-24). Runs AFTER so_drift is computed from
+  // the raw variants above, so the drift compare stays apples-to-apples. ONE
+  // batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(supabase, c, items);
   return c.json({ purchaseOrder, items });
 });
 

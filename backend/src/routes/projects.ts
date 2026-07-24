@@ -330,14 +330,29 @@ app.patch("/brands/:id", requirePermission("projects.manage"), async (c) => {
 app.delete("/brands/:id", requirePermission("projects.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (!id) return c.json({ error: "Invalid ID." }, 400);
-  // Soft-delete. Existing projects keep their brand label; the brand
-  // just stops appearing in new-project pickers. Scoped so a 2990-context
-  // request can't deactivate a HOUZS brand.
-  await c.env.DB.prepare(
-    `UPDATE project_brands SET active = 0 WHERE id = ?${activeCompanySql(c)}`
-  )
-    .bind(id)
-    .run();
+  // ?hard=1 removes the row entirely (owner 2026-07-23 asked for a real
+  // delete on 2990's project_brands after the seed left duplicates like
+  // "Happi.S" + "Happi.S Mattress" — soft-delete just hid them from the
+  // picker but kept the row). Scoped so a 2990-context request can't
+  // touch HOUZS brand rows. mfg_products.branding is free-text (not FK),
+  // so an already-set SKU keeps its textual value; the BrandingInput
+  // renders it as "(legacy)" until an operator picks a canonical brand.
+  const hard = c.req.query("hard") === "1";
+  if (hard) {
+    await c.env.DB.prepare(
+      `DELETE FROM project_brands WHERE id = ?${activeCompanySql(c)}`
+    )
+      .bind(id)
+      .run();
+  } else {
+    // Soft-delete (default). Existing projects keep their brand label;
+    // the brand just stops appearing in new-project pickers.
+    await c.env.DB.prepare(
+      `UPDATE project_brands SET active = 0 WHERE id = ?${activeCompanySql(c)}`
+    )
+      .bind(id)
+      .run();
+  }
   return c.json({ ok: true });
 });
 
@@ -566,7 +581,7 @@ app.get("/cost-rates", requirePageAccess("projects.finances"), async (c) => {
             cr.updated_at
        FROM project_cost_rates cr
        JOIN project_brands pb ON pb.name = cr.brand
-      WHERE pb.active = 1
+      WHERE pb.active = 1${(() => { const id = activeCompanyId(c); return id != null ? ` AND pb.company_id = ${id}` : ""; })()}
       ORDER BY pb.sort_order ASC, pb.name ASC`,
   ).all();
   return c.json({ data: rows.results ?? [] });
@@ -951,9 +966,13 @@ app.delete("/organizers/:id", requirePermission("projects.manage"), async (c) =>
 // `projects.venue` stays valid so legacy data still renders.
 
 app.get("/venues", requirePageAccess("projects"), async (c) => {
+  // Company-scoped: project_venues carries company_id (mig 0093, all existing
+  // rows tagged HOUZS). Without this the 2990 Project Maintenance venue master
+  // + the SO venue picker listed every HOUZS exhibition venue — the same leak
+  // already fixed for the brand pool below.
   const rows = await c.env.DB.prepare(
     `SELECT id, name, state, notes, active FROM project_venues
-      WHERE active = 1 ORDER BY name`
+      WHERE active = 1${activeCompanySql(c)} ORDER BY name`
   ).all();
   type VenueOut = Record<string, unknown> & { name?: unknown; origin: 'PROJECT' | 'SHOWROOM' };
   const projectVenues: VenueOut[] = ((rows.results ?? []) as Array<Record<string, unknown>>).map((r) => ({

@@ -507,9 +507,14 @@ const TYPE_META: Record<
 export function GlobalSearchTrigger({
   collapsed,
   className,
+  tone = "surface",
 }: {
   collapsed?: boolean;
   className?: string;
+  /** Field palette. "surface" is the classic white field; "inset" is the
+   *  2b top-chrome variant — bg-surface-2 so the field reads recessed
+   *  against the white bar. */
+  tone?: "surface" | "inset";
 }) {
   const { open } = useGlobalSearch();
   const isMac =
@@ -539,7 +544,8 @@ export function GlobalSearchTrigger({
     <button
       onClick={open}
       className={cn(
-        "group flex h-9 w-full items-center gap-2 rounded-md border border-border bg-surface px-2.5 text-left text-[12px] text-ink-muted transition-colors hover:border-primary/50 hover:text-ink",
+        "group flex h-9 w-full items-center gap-2 rounded-md border border-border px-2.5 text-left text-[12px] text-ink-muted transition-colors hover:border-primary/50 hover:text-ink",
+        tone === "inset" ? "bg-surface-2" : "bg-surface",
         className
       )}
       title={`Search (${shortcut})`}

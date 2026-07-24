@@ -16,6 +16,14 @@ interface Props {
    *  of the button (top-navbar — prevents overflow off the right edge
    *  of the viewport). Defaults to "start". */
   align?: "start" | "end";
+  /** Button palette. "sidebar" (default) keeps the dark-slab colours the
+   *  sidebar has always used; "navbar" is the light top-chrome variant
+   *  (2b redesign): ink icon on a quiet surface-2 hover. */
+  tone?: "sidebar" | "navbar";
+  /** Unread affordance. "count" (default) renders the numeric pill;
+   *  "dot" renders the 2b red presence-style dot — the popover still
+   *  carries the numbers, the chrome stays quiet. */
+  unread?: "count" | "dot";
 }
 
 /**
@@ -28,6 +36,8 @@ export function NotificationBell({
   collapsed,
   direction = "down",
   align = "start",
+  tone = "sidebar",
+  unread = "count",
 }: Props) {
   const { feed, totalUnread } = useNotifications();
   const [open, setOpen] = useState(false);
@@ -54,7 +64,10 @@ export function NotificationBell({
         aria-label={`Notifications${totalUnread ? ` · ${countLabel} unread` : ""}`}
         title="Notifications"
         className={cn(
-          "relative inline-flex items-center rounded-md text-sidebar-ink-muted transition-colors hover:bg-sidebar-hover hover:text-accent",
+          "relative inline-flex items-center rounded-md transition-colors",
+          tone === "navbar"
+            ? "text-ink-secondary hover:bg-surface-2 hover:text-primary-ink"
+            : "text-sidebar-ink-muted hover:bg-sidebar-hover hover:text-accent",
           collapsed ? "h-9 w-9 justify-center" : "h-9 w-full gap-2 px-3"
         )}
       >
@@ -64,18 +77,23 @@ export function NotificationBell({
             Notifications
           </span>
         )}
-        {totalUnread > 0 && (
-          <span
-            className={cn(
-              "flex items-center justify-center rounded-full bg-err font-mono text-[9px] font-bold text-white shadow-sm",
-              collapsed
-                ? "absolute right-1.5 top-1.5 h-4 min-w-[16px] px-1"
-                : "h-4 min-w-[18px] px-1"
-            )}
-          >
-            {countLabel}
-          </span>
-        )}
+        {totalUnread > 0 &&
+          (unread === "dot" ? (
+            // 2b: a quiet presence-style dot — the count lives in the
+            // aria-label and the popover, not the chrome.
+            <span className="absolute right-1.5 top-1.5 h-[7px] w-[7px] rounded-full bg-err ring-[1.5px] ring-surface" />
+          ) : (
+            <span
+              className={cn(
+                "flex items-center justify-center rounded-full bg-err font-mono text-[9px] font-bold text-white shadow-sm",
+                collapsed
+                  ? "absolute right-1.5 top-1.5 h-4 min-w-[16px] px-1"
+                  : "h-4 min-w-[18px] px-1"
+              )}
+            >
+              {countLabel}
+            </span>
+          ))}
       </button>
 
       {open && (

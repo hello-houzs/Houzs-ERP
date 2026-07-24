@@ -8,6 +8,22 @@ let deferredPrompt: any = null;
 const installListeners = new Set<(canInstall: boolean) => void>();
 const onlineListeners = new Set<(online: boolean) => void>();
 
+// Owner 2026-07-23: staff (and the owner testing his own merges) kept seeing
+// the OLD build after a deploy because the running page holds the old JS in
+// memory — a plain refresh often still hit the cached shell, so a change that
+// merged + deployed fine "couldn't be tested" without a manual hard refresh.
+// The SW already skipWaiting()s + clients.claim()s on a new build; we just
+// never surfaced it. These listeners fire when a NEW build takes over so the
+// UI can offer a one-tap Reload (never auto-reload — that would nuke an
+// in-progress order form).
+let updateAvailable = false;
+const updateListeners = new Set<(available: boolean) => void>();
+function notifyUpdate() {
+  if (updateAvailable) return; // latch — a build only gets newer, never older
+  updateAvailable = true;
+  for (const fn of updateListeners) fn(true);
+}
+
 export function registerPwa() {
   // DEV: never run a service worker. On localhost the SW caches the vite
   // module graph cache-first, so edits "don't show" after a refresh until the
@@ -29,16 +45,53 @@ export function registerPwa() {
   } else if ("serviceWorker" in navigator) {
     // PROD: register the SW (secure-context only; localhost is exempt but dev
     // is handled above).
+    //
+    // A controller already present at load means a PRIOR build is running: a
+    // later controllerchange is then a version SWAP, not the first-ever
+    // install — that is our "new build is live" signal.
+    const hadControllerAtLoad = !!navigator.serviceWorker.controller;
+
     window.addEventListener("load", () => {
       navigator.serviceWorker
         .register("/sw.js")
         .then((reg) => {
           // Best-effort update check on each load.
           reg.update().catch(() => {});
+
+          // A tab left open for hours never re-checks on its own. Re-run the
+          // update probe when the tab regains focus and on a slow interval so
+          // a deploy that lands mid-session is still noticed.
+          const recheck = () => reg.update().catch(() => {});
+          document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") recheck();
+          });
+          setInterval(recheck, 60_000);
+
+          // Backup signal: a new worker reaching "installed" while one already
+          // controls the page is a waiting update. sw.js calls skipWaiting so
+          // this usually rolls straight into controllerchange below, but on
+          // browsers that defer activation this still surfaces it.
+          reg.addEventListener("updatefound", () => {
+            const installing = reg.installing;
+            if (!installing) return;
+            installing.addEventListener("statechange", () => {
+              if (installing.state === "installed" && navigator.serviceWorker.controller) {
+                notifyUpdate();
+              }
+            });
+          });
         })
         .catch((e) => {
           console.warn("[pwa] SW registration failed:", e);
         });
+    });
+
+    // Primary signal: sw.js does skipWaiting() + clients.claim(), so a fresh
+    // build takes control and fires controllerchange. Guarded by
+    // hadControllerAtLoad so the first-ever registration (no prior controller)
+    // is not mistaken for an update.
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (hadControllerAtLoad) notifyUpdate();
     });
   }
 
@@ -78,6 +131,14 @@ export function onOnline(fn: (online: boolean) => void): () => void {
   onlineListeners.add(fn);
   fn(navigator.onLine);
   return () => onlineListeners.delete(fn);
+}
+
+/** Subscribe to "a newer build is live" — fires once, latched. The banner
+ *  reads this to offer a one-tap Reload. Returns an unsubscribe fn. */
+export function onUpdateAvailable(fn: (available: boolean) => void): () => void {
+  updateListeners.add(fn);
+  fn(updateAvailable);
+  return () => updateListeners.delete(fn);
 }
 
 export async function promptInstall(): Promise<"accepted" | "dismissed" | "unavailable"> {

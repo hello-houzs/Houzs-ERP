@@ -1,4 +1,16 @@
 import { NavLink, useLocation } from "react-router-dom";
+import { markWorkspaceOpenIntent } from "../lib/workspaceTabs";
+
+// Workspace tab strip: a plain left-click on a sidebar destination is the ONE
+// gesture that opens/activates a tab (lib/workspaceTabs.ts). Modified clicks
+// (Ctrl/Cmd/Shift/Alt — a real browser window) must not mark, and the mark
+// itself expires if no navigation follows.
+function markOpenIntentOnPlainClick(e: { button?: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }): void {
+  if ((e.button ?? 0) === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+    markWorkspaceOpenIntent();
+  }
+}
+
 import {
   ClipboardList,
   Zap,
@@ -853,6 +865,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
               <NavLink
                 to={headerTo}
                 title={tab.label}
+                onClick={markOpenIntentOnPlainClick}
                 onMouseEnter={() => prefetchRoute(headerTo)}
                 className={cn(
                   "group relative my-0.5 flex items-center justify-center rounded-md px-2 py-2 transition-all duration-150",
@@ -892,7 +905,10 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
             {headerTo ? (
               <NavLink
                 to={headerTo}
-                onClick={() => openGroup(gid)}
+                onClick={(e) => {
+                  markOpenIntentOnPlainClick(e);
+                  openGroup(gid);
+                }}
                 onMouseEnter={() => prefetchRoute(headerTo)}
                 className="flex min-w-0 flex-1 items-center gap-3 py-2"
               >
@@ -939,6 +955,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
         key={to}
         to={to}
         end={tab.end}
+        onClick={markOpenIntentOnPlainClick}
         onMouseEnter={() => prefetchRoute(to)}
         // We compute active state ourselves so query strings match.
         className={() =>

@@ -314,6 +314,23 @@ export function MobileServiceCase({ onBack, startNew = false }: { onBack?: () =>
   );
 }
 
+// Sort menu (owner 2026-07-23: default = Case newest-first, everything else
+// is auxiliary; Stuck/Updated/Priority/Customer added same day, all four
+// picked). Every `by` is a key of the backend ASSR_SORT_MAP whitelist —
+// unknown keys are silently ignored server-side (falls back to id DESC), so
+// keep the two lists in sync. Priority relies on the map's CASE expression
+// for semantic order (urgent→low when asc), not the raw text column.
+const SORT_MENU = [
+  { key: "no", label: "Newest", by: "assr_no", dir: "desc" },
+  { key: "old", label: "Oldest", by: "assr_no", dir: "asc" },
+  { key: "sla", label: "SLA", by: "hours_to_deadline", dir: "asc" },
+  { key: "stuck", label: "Stuck", by: "days_in_stage", dir: "desc" },
+  { key: "updated", label: "Updated", by: "updated_at", dir: "desc" },
+  { key: "priority", label: "Priority", by: "priority", dir: "asc" },
+  { key: "customer", label: "Customer", by: "customer_name", dir: "asc" },
+] as const;
+type SortKey = (typeof SORT_MENU)[number]["key"];
+
 // ── LIST — "Status Cards" (design ListA) ──────────────────────────
 function CaseList({
   onBack,
@@ -327,7 +344,7 @@ function CaseList({
   const { user, can } = useAuth();
   const [q, setQ] = useState("");
   const [chip, setChip] = useState("all");
-  const [sort, setSort] = useState<"sla" | "no">("sla");
+  const [sort, setSort] = useState<SortKey>("no");
   /* Debounced search term — the value keyed into (and sent to) the server so a
      keystroke doesn't fire a request per character. Mirrors MobileSalesOrders. */
   const [debouncedQ, setDebouncedQ] = useState("");
@@ -367,50 +384,62 @@ function CaseList({
       || Number(get(r, "assignedTo2", "assigned_to_2") ?? 0) === uid;
   };
 
-  // Design chips (ListA): All / SLA risk / Urgent / Mine, with counts.
-  //   · all    — no server filter.
-  //   · mine   — SERVER-SIDE: /api/assr?assigned_to=<me> (matches assigned_to
-  //              OR assigned_to_2, exactly like isMine), so it's correct across
-  //              every page.
-  //   · risk / urgent — the endpoint has no SLA-bucket or priority param, so
-  //              these two stay CLIENT-SIDE over the rows loaded so far (FLAG).
-  //              Infinite scroll keeps pulling pages as the (shorter) filtered
-  //              list leaves the sentinel in view, so matches accumulate as the
-  //              operator scrolls rather than being hard-capped at 200.
-  const CHIPS: { key: string; label: string; match: (r: Any) => boolean }[] = [
-    { key: "all", label: "All", match: () => true },
-    { key: "risk", label: "SLA risk", match: (r) => ["breach", "risk"].includes(slaStateOf(r).tone) },
-    { key: "urgent", label: "Urgent", match: (r) => priorityOf(r) === "urgent" },
-    { key: "mine", label: "Mine", match: isMine },
-    // Archived — SERVER-SIDE archived_only=1, a separate list rather than
-    // archived rows interleaved with live work (owner 2026-07-21, desktop
-    // #1023 parity). match is a no-op: the server already returns only
-    // archived rows while this chip is active.
-    { key: "archived", label: "Archived", match: () => true },
-  ];
+  // Role-aware chip row (owner 2026-07-23: "不同user show不同的chips") —
+  // three cuts derived from the SAME capability signals that gate the list
+  // (canViewCases below), so visibility and chip set can't drift apart:
+  //   · ops/service (service_cases.read) get the desktop-equivalent FULL
+  //     stage cut (owner: "operation 的话…跟 desktop 一样有 full staging 的")
+  //     — one chip per pipeline stage, plus All and Archived;
+  //   · sales (org.sales.staff) follow their own cases → Mine/Open/Completed,
+  //     no queue noise;
+  //   · directors/others get the overview cut with Archived.
+  // Every chip filters SERVER-SIDE (cross-page correct): stage chips →
+  // stage=<key>; open → exclude_stage=completed; completed → stage=completed;
+  // mine → assigned_to (matches assigned_to OR assigned_to_2, like isMine);
+  // archived → archived_only=1, a separate list rather than archived rows
+  // interleaved with live work (desktop #1023 parity — its match is a no-op
+  // because the server already returns only archived rows).
+  type ChipDef = { key: string; label: string; match: (r: Any) => boolean; params?: Record<string, string> };
+  const CHIP_DEFS: Record<string, ChipDef> = {
+    all: { key: "all", label: "All", match: () => true },
+    open: { key: "open", label: "Open", match: (r) => stageOf(r) !== "completed", params: { exclude_stage: "completed" } },
+    completed: { key: "completed", label: "Completed", match: (r) => stageOf(r) === "completed", params: { stage: "completed" } },
+    mine: { key: "mine", label: "Mine", match: isMine, params: { ...(user?.id ? { assigned_to: String(user.id) } : {}) } },
+    archived: { key: "archived", label: "Archived", match: () => true, params: { archived_only: "1" } },
+  };
+  const stageChips: ChipDef[] = STAGES.map((s) => ({
+    key: `stage:${s.key}`,
+    label: s.label,
+    match: (r) => stageOf(r) === s.key,
+    params: { stage: s.key },
+  }));
+  const CHIPS: ChipDef[] = can("service_cases.read")
+    ? [CHIP_DEFS.all, ...stageChips, CHIP_DEFS.archived]
+    : capability(user, "org.sales.staff")
+      ? [CHIP_DEFS.all, CHIP_DEFS.mine, CHIP_DEFS.open, CHIP_DEFS.completed]
+      : [CHIP_DEFS.all, CHIP_DEFS.open, CHIP_DEFS.completed, CHIP_DEFS.archived];
 
   /* Server-side search + sort + Mine + infinite scroll. `search` covers
      case no / SO doc / Ref / customer server-side (cross-page); the sort
-     selector maps to the endpoint's sort_by (sla → hours_to_deadline asc =
-     most-overdue first, nulls last; no → assr_no asc). Changing search / sort /
+     selector maps to the endpoint's sort_by via SORT_MENU (newest case
+     first is the default). Changing search / sort /
      Mine swaps the query key so the list restarts from page 1. per_page 30;
      default id-desc tiebreak → no skipped/dup rows.
      NOTE: the server `search` does NOT cover the complaint issue text or the
      item code/description that the old client search also matched — those two
      fields are no longer searchable (cross-page correctness is the trade). */
-  const mineParam = chip === "mine" ? user?.id ?? null : null;
-  // Archived chip → archived_only=1 (NOT include_archived, which would
-  // interleave archived rows into the active list — the pre-#1023 bug).
-  const archivedParam = chip === "archived" ? 1 : null;
+  const activeChip = CHIPS.find((c) => c.key === chip) ?? CHIPS[0];
   const buildParams = (page: number): string => {
     const p = new URLSearchParams();
     p.set("page", String(page));
     p.set("per_page", "30");
     if (debouncedQ) p.set("search", debouncedQ);
-    if (sort === "no") { p.set("sort_by", "assr_no"); p.set("sort_dir", "asc"); }
-    else { p.set("sort_by", "hours_to_deadline"); p.set("sort_dir", "asc"); }
-    if (mineParam != null) p.set("assigned_to", String(mineParam));
-    if (archivedParam != null) p.set("archived_only", "1");
+    const s = SORT_MENU.find((o) => o.key === sort) ?? SORT_MENU[0];
+    p.set("sort_by", s.by);
+    p.set("sort_dir", s.dir);
+    // The active chip's server-side filter (archived_only NOT
+    // include_archived, which would interleave — the pre-#1023 bug).
+    for (const [k, v] of Object.entries(activeChip.params ?? {})) p.set(k, v);
     return p.toString();
   };
   type AssrListPage = { data?: Any[]; total?: number; page?: number; per_page?: number };
@@ -418,7 +447,7 @@ function CaseList({
     data, isLoading, isFetching, isPlaceholderData, error,
     fetchNextPage, hasNextPage, isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ["mobile-assr-list-paged", debouncedQ, sort, mineParam, archivedParam],
+    queryKey: ["mobile-assr-list-paged", debouncedQ, sort, activeChip.key, user?.id],
     queryFn: ({ pageParam, signal }) => api.get<AssrListPage>(`/api/assr?${buildParams(pageParam)}`, { signal }),
     initialPageParam: 1,
     getNextPageParam: (last, pages) => {
@@ -502,20 +531,32 @@ function CaseList({
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search case · SO · Ref · customer · phone" />
           </div>
           <SearchProgress active={searchTransition.isSearching} label="Searching…" />
-          <select value={sort} onChange={(e) => setSort(e.target.value as "sla" | "no")} style={{ flex: "none", fontFamily: "inherit", fontSize: 12, color: "var(--mut)", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "0 8px", height: 38, appearance: "none", WebkitAppearance: "none" }}>
-            <option value="sla">Sort: SLA</option>
-            <option value="no">Sort: Case</option>
+          <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} style={{ flex: "none", fontFamily: "inherit", fontSize: 12, color: "var(--mut)", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "0 8px", height: 38, appearance: "none", WebkitAppearance: "none" }}>
+            {SORT_MENU.map((o) => (
+              <option key={o.key} value={o.key}>Sort: {o.label}</option>
+            ))}
           </select>
         </div>
         <SearchScopeHint scope="server" searching={searchTransition.isSearching} countPending={isLoading || isPlaceholderData || Boolean(error) || searchTransition.resultsAreStale} resultCount={totalCount} term={q} className="mt-1 px-1" />
-        {/* status chips — petrol active pill with count badge (design SegChips) */}
-        <div className="hz-scroll" style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 11, paddingBottom: 2 }}>
-          {CHIPS.map((c) => {
+        {/* status chips — petrol active pill with count badge (design SegChips).
+            Ops' full stage cut renders as TWO rows (owner 2026-07-23:
+            "Operation view的 chips 要做成2 row") — deterministic halves so the
+            pipeline still reads left-to-right within each row; both rows share
+            one horizontal scroll. Short cuts (sales/director) stay one line. */}
+        <div className="hz-scroll" style={{ overflowX: "auto", marginTop: 11, paddingBottom: 2 }}>
+          {(CHIPS.length > 6
+            ? [CHIPS.slice(0, Math.ceil(CHIPS.length / 2)), CHIPS.slice(Math.ceil(CHIPS.length / 2))]
+            : [CHIPS]
+          ).map((rowChips, ri) => (
+          <div key={ri} style={{ display: "flex", gap: 8, width: "max-content", marginTop: ri ? 8 : 0 }}>
+          {rowChips.map((c) => {
             const on = chip === c.key;
-            // Archived is a different SERVER dataset, so a loaded-rows count
-            // is meaningless while inactive (the active list holds no archived
-            // rows) — badge only when selected, showing the server total.
-            const badge = c.key === "archived" ? (on ? totalCount : null) : counts[c.key] ?? 0;
+            // Active chip → the envelope total (true cross-page count for the
+            // server-filtered list). Inactive → loaded-rows estimate, except
+            // All and Archived: All's "estimate" would just echo whatever list
+            // is currently loaded, and Archived's rows aren't in the active
+            // dataset at all — both hide their badge until selected.
+            const badge = on ? totalCount : c.key === "archived" || c.key === "all" ? null : counts[c.key] ?? 0;
             return (
               <button
                 key={c.key}
@@ -537,6 +578,8 @@ function CaseList({
               </button>
             );
           })}
+          </div>
+          ))}
         </div>
       </header>
 
@@ -545,13 +588,11 @@ function CaseList({
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load service cases. Pull to retry.</div>}
         {!isLoading && !error && (
           <>
-            {/* Count note — server total for All/Mine (cross-page); for the
-                client-side risk/urgent chips it can only reflect loaded rows. */}
+            {/* Count note — every chip filters server-side now, so the
+                envelope total is the true cross-page count for all of them. */}
             {!searchTransition.resultsAreStale && (
               <div style={{ fontSize: 11, color: MUTED, margin: "0 2px 10px" }}>
-                {chip === "urgent" || chip === "risk"
-                  ? `${visibleRows.length} shown (loaded)`
-                  : `${totalCount} case${totalCount === 1 ? "" : "s"}`}
+                {`${totalCount} case${totalCount === 1 ? "" : "s"}`}
               </div>
             )}
             {visibleRows.length > 0 && (
@@ -653,11 +694,7 @@ function CaseList({
               />
             )}
             {/* Infinite-scroll sentinel — watched by the IntersectionObserver;
-                enters view (+600px) near the end and pulls the next page. Keyed
-                off hasNextPage alone (not rows.length): the client-side
-                risk/urgent chips can filter the loaded rows to zero while more
-                pages remain, and we still want those pages pulled so matches on
-                later pages surface. */}
+                enters view (+600px) near the end and pulls the next page. */}
             {!searchTransition.isSearching && hasNextPage && (
               <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
             )}
@@ -1474,6 +1511,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                     // SO re-matches customer info from the SO mirror
                     // server-side.
                     { key: "doc_no", label: "SO No", value: get(c, "docNo", "doc_no"), type: "so" },
+                    { key: "ref_no", label: "Ref No", value: get(c, "refNo", "ref_no"), type: "text" },
                     { key: "customer_name", label: "Customer", value: customer(c) === "—" ? "" : customer(c), type: "text" },
                     { key: "phone", label: "Phone", value: get(c, "phone", "customerPhone", "customer_phone"), type: "text" },
                     { key: "customer_email", label: "Email", value: get(c, "customerEmail", "customer_email"), type: "text" },

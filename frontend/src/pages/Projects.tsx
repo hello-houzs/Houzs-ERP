@@ -2568,18 +2568,21 @@ function FinanceListView() {
           />
         </FilterField>
         <FilterField label="Brand">
+          <span className="relative inline-flex">
           <select
-            value={brand}
-            onChange={(e) => setBrand(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-          >
-            <option value="">All</option>
-            {(brandsQ.data?.data ?? []).map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
+              value={brand}
+              onChange={(e) => setBrand(e.target.value)}
+              className="h-8 w-full rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+            >
+              <option value="">All</option>
+              {(brandsQ.data?.data ?? []).map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted" />
+          </span>
         </FilterField>
         <FilterField label="Stage">
           <select
@@ -3377,11 +3380,9 @@ function ProjectsCalendarView() {
     true,
     booleanPreference,
   );
-  const [expandAll, setExpandAll] = useIdentityPreference(
-    "projects:cal:expandAll",
-    false,
-    booleanPreference,
-  );
+  // Owner 2026-07-23: the calendar always shows every project bar + task inline
+  // (no "+N more", no Expand-all toggle) — pc and mobile both default-expanded.
+  const expandAll = true;
   const brandsQ = useQuery<{ data: string[] }>("/api/projects/brands", () =>
     api.get("/api/projects/brands")
   );
@@ -3483,14 +3484,23 @@ function ProjectsCalendarView() {
       // still be scrolled by dragging over its content. Works in both modes.
       const target = e.target as HTMLElement | null;
       if (target && target.closest(".cal-bar,[data-cal-content]")) return;
-      /* Owner 2026-07-16 — never hijack the wheel when the page can actually
-         scroll. The .cal-bar/[data-cal-content] escape hatches above only exist
-         on cells that HAVE content, so on an empty calendar (a scoped Sales rep
-         with no in-scope projects) every wheel event flipped the month and the
-         page could not be scrolled at all. This is the behaviour the note below
-         has always claimed but never implemented. */
+      /* Owner 2026-07-16 — never hijack the wheel while the page can still
+         scroll in that direction. Owner 2026-07-23 — but the flip must SURVIVE
+         a scrollable page: 6c29e5cc (always expand all bars) made the grid
+         overflow the viewport on any busy month, which turned the old
+         "scrollable ⇒ never flip" guard into a permanent kill-switch — the
+         tip kept promising a scroll-to-change-month that could never fire.
+         Boundary rule instead: wheeling over blank space flips the month only
+         at the edge being pushed past (down at the bottom, up at the top);
+         mid-scroll the page scrolls normally. An empty short calendar is at
+         both edges at once, which is exactly the pre-expand behaviour. */
       const scroller = el.closest("main");
-      if (scroller && scroller.scrollHeight > scroller.clientHeight + 1) return;
+      if (scroller && scroller.scrollHeight > scroller.clientHeight + 1) {
+        const atTop = scroller.scrollTop <= 1;
+        const atBottom =
+          scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+        if (e.deltaY > 0 ? !atBottom : !atTop) return;
+      }
       e.preventDefault();
       const now = Date.now();
       if (now - wheelTsRef.current < 380) return;
@@ -3659,7 +3669,7 @@ function ProjectsCalendarView() {
             else d.setMonth(d.getMonth() - 1);
             setAnchor(d);
           }}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-primary/40 hover:text-primary"
           title={mode === "week" ? "Previous week" : "Previous month"}
         >
           <ChevronLeft size={16} />
@@ -3677,7 +3687,7 @@ function ProjectsCalendarView() {
               setAnchor(d);
             }
           }}
-          className="rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] hover:border-accent/40"
+          className="rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] text-ink-secondary transition-colors hover:border-primary/40 hover:text-primary"
         >
           Today
         </button>
@@ -3688,7 +3698,7 @@ function ProjectsCalendarView() {
             else d.setMonth(d.getMonth() + 1);
             setAnchor(d);
           }}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-primary/40 hover:text-primary"
           title={mode === "week" ? "Next week" : "Next month"}
         >
           <ChevronRight size={16} />
@@ -3703,8 +3713,10 @@ function ProjectsCalendarView() {
               onClick={() => setMode(m)}
               className={cn(
                 "px-3 py-1.5 text-[11px] font-semibold transition-colors",
+                // Theme C: petrol is the FUNCTIONAL accent (active states);
+                // brass is brand-only (owner 2026-07-23 calendar pass).
                 mode === m
-                  ? "bg-accent text-white"
+                  ? "bg-primary text-white"
                   : "bg-surface text-ink-secondary hover:bg-bg/50",
               )}
             >
@@ -3718,7 +3730,7 @@ function ProjectsCalendarView() {
           <select
             value={brand}
             onChange={(e) => setBrand(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
+            className="h-8 appearance-none rounded-md border border-border bg-surface pl-2 pr-7 text-[11px] text-ink-secondary outline-none transition-colors hover:border-primary/40 focus:border-primary focus:ring-2 focus:ring-primary/15"
             title="Filter by brand"
           >
             <option value="">All brands</option>
@@ -3728,33 +3740,39 @@ function ProjectsCalendarView() {
               </option>
             ))}
           </select>
+          <span className="relative inline-flex">
           <select
-            value={section}
-            onChange={(e) => setSection(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-            title="Filter by current section (stage)"
-          >
-            <option value="">All sections</option>
-            {(sectionsListQ.data?.data ?? []).map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-            <option value="__done">Completed</option>
-          </select>
+              value={section}
+              onChange={(e) => setSection(e.target.value)}
+              className="h-8 appearance-none rounded-md border border-border bg-surface pl-2 pr-7 text-[11px] text-ink-secondary outline-none transition-colors hover:border-primary/40 focus:border-primary focus:ring-2 focus:ring-primary/15"
+              title="Filter by current section (stage)"
+            >
+              <option value="">All sections</option>
+              {(sectionsListQ.data?.data ?? []).map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+              <option value="__done">Completed</option>
+            </select>
+            <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted" />
+          </span>
+          <span className="relative inline-flex">
           <select
-            value={organizer}
-            onChange={(e) => setOrganizer(e.target.value)}
-            className="h-8 rounded-md border border-border bg-surface px-2 text-[11px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/15"
-            title="Filter by organizer"
-          >
-            <option value="">All organizers</option>
-            {(organizersQ.data?.data ?? []).map((o) => (
-              <option key={o.id} value={o.name}>
-                {o.name}
-              </option>
-            ))}
-          </select>
+              value={organizer}
+              onChange={(e) => setOrganizer(e.target.value)}
+              className="h-8 appearance-none rounded-md border border-border bg-surface pl-2 pr-7 text-[11px] text-ink-secondary outline-none transition-colors hover:border-primary/40 focus:border-primary focus:ring-2 focus:ring-primary/15"
+              title="Filter by organizer"
+            >
+              <option value="">All organizers</option>
+              {(organizersQ.data?.data ?? []).map((o) => (
+                <option key={o.id} value={o.name}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted" />
+          </span>
           <ResetFiltersButton
             active={!!(brand || section || organizer || params.get("stage"))}
             onReset={() => {
@@ -3779,9 +3797,9 @@ function ProjectsCalendarView() {
           <button
             onClick={() => setShowTasks(!showTasks)}
             className={cn(
-              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider transition-colors",
+              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors",
               showTasks
-                ? "border-accent/40 bg-accent-soft/40 text-accent"
+                ? "border-primary/40 bg-primary-soft text-primary-ink"
                 : "border-border bg-surface text-ink-muted hover:text-ink"
             )}
             title="Toggle task chips"
@@ -3791,26 +3809,14 @@ function ProjectsCalendarView() {
           <button
             onClick={() => setShowHolidays(!showHolidays)}
             className={cn(
-              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider transition-colors",
+              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors",
               showHolidays
-                ? "border-accent/40 bg-accent-soft/40 text-accent"
+                ? "border-primary/40 bg-primary-soft text-primary-ink"
                 : "border-border bg-surface text-ink-muted hover:text-ink"
             )}
             title="Show Malaysian federal public holidays"
           >
             {showHolidays ? <Check size={12} /> : <Circle size={12} />} MY Holidays
-          </button>
-          <button
-            onClick={() => setExpandAll(!expandAll)}
-            className={cn(
-              "inline-flex h-8 items-center gap-1 rounded-md border px-2.5 font-mono text-[10.5px] font-semibold uppercase tracking-wider transition-colors",
-              expandAll
-                ? "border-accent/40 bg-accent-soft/40 text-accent"
-                : "border-border bg-surface text-ink-muted hover:text-ink"
-            )}
-            title="Show every project bar + task inline (no +N more)"
-          >
-            {expandAll ? <Check size={12} /> : <Circle size={12} />} Expand all
           </button>
           {(brand || section || organizer) && (
             <button
@@ -3819,7 +3825,7 @@ function ProjectsCalendarView() {
                 setSection("");
                 setOrganizer("");
               }}
-              className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
+              className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted hover:text-err"
             >
               Clear
             </button>
@@ -3839,7 +3845,7 @@ function ProjectsCalendarView() {
           </span>
         ))}
         {mode === "month" && (
-          <span className="ml-auto text-[10.5px] italic text-ink-muted">
+          <span className="ml-auto text-[10.5px] text-ink-muted">
             Tip: scroll over empty space to change month
           </span>
         )}
@@ -3969,7 +3975,7 @@ function ProjectsCalendarView() {
                           className={cn(
                             "inline-flex items-center rounded-full px-3 py-1 text-[12px] font-semibold",
                             isToday
-                              ? "bg-accent text-white"
+                              ? "bg-primary text-white"
                               : "text-ink-secondary",
                           )}
                         >
@@ -3986,11 +3992,11 @@ function ProjectsCalendarView() {
                     ) : (
                       <div className="flex items-center gap-1.5">
                         {isToday ? (
-                          <span className="inline-flex h-[22px] min-w-[22px] shrink-0 items-center justify-center rounded-full bg-accent px-1.5 font-mono text-[13px] font-bold text-white">
+                          <span className="inline-flex h-[22px] min-w-[22px] shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[13px] font-bold text-white">
                             {cell.date.getUTCDate()}
                           </span>
                         ) : (
-                          <span className="shrink-0 font-mono text-[14px] font-bold text-ink">
+                          <span className="shrink-0 text-[14px] font-semibold text-ink">
                             {cell.date.getUTCDate()}
                           </span>
                         )}
@@ -8821,6 +8827,18 @@ type CrewSlot = { name: string; phone: string };
 // provider (owner 2026-07-23): a trip that is NOT an internal lorry is done by
 // Grab or Lalamove — chosen per lorry card. "" = internal lorry (use plate).
 type LorryCrew = { plate: string; provider?: string; drivers: CrewSlot[]; helpers: CrewSlot[] };
+// Outsourced trip (owner 2026-07-23): Setup & Dismantle offer three providers.
+// Outsource / Lalamove carry a manual name·phone·plate; Grab carries two staff
+// helpers (helper1/helper2) instead. `provider` absent = legacy Outsource entry.
+type OutsourcedProvider = "outsource" | "lalamove" | "grab";
+type OutsourcedEntry = {
+  provider?: OutsourcedProvider;
+  name?: string;
+  phone?: string;
+  plate?: string;
+  helper1?: string;
+  helper2?: string;
+};
 interface PhaseCrew {
   /** The editable per-lorry structure. */
   lorryCrew: LorryCrew[];
@@ -8830,7 +8848,7 @@ interface PhaseCrew {
   drivers: CrewSlot[];
   helpers: CrewSlot[];
   lorries: string[];
-  outsourced: { enabled: boolean; entries: { name: string; phone: string; plate: string }[] };
+  outsourced: { enabled: boolean; entries: OutsourcedEntry[] };
   /** Free-text note — used by the Service / Exchange phase ("what service /
    *  exchange"). This one is the INTERNAL-LORRY remark. Empty for
    *  setup/dismantle. Persisted inside the same JSON. */
@@ -8982,6 +9000,91 @@ function OutsourcedBox({
   );
 }
 
+// Grab trip (owner 2026-07-23): instead of a manual name/phone/plate, a Grab
+// trip is two staff helpers riding together, picked from the full helper list.
+function GrabHelperBox({
+  helpers,
+  onAdd,
+}: {
+  helpers: CrewMember[];
+  onAdd: (o: { helper1: string; helper2: string }) => void;
+}) {
+  const [h, setH] = useState({ helper1: "", helper2: "" });
+  const HelperSelect = ({ which, label }: { which: "helper1" | "helper2"; label: string }) => (
+    <select
+      value={h[which]}
+      onChange={(e) => setH({ ...h, [which]: e.target.value })}
+      className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
+    >
+      <option value="">{label}…</option>
+      {helpers.map((o) => (
+        <option key={o.id} value={o.name}>{o.name}</option>
+      ))}
+    </select>
+  );
+  return (
+    <div className="space-y-2 rounded-md border border-dashed border-border bg-bg/40 p-2">
+      <HelperSelect which="helper1" label="Helper 1" />
+      <HelperSelect which="helper2" label="Helper 2" />
+      <button
+        onClick={() => {
+          if (!h.helper1 && !h.helper2) return;
+          onAdd(h);
+          setH({ helper1: "", helper2: "" });
+        }}
+        className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
+      >
+        + Add
+      </button>
+    </div>
+  );
+}
+
+const OUTSOURCED_PROVIDER_LABEL: Record<OutsourcedProvider, string> = {
+  outsource: "Outsource",
+  lalamove: "Lalamove",
+  grab: "Grab",
+};
+
+// One chip per outsourced trip — Grab shows its two helpers, the others show
+// the manual name / phone / plate. Falls back to name/phone/plate for any
+// legacy Grab row that predates the helper picker. Shared by every phase.
+function OutsourcedEntryChips({
+  entries,
+  readOnly,
+  onRemove,
+}: {
+  entries: OutsourcedEntry[];
+  readOnly: boolean;
+  onRemove: (i: number) => void;
+}) {
+  if (!entries.length) return null;
+  const rawProvider = (o: OutsourcedEntry) => (o.provider ?? "outsource").toString().toLowerCase();
+  const providerKey = (o: OutsourcedEntry): OutsourcedProvider =>
+    rawProvider(o) === "grab" ? "grab" : rawProvider(o) === "lalamove" ? "lalamove" : "outsource";
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {entries.map((o, i) => {
+        const provider = providerKey(o);
+        const helperDetail = [o.helper1, o.helper2].filter(Boolean).join(" · ");
+        const manualDetail = [o.name, o.phone ? formatPhone(o.phone) : "", o.plate].filter(Boolean).join(" · ");
+        const detail = provider === "grab" && helperDetail ? helperDetail : manualDetail || helperDetail;
+        return (
+          <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
+            <span className="font-semibold text-ink-secondary">{OUTSOURCED_PROVIDER_LABEL[provider]}</span>
+            {detail && <span className="text-ink">· {detail}</span>}
+            {!readOnly && (
+              <button onClick={() => onRemove(i)} className="text-ink-muted hover:text-err">
+                <X size={11} />
+              </button>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function PhaseCrewEditor({
   title,
   field,
@@ -9026,6 +9129,17 @@ function PhaseCrewEditor({
   useEffect(() => setRemarkDraft(pc.remark), [pc.remark]);
   const [outRemarkDraft, setOutRemarkDraft] = useState(pc.outsourcedRemark);
   useEffect(() => setOutRemarkDraft(pc.outsourcedRemark), [pc.outsourcedRemark]);
+  // Which provider's add-box is open in the Setup/Dismantle outsourced row.
+  const [openProvider, setOpenProvider] = useState<OutsourcedProvider | null>(null);
+  const addOutsourced = (entry: OutsourcedEntry) =>
+    save({ ...pc, outsourced: { enabled: true, entries: [...pc.outsourced.entries, entry] } });
+  const removeOutsourced = (i: number) => {
+    const entries = pc.outsourced.entries.filter((_, j) => j !== i);
+    save({ ...pc, outsourced: { enabled: entries.length > 0, entries } });
+  };
+  // Setup & Dismantle get the three-provider button row; Service / Exchange
+  // keeps the single Outsourced checkbox (it has its own per-lorry dropdown).
+  const isSetupDismantle = field === "setup_crew" || field === "dismantle_crew";
   // Always show at least one lorry card so an empty project isn't blank —
   // the card is only persisted once the user actually fills something in.
   const lorries = pc.lorryCrew.length ? pc.lorryCrew : [{ plate: "", drivers: [], helpers: [] }];
@@ -9076,21 +9190,25 @@ function PhaseCrewEditor({
             </div>
             {/* 3rd-party transport (owner 2026-07-23): a trip not done by an
                 internal lorry (the plate above) is via Grab or Lalamove. Blank
-                = internal lorry. "Internal lorry" option dropped as redundant. */}
-            <div className="flex items-center gap-1">
-              <Truck size={12} className="shrink-0 opacity-0" />
-              <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-muted">3rd-party</span>
-              <select
-                value={lorry.provider ?? ""}
-                onChange={(e) => updateLorry(li, { provider: e.target.value })}
-                disabled={readOnly}
-                className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px] disabled:bg-bg/40 disabled:opacity-70"
-              >
-                <option value="">—</option>
-                <option value="Grab">Grab</option>
-                <option value="Lalamove">Lalamove</option>
-              </select>
-            </div>
+                = internal lorry. SERVICE / EXCHANGE ONLY — setup & dismantle
+                always run on internal lorries, so the dropdown is hidden there
+                (owner 2026-07-23). */}
+            {field === "service_crew" && (
+              <div className="flex items-center gap-1">
+                <Truck size={12} className="shrink-0 opacity-0" />
+                <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-muted">3rd-party</span>
+                <select
+                  value={lorry.provider ?? ""}
+                  onChange={(e) => updateLorry(li, { provider: e.target.value })}
+                  disabled={readOnly}
+                  className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px] disabled:bg-bg/40 disabled:opacity-70"
+                >
+                  <option value="">—</option>
+                  <option value="Grab">Grab</option>
+                  <option value="Lalamove">Lalamove</option>
+                </select>
+              </div>
+            )}
             <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={lorry.drivers[0]} onChange={(s) => setLorrySlot(li, "drivers", 0, s)} readOnly={readOnly} />
             <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={lorry.drivers[1]} onChange={(s) => setLorrySlot(li, "drivers", 1, s)} readOnly={readOnly} />
             <CrewSlotRow label="Helper 1" color="text-warning-text" options={helpers} slot={lorry.helpers[0]} onChange={(s) => setLorrySlot(li, "helpers", 0, s)} readOnly={readOnly} />
@@ -9106,53 +9224,69 @@ function PhaseCrewEditor({
           + Add lorry
         </button>
       )}
-      <label className="mt-1 flex items-center gap-2 text-[11px] font-semibold text-ink-secondary">
-        <input
-          type="checkbox"
-          checked={pc.outsourced.enabled}
-          disabled={readOnly}
-          onChange={(e) => save({ ...pc, outsourced: { ...pc.outsourced, enabled: e.target.checked } })}
-        />
-        Outsourced
-      </label>
-      {pc.outsourced.enabled && (
-        <div className="space-y-1.5">
-          {pc.outsourced.entries.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {pc.outsourced.entries.map((o, i) => (
-                <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
-                  <Truck size={11} />
-                  {o.name}
-                  {o.phone ? ` · ${formatPhone(o.phone)}` : ""}
-                  {o.plate ? ` · ${o.plate}` : ""}
-                  {!readOnly && (
-                    <button
-                      onClick={() =>
-                        save({
-                          ...pc,
-                          outsourced: {
-                            ...pc.outsourced,
-                            entries: pc.outsourced.entries.filter((_, j) => j !== i),
-                          },
-                        })
-                      }
-                      className="text-ink-muted hover:text-err"
-                    >
-                      <X size={11} />
-                    </button>
-                  )}
-                </span>
-              ))}
-            </div>
-          )}
+      {isSetupDismantle ? (
+        <div className="mt-1 space-y-1.5">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">Outsourced trips</div>
+          <OutsourcedEntryChips entries={pc.outsourced.entries} readOnly={readOnly} onRemove={removeOutsourced} />
           {!readOnly && (
-            <OutsourcedBox
-              onAdd={(o) =>
-                save({ ...pc, outsourced: { enabled: true, entries: [...pc.outsourced.entries, o] } })
-              }
-            />
+            <>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(["outsource", "lalamove", "grab"] as OutsourcedProvider[]).map((prov) => (
+                  <button
+                    key={prov}
+                    type="button"
+                    onClick={() => setOpenProvider(openProvider === prov ? null : prov)}
+                    className={cn(
+                      "rounded-md border px-3 py-1.5 text-[11px] font-semibold",
+                      openProvider === prov
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
+                    )}
+                  >
+                    {OUTSOURCED_PROVIDER_LABEL[prov]}
+                  </button>
+                ))}
+              </div>
+              {(openProvider === "outsource" || openProvider === "lalamove") && (
+                <OutsourcedBox
+                  onAdd={(o) => {
+                    addOutsourced({ provider: openProvider, ...o });
+                    setOpenProvider(null);
+                  }}
+                />
+              )}
+              {openProvider === "grab" && (
+                <GrabHelperBox
+                  helpers={helpers}
+                  onAdd={(o) => {
+                    addOutsourced({ provider: "grab", ...o });
+                    setOpenProvider(null);
+                  }}
+                />
+              )}
+            </>
           )}
         </div>
+      ) : (
+        <>
+          <label className="mt-1 flex items-center gap-2 text-[11px] font-semibold text-ink-secondary">
+            <input
+              type="checkbox"
+              checked={pc.outsourced.enabled}
+              disabled={readOnly}
+              onChange={(e) => save({ ...pc, outsourced: { ...pc.outsourced, enabled: e.target.checked } })}
+            />
+            Outsourced
+          </label>
+          {pc.outsourced.enabled && (
+            <div className="space-y-1.5">
+              <OutsourcedEntryChips entries={pc.outsourced.entries} readOnly={readOnly} onRemove={removeOutsourced} />
+              {!readOnly && (
+                <OutsourcedBox onAdd={(o) => addOutsourced({ provider: "outsource", ...o })} />
+              )}
+            </div>
+          )}
+        </>
       )}
       {showRemark && (
         <div className="mt-1 space-y-2">

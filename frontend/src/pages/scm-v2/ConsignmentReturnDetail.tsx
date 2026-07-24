@@ -38,7 +38,7 @@ import {
   useDeleteConsignmentReturnItem,
 } from '../../vendor/scm/lib/consignment-return-queries';
 import { SoLineCard, emptySoLine, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
-import { buildVariantSummary, fmtDateOrDash, fmtMoneyCenti, lineIdentity } from '@2990s/shared';
+import { buildVariantSummary, fmtDateOrDash, fmtMoneyCenti, orderLineIdentity } from '@2990s/shared';
 import { useAuth } from '../../auth/AuthContext';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
@@ -497,13 +497,13 @@ export const ConsignmentReturnDetail = () => {
               {items.map((it) => (
                 <tr key={it.id}>
                   <td>
-                    {/* Description ONCE, code NOT displayed, variant KEPT — the
-                        shared rule (vendor/shared/line-identity.ts). The code
-                        still BINDS. Unlike its Note/Order siblings this table
-                        has no "Description 2" column, so the variant IS this
-                        cell's second line and must survive the code's removal. */}
+                    {/* Item CODE first, then the variant subtitle; description
+                        dropped (owner 2026-07-24) — the shared order-line rule
+                        (vendor/shared/line-identity.ts). Unlike its Note/Order
+                        siblings this table has no "Description 2" column, so the
+                        variant IS this cell's second line. */}
                     {(() => {
-                      const { primary, secondary } = lineIdentity({
+                      const { primary, secondary } = orderLineIdentity({
                         code: it.item_code,
                         description: it.description,
                         variant: buildVariantSummary(it.item_group, it.variants),

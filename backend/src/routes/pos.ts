@@ -17,7 +17,7 @@
 // ----------------------------------------------------------------------------
 import { Hono, type Context } from "hono";
 import type { Env } from "../types";
-import { auth } from "../middleware/auth";
+import { auth, requirePermission } from "../middleware/auth";
 import { companyContext } from "../middleware/companyContext";
 import {
   createSession,
@@ -145,6 +145,41 @@ pos.post("/set-pin", auth, async (c) => {
        ON CONFLICT (staff_id) DO UPDATE SET pin_hash = EXCLUDED.pin_hash, updated_at = now()`,
   ).bind(staffId, hash).run();
   return c.json({ ok: true });
+});
+
+// ── ADMIN: set / reset another staff member's PIN ───────────────────────────
+// Keyed by HOUZS USER ID (like the showroom-parking endpoint), because the
+// Members page lists Houzs users; resolve the scm.staff uuid server-side.
+// Gated on users.manage — the same permission the Members page requires. A POS
+// PIN is a login credential, so only a member-admin may set one for someone
+// else. The plaintext PIN is hashed server-side (never stored raw); it travels
+// over TLS exactly like the self-service /set-pin.
+async function staffIdForUser(c: Context<{ Bindings: Env; Variables: Vars }>, userId: number): Promise<string | null> {
+  const s = await c.env.DB.prepare(`SELECT id FROM scm.staff WHERE user_id = ?`).bind(userId).first<{ id: string }>();
+  return s?.id ?? null;
+}
+pos.post("/admin-set-pin/:userId", auth, requirePermission("users.manage"), async (c) => {
+  const userId = Number(c.req.param("userId"));
+  if (!Number.isInteger(userId) || userId <= 0) return c.json({ error: "bad_user" }, 400);
+  let body: { pin?: string };
+  try { body = await c.req.json(); } catch { return c.json({ error: "invalid_json" }, 400); }
+  if (!isPin(body.pin)) return c.json({ error: "pin_invalid" }, 400);
+  const staffId = await staffIdForUser(c, userId);
+  if (!staffId) return c.json({ error: "no_staff_row", message: "This member has no sales profile yet." }, 409);
+  const hash = await hashPassword(body.pin!);
+  await c.env.DB.prepare(
+    `INSERT INTO scm.pos_pins (staff_id, pin_hash, updated_at) VALUES (?, ?, now())
+       ON CONFLICT (staff_id) DO UPDATE SET pin_hash = EXCLUDED.pin_hash, updated_at = now()`,
+  ).bind(staffId, hash).run();
+  return c.json({ ok: true });
+});
+pos.post("/admin-reset-pin/:userId", auth, requirePermission("users.manage"), async (c) => {
+  const userId = Number(c.req.param("userId"));
+  if (!Number.isInteger(userId) || userId <= 0) return c.json({ error: "bad_user" }, 400);
+  const staffId = await staffIdForUser(c, userId);
+  if (!staffId) return c.json({ error: "no_staff_row", message: "This member has no sales profile yet." }, 409);
+  await c.env.DB.prepare(`DELETE FROM scm.pos_pins WHERE staff_id = ?`).bind(staffId).run();
+  return c.json({ ok: true, cleared: true });
 });
 
 // ── AUTHED: re-verify PIN for a sensitive action ────────────────────────────

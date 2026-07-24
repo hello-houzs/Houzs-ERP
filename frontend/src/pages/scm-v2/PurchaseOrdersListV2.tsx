@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { fmtCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import {
   Plus,
@@ -379,13 +379,16 @@ function DetailDrawer({
                 <RowKV k="Contact" v={row.supplier?.contact_person || "—"} />
                 <RowKV k="Phone" v={formatPhone(row.supplier?.phone) || "—"} />
                 <RowKV k="Email" v={row.supplier?.email || "—"} />
+                <RowKV k="Address" v={row.supplier?.address || "—"} />
               </div>
 
               <SectionHeading>Line items</SectionHeading>
               <div className="overflow-hidden rounded-lg border border-border">
-                <div className="grid grid-cols-[1fr_52px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                <div className="grid grid-cols-[1fr_44px_44px_44px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
                   <span>Item</span>
-                  <span className="text-right">Qty</span>
+                  <span className="text-right">Ord</span>
+                  <span className="text-right">Rcv</span>
+                  <span className="text-right">Bal</span>
                   <span className="text-right">Amount</span>
                 </div>
                 {detailQ.isLoading && (
@@ -398,36 +401,51 @@ function DetailDrawer({
                     No lines
                   </div>
                 )}
-                {items.map((l) => (
-                  <div
-                    key={l.id}
-                    className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
-                  >
-                    {/* Description ONCE, code NOT displayed — the shared rule
-                        (vendor/shared/line-identity.ts). Same judgement as
-                        PurchaseOrderDetailV2: purchase vocabulary, swept because
-                        the SHAPE is identical to the four reports (bold
-                        description the operator reads, muted code echoing it
-                        beneath). This row had the sharpest version of it — with
-                        no description AND no material_name the two lines both
-                        printed material_code, the same string twice. The code
-                        still BINDS as this row's key and search value. */}
-                    <div>
-                      <div className="text-[13px] font-semibold text-ink">
-                        {lineIdentity({
-                          code: l.material_code,
-                          description: l.description || l.material_name,
-                        }).primary}
+                {items.map((l) => {
+                  // #1110 (variant summary in the item cell) + #1108 (Ord/Rcv/Bal
+                  // fulfillment cols) merged: a PO drawer needs both the fabric/
+                  // colour line AND the received-vs-ordered progress.
+                  const { primary, secondary } = orderLineIdentity({
+                    code: l.material_code,
+                    description: l.description || l.material_name,
+                    variant:
+                      buildVariantSummary(l.item_group ?? "others", l.variants ?? null) ||
+                      (l.description2 ?? ""),
+                  });
+                  const received = Number(l.received_qty ?? 0);
+                  const ordered = Number(l.qty ?? 0);
+                  const balance = Math.max(0, ordered - received);
+                  const fullyReceived = ordered > 0 && received >= ordered;
+                  return (
+                    <div
+                      key={l.id}
+                      className="grid grid-cols-[1fr_44px_44px_44px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-[12.5px] font-medium leading-snug text-ink">
+                          {primary}
+                        </div>
+                        {secondary && (
+                          <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
+                            {secondary}
+                          </div>
+                        )}
                       </div>
+                      <span className="text-right font-money text-[12.5px] text-ink-secondary">
+                        {ordered}
+                      </span>
+                      <span className={cn("text-right font-money text-[12.5px] font-semibold", fullyReceived ? "text-synced" : "text-ink-secondary")}>
+                        {received}
+                      </span>
+                      <span className={cn("text-right font-money text-[12.5px] font-semibold", balance > 0 ? "text-accent-bright" : "text-ink-muted")}>
+                        {balance > 0 ? balance : "—"}
+                      </span>
+                      <span className="text-right font-money text-[12.5px] font-semibold text-ink">
+                        {fmtRm(l.line_total_centi ?? 0)}
+                      </span>
                     </div>
-                    <span className="text-right font-money text-[12.5px] text-ink-secondary">
-                      {l.qty}
-                    </span>
-                    <span className="text-right font-money text-[12.5px] font-semibold text-ink">
-                      {fmtRm(l.line_total_centi ?? 0)}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="mt-4 rounded-lg border border-border bg-surface px-5 py-4">
@@ -845,19 +863,29 @@ export function PurchaseOrdersListV2() {
       render: (r) => <span className="text-[12.5px] text-ink-secondary">{fmtDate(r.po_date)}</span>,
     },
     {
+      // Owner 2026-07-23: supplier NAME and CODE are separate columns, not a
+      // stacked cell — a purchaser filters/sorts by code, so it needs to be its
+      // own field.
       key: "supplier",
       label: "Supplier",
       disableSort: true,
       getValue: (r) => supplierNameOf(r),
       render: (r) => (
-        <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold text-ink">
-            {supplierNameOf(r)}
-          </div>
-          <div className="mt-0.5 font-mono text-[11px] text-ink-muted">
-            {supplierCodeOf(r)}
-          </div>
+        <div className="min-w-0 truncate text-[13px] font-semibold text-ink">
+          {supplierNameOf(r)}
         </div>
+      ),
+    },
+    {
+      key: "supplier_code",
+      label: "Code",
+      width: "108px",
+      disableSort: true,
+      getValue: (r) => supplierCodeOf(r),
+      render: (r) => (
+        <span className="font-mono text-[11.5px] text-ink-secondary">
+          {supplierCodeOf(r) || "—"}
+        </span>
       ),
     },
     {
@@ -927,6 +955,7 @@ export function PurchaseOrdersListV2() {
         <div className="hidden md:block">
           <PageHeader
             eyebrow="Procurement"
+            eyebrowMeta={`${total.toLocaleString("en-MY")} orders`}
             title="Purchase Orders"
             description="Every PO raised to a supplier — Draft through Received. Click any row for the quick view; open the full page to edit or receive."
             primaryAction={
