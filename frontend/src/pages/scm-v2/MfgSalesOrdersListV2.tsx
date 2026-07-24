@@ -65,7 +65,7 @@ import { resolveSoLocation } from "../../lib/soLocation";
 import { useAuth } from "../../auth/AuthContext";
 import { canViewScmCosting, canOperateDeliveryOrders } from "../../auth/salesAccess";
 import { capability } from "../../auth/capabilities";
-import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -591,11 +591,12 @@ function DetailDrawer({
                 )}
                 {items.map((l, i) => {
                   const amt = l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
-                  /* Description ONCE, code NOT displayed, variant KEPT — the
-                     shared rule (vendor/shared/line-identity.ts). Live variant
-                     summary wins over the stored description2, which can be
-                     stale on older rows with no variants blob. */
-                  const { primary, secondary } = lineIdentity({
+                  /* Item CODE first, then the variant subtitle; description
+                     dropped (owner 2026-07-24) — the shared order-line rule
+                     (vendor/shared/line-identity.ts). Live variant summary wins
+                     over the stored description2, which can be stale on older
+                     rows with no variants blob. */
+                  const { primary, secondary } = orderLineIdentity({
                     code: l.item_code,
                     description: l.description,
                     variant:
@@ -896,13 +897,13 @@ function SoLinesExpansion({ docNo }: { docNo: string }) {
       </div>
       {items.map((l, i) => {
         const amt = l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
-        /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+        /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
            (vendor/shared/line-identity.ts). This drill-down row is the TWIN of
            the quick-view drawer above in this same file: the drawer was fixed
            for #616 and this copy, twenty lines away, kept rendering the code on
            a muted second line for another four weeks. That is the whole reason
            the rule now lives in one shared module instead of in a comment. */
-        const { primary, secondary } = lineIdentity({
+        const { primary, secondary } = orderLineIdentity({
           code: l.item_code,
           description: l.description,
           variant:

@@ -18,7 +18,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { buildVariantSummary, fmtCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import {
   Plus,
@@ -536,7 +536,7 @@ function DetailDrawer({
                   const amt =
                     l.line_total_centi ??
                     (l.qty_returned ?? 0) * (l.unit_price_centi ?? 0);
-                  const { primary, secondary } = lineIdentity({
+                  const { primary, secondary } = orderLineIdentity({
                     code: l.item_code,
                     description: l.description,
                     variant:

@@ -82,7 +82,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import { clearPaymentRetryHandoff, completePaymentRetryDraft, consumePaymentRetryNavigationState, planPaymentDraftFlush, readPaymentRetryHandoff, readPaymentRetryNavigationState } from "../../lib/paymentRetryHandoff";
 
@@ -903,13 +903,13 @@ export function SalesInvoiceDetailV2() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.item_code,
-      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+      /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
          (vendor/shared/line-identity.ts). Converged onto the helper from this
          page's own #647 copy: same behaviour, but the rule now comes from the
          one module instead of a per-page comment that the next sibling would
          have to remember to copy. The code still BINDS via getValue above. */
       render: (l) => {
-        const { primary, secondary } = lineIdentity({
+        const { primary, secondary } = orderLineIdentity({
           code: l.item_code,
           description: l.description,
           variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),

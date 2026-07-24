@@ -11,7 +11,7 @@
 
 import { Suspense, lazy, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import {
   ArrowLeft,
@@ -548,7 +548,7 @@ function PurchaseOrderDetailV2ReadOnly() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.material_code,
-      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+      /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
          (vendor/shared/line-identity.ts). JUDGEMENT CALL, stated rather than
          silently taken: this is PURCHASE vocabulary (material_code), and every
          owner precedent for the rule is sales-side, so it is not covered by the
@@ -563,7 +563,7 @@ function PurchaseOrderDetailV2ReadOnly() {
          summary. The code still BINDS: getValue above keeps it the sort /
          search / export value. */
       render: (l) => {
-        const { primary, secondary } = lineIdentity({
+        const { primary, secondary } = orderLineIdentity({
           code: l.material_code,
           description: l.description || l.material_name,
           variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),

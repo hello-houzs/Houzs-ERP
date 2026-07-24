@@ -71,6 +71,7 @@ import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { warehouseLabel } from '../lib/warehouse-label';
 import { canonicalizeMyState } from '../lib/canonical-state';
 import { deriveLineBrandingFromProduct } from '../lib/derive-line-branding';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import {
   scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   isMirroredDocNo, mintsIntoMirroredNamespace, houzsOwns2990,
@@ -2719,6 +2720,9 @@ mfgSalesOrders.get('/:docNo', async (c) => {
     pwpCodes = [];
   }
   gateSoFinance(c, salesOrder, items);
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ salesOrder, items, pwpCodes });
 });
 
@@ -2801,6 +2805,9 @@ mfgSalesOrders.get('/:docNo/items', async (c) => {
     };
   });
   gateSoFinance(c, null, items);
+  // Same supplier-fabric-code stamp as the /:docNo detail (this endpoint mirrors
+  // its items path exactly), so both surfaces read "BF-01 (PC151-01)".
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ items });
 });
 

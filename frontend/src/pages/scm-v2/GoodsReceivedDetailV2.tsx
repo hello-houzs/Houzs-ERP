@@ -3,7 +3,7 @@
 // Received value + qty landed, tinted green once posted.
 
 import { lazy, Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
-import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -342,14 +342,14 @@ function GoodsReceivedDetailV2ReadOnly() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.material_code || l.item_code || "",
-      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+      /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
          (vendor/shared/line-identity.ts). Swept on SHAPE, not vocabulary: this
          was the pre-#647 SalesOrderDetailV2 cell exactly (bold description, then
          the code and `· description2` on one muted line). The WAREHOUSE pill is
          not a duplicate and stays; its row now renders when the pill or the
          variant is present. The code still BINDS via getValue above. */
       render: (l) => {
-        const { primary, secondary } = lineIdentity({
+        const { primary, secondary } = orderLineIdentity({
           code: l.material_code || l.item_code,
           description: l.description,
           variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),

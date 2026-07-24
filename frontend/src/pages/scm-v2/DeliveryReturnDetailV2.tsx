@@ -72,7 +72,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 
 // ─── Row shapes (subset — see DeliveryReturnDetail.tsx for full 40-field
@@ -644,14 +644,14 @@ export function DeliveryReturnDetailV2() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.item_code,
-      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+      /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
          (vendor/shared/line-identity.ts). Converged onto the helper from this
          page's own #647 copy: same behaviour, one source. The variant and the
          warehouse pill stay — this row shows them nowhere else — and their row
          is kept when only the pill is present. The code still BINDS via
          getValue above. */
       render: (l) => {
-        const { primary, secondary } = lineIdentity({
+        const { primary, secondary } = orderLineIdentity({
           code: l.item_code,
           description: l.description,
           variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),

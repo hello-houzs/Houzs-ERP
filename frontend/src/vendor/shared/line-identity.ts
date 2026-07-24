@@ -57,6 +57,21 @@
 //    product MODEL code. Every owner precedent is sales-side. Do not force this
 //    onto a surface where the code is what the row IS.
 //
+// ORDER-LINE FLAVOUR — `orderLineIdentity` (owner 2026-07-24). A DOCUMENT ORDER
+// LINE (SO / PO / DO / SI / PI / PR / GRN detail, their list expansions, the Fair
+// Report's selling-&-cost breakdown, the mobile twins) names itself by its item
+// CODE, with the variant summary as the subtitle — the product DESCRIPTION is
+// dropped ("我们就呈现 Code 就可以了" — presenting the Code is enough). This is the
+// mirror image of `lineIdentity` above (description-first), and it exists as its
+// own function ON PURPOSE: `lineIdentity` is still correct for NAME/catalog
+// surfaces — product & material pickers, the MRP list, the New-SO product grid —
+// where the operator scans by NAME, so those must NOT flip to code-first. The two
+// are told apart by INTENT at the call site (which function you call), never by a
+// fragile "does it carry a variant" guess (the New-SO pickers pass a branding /
+// size label as their `variant`, yet want the name). Same `LineIdentity` shape,
+// so a call site migrates by renaming the function; the code still BINDS
+// everywhere it bound before (getValue / search / sort / payload untouched).
+//
 // Pure — no I/O, no DOM, no React (this directory is framework-free .ts by
 // convention, vendored from 2990). Desktop and mobile are ONE logic layer
 // (standing owner rule), so both consume this same function; a rule that lands
@@ -119,6 +134,39 @@ export function lineIdentity(input: {
   // The variant is KEPT (it is the only display of fabric / divan / leg / seat
   // on the row) but suppressed when it merely restates the line we already
   // rendered — a variant equal to `primary` is the duplicate, not the identity.
+  const secondary = variant && variant !== primary ? variant : null;
+
+  return { primary, secondary };
+}
+
+/**
+ * ORDER-LINE identity: the item CODE, then the variant summary (owner 2026-07-24,
+ * see the "ORDER-LINE FLAVOUR" note in the header). The product description is
+ * DROPPED — the code is the identity the owner wants on a document order line, and
+ * the variant (`PC151-01 / SEAT 28 / LEG 6"`, supplier code already folded in as
+ * "BF-01 (PC151-01)") is the subtitle.
+ *
+ * Takes the SAME `{ code, description, variant }` shape as `lineIdentity` so a
+ * call site migrates by renaming the function — `description` is accepted for that
+ * parity and used ONLY as the fallback when a line has no code, so a codeless row
+ * (e.g. a free-text service line) still names itself rather than rendering blank.
+ *
+ * Use this on document order lines; keep `lineIdentity` for name/catalog surfaces
+ * (pickers, MRP list) where the operator scans by name — see the header note.
+ */
+export function orderLineIdentity(input: {
+  code?: string | null;
+  description?: string | null;
+  variant?: string | null;
+}): LineIdentity {
+  const code = clean(input.code);
+  const description = clean(input.description);
+  const variant = clean(input.variant);
+
+  // CODE leads; description is only the no-code fallback so a row is never blank.
+  const primary = code || description;
+
+  // Variant subtitle, suppressed only when it would merely restate `primary`.
   const secondary = variant && variant !== primary ? variant : null;
 
   return { primary, secondary };
