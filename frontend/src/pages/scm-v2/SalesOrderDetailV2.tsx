@@ -621,8 +621,12 @@ function SalesOrderDetailV2ReadOnly() {
   // The 5-node document chain + what each node does when clicked now come from
   // the shared hook, so this page and the ?edit=1 editor cannot drift again
   // (they already had — see so-relationship-map.ts).
-  const { nodes: chainNodes, onNodeClick: onChainNodeClick } =
-    useSoRelationshipMap(salesOrder);
+  const {
+    nodes: chainNodes,
+    onNodeClick: onChainNodeClick,
+    amendments: chainAmendments,
+    onAmendmentClick: onChainAmendmentClick,
+  } = useSoRelationshipMap(salesOrder);
 
   // ── Line item columns ────────────────────────────────────────────────
   const lineColumns: Column<SoItem>[] = [
@@ -1249,6 +1253,10 @@ function SalesOrderDetailV2ReadOnly() {
           // (Customer PO / a GRN we may not open) must render OVER the map, not
           // dismiss it.
           if (onChainNodeClick(n)) setRelMapOpen(false);
+        }}
+        amendments={chainAmendments}
+        onAmendmentClick={(a) => {
+          if (onChainAmendmentClick(a)) setRelMapOpen(false);
         }}
       />
     </div>

@@ -24,7 +24,31 @@ export type ChainNode = {
   meta: string;
   state: ChainNodeState;
   href?: string;
+  // Whether the node has something to do when tapped. Defaults to
+  // `state === "done"` (a linked document opens). Set TRUE on a node that is
+  // grey/pending but still actionable — e.g. the PO node that lists advisory
+  // candidate POs ("N candidates — tap"); without this it renders disabled and
+  // the tap is dead.
+  actionable?: boolean;
 };
+
+// A Sales Order amendment (revision request) surfaced beside the graph. Each is
+// a real document, clickable to its job card at /scm/amendments/:id.
+export type AmendmentChip = {
+  id: string;
+  label: string;
+  status: string | null;
+};
+
+// Turn a raw amendment status key (REQUESTED / SUPPLIER_PENDING / SO_APPROVED /
+// PO_APPROVED / SENT / REJECTED …) into a readable label. No canonical status
+// map exists for amendments, so lower-case the token and space the underscores.
+function humaniseAmendmentStatus(status: string): string {
+  const s = status.trim();
+  if (!s) return s;
+  const spaced = s.replace(/_/g, " ").toLowerCase();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
 
 // ─── Modal shell (portal-anchored so `fixed` latches to the viewport even
 // when an ancestor has transform/filter set) ───────────────────────────
@@ -99,11 +123,17 @@ export function DocumentRelationshipMapModal({
   onClose,
   nodes,
   onNodeClick,
+  amendments,
+  onAmendmentClick,
 }: {
   open: boolean;
   onClose: () => void;
   nodes: ChainNode[];
   onNodeClick?: (node: ChainNode) => void;
+  // Optional amendments branch (SO map only). When present, a labelled row of
+  // clickable amendment chips renders beneath the graph.
+  amendments?: AmendmentChip[];
+  onAmendmentClick?: (a: AmendmentChip) => void;
 }) {
   // Canvas layout — fixed pixel positions so the graph reads at any modal
   // width. Two shapes:
@@ -141,7 +171,14 @@ export function DocumentRelationshipMapModal({
   const nodeCard = (n: ChainNode, opts: { left: number; top: number }) => {
     const cur = n.state === "current";
     const done = n.state === "done";
-    const linked = !!onNodeClick && n.state !== "current" && n.state === "done";
+    // A node is tappable when the caller wired a handler AND it is not the
+    // current tile (you are already there). "Actionable" is what decides it:
+    // a linked document (done) opens, but a grey/pending node the builder marks
+    // actionable (e.g. the PO node listing candidate POs) must tap too. The old
+    // `state === "done"` test left that candidate node disabled and its
+    // "N candidates — tap" action dead.
+    const actionable = n.actionable ?? done;
+    const linked = !!onNodeClick && !cur && actionable;
     return (
       <button
         key={n.type}
@@ -334,6 +371,47 @@ export function DocumentRelationshipMapModal({
 
         {nodes.slice(0, positions.length).map((n, i) => nodeCard(n, positions[i]!))}
       </div>
+
+      {/* Amendments branch off the Sales Order — revision requests are real
+          documents, so they get their own labelled row of clickable chips
+          rather than being hidden. Rendered only when the caller supplies them
+          (the SO map does; the DO / SI / DR maps do not). */}
+      {amendments && amendments.length > 0 && (
+        <div className="mt-3 rounded-xl border border-border-subtle bg-surface-2 px-3 py-2.5">
+          <div className="mb-1.5 flex items-center gap-1.5 font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+            <Share2 size={11} />
+            Amendments off the Sales Order
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {amendments.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => onAmendmentClick?.(a)}
+                disabled={!onAmendmentClick}
+                className={cn(
+                  "rounded-lg border border-accent/30 bg-accent-soft px-3 py-2 text-left transition-all",
+                  onAmendmentClick
+                    ? "cursor-pointer hover:-translate-y-px hover:shadow-slab"
+                    : "cursor-default"
+                )}
+              >
+                <div className="font-mono text-[9px] font-bold uppercase tracking-brand text-accent-ink">
+                  Amendment
+                </div>
+                <div className="mt-1 truncate font-mono text-[12.5px] font-bold text-accent-ink">
+                  {a.label}
+                </div>
+                {a.status && (
+                  <div className="mt-0.5 truncate text-[10.5px] text-accent-ink/80">
+                    {humaniseAmendmentStatus(a.status)}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-muted">
         <span className="inline-flex items-center gap-1.5">

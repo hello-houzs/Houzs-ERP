@@ -640,8 +640,12 @@ export const SalesOrderDetail = () => {
   /* Relationship-map chain + destinations — SHARED with SalesOrderDetailV2 so the
      two SO detail surfaces can't drift again. Called here (not at the render site)
      because the early returns below would otherwise make the hook conditional. */
-  const { nodes: chainNodes, onNodeClick: onChainNodeClick } =
-    useSoRelationshipMap(header);
+  const {
+    nodes: chainNodes,
+    onNodeClick: onChainNodeClick,
+    amendments: chainAmendments,
+    onAmendmentClick: onChainAmendmentClick,
+  } = useSoRelationshipMap(header);
   const [saveError, setSaveError] = useState<string | null>(null);
   const customerCardRef = useRef<CustomerCardHandle | null>(null);
 
@@ -2316,6 +2320,10 @@ export const SalesOrderDetail = () => {
           // Close only when the click actually navigated away; an in-app notice
           // must render OVER the map, not dismiss it.
           if (onChainNodeClick(n)) setRelMapOpen(false);
+        }}
+        amendments={chainAmendments}
+        onAmendmentClick={(a) => {
+          if (onChainAmendmentClick(a)) setRelMapOpen(false);
         }}
       />
     </div>

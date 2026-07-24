@@ -57,6 +57,24 @@ line (`isServiceLine`) now stamps `stock_state='stock'` so it renders READY, not
 a blank cell. Frontend `drillStock` (SO list) service branch returns READY.
 Logged in `BUG-HISTORY.md` (bug-class fix).
 
+### 2.3 SO amendments surfaced on the Relationship Map — uses linkage **B**
+`GET /document-flow/:type/:id` now returns an extra read-only `amendments` array
+alongside `nodes` / `edges` / `rootSos`: `{ id, soDocNo, amendmentNo, status,
+createdAt }` for every `so_amendments` row whose `so_doc_no` is one of the
+company-scoped `rootSos` (so the amendments inherit the exact company scope the
+graph already enforces — no new gate). The field is ADDITIVE: existing consumers
+(`DocumentTraceability.tsx`, the vendor `DocumentFlowModal`) ignore it.
+
+The Sales Order relationship map (`so-relationship-map.ts` →
+`DocumentRelationshipMapModal`, used by both `SalesOrderDetailV2` and the
+`?edit=1` editor `SalesOrderDetail`) reads that array and renders an
+"Amendments off the Sales Order" branch of clickable chips beneath the graph,
+each opening its job card at `/scm/amendments/:id` (gated `scm.sales.orders` +
+allowSales, same as the SO — no extra access check). PO amendments are NOT a
+separate document: a PO revision is the PO leg of an SO amendment (approve-po →
+`reviseBoundPo` → `po_revisions`), so there is nothing extra to branch off the
+PO. The SI / DO / DR maps do not pass amendments and are unchanged.
+
 ---
 
 ## 3. What was STOP-and-reported (not built — would require fabricating a linkage or new persistence)
@@ -111,6 +129,15 @@ the line SHIPS; the gap is only the received-but-not-yet-shipped window.
 - `frontend/src/pages/scm-v2/MfgSalesOrdersListV2.tsx` — `drillStock` service → READY.
 - `backend/src/scm/routes/mfg-sales-orders.ts` — service line `stock_state='stock'`
   (both SO read callsites).
+
+Amendments-on-map + clickability (`feat/relmap-clickable-amendment`, §2.3):
+- `backend/src/scm/routes/document-flow.ts` — `amendments` array on the SO-chain response.
+- `frontend/src/vendor/scm/lib/flow-queries.ts` — `FlowAmendment` type + response shape.
+- `frontend/src/pages/scm-v2/so-relationship-map.ts` — expose amendments + `onAmendmentClick`;
+  mark the candidate-PO node `actionable`.
+- `frontend/src/components/scm-v2/DocumentRelationshipMapModal.tsx` — amendments branch,
+  `AmendmentChip` type, `actionable` flag + clickable-logic fix.
+- `frontend/src/pages/scm-v2/SalesOrderDetailV2.tsx`, `SalesOrderDetail.tsx` — pass amendments.
 
 ## 5. Out of scope (do not touch)
 Delivery-Order surfaces and DO/delivery status logic are owned by a concurrent

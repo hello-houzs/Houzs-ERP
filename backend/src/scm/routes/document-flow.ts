@@ -447,7 +447,7 @@ documentFlow.get('/:type/:id', async (c) => {
     // Orphan document with no resolvable SO — still show it alone so the map
     // is never blank. (Rare: an ad-hoc invoice with no SO/DO link.)
     nodes.set(anchorKey, { key: anchorKey, type, id, label: id, status: null, isAnchor: true });
-    return c.json({ nodes: [...nodes.values()], edges, rootSos });
+    return c.json({ nodes: [...nodes.values()], edges, rootSos, amendments: [] });
   }
 
   // ── 1. SO headers + lines ───────────────────────────────────────────────
@@ -757,7 +757,28 @@ documentFlow.get('/:type/:id', async (c) => {
     }
   }
 
-  return c.json({ nodes: [...nodes.values()], edges, rootSos });
+  // ── 10. SO amendments (revision requests) ────────────────────────────────
+  // Amendments hang off the SO by so_doc_no. They are surfaced as a read-only
+  // side list (not graph nodes) so the relationship map can branch them off the
+  // Sales Order, each clickable to /scm/amendments/:id. Company scope is already
+  // enforced: rootSos was filtered to the active company's owned SOs above, so a
+  // join on so_doc_no can only ever reach this company's amendments. PO
+  // amendments do not exist as their own document — a PO revision is the PO leg
+  // of an SO amendment (approve-po → po_revisions) — so there is nothing extra
+  // to surface off the PO.
+  const { data: amendRows } = await sb.from('so_amendments')
+    .select('id, so_doc_no, amendment_no, status, created_at')
+    .in('so_doc_no', rootSos)
+    .order('amendment_no', { ascending: true });
+  const amendments = ((amendRows ?? []) as any[]).map((a) => ({
+    id: String(a.id),
+    soDocNo: a.so_doc_no,
+    amendmentNo: a.amendment_no,
+    status: a.status ?? null,
+    createdAt: a.created_at ?? null,
+  }));
+
+  return c.json({ nodes: [...nodes.values()], edges, rootSos, amendments });
 });
 
 export default documentFlow;
