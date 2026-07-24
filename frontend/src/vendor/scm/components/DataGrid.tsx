@@ -1109,11 +1109,19 @@ function DataGridInner<T>({
                (__expand__ / __select__) render nothing, not a dash. */
             const content = col.accessor(row);
             const isEmpty = content == null || content === '';
+            /* Cells clip (.td: overflow hidden + ellipsis) — surface the full
+               value as a native tooltip so a cropped cell stays readable.
+               Primitive cells only: JSX cells have no cheap text identity. */
+            const tip =
+              typeof content === 'string' || typeof content === 'number'
+                ? String(content)
+                : undefined;
             return (
               <td
                 key={col.key}
                 className={`${styles.td} ${col.align === 'right' ? styles.tdAlignRight : ''}`}
                 style={{ width: w, maxWidth: w }}
+                title={tip}
               >
                 {isEmpty ? (col.key.startsWith('__') ? null : '—') : content}
               </td>
@@ -1390,7 +1398,10 @@ function DataGridInner<T>({
                           {arrow && <span className={styles.sortArrow}>{arrow === 'A' ? '^' : 'v'}</span>}
                         </button>
                       ) : col.label}
-                      {col.key !== '__expand__' && (
+                      {/* Funnel on every DATA column. Synthetic columns
+                          (__expand__ chevron, __select__ checkbox) carry no
+                          filterable value — a funnel there is pure noise. */}
+                      {!col.key.startsWith('__') && (
                         <button
                           type="button"
                           title="Filter this column"

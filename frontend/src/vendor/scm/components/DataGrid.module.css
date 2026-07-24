@@ -374,6 +374,10 @@
   position: relative;
   user-select: none;
   white-space: nowrap;
+  /* Headers clip like body cells (owner 2026-07-24) — a label longer than
+     its resized column crops instead of painting over the next header. */
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: grab;
 }
 .th:last-child { border-right: 0; }
@@ -397,7 +401,9 @@
 .resizeHandle {
   position: absolute;
   top: 0;
-  right: -3px;
+  /* right: 0 (was -3px): .th now clips its overflow, and a handle straddling
+     the edge would lose its outer half to the clip. Same 6px grab area. */
+  right: 0;
   width: 6px;
   height: 100%;
   cursor: col-resize;

@@ -791,6 +791,77 @@ describe("DataTable header filter + sort menu", () => {
     expect(boxes.every((b) => b.checked)).toBe(true);
   });
 
+  it("client-sorts a disableSort column on a server-sorted table without touching the server query", () => {
+    setViewport(1280);
+    const onSortChange = vi.fn();
+    // name = backend-sortable; status = NOT in the backend whitelist
+    // (disableSort) → must still sort, client-side over the loaded page.
+    const serverCols: Column<Row>[] = [
+      { key: "name", label: "Order", render: (r) => r.name, getValue: (r) => r.name },
+      { key: "status", label: "Status", render: (r) => r.status, getValue: (r) => r.status, disableSort: true },
+    ];
+    const { container } = render(
+      <DataTable
+        tableId="server-client-fallback"
+        rows={rows.slice(0, 6)}
+        columns={serverCols}
+        getRowKey={(r) => r.id}
+        serverSort
+        onSortChange={onSortChange}
+      />,
+    );
+    // Mount handshake: exactly one call, with no restored sort → null.
+    expect(onSortChange).toHaveBeenCalledTimes(1);
+    expect(onSortChange).toHaveBeenLastCalledWith(null);
+
+    const statusTh = Array.from(container.querySelectorAll("thead th")).find(
+      (el) => el.textContent?.trim().startsWith("Status"),
+    )!;
+    const statusColumn = () =>
+      Array.from(container.querySelectorAll("tbody tr[data-vrow]")).map(
+        (tr) => tr.querySelectorAll("td")[1]?.textContent?.trim(),
+      );
+    // Loaded order alternates Closed/Open. Clicking the non-whitelisted
+    // header sorts the LOADED rows in memory…
+    fireEvent.click(statusTh);
+    expect(statusColumn()).toEqual(["Closed", "Closed", "Closed", "Open", "Open", "Open"]);
+    fireEvent.click(statusTh);
+    expect(statusColumn()).toEqual(["Open", "Open", "Open", "Closed", "Closed", "Closed"]);
+    // …and never reports the un-whitelisted key upward (the mapped value is
+    // still null, and null was already reported on mount — deduped).
+    expect(onSortChange).toHaveBeenCalledTimes(1);
+
+    // A whitelisted column still goes to the server and is NOT re-sorted here.
+    const nameTh = Array.from(container.querySelectorAll("thead th")).find(
+      (el) => el.textContent?.trim().startsWith("Order"),
+    )!;
+    fireEvent.click(nameTh);
+    expect(onSortChange).toHaveBeenLastCalledWith({ key: "name", dir: "asc" });
+  });
+
+  it("clips cell overflow with an ellipsis and carries the full text on title", () => {
+    setViewport(1280);
+    const clipCols: Column<Row>[] = [
+      { key: "name", label: "Order", width: "80px", render: (r) => r.name, getValue: (r) => r.name },
+    ];
+    const { container } = render(
+      <DataTable tableId="clip-cells" rows={rows.slice(0, 2)} columns={clipCols} getRowKey={(r) => r.id} />,
+    );
+    const td = container.querySelector<HTMLElement>("tbody tr[data-vrow] td")!;
+    // The clip rule: never paint over a neighbour column.
+    expect(td.className).toContain("overflow-hidden");
+    expect(td.className).toContain("text-ellipsis");
+    expect(td.className).toContain("whitespace-nowrap");
+    // A declared px width is a cap, not a suggestion.
+    expect(td.style.maxWidth).toBe("80px");
+    // The cropped value stays readable via the native tooltip.
+    expect(td.getAttribute("title")).toBe("Order 1");
+    // Headers clip too.
+    const th = container.querySelector<HTMLElement>("thead th")!;
+    expect(th.className).toContain("overflow-hidden");
+    expect(th.style.maxWidth).toBe("80px");
+  });
+
   it("Sort A→Z / Z→A order the rows and persist the direction", () => {
     setViewport(1280);
     const { container } = render(
