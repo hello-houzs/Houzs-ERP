@@ -561,14 +561,14 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
     const rows = (data?.stage === 'do' ? data.rows : []) as FairDoRow[];
     const showDrift = !hidden.has('drift');
     const sum = data?.stage === 'do' ? data.summary : null;
-    const cols = 7 + 4 + (showDrift ? 1 : 0) + 1;
+    const cols = 7 + 5 + (showDrift ? 1 : 0) + 1;
     return (
       <div className="overflow-x-auto">
         <table className="w-full border-collapse">
           <thead className="bg-primary-soft/30">
             <tr>
               <th className={th}>Delivery Date</th><th className={th}>Venue</th><th className={th}>Project / Fair</th><th className={th}>Branding</th>
-              <th className={th}>DO No</th><th className={th}>Linked SO</th><th className={thR}>Qty</th>
+              <th className={th}>DO No</th><th className={th}>Linked SO</th><th className={thR}>Qty</th><th className={thR}>SO Amount</th>
               <th className={thR}>Total SO Cost</th><th className={thR}>Total DO Cost</th><th className={thR}>Cost Δ</th><th className={thR}>DO Margin %</th>
               {showDrift && <th className={thR}>Margin drift</th>}
               <th className={thR} aria-label="open" />
@@ -584,6 +584,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
                 <td className={td}><span className={`${mono} text-primary-ink`}>{r.do_no}</span>{r.do_cost_is_legacy && <span className="ml-1 rounded bg-ink-muted/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-ink-muted">Legacy</span>}</td>
                 <td className={td}><span className={`${mono} text-ink-secondary`}>{r.so_no ?? '—'}</span></td>
                 <td className={tdR}>{r.qty}</td>
+                <td className={tdR}>{cell(r.so_amount_centi)}</td>
                 <td className={tdR}>{cell(r.total_so_cost_centi)}</td>
                 <td className={`${tdR} font-semibold`}>{cell(r.total_do_cost_centi)}</td>
                 <td className={`${tdR} ${r.cost_delta_centi > 0 ? 'text-err' : r.cost_delta_centi < 0 ? 'text-synced' : ''} font-medium`}>{signedMoney(r.cost_delta_centi)}</td>
@@ -598,6 +599,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
             <tfoot>
               <tr className="border-t-2 border-border bg-surface-2 font-semibold">
                 <td className={`${td} uppercase text-[10px] tracking-brand text-ink-muted`} colSpan={6}>Delivered · {sum.deliveries} orders</td>
+                <td className={tdR} />
                 <td className={tdR} />
                 <td className={tdR}>{cell(sum.total_so_cost_centi)}</td>
                 <td className={tdR}>{cell(sum.total_do_cost_centi)}</td>

@@ -1028,6 +1028,9 @@ export const fairReportHandler = async (c: FairCtx) => {
         so_no: d.so_doc_no,
         status: d.status,
         qty: doCost.qty,
+        // The linked SO's amount (product + service) — same value the SO tab
+        // shows in its Amount column, so the two stages reconcile per SO.
+        so_amount_centi: h ? fairSoMoney(h).amount_centi : null,
         total_so_cost_centi: totalSoCost,
         total_do_cost_centi: doCost.total_do_cost_centi,
         do_cost_is_legacy: doCost.is_legacy,
