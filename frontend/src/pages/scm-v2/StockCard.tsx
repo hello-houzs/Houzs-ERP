@@ -30,7 +30,7 @@ import {
   type InventoryMovement,
   type InventoryLot,
 } from '../../vendor/scm/lib/inventory-queries';
-import { fmtCenti, fmtDate as fmtDateShared, fmtQty } from '@2990s/shared';
+import { adjustmentReasonLabel, fmtCenti, fmtDate as fmtDateShared, fmtQty } from '@2990s/shared';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import styles from './Inventory.module.css';
 import chrome from './SalesOrderDetail.module.css';
@@ -245,10 +245,23 @@ export const StockCard = () => {
         sortFn: (a, b) => a.runningBalance - b.runningBalance,
       },
       {
+        key: 'reason',
+        label: 'Reason',
+        width: 130,
+        // reason_code is set on ADJUSTMENT movements (and COUNT on stock-take
+        // corrections); other movement types have none → '—'. The raw code
+        // (WRITEOFF / DAMAGE …) is mapped to its plain label, matching mobile.
+        accessor: (m) => (
+          <span className={styles.numCellZero}>{m.reason_code ? adjustmentReasonLabel(m.reason_code) : '—'}</span>
+        ),
+        searchValue: (m) => (m.reason_code ? adjustmentReasonLabel(m.reason_code) : ''),
+        filterValue: (m) => (m.reason_code ? adjustmentReasonLabel(m.reason_code) : '—'),
+      },
+      {
         key: 'notes',
         label: 'Notes',
         width: 200,
-        accessor: (m) => <span className={styles.numCellZero}>{m.notes ?? '—'}</span>,
+        accessor: (m) => <span className={`${styles.numCellZero} ${styles.notesCell}`} title={m.notes ?? ''}>{m.notes ?? '—'}</span>,
         searchValue: (m) => m.notes ?? '',
         filterValue: (m) => m.notes ?? '—',
       },

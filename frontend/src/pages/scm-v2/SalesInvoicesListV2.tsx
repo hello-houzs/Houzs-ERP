@@ -34,6 +34,11 @@ import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
 import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
+import {
+  DocumentLinesExpansion,
+  type DocumentDrillLine,
+  type DrillItemFields,
+} from "../../components/DocumentLinesExpansion";
 import { ListPager } from "../../components/ListPager";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { Badge } from "../../components/Badge";
@@ -749,6 +754,42 @@ function TotalRow({
 const SORT_COL_MAP: Record<string, string> = {
   amount: "total_centi",
 };
+
+// ─── Row drill-down (DataTable `expandable`) ──────────────────────────────────
+// Inline per-line breakdown for one SI, lazy-fetched via the SAME
+// useSalesInvoiceDetail hook the drawer uses (TanStack-cached). Group + item
+// code/variant + Qty + Amount (line value), via the shared
+// DocumentLinesExpansion. Although a sales invoice is a sales-side surface, its
+// detail payload carries no per-line MRP coverage (stock_state / coverage_po) —
+// those ride the SO detail, not this one — so, per "do not invent a backend
+// endpoint the hook doesn't already answer", the SO/DO-only Stock + Incoming PO
+// columns are absent here.
+function SiLinesExpansion({ id }: { id: string }) {
+  const detailQ = useSalesInvoiceDetail(id);
+  const items =
+    ((detailQ.data as { items?: DrillItemFields[] } | undefined)?.items ?? []);
+  const lines: DocumentDrillLine[] = items.map((l) => ({
+    itemGroup: l.item_group ?? null,
+    code: l.item_code || l.product_code || null,
+    description: l.description || l.product_name || null,
+    description2: l.description2 ?? null,
+    variants: l.variants ?? null,
+    qty: Number(l.qty ?? 0),
+    amountCenti:
+      l.amount_centi ??
+      l.total_centi ??
+      Number(l.qty ?? 0) * (l.unit_price_centi ?? 0),
+  }));
+  return (
+    <DocumentLinesExpansion
+      isLoading={detailQ.isLoading}
+      isError={Boolean(detailQ.error)}
+      errorMessage={detailQ.error instanceof Error ? detailQ.error.message : null}
+      lines={lines}
+      emptyLabel="No lines on this sales invoice."
+    />
+  );
+}
 
 // ─── Main page ──────────────────────────────────────────────────────────────
 
@@ -1655,6 +1696,10 @@ export function SalesInvoicesListV2() {
               columns={columns}
               getRowKey={(r) => r.id}
               onRowClick={(r) => setSelected(r)}
+              expandable={{
+                render: (r) => <SiLinesExpansion id={r.id} />,
+                rowKey: (r) => r.id,
+              }}
               selection={{
                 selectedIds,
                 onToggle: toggleSelect,

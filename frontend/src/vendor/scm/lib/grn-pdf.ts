@@ -13,7 +13,7 @@ import {
 import { formatPhone } from '@2990s/shared/phone';
 import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
 import { supplierBlock } from './pdf-party-blocks';
-import { loadSupplierDocData, supplierCodeFor, specsLine } from './supplier-doc-data';
+import { loadSupplierDocData, supplierCodeFor, docVariantLine } from './supplier-doc-data';
 
 type GrnHeader = {
   grn_number: string; status: string;
@@ -70,7 +70,7 @@ export async function renderGrnInto(
      GRN's own header carries only { code, name } (endpoint economy), the
      top-up comes from GET /suppliers/:id. loadSupplierDocData is a single
      parallel round; moving it forward doesn't add a request. */
-  const { skuMap, fabricMap, supplier: sFull } = await loadSupplierDocData(header.supplier_id, items);
+  const { skuMap, fabricMap, fabricDescMap, supplier: sFull } = await loadSupplierDocData(header.supplier_id, items);
   const supplierAddressLines = [
     sFull?.address,
     sFull?.area,
@@ -125,7 +125,7 @@ export async function renderGrnInto(
   ).map((r) => r.__row);
 
   const rows = orderedItems.map((it, idx) => {
-    const specs = specsLine(it, fabricMap);
+    const specs = docVariantLine(it, fabricMap, fabricDescMap, { labelled: true });
     const desc = it.description ?? it.material_name;
     return [
       String(idx + 1),

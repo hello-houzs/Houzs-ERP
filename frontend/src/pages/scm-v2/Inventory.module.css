@@ -192,6 +192,16 @@
 .numCellNeg { color: #b23a3a; }
 .numCellZero { color: #9aa093; }
 
+/* Free-text Notes column — clamp so a long adjustment note can't balloon the
+   table (or, inside the 720px breakdown drawer, push it into overflow). Full
+   text stays reachable via the cell's title tooltip. */
+.notesCell {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .movementPill {
   display: inline-flex;
   align-items: center;
