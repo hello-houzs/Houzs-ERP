@@ -99,26 +99,27 @@ const OPTIONAL_GROUPS: Record<FairStage, { key: string; label: string }[]> = {
 };
 
 type OptionMaps = {
-  venues: Record<string, string>;
+  venues: string[];
   projects: Record<string, string>;
   states: string[];
   brandings: string[];
   salespersons: Record<string, string>;
 };
-const EMPTY_OPTS: OptionMaps = { venues: {}, projects: {}, states: [], brandings: [], salespersons: {} };
+const EMPTY_OPTS: OptionMaps = { venues: [], projects: {}, states: [], brandings: [], salespersons: {} };
 
 /** Merge the distinct filter values carried on a batch of rows into the running
  *  option set. Accumulated (never shrinks) so a dropdown stays usable after a
  *  filter narrows the result. Returns `prev` unchanged when nothing is new. */
 function accumulate(prev: OptionMaps, rows: FairDims[]): OptionMaps {
-  const venues = { ...prev.venues };
+  const venues = new Set(prev.venues);
   const projects = { ...prev.projects };
   const states = new Set(prev.states);
   const brandings = new Set(prev.brandings);
   const salespersons = { ...prev.salespersons };
   let changed = false;
   for (const r of rows) {
-    if (r.venue_id && r.venue && venues[r.venue_id] !== r.venue) { venues[r.venue_id] = r.venue; changed = true; }
+    // Venue keys on the TEXT (venue_id is a dead scm.venues FK, NULL on modern SOs).
+    if (r.venue && !venues.has(r.venue)) { venues.add(r.venue); changed = true; }
     if (r.project_id != null && r.project) {
       const label = r.project_start_date
         ? `${r.project} · ${formatDate(r.project_start_date)}${r.project_end_date ? `–${formatDate(r.project_end_date)}` : ''}`
@@ -131,7 +132,8 @@ function accumulate(prev: OptionMaps, rows: FairDims[]): OptionMaps {
   }
   if (!changed) return prev;
   return {
-    venues, projects, salespersons,
+    projects, salespersons,
+    venues: [...venues].sort((a, b) => a.localeCompare(b)),
     states: [...states].sort((a, b) => a.localeCompare(b)),
     brandings: [...brandings].sort((a, b) => a.localeCompare(b)),
   };
@@ -331,7 +333,7 @@ export const FairReport = () => {
       <div className="rounded-lg border border-border bg-surface p-3 shadow-stone">
         <div className="flex flex-wrap items-end gap-3">
           <SelectFilter label="Venue" value={filters.venue ?? ''} onChange={(v) => setParam('venue', v)}
-            options={Object.entries(opts.venues).map(([id, label]) => ({ value: id, label }))} allLabel="All venues" />
+            options={opts.venues.map((v) => ({ value: v, label: v }))} allLabel="All venues" />
           <SelectFilter label="State" value={filters.state ?? ''} onChange={(v) => setParam('state', v)}
             options={opts.states.map((s) => ({ value: s, label: s }))} allLabel="All states" />
           <SelectFilter label="Project / Fair" value={filters.project != null ? String(filters.project) : ''} onChange={(v) => setParam('project', v)}
