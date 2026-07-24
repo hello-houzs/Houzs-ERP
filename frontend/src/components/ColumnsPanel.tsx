@@ -95,7 +95,10 @@ export function ColumnsPanel({
     setDragKey(key);
   }
   function handleDragOver(e: React.DragEvent, key: string) {
-    if (!canReorder) return;
+    // Reorder is VISIBLE-only: the checked block is the table's column order and
+    // is hand-arrangeable; the hidden block below is an A-Z pool to pick from,
+    // not hand-ordered, so it accepts neither a grabbed row nor a drop.
+    if (!canReorder || hidden.has(key)) return;
     e.preventDefault();
     if (key !== overKey) setOverKey(key);
   }
@@ -103,7 +106,7 @@ export function ColumnsPanel({
     const from = dragKey;
     setDragKey(null);
     setOverKey(null);
-    if (!canReorder || !from) return;
+    if (!canReorder || !from || hidden.has(targetKey)) return;
     onReorder(from, targetKey);
   }
   function handleDragEnd() {
@@ -111,15 +114,25 @@ export function ColumnsPanel({
     setOverKey(null);
   }
 
-  const displayOptions = useMemo(
-    () =>
-      azSort
-        ? [...options].sort((a, b) =>
-            a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" })
-          )
-        : options,
-    [options, azSort]
-  );
+  /* Checked (visible) columns float to the TOP in BOTH modes (owner 2026-07-24:
+     "勾选的自动置顶" + "勾选的同时要有可以拖拽排序功能"). Within each block the
+     active mode applies — A-Z when hunting for a column, otherwise storage order.
+     Keeping the VISIBLE block in STORAGE order in Table-order mode preserves
+     display==storage there, so the key-based onReorder(from, target) still lands
+     a drop exactly where the line sits — the invariant #1169 restored, now with
+     the checked rows grouped on top. Drag stays visible-only (see rowCanDrag). */
+  const displayOptions = useMemo(() => {
+    const az = (arr: Option[]) =>
+      [...arr].sort((a, b) =>
+        a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" })
+      );
+    const shown = options.filter((o) => !hidden.has(o.key));
+    const notShown = options.filter((o) => hidden.has(o.key));
+    // Checked block follows the mode (storage order to drag, else A-Z). The
+    // unchecked pool is ALWAYS A-Z — it is never hand-ordered (owner: 抽屉都按
+    // A-Z排序), just a findable list to pick the next column from.
+    return [...(azSort ? az(shown) : shown), ...az(notShown)];
+  }, [options, hidden, azSort]);
 
   // Where the carried row currently sits, so the insertion line can be drawn
   // on the side it is arriving from. -1 when no drag is in flight.
@@ -184,6 +197,9 @@ export function ColumnsPanel({
           )}
           {displayOptions.map((opt, index) => {
             const visible = !hidden.has(opt.key);
+            // Only checked rows are hand-arrangeable; unchecked rows are the A-Z
+            // pick-pool, so they carry no grip and refuse drops (see handlers).
+            const rowCanDrag = canReorder && visible;
             const isDragging = dragKey === opt.key;
             const isDropTarget = overKey === opt.key && dragKey && dragKey !== opt.key;
             /* Owner 2026-07-24: "拖拽的时候可以有个加粗线条" — a BOLD insertion
@@ -194,7 +210,7 @@ export function ColumnsPanel({
             return (
               <div
                 key={opt.key}
-                draggable={canReorder}
+                draggable={rowCanDrag}
                 onDragStart={(e) => {
                   handleDragStart(opt.key);
                   // Firefox refuses to start a drag with no payload.
@@ -226,9 +242,10 @@ export function ColumnsPanel({
                     )}
                   />
                 )}
-                {/* No grip in A-Z mode: a handle you can't drag is a lie. The
-                    spacer keeps both modes on the same left edge. */}
-                {canReorder ? (
+                {/* Grip only where a drag is real: table-order mode AND a checked
+                    row. A handle you can't drag is a lie; the spacer keeps every
+                    row on the same left edge (A-Z mode, or an unchecked row). */}
+                {rowCanDrag ? (
                   <span
                     className="cursor-grab text-ink-muted hover:text-ink active:cursor-grabbing"
                     title="Drag to reorder"
