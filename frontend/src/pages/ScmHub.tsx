@@ -4,6 +4,7 @@ import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { useAuth } from "../auth/AuthContext";
 import { PageHeader } from "../components/Layout";
 import { cn } from "../lib/utils";
+import { prefetchRoute } from "../lib/prefetch-routes";
 
 /**
  * Supply Chain Hub — a section landing page for /scm.
@@ -82,6 +83,7 @@ export function ScmHub() {
                       <button
                         key={k.to}
                         onClick={() => k.to && navigate(k.to)}
+                        onMouseEnter={() => k.to && prefetchRoute(k.to)}
                         className={cn(
                           "group flex flex-col gap-2.5 rounded-xl border border-border bg-surface p-4 text-left shadow-stone transition-all duration-150",
                           "hover:-translate-y-px hover:border-primary hover:shadow-slab",

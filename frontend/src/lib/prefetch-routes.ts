@@ -101,6 +101,30 @@ const ROUTE_CHUNKS: Record<string, () => Promise<unknown>> = {
   // The SO list's own destination: every row opens this. Keyed by App.tsx's
   // route pattern since the real pathname carries a doc number.
   "/scm/sales-orders/:docNo": () => import("../pages/scm-v2/SalesOrderDetailV2"),
+  // ── Document CREATE forms. Every SCM list's most likely next click is its own
+  //    "New" button, but each create form is its OWN lazy chunk that was NOT in
+  //    this map — so that click cold-loaded the chunk and flashed <PageSkeleton>
+  //    (owner: "why does it flash when I click some modules", on
+  //    /scm/stock-transfers/new). Keyed by the real `<listpath>/new` pathname so
+  //    prefetchDocCreate() / a hover resolve them like any other route. ──
+  "/scm/purchase-orders/new": () => import("../pages/scm-v2/PurchaseOrderNew"),
+  "/scm/grns/new": () => import("../pages/scm-v2/GrnNew"),
+  "/scm/purchase-invoices/new": () => import("../pages/scm-v2/PurchaseInvoiceNew"),
+  "/scm/payment-vouchers/new": () => import("../pages/scm-v2/PaymentVoucherNew"),
+  "/scm/stock-adjustments/new": () => import("../pages/scm-v2/StockAdjustmentNew"),
+  "/scm/stock-transfers/new": () => import("../pages/scm-v2/StockTransferNew"),
+  "/scm/stock-takes/new": () => import("../pages/scm-v2/StockTakeNew"),
+  "/scm/purchase-returns/new": () => import("../pages/scm-v2/PurchaseReturnNew"),
+  "/scm/sales-orders/new": () => import("../pages/scm-v2/SalesOrderNew"),
+  "/scm/delivery-orders/new": () => import("../pages/scm-v2/DeliveryOrderNewV2"),
+  "/scm/sales-invoices/new": () => import("../pages/scm-v2/SalesInvoiceNew"),
+  "/scm/delivery-returns/new": () => import("../pages/scm-v2/DeliveryReturnNew"),
+  "/scm/consignment-orders/new": () => import("../pages/scm-v2/ConsignmentOrderNew"),
+  "/scm/consignment-notes/new": () => import("../pages/scm-v2/ConsignmentNoteNew"),
+  "/scm/consignment-returns/new": () => import("../pages/scm-v2/ConsignmentReturnNew"),
+  "/scm/purchase-consignment-orders/new": () => import("../pages/scm-v2/PurchaseConsignmentOrderNew"),
+  "/scm/purchase-consignment-receives/new": () => import("../pages/scm-v2/PurchaseConsignmentReceiveNew"),
+  "/scm/purchase-consignment-returns/new": () => import("../pages/scm-v2/PurchaseConsignmentReturnNew"),
 };
 
 /**
@@ -291,4 +315,17 @@ export function prefetchRoute(href: string): void {
 /** Queue the idle warm list. Called once from the app shell (Layout). */
 export function prefetchTopRoutes(): void {
   for (const key of IDLE_ROUTES) enqueue(key, true);
+}
+
+/**
+ * Warm the "New document" form chunk for a list the operator is currently on —
+ * call with the list pathname (the SCM shell does this on every navigation). The
+ * create route is always `<listpath>/new`, so we derive the key rather than keep
+ * a second table; `enqueue` no-ops when that key isn't a known chunk (a detail
+ * page, a list with no create form). Idle, not urgent: the operator is reading
+ * the list, and the New click is a beat away — this only tries to have already
+ * paid for it, exactly like the hover warm.
+ */
+export function prefetchDocCreate(listPathname: string): void {
+  enqueue(`${listPathname}/new`, true);
 }
