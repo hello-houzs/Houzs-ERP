@@ -1574,10 +1574,10 @@ export function MfgSalesOrdersListV2() {
       width: "140px",
       defaultHidden: true,
       disableSort: true,
-      getValue: (r) => r.processing_date ?? r.internal_expected_dd ?? "",
+      getValue: (r) => r.internal_expected_dd ?? r.processing_date ?? "",
       render: (r) => (
         <span className="text-[12.5px] text-ink-secondary">
-          {fmtDate(r.processing_date ?? r.internal_expected_dd)}
+          {fmtDate(r.internal_expected_dd ?? r.processing_date)}
         </span>
       ),
     },
