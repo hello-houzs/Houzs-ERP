@@ -58,6 +58,7 @@ import { staff } from "./routes/staff";
 import { fabricColours } from "./routes/fabric-colours";
 import { addons } from "./routes/addons";
 import { documentFlow } from "./routes/document-flow";
+import { poSoCoverage } from "./routes/po-so-coverage";
 import { drivers } from "./routes/drivers";
 import { soDropdownOptions } from "./routes/so-dropdown-options";
 import { venues } from "./routes/venues";
@@ -429,6 +430,14 @@ scm.route("/addons", addons);
 // document-flow: read-only cross-area graph — left on the coarse gate (see
 // SHARED READ HELPERS note above).
 scm.route("/document-flow", documentFlow);
+// po-so-coverage: read-only ADVISORY floating "assigned Sales Order" view for a
+// PO / GRN / PI (reverse of mrp.ts computeMrp). Coarse gate, same as
+// document-flow — it returns SO doc no, that SO line's delivery date, customer
+// name, qty and warehouse, and NO cost / NO margin. That is the SAME operational
+// class as document-flow (which already reveals the SO a purchase doc descends
+// from) and the MRP page; the finance-leak rule at line 112 was specifically
+// about cost + margin, which this endpoint never returns (see line 119).
+scm.route("/po-so-coverage", poSoCoverage);
 scm.use("/drivers/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/drivers", drivers);
 // ── Delivery Planning + TMS (scm.transportation.*) — stage 2, ported 2026-06-28 ─
