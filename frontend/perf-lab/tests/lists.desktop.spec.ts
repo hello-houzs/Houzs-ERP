@@ -1,14 +1,26 @@
 import { expect, test } from "@playwright/test";
-import { expectBounded, nextFrames, scrollWindowToRealEnd } from "./geometry.helpers";
+import { expectBounded, nextFrames } from "./geometry.helpers";
 
-test("DataTable keeps 10k desktop rows windowed through the browser's real scroll clamp", async ({ page }) => {
+test("DataTable keeps 10k desktop rows windowed at its real internal scroll limit", async ({ page }) => {
+  // The frozen-header work (owner 2026-07-24) made the desktop DataTable its
+  // own vertical scroll container — rows scroll INSIDE the capped wrapper and
+  // the window's scroll range ends at the frozen composition, so the old
+  // "scroll the WINDOW to its clamped end" contract no longer reaches row
+  // 10000 by design. The windowing guarantee under a real scroll limit is now
+  // the same one the DataGrid test below exercises: drive the INNER scroller
+  // to its true end and the tail must be live while the DOM stays bounded.
   await page.goto("/?scenario=data-table-desktop");
   const rows = page.locator("tr[data-vrow]");
+  const scroller = page.locator('[data-scenario="data-table-desktop"] table').locator("..");
   await expect(rows.first()).toContainText("Order 00001");
   await expectBounded(rows, 60);
   await expect(page.getByText("Order 10000", { exact: true })).toHaveCount(0);
 
-  await scrollWindowToRealEnd(page);
+  await scroller.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await nextFrames(page, 3);
 
   await expect(page.getByText("Order 10000", { exact: true })).toBeVisible();
   await expect(page.getByText("Order 00001", { exact: true })).toHaveCount(0);

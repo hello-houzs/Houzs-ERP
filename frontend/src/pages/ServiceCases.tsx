@@ -819,7 +819,11 @@ function CasesView({
         onPick={(v) => { setPage(1); setStage(v); }}
       />
 
-      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-3">
+      {/* data-freeze-anchor: on scroll the frozen composition starts HERE —
+          the view toggle + table freeze under the page header while the KPI
+          cards and stage funnel above scroll away (owner: funnel 不用 freeze,
+          "我要滑动到这里freeze着"); see DataTable's frozen-header block. */}
+      <div data-freeze-anchor className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-3">
         {/* View mode — List / Board / Calendar. The board and calendar
             re-read the same cases through an SLA-urgency lens; the list
             stays the dense system-of-record. */}
