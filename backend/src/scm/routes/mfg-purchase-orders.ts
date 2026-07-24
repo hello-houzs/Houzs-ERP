@@ -46,6 +46,7 @@ import {
   LEAD_TIME_SELECT,
 } from '../lib/lead-time';
 import { groupKeyFor } from '../lib/po-grouping';
+import { findOverConvertOffender } from '../lib/po-over-convert';
 import { loadLeadBuffers } from '../../services/agents/procurement-learning';
 import { sendEmail, isChannelEnabled } from '../../services/email';
 import { getBrandingForCompany } from '../../services/branding';
@@ -58,6 +59,7 @@ import {
   type PoEmailRow,
 } from '../lib/po-email';
 import { getSupabaseService } from '../../db/supabase';
+import { markIdempotencyNoWrite } from '../../middleware/idempotency';
 import { supabaseAuth } from '../middleware/auth';
 import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 import { PO_LINE_AUDIT_FIELDS, PO_LINE_AUDIT_SELECT } from '../lib/entity-audit-fields';
@@ -949,6 +951,14 @@ mfgPurchaseOrders.post('/', async (c) => {
   // line-by-line on the detail page (matches SO flow).
   const items = (body.items as Array<Record<string, unknown>> | undefined) ?? [];
 
+  /* Convert-from-SO over-convert override (owner 2026-07-24). When the desktop
+     New-PO-form create carries SO-sourced lines whose qty exceeds what the SO
+     still needs, the remaining-qty cap below rejects with 409
+     qty_exceeds_remaining — UNLESS the operator has confirmed the over-convert,
+     in which case the client replays with this flag set. Mirrors the
+     confirmShortStock soft-warn -> confirm -> proceed shape. */
+  const confirmOverConvert = body.confirmOverConvert === true;
+
   const currency = ((body.currency as string) ?? 'MYR').toUpperCase();
   if (!VALID_CURRENCIES.has(currency)) return c.json({ error: 'invalid_currency' }, 400);
 
@@ -968,12 +978,37 @@ mfgPurchaseOrders.post('/', async (c) => {
       .filter((x): x is string => !!x);
     if (lineSoItemIds.length > 0) {
       const { data: lineSoRows } = await supabase
-        .from('mfg_sales_order_items').select('doc_no').in('id', lineSoItemIds);
+        .from('mfg_sales_order_items')
+        .select('id, doc_no, qty, po_qty_picked')
+        .in('id', lineSoItemIds);
+      const soRows = (lineSoRows ?? []) as Array<{
+        id: string; doc_no: string | null; qty: number; po_qty_picked: number;
+      }>;
       const offender = await firstUnorderableSo(
         supabase,
-        ((lineSoRows ?? []) as Array<{ doc_no: string | null }>).map((r) => r.doc_no),
+        soRows.map((r) => r.doc_no),
       );
       if (offender) return c.json(soNotOrderableResponse(offender), 409);
+
+      /* Remaining-qty cap — parity with the /from-sos guard (convertSosToPosCore,
+         the `if (!fromMrp && p.qty > remaining)` check). The desktop "create new
+         PO from SO" flow feeds SO-sourced lines through THIS generic create,
+         which — unlike /from-sos — had no server-side cap, so a New-PO-form line
+         could order more than the SO still needs (docs/2990-parity-allocation-
+         costing.md, BUG-HISTORY 2026-07-24). Sum the requested qty per source SO
+         line and reject when it exceeds (qty - po_qty_picked), overridable via
+         confirmOverConvert. Purely-manual lines (no soItemId) never enter the map
+         so manual POs are untouched; MRP never routes here (it uses /from-sos
+         with fromMrp) so there is no MRP case to exclude. Pre-write guard: mark
+         the idempotency claim no-write so the confirmed replay re-runs instead of
+         replaying this 409 (mirrors the short_stock gate). */
+      if (!confirmOverConvert) {
+        const offender = findOverConvertOffender(items, soRows);
+        if (offender) {
+          markIdempotencyNoWrite(c);
+          return c.json({ error: 'qty_exceeds_remaining', ...offender }, 409);
+        }
+      }
     }
   }
 
