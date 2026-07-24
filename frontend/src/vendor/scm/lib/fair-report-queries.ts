@@ -27,7 +27,7 @@ export type FairTenderSplit = { Cash: number; Merchant: number; Installment: num
 /** The 7 shared filters (all live on the SO header server-side). Empty / unset
  *  fields are omitted from the query string. */
 export type FairFilters = {
-  venue?: string;        // venue_id (uuid)
+  venue?: string;        // venue TEXT (venue_id is a dead scm.venues FK; filter on the name)
   state?: string;        // customer_state
   project?: number;      // project_id (int)
   branding?: string;

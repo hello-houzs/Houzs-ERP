@@ -673,7 +673,15 @@ async function fetchFairSos(
   const { data, error } = await paginateAll((pFrom: number, pTo: number) => {
     let q = sb.from('mfg_sales_orders').select(FAIR_SO_COLS).eq('status', 'CONFIRMED');
     if (filters.project != null) q = q.eq('project_id', filters.project);
-    if (filters.venue)       q = q.eq('venue_id', filters.venue);
+    /* Filter by the venue TEXT, not venue_id. mfg_sales_orders.venue_id is a UUID
+       FK to the empty/unused scm.venues; the SO write path NULLs it for every
+       venue picked from public.project_venues (the modern New-SO path) and keeps
+       only the `venue` TEXT column, which routes/mfg-sales-orders.ts documents as
+       "the source of truth for the venue". So an eq on venue_id matched almost
+       nothing and the Venue dropdown built off it was always empty (BUG-HISTORY
+       2026-07-24). Match STATE/BRANDING: the dropdown lists distinct venue TEXT
+       and filters on it. */
+    if (filters.venue)       q = q.eq('venue', filters.venue);
     if (filters.state)       q = q.eq('customer_state', filters.state);
     /* NO branding predicate here: header branding is blank on nearly every SO
        (the create form has no branding field), so an eq matched nothing. The
