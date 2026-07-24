@@ -3,27 +3,28 @@
 //
 // Owner directive 2026-07-24 (task #102): one consistent, clean state selector
 // everywhere — no ad-hoc free-text state entry.
-//   • States are ALWAYS GROUPED BY COUNTRY in native <optgroup>s. Malaysia (the
-//     primary market) lists first, then every other seeded country
-//     alphabetically, with any country-less state under "Other".
-//   • Type-to-search FILTERS the grouped list (desktop). It only narrows the
-//     seeded options; it can NEVER introduce a new value.
-//   • The legacy "Others" expander and the free-text "Search" escape are GONE.
-//     Both were backdoors — the first hid CN/SG behind an extra click, the
-//     second let an operator commit a state that isn't in scm.my_localities.
+//   • States are ALWAYS GROUPED BY COUNTRY. Malaysia (the primary market)
+//     lists first, then every other seeded country alphabetically, with any
+//     country-less state under "Other".
+//   • Owner refinement 2026-07-24 (second pass): typing must filter THE OPEN
+//     LIST ITSELF — "应该是 implement 在我 scrolling 的那个地方打字,而不是多加
+//     一个 column 出来". The separate "Search state…" input above the select is
+//     GONE; desktop is now ONE combobox: click opens the grouped list, typing
+//     filters it in place, Enter/click picks, Esc closes. Typing can only
+//     NARROW the seeded options; it can NEVER commit a new value — blur without
+//     a pick restores the stored value, so the free-text backdoor stays closed.
+//   • The legacy "Others" expander stays gone (it hid CN/SG behind a click).
 //
 // TWO layouts, driven by the `country` prop:
 //   • Country pinned (Warehouse / Supplier edit — country is a separate field)
-//     → a flat <select> of just that country's states.
-//   • Country empty (create-supplier / Venue / SO forms) → the grouped-by-country
-//     <select>.
-//   Both desktop layouts sit under a visible type-to-search box; only `compact`
-//   (mobile, native OS picker) is select-only.
+//     → the combobox lists just that country's states, flat.
+//   • Country empty (create-supplier / Venue / SO forms) → grouped-by-country.
+//   `compact` (mobile) keeps the native <select> — the OS picker already
+//   groups and filters better than any web control on a phone.
 //
-// STYLING: the default select + search box are bordered to match the sibling
-// City / Country / Postcode selects (see StatePicker.module.css) — the owner's
-// 2026-07-24 fix for the picker reading as a bare borderless control. A caller
-// may still pass `selectClassName` (e.g. mobile "fld-i") to restyle the select.
+// STYLING: the combobox input reuses the bordered select look (chevron
+// included) so it still matches the sibling City / Country / Postcode fields;
+// the dropdown panel is a bordered paper card (StatePicker.module.css).
 //
 // The value MUST live in scm.my_localities. While the seed is loading or empty
 // the control stays DISABLED ("Loading…" / "No states seeded") — never a
@@ -33,7 +34,7 @@
 // seeded state, or add the missing one via the Localities Maintenance UI.
 // ----------------------------------------------------------------------------
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   useLocalities,
   statesInCountry,
@@ -67,17 +68,19 @@ export const StatePicker = ({
   style?: React.CSSProperties;
   disabled?: boolean;
   placeholder?: string;
-  /** Compact — render ONLY the grouped <select> (no search box). For mobile /
-   *  tight inline contexts where the native optgroup picker already groups by
-   *  country (iOS wheel, Android list). Grouping keeps MY on top so the owner's
-   *  "MY first" spirit survives. */
+  /** Compact — render ONLY the grouped native <select>. For mobile / tight
+   *  inline contexts where the OS picker (iOS wheel, Android list) is the
+   *  better filter. Grouping keeps MY on top. */
   compact?: boolean;
-  /** Applied to the inner <select> so the caller can share its form styles. */
+  /** Applied to the inner control so the caller can share its form styles. */
   selectClassName?: string;
 }) => {
   const localities = useLocalities();
   const rows = localities.data ?? [];
+  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [active, setActive] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
   const isCountryPinned = country.trim().length > 0;
 
   /* Country-pinned: a flat list of that country's states.
@@ -109,9 +112,22 @@ export const StatePicker = ({
   const q = query.trim().toLowerCase();
   const match = (s: string) => !q || s.toLowerCase().includes(q);
 
+  /* The filtered view the open panel renders, plus a FLAT list of the same
+     options in display order for keyboard navigation. */
+  const filteredGroups = useMemo<[string, string[]][]>(() => {
+    if (isCountryPinned) {
+      const opts = scoped.filter(match);
+      return opts.length ? [[country, opts]] : [];
+    }
+    return orderedGroups
+      .map(([c, list]) => [c, list.filter(match)] as [string, string[]])
+      .filter(([, list]) => list.length > 0);
+  }, [isCountryPinned, scoped, orderedGroups, country, q]);
+  const flat = useMemo(() => filteredGroups.flatMap(([, list]) => list), [filteredGroups]);
+
   /* Is the stored value one of the seeded states? If not (legacy data, or a
-     state whose country differs from a now-pinned one), it is still shown as the
-     current selection below so it never blanks. */
+     state whose country differs from a now-pinned one), it is still shown as
+     the current text so it never blanks. */
   const knownStates = useMemo(
     () => new Set(isCountryPinned ? scoped : distinctStates(rows)),
     [isCountryPinned, scoped, rows],
@@ -127,64 +143,159 @@ export const StatePicker = ({
     onChange(nextState, derived);
   };
 
-  /* Loading / empty locality set: keep the dropdown DISABLED rather than falling
+  const close = () => {
+    setOpen(false);
+    setQuery('');
+    setActive(0);
+  };
+  const pick = (s: string) => {
+    handlePick(s);
+    close();
+    inputRef.current?.blur();
+  };
+
+  /* Loading / empty locality set: keep the control DISABLED rather than falling
      back to free text. Empty = pre-seed environment; loading = fetch in flight.
      Either way, letting the operator type a raw string is the backdoor this
      component exists to remove. */
   const isEmpty = !localities.isLoading && rows.length === 0;
   const controlsDisabled = disabled || localities.isLoading || isEmpty;
 
-  const selectEl = (
-    <select
-      value={value}
-      onChange={(e) => handlePick(e.target.value)}
-      disabled={controlsDisabled}
-      className={selectClassName ?? styles.select}
-    >
-      <option value="">
-        {localities.isLoading ? 'Loading…' : isEmpty ? 'No states seeded' : placeholder}
-      </option>
-      {/* Stored value not in the seed — shown so old data never blanks. Not
-          grouped (it isn't a maintained state); picking a real one replaces it. */}
-      {orphanValue && <option value={value}>{value}</option>}
-      {isCountryPinned
-        ? scoped.filter(match).map((s) => (
-            <option key={s} value={s}>{s}</option>
-          ))
-        : orderedGroups.map(([c, list]) => {
-            const opts = list.filter(match);
-            if (opts.length === 0) return null;
-            return (
-              <optgroup key={c} label={c}>
-                {opts.map((s) => (
-                  <option key={`${c}-${s}`} value={s}>{s}</option>
-                ))}
-              </optgroup>
-            );
-          })}
-    </select>
-  );
-
   const wrapCls = className ? `${styles.wrap} ${className}` : styles.wrap;
 
-  /* Compact (mobile native picker) is select-only. Every desktop layout —
-     country-pinned AND country-empty — carries the type-to-search box above
-     the select, so the search is consistently visible on every surface. */
+  /* Compact (mobile) keeps the native grouped <select>. */
   if (compact) {
-    return <div className={wrapCls} style={style}>{selectEl}</div>;
+    return (
+      <div className={wrapCls} style={style}>
+        <select
+          value={value}
+          onChange={(e) => handlePick(e.target.value)}
+          disabled={controlsDisabled}
+          className={selectClassName ?? styles.select}
+        >
+          <option value="">
+            {localities.isLoading ? 'Loading…' : isEmpty ? 'No states seeded' : placeholder}
+          </option>
+          {orphanValue && <option value={value}>{value}</option>}
+          {orderedGroups.map(([c, list]) => (
+            <optgroup key={c} label={c}>
+              {list.map((s) => (
+                <option key={`${c}-${s}`} value={s}>{s}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+    );
   }
 
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      close();
+      inputRef.current?.blur();
+      return;
+    }
+    if (!open && (e.key === 'ArrowDown' || e.key === 'Enter')) {
+      setOpen(true);
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive((i) => Math.min(i + 1, flat.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const chosen = flat[active] ?? flat[0];
+      if (chosen) pick(chosen);
+    }
+  };
+
+  /* One combobox: shows the stored value when closed; opening clears it into a
+     live filter (placeholder keeps the current value visible). Options use
+     onMouseDown + preventDefault so the pick lands before the input's blur. */
+  let flatIdx = -1;
   return (
     <div className={wrapCls} style={style}>
-      <input
-        type="search"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search state…"
-        disabled={controlsDisabled}
-        className={styles.search}
-      />
-      {selectEl}
+      <div className={styles.comboWrap}>
+        <input
+          ref={inputRef}
+          type="text"
+          role="combobox"
+          aria-expanded={open}
+          autoComplete="off"
+          value={open ? query : value}
+          placeholder={
+            localities.isLoading
+              ? 'Loading…'
+              : isEmpty
+                ? 'No states seeded'
+                : open && value
+                  ? value
+                  : placeholder
+          }
+          disabled={controlsDisabled}
+          className={selectClassName ?? styles.select}
+          onFocus={() => {
+            setOpen(true);
+            setQuery('');
+            setActive(0);
+          }}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+            setActive(0);
+          }}
+          onKeyDown={onKeyDown}
+          onBlur={close}
+        />
+        {open && !controlsDisabled && (
+          <div className={styles.panel} role="listbox">
+            {orphanValue && !q && (
+              <div
+                className={styles.optOrphan}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pick(value);
+                }}
+              >
+                {value}
+                <span className={styles.orphanNote}>current — not in the maintained list</span>
+              </div>
+            )}
+            {flat.length === 0 && <div className={styles.emptyRow}>No matching state</div>}
+            {filteredGroups.map(([c, list]) => (
+              <div key={c}>
+                {!isCountryPinned && <div className={styles.groupLabel}>{c}</div>}
+                {list.map((s) => {
+                  flatIdx += 1;
+                  const idx = flatIdx;
+                  return (
+                    <div
+                      key={`${c}-${s}`}
+                      role="option"
+                      aria-selected={s === value}
+                      className={[
+                        styles.opt,
+                        idx === active ? styles.optActive : '',
+                        s === value ? styles.optCurrent : '',
+                      ].join(' ')}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        pick(s);
+                      }}
+                      onMouseEnter={() => setActive(idx)}
+                    >
+                      {s}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 };
