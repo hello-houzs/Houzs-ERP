@@ -22,11 +22,13 @@
 // just work.
 
 import { useEffect, type ReactNode } from 'react';
+import { useLocation } from 'react-router-dom';
 import { NotifyProvider, useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { ConfirmProvider, useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { PromptProvider } from '../../vendor/scm/components/PromptDialog';
 import { ChoiceProvider } from '../../vendor/scm/components/ChoiceDialog';
 import { registerDialogService } from '../../vendor/scm/lib/dialog-service';
+import { rememberScmListReturn } from '../../lib/scmListReturn';
 
 /** Registers the live confirm + notify fns with the module-level dialog-service
  *  bridge so non-React callers (authedFetch's short-stock gate, query onError
@@ -40,6 +42,18 @@ function DialogServiceBridge() {
   return null;
 }
 
+/** Records the current SCM LIST url (path + query) so a document detail's Back
+ *  button can return to the filtered list the user came from (owner 2026-07-24;
+ *  see lib/scmListReturn.ts). No-op on detail/action pages. This shell wraps
+ *  every /scm/* list and detail, so it is the one place that sees them all. */
+function ScmListReturnTracker() {
+  const location = useLocation();
+  useEffect(() => {
+    rememberScmListReturn(location.pathname, location.search);
+  }, [location.pathname, location.search]);
+  return null;
+}
+
 export function Scm2990Shell({ children }: { children: ReactNode }) {
   return (
     <NotifyProvider>
@@ -47,6 +61,7 @@ export function Scm2990Shell({ children }: { children: ReactNode }) {
         <PromptProvider>
           <ChoiceProvider>
             <DialogServiceBridge />
+            <ScmListReturnTracker />
             {/* Nick 2026-07-09 — "local host 还没有上面 pin 起来". `overflow-x:
                 hidden` on this wrapper creates a scroll container that traps
                 position: sticky on every descendant edit-mode header (the SO

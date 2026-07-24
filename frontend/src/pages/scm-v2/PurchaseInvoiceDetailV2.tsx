@@ -5,6 +5,7 @@
 import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { scmListReturnTo } from "../../lib/scmListReturn";
 import {
   ArrowLeft,
   History,
@@ -386,7 +387,7 @@ function PurchaseInvoiceDetailV2ReadOnly() {
   // details page's back button goes to its relevant list, not wherever
   // browser history happens to point). The list restores its own sticky
   // filters, so the prior filtered view comes back — no context lost.
-  const goBack = () => navigate("/scm/purchase-invoices");
+  const goBack = () => navigate(scmListReturnTo("/scm/purchase-invoices"));
   const goEdit = () => id && navigate(`/scm/purchase-invoices/${id}?edit=1`);
   const goHistory = () => id && navigate(`/scm/purchase-invoices/${id}?tab=history`);
   // Render + download the PI PDF via the shared jspdf generator (client-side),

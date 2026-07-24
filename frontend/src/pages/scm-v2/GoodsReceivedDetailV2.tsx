@@ -6,6 +6,7 @@ import { lazy, Suspense, useCallback, useMemo, useState, type ReactNode } from "
 import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { scmListReturnTo } from "../../lib/scmListReturn";
 import {
   ArrowLeft,
   History,
@@ -303,7 +304,7 @@ function GoodsReceivedDetailV2ReadOnly() {
   // details page's back button goes to its relevant list, not wherever
   // browser history happens to point). The list restores its own sticky
   // filters, so the prior filtered view comes back — no context lost.
-  const goBack = () => navigate("/scm/grns");
+  const goBack = () => navigate(scmListReturnTo("/scm/grns"));
   const goEdit = () => id && navigate(`/scm/grns/${id}?edit=1`);
   // Render + download the GRN PDF via the shared jspdf generator (client-side),
   // mirroring the V1 GoodsReceivedDetail handler. The old `?print=1` navigation
