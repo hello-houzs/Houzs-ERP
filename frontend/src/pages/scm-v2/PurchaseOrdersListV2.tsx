@@ -34,6 +34,7 @@ import {
   type DocumentDrillLine,
   type DrillItemFields,
 } from "../../components/DocumentLinesExpansion";
+import { DocumentTraceability } from "../../components/DocumentTraceability";
 import { ListPager } from "../../components/ListPager";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { Badge } from "../../components/Badge";
@@ -581,13 +582,16 @@ function PoLinesExpansion({ id }: { id: string }) {
     amountCenti: l.line_total_centi ?? 0,
   }));
   return (
-    <DocumentLinesExpansion
-      isLoading={detailQ.isLoading}
-      isError={Boolean(detailQ.error)}
-      errorMessage={detailQ.error instanceof Error ? detailQ.error.message : null}
-      lines={lines}
-      emptyLabel="No lines on this purchase order."
-    />
+    <div className="flex flex-col gap-2">
+      <DocumentTraceability type="po" id={id} />
+      <DocumentLinesExpansion
+        isLoading={detailQ.isLoading}
+        isError={Boolean(detailQ.error)}
+        errorMessage={detailQ.error instanceof Error ? detailQ.error.message : null}
+        lines={lines}
+        emptyLabel="No lines on this purchase order."
+      />
+    </div>
   );
 }
 
