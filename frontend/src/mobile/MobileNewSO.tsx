@@ -74,6 +74,7 @@ import { useFabricLibrary } from "../vendor/scm/lib/queries";
 import { useDebouncedValue } from "../vendor/scm/lib/hooks";
 import { activeOptions, maintPickerValues, restrictPricedToPool, restrictStringsToPool } from "../vendor/shared/maintenance-pools";
 import { missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../vendor/shared/so-variant-rule";
+import { isColourKiv } from "../vendor/shared/variant-summary";
 import { lineIdentity } from "@2990s/shared";
 import { normalizePhone } from "../vendor/shared/phone";
 import { PhoneInput } from "../vendor/scm/components/PhoneInput";
@@ -2936,6 +2937,14 @@ function LineCard({
               value={fabVal} colourLabel={fabColourLabel}
               invalid={showErrors && missing.has("fabricCode")} onOpen={onOpenFabricPicker}
             />
+            {/* Colour KIV (owner 2026-07-24, SO-2607-016) — series committed,
+                colour still open; the server blocks a Processing Date until
+                the colour is confirmed. Same hint as desktop SoLineCard. */}
+            {isColourKiv(v) && (
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#B8331F" }}>
+                Colour KIV — confirm the colour before a Processing Date can be set.
+              </div>
+            )}
             <div style={{ display: "flex", gap: 9 }}>
               <SpecSel label="Seat height" required invalid={showErrors && missing.has("seatHeight")}
                 value={String(v.seatHeight ?? "")} opts={sofaSeatOpts} onChange={(x) => setVar({ seatHeight: x })} />
@@ -2953,6 +2962,11 @@ function LineCard({
               value={fabVal} colourLabel={fabColourLabel}
               invalid={showErrors && missing.has("fabricCode")} onOpen={onOpenFabricPicker}
             />
+            {isColourKiv(v) && (
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#B8331F" }}>
+                Colour KIV — confirm the colour before a Processing Date can be set.
+              </div>
+            )}
             {/* Bedframe build — 3 selects stacked in a responsive grid so DIVAN /
                 LEG / GAP each get full width and read completely (owner: the old
                 3-in-a-row cramped them to "No Le"). */}
