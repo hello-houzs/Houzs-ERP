@@ -86,7 +86,8 @@ select {
    family to be fixed-width. Keeps counts, dates, balances and kbd hints
    column-aligned even if the mono alias is ever repointed at a proportional
    face — which it has been before. */
-.font-mono {
+.font-mono,
+.font-money {
   font-variant-numeric: tabular-nums;
 }
 

@@ -178,14 +178,17 @@
   /* Backwards-compat alias — some old components still reference --font-display */
   --font-display: var(--font-mark);
   --font-cn:      "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-  /* Theme C type spec (Nick 2026-07-03): codes / SKUs / doc numbers use
-     IBM Plex Mono — the 金额/编号 role alongside --font-money. (Reverts
-     the 2026-05-29 sans alias.) */
+  /* Codes / SKUs / doc numbers — owner override 2026-07-24: back to the
+     system stack (the 2990 2026-05-29 decision). Plex Mono's dotted zero
+     read wrong, and our subsets carry no plain-zero alternate or tnum;
+     Segoe UI has both. Alignment comes from font-variant-numeric:
+     tabular-nums at the call sites. (Overrides the Nick 2026-07-03 Plex
+     Mono spec for the 金额/编号 role.) */
   --font-mono:    var(--font-money);
   /* Money / financial figures — IBM Plex Mono for ledger-grade tabular digits
      so amounts align by decimal across rows and in detail drawers. The ONLY
      web font reintroduced; used solely on amount cells via this token. */
-  --font-money:   "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-money:   system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 
   /* Base size */
   --fs-base: 16px;

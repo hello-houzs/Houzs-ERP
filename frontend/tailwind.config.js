@@ -87,12 +87,18 @@ export default {
         // `font-serif` stays on IBM Plex Serif for the rare place that
         // deliberately opts into serif (`className="font-serif"`).
         display: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
-        // Real mono for codes / IDs / eyebrow labels (金额/编号 role).
-        // Reverts the 2026-05-29 sans alias — Theme C wants Plex Mono.
-        mono: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
-        // Money / financial figures — same Plex Mono, kept as its own
-        // alias so amount cells can diverge from codes again if needed.
-        money: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
+        // Codes / IDs / eyebrow labels (金额/编号 role) — SYSTEM stack, owner
+        // override 2026-07-24: Plex Mono's dotted zero read wrong ("系统的0可以
+        // 用第二张照片的0吗"), and our self-hosted Plex subsets carry no plain-
+        // zero alternate or tnum, so the fix is the same one 2990 shipped on
+        // 2026-05-29: digits in the system face (Segoe UI on Windows — plain
+        // zero, tnum supported), alignment via font-variant-numeric in
+        // index.css. Deliberately SKIPS IBM Plex Sans: it would win the stack
+        // but its subset lacks tnum, breaking column alignment.
+        mono: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
+        // Money / financial figures — same stack, kept as its own alias so
+        // amount cells can diverge from codes again if needed.
+        money: ["system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
         serif: ['"IBM Plex Serif"', '"Noto Serif SC"', "Georgia", "serif"],
       },
       letterSpacing: {
