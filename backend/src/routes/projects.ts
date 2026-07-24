@@ -60,7 +60,7 @@ import {
   projects as projectsTable,
 } from "../db/schema";
 import { and, eq, sql } from "drizzle-orm";
-import { activeCompanyId, activeCompanySql } from "../scm/lib/companyScope";
+import { activeCompanyId, activeCompanySql, requireActiveCompanyId } from "../scm/lib/companyScope";
 
 /* The context the extracted handlers below receive. They are exported so the
    route tests can drive them directly; the shape is exactly what app.get/post
@@ -1049,10 +1049,24 @@ app.post("/venues", requirePermission("projects.write"), async (c) => {
   }>();
   const name = (body.name || "").trim();
   if (!name) return c.json({ error: "name required" }, 400);
+  // Resolve the active company for this WRITE, or refuse. The INSERT below used
+  // to omit company_id, so a venue created while viewing 2990 was written with
+  // company_id = HOUZS (the project_venues.company_id DEFAULT, mig 0093). The
+  // company-scoped GET /venues for 2990 then never listed it again — the owner
+  // saw "save success" and the venue was gone on reload. Fail closed when the
+  // company can't be resolved rather than writing that default: guessing the
+  // company is exactly the bug this fixes (companyScope: writes must REFUSE).
+  const co = requireActiveCompanyId(c);
+  if (!co.ok) return c.json(co.refusal, 409);
+  // Company-scope the existing-by-name lookup too, so a same-named venue in
+  // ANOTHER company can no longer be matched and reactivated/updated in place —
+  // a save in company 2 must create/update within company 2, never hijack a
+  // company-1 row.
   const existing = await c.env.DB.prepare(
-    `SELECT id, name, state FROM project_venues WHERE LOWER(name) = LOWER(?)`
+    `SELECT id, name, state FROM project_venues
+      WHERE LOWER(name) = LOWER(?) AND company_id = ?`
   )
-    .bind(name)
+    .bind(name, co.companyId)
     .first<{ id: number; name: string; state: string | null }>();
   if (existing) {
     // Reactivate + update state/notes if user supplied them.
@@ -1061,17 +1075,17 @@ app.post("/venues", requirePermission("projects.write"), async (c) => {
           SET active = 1,
               state  = COALESCE(?, state),
               notes  = COALESCE(?, notes)
-        WHERE id = ?`
+        WHERE id = ? AND company_id = ?`
     )
-      .bind(body.state ?? null, body.notes ?? null, existing.id)
+      .bind(body.state ?? null, body.notes ?? null, existing.id, co.companyId)
       .run();
     return c.json({ id: existing.id, name: existing.name, state: existing.state }, 200);
   }
   const r = await c.env.DB.prepare(
-    `INSERT INTO project_venues (name, state, notes, created_by)
-     VALUES (?, ?, ?, ?)`
+    `INSERT INTO project_venues (name, state, notes, created_by, company_id)
+     VALUES (?, ?, ?, ?, ?)`
   )
-    .bind(name, body.state ?? null, body.notes ?? null, user?.id ?? null)
+    .bind(name, body.state ?? null, body.notes ?? null, user?.id ?? null, co.companyId)
     .run();
   return c.json({ id: r.meta.last_row_id, name, state: body.state ?? null }, 201);
 });
@@ -1079,6 +1093,12 @@ app.post("/venues", requirePermission("projects.write"), async (c) => {
 app.patch("/venues/:id", requirePermission("projects.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  // Scope the UPDATE to the active company so a 2990-context request can't reach
+  // in and rename a HOUZS venue by its id (the UI only ever surfaces this
+  // company's ids via the scoped GET, but the handler is reachable by raw id).
+  // Mirrors the sibling PATCH /brands/:id guard. Degrades to no predicate on a
+  // genuinely unresolved / single-company context, matching activeCompanySql.
+  const venueCoSql = activeCompanySql(c);
   const body = await c.req.json<{
     name?: string;
     state?: string | null;
@@ -1101,18 +1121,23 @@ app.patch("/venues/:id", requirePermission("projects.manage"), async (c) => {
     binds.push(body.notes ?? null);
   }
   if (sets.length === 0) return c.json({ ok: true });
-  await c.env.DB.prepare(
-    `UPDATE project_venues SET ${sets.join(", ")} WHERE id = ?`
+  const r = await c.env.DB.prepare(
+    `UPDATE project_venues SET ${sets.join(", ")} WHERE id = ?${venueCoSql}`
   )
     .bind(...binds, id)
     .run();
+  // A miss means the id isn't this company's — answer 404 so the cross-company
+  // guard is observable instead of a silent no-op "ok".
+  if (!r.meta.changes) return c.json({ error: "Not found" }, 404);
   return c.json({ ok: true });
 });
 
 app.delete("/venues/:id", requirePermission("projects.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
-  await c.env.DB.prepare(`UPDATE project_venues SET active = 0 WHERE id = ?`)
+  // Same company guard as PATCH above / DELETE /brands/:id: a 2990-context
+  // request must not soft-delete a HOUZS venue by its id.
+  await c.env.DB.prepare(`UPDATE project_venues SET active = 0 WHERE id = ?${activeCompanySql(c)}`)
     .bind(id)
     .run();
   return c.json({ ok: true });
