@@ -131,11 +131,11 @@ export function QuickActionsFAB() {
         <div
           className={cn(
             "fixed z-40 flex flex-col items-end gap-2",
-            // Sit directly above the "+" — its bottom + its height + 8 px.
-            //   Mobile "+":  bottom-24 (96) + h-12 (48) + 8 = 152 px
-            //   Desktop "+": bottom-5 (20) + h-14 (56) + 8 = 84 px
+            // Sit directly above the pill — its bottom + its height (48) + 8.
+            //   Mobile:  bottom-24 (96) + 48 + 8 = 152 px
+            //   Desktop: bottom-5 (20) + 48 + 8 = 76 px
             "right-4 bottom-[calc(9.5rem+env(safe-area-inset-bottom))]",
-            "lg:right-5 lg:bottom-[84px]",
+            "lg:right-5 lg:bottom-[76px]",
           )}
         >
           {actions.map((a, i) => {
@@ -172,17 +172,14 @@ export function QuickActionsFAB() {
               </button>
             );
           })}
-          <style>{`
-            @keyframes qa-fab-in {
-              from { opacity: 0; transform: translateY(6px); }
-              to   { opacity: 1; transform: translateY(0);   }
-            }
-          `}</style>
         </div>
       )}
 
-      {/* The main "+" FAB — icon flips to X when the menu is open so
-          the button doubles as the dismiss control. */}
+      {/* The round green "+" (48px) — owner 2026-07-23 v2: no label, just the
+          plus; pressing it opens the speed-dial (Sales Order / Service Case /
+          Project). Icon flips to X while the menu is open so the button
+          doubles as the dismiss control. Single-action operators keep the
+          direct-open behaviour — their one tap is their one action. */}
       <button
         onClick={onFabClick}
         aria-label={
@@ -201,17 +198,13 @@ export function QuickActionsFAB() {
         }
         aria-expanded={actions.length > 1 ? open : undefined}
         className={cn(
-          "fixed right-4 z-40 inline-flex items-center justify-center rounded-full bg-primary text-white shadow-slab transition-all duration-200 hover:scale-105 hover:bg-primary-ink active:scale-95",
-          "h-12 w-12 lg:h-14 lg:w-14 lg:right-5",
-          "bottom-[calc(theme(spacing.24)+env(safe-area-inset-bottom))] lg:bottom-5",
+          "fixed right-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full bg-synced text-white shadow-slab",
+          "transition-all duration-200 hover:scale-105 hover:brightness-110 active:scale-95",
+          "bottom-[calc(theme(spacing.24)+env(safe-area-inset-bottom))] lg:bottom-5 lg:right-5",
           open && "rotate-45",
         )}
       >
-        {open ? (
-          <X size={22} strokeWidth={2.4} />
-        ) : (
-          <Plus size={22} strokeWidth={2.4} />
-        )}
+        {open ? <X size={22} strokeWidth={2.4} /> : <Plus size={22} strokeWidth={2.4} />}
       </button>
     </>
   );

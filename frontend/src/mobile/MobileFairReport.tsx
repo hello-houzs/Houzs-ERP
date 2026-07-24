@@ -20,6 +20,7 @@ import {
 } from "../vendor/scm/lib/fair-report-queries";
 import { fmtAmt, fmtCenti } from "../lib/scm";
 import { formatDate } from "../lib/utils";
+import { buildVariantSummary, orderLineIdentity } from "@2990s/shared";
 import "./mobile.css";
 
 /*
@@ -632,12 +633,22 @@ function FairDetail({ docNo, onBack }: { docNo: string; onBack: () => void }) {
             {/* order lines — selling & cost, stacked */}
             <div style={secH}>Order lines · selling &amp; cost</div>
             {d.lines.length === 0 && <div style={{ fontSize: 12, color: "var(--mut)" }}>No lines.</div>}
-            {d.lines.map((l, i) => (
+            {d.lines.map((l, i) => {
+              /* Item CODE + variant, same shared order-line rule as the desktop
+                 Fair Report and every other order-line surface (owner
+                 2026-07-24). Was item_code + a description badge — which showed
+                 the code twice when the description contained it, and no variant. */
+              const { primary, secondary } = orderLineIdentity({
+                code: l.item_code,
+                description: l.description,
+                variant:
+                  buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
+                  (l.description2 ?? ""),
+              });
+              return (
               <div key={i} className="card" style={{ padding: "11px 12px", marginBottom: 9, ...(l.cancelled ? { opacity: 0.55, textDecoration: "line-through" } : null) }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{l.item_code ?? "—"}</span>
-                  {l.description && <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--mut)", textTransform: "uppercase", letterSpacing: ".03em", background: "var(--bg)", padding: "2px 7px", borderRadius: 5, whiteSpace: "nowrap" }}>{l.description}</span>}
-                </div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{primary || "—"}</div>
+                {secondary && <div style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>{secondary}</div>}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 5, marginTop: 10 }}>
                   <LineCell k="Qty" v={l.qty == null ? "—" : String(l.qty)} />
                   <LineCell k="Unit sell" v={cell(l.unit_price_centi)} />
@@ -646,7 +657,8 @@ function FairDetail({ docNo, onBack }: { docNo: string; onBack: () => void }) {
                   <LineCell k="Line cost" v={cell(l.line_cost_centi)} cost />
                 </div>
               </div>
-            ))}
+              );
+            })}
 
             {/* cost by category */}
             <div style={secH}>Cost by category</div>

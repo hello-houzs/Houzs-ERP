@@ -1,0 +1,61 @@
+/* StatePicker default styling (task #102 UI polish, 2026-07-24).
+   Owner feedback: the picker read as a bare BORDERLESS control next to the
+   nicely-boxed City / Country / Postcode selects. These classes make the
+   default select + search box match those siblings exactly — same 1px line,
+   radius, padding, focus ring, disabled paper — using the same shared tokens
+   (var(--line) #d6d9d2, var(--radius-sm) 8px, var(--c-paper) #fff) with literal
+   fallbacks so it still renders bordered even where a token is absent.
+   Callers that pass `selectClassName` (e.g. the mobile "fld-i" field) override
+   the select styling and keep their own look. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.search,
+.select {
+  font-family: var(--font-sans, inherit);
+  font-size: var(--fs-12, 12px);
+  background-color: var(--c-paper, #fff);
+  border: 1px solid var(--line, #d6d9d2);
+  border-radius: var(--radius-sm, 8px);
+  padding: 6px 10px;
+  color: #11140f;
+  outline: none;
+  width: 100%;
+  line-height: 1.3;
+  box-sizing: border-box;
+}
+
+.search:focus,
+.select:focus {
+  border-color: var(--c-burnt, #16695f);
+  box-shadow: 0 0 0 2px rgba(22, 105, 95, 0.16);
+}
+
+.search:disabled,
+.select:disabled {
+  background-color: #f4f6f3;
+  border-color: #d6d9d2;
+  color: #767b6e;
+  cursor: not-allowed;
+}
+
+/* Match the siblings' custom chevron: native arrow suppressed, a muted
+   down-chevron painted at the right edge. */
+.select {
+  padding-right: 32px;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23767b6e' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+.select:disabled { cursor: not-allowed; }
+.select::-ms-expand { display: none; }

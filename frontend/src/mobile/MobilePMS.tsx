@@ -1278,10 +1278,13 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reload={reload}
             />}
 
-            {/* setup & dismantle (logistic). Owner 2026-07-17: Sales may VIEW it
-                (crew + dates) — the backend now sends the data for them — but
-                stays read-only, since PIC/SALES lack the PMS "EDIT" section. */}
-            {(canSetupDismantle || cohort5) && !isPurchaserView && (
+            {/* setup & dismantle (logistic) — FIELD cohort position (sales/
+                crew keep it up here, above their doc cards). For the ops +
+                management cohorts it renders further down instead, between
+                Operation and S&D documents (owner 2026-07-23 order). Owner
+                2026-07-17: Sales may VIEW it (crew + dates) but stay
+                read-only, since PIC/SALES lack the PMS "EDIT" section. */}
+            {cohort5 && !isPurchaserView && (
               <SetupDismantle
                 projectId={id}
                 project={p}
@@ -1356,36 +1359,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               />
             )}
 
-            {/* Owner 2026-07-23 card respec — ops/office cohort: Operation +
-                Setup & Dismantle doc cards, view & download only. No Contract,
-                no Payment card for this cohort. */}
-            {cohortOps && (
-              <>
-                <SalesDocsCard
-                  tiles={opsOperationTiles}
-                  title="Operation"
-                  showRoleTags={isLogistic}
-                  checklist={data.checklist}
-                  attachments={data.checklist_attachments}
-                  canTick={canTick && !archived}
-                  busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
-                />
-                <SalesDocsCard
-                  tiles={opsSdTiles}
-                  title="Setup & Dismantle documents"
-                  showRoleTags={isLogistic}
-                  checklist={data.checklist}
-                  attachments={data.checklist_attachments}
-                  canTick={canTick && !archived}
-                  busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
-                />
-              </>
-            )}
-
-            {/* Owner 2026-07-23 card respec — management cohort (mgt / sales
-                director / BD / owner): Contract (BD tier + Kingsley only),
-                Operation, Payment and Setup & Dismantle cards. View & download
-                for everyone in the cohort; the BD tier edits. */}
+            {/* Owner's 2026-07-23 section order for the office cohorts:
+                TEAM → CONTRACT → PAYMENT → OPERATION → S&D LOGISTIC →
+                S&D DOCUMENTS → FLOORPLANS → SALES → P&L. */}
             {cohortMgmt && (
               <>
                 {canContractEdit && (
@@ -1400,15 +1376,6 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                   />
                 )}
                 <SalesDocsCard
-                  tiles={mgmtOperationTiles}
-                  showRoleTags
-                  title="Operation"
-                  checklist={data.checklist}
-                  attachments={data.checklist_attachments}
-                  canTick={canTick && !archived}
-                  busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
-                />
-                <SalesDocsCard
                   tiles={mgmtPaymentTiles}
                   showRoleTags
                   title="Payment"
@@ -1418,15 +1385,70 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                   busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
                 />
                 <SalesDocsCard
-                  tiles={mgmtSdTiles}
+                  tiles={mgmtOperationTiles}
                   showRoleTags
-                  title="Setup & Dismantle documents"
+                  title="Operation"
                   checklist={data.checklist}
                   attachments={data.checklist_attachments}
                   canTick={canTick && !archived}
                   busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
                 />
               </>
+            )}
+            {cohortOps && (
+              <SalesDocsCard
+                tiles={opsOperationTiles}
+                title="Operation"
+                showRoleTags={isLogistic}
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+              />
+            )}
+
+            {/* setup & dismantle (logistic) — office-cohort position, below
+                Operation (owner 2026-07-23). */}
+            {!cohort5 && canSetupDismantle && !isPurchaserView && (
+              <SetupDismantle
+                projectId={id}
+                project={p}
+                photos={photos}
+                drivers={drivers}
+                lorries={lorries}
+                canWrite={canWrite && access.canEdit && !archived}
+                canPhoto={(isDriverCrew || isStorekeeper) && !archived}
+                canScheduleEdit={(isOwnerAdmin || isBD || isLogistic) && !archived}
+                busy={busy}
+                setBusy={setBusy}
+                patchProject={patchProject}
+                notify={notify}
+                reloadPhotos={reloadPhotos}
+                confirm={confirm}
+              />
+            )}
+
+            {cohortOps && (
+              <SalesDocsCard
+                tiles={opsSdTiles}
+                title="Setup & Dismantle documents"
+                showRoleTags={isLogistic}
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+              />
+            )}
+            {cohortMgmt && (
+              <SalesDocsCard
+                tiles={mgmtSdTiles}
+                showRoleTags
+                title="Setup & Dismantle documents"
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy} setBusy={setBusy} notify={notify} prompt={prompt} confirm={confirm} reload={reload}
+              />
             )}
 
             {/* floor plans & layout + stock transfers (upload-only) */}
@@ -2780,31 +2802,32 @@ function PhaseBlock({
           )}
         </div>
       )}
-      <button
-        type="button"
-        disabled={busy || (!photoKey && !canPhoto)}
-        onClick={() => { if (photoKey) setPhotoOpen(true); else if (canPhoto) fileRef.current?.click(); }}
-        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 0, overflow: "hidden", cursor: photoKey || canPhoto ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
-      >
-        {photoKey ? (
-          <R2Thumb r2Key={photoKey} style={{ width: 64, height: 54, flex: "none" }} />
-        ) : (
-          <div className="ph" style={{ width: 64, height: 54, flex: "none", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7.5 6.5H4A2 2 0 0 0 2 8.5v9A2 2 0 0 0 4 19.5h16a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-3.5L14.5 4Z" /><circle cx="12" cy="13" r="3.2" /></svg>
+      {/* Owner 2026-07-23: the "Replace photo" text button is gone (remove the
+          photo, then tap-to-upload again) and Remove is the same floating ×
+          every other file row uses. */}
+      <div style={{ position: "relative" }}>
+        <button
+          type="button"
+          disabled={busy || (!photoKey && !canPhoto)}
+          onClick={() => { if (photoKey) setPhotoOpen(true); else if (canPhoto) fileRef.current?.click(); }}
+          style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 0, overflow: "hidden", cursor: photoKey || canPhoto ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
+        >
+          {photoKey ? (
+            <R2Thumb r2Key={photoKey} style={{ width: 64, height: 54, flex: "none" }} />
+          ) : (
+            <div className="ph" style={{ width: 64, height: 54, flex: "none", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7.5 6.5H4A2 2 0 0 0 2 8.5v9A2 2 0 0 0 4 19.5h16a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-3.5L14.5 4Z" /><circle cx="12" cy="13" r="3.2" /></svg>
+            </div>
+          )}
+          <div style={{ padding: "7px 0", minWidth: 0 }}>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canPhoto ? " · tap to upload" : ""}</div>
+            <div style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{uploaderCredit(photo)}</div>
           </div>
-        )}
-        <div style={{ padding: "7px 0", minWidth: 0 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canPhoto ? " · tap to upload" : ""}</div>
-          <div style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{uploaderCredit(photo)}</div>
-        </div>
-      </button>
-      {photoKey && canPhoto && (
-        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-          <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Replace photo</button>
+        </button>
+        {photoKey && canPhoto && (
           <button
-            className="tinybtn"
+            aria-label={`Remove ${kind.toLowerCase()} photo`}
             disabled={busy}
-            style={{ color: "#a13a34" }}
             onClick={async () => {
               if (!photo) return;
               if (!(await confirm({ title: `Remove the ${kind.toLowerCase()} photo?`, confirmLabel: "Remove", danger: true }))) return;
@@ -2818,11 +2841,12 @@ function PhaseBlock({
                 setBusy(false);
               }
             }}
+            style={{ position: "absolute", top: -6, right: -6, width: 20, height: 20, borderRadius: "50%", border: "1px solid #d6d9d2", background: "#fff", color: "#a13a34", fontSize: 12, lineHeight: 1, cursor: "pointer" }}
           >
-            Remove
+            ×
           </button>
-        </div>
-      )}
+        )}
+      </div>
       <input ref={fileRef} type="file" accept="image/*,.pdf,.mp4,.mov,.webm" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadPhoto(f); }} />
       {photoOpen && photoKey && (
         <MediaLightbox
@@ -3705,11 +3729,13 @@ function FinancialSnapshot({
   return (
     <details className="pacc fin-only" open>
       <summary>
-        {/* Title + gating badge — design "P&L (finance)" VERBATIM, plus our
-            live net so the collapsed header still carries the headline number. */}
+        {/* Title + the live net so the collapsed header still carries the
+            headline number. The old "Owner / Director only" badge is gone
+            (owner 2026-07-23): visibility is role-gated in code now
+            (owner/BD/weisiang/finance edit, sales directors view), so the
+            label was stale and read as noise to the people allowed in. */}
         <span className="psec-t" style={{ color: "#8a4b12" }}>P&amp;L (finance)</span>
-        <span className="rbadge" style={{ marginLeft: "auto", background: "#f3ece0", color: "#a16a2e" }}>Owner / Director only</span>
-        <span style={{ fontSize: 11, fontWeight: 700, color: netColor, marginLeft: 8 }}>Net {formatCurrency(net)}</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: netColor, marginLeft: "auto" }}>Net {formatCurrency(net)}</span>
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">

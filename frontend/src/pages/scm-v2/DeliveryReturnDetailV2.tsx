@@ -72,7 +72,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 
 // ─── Row shapes (subset — see DeliveryReturnDetail.tsx for full 40-field
@@ -154,6 +154,7 @@ type DrItem = {
   line_total_centi: number;
   cancelled?: boolean;
   item_group?: string;
+  variants?: Record<string, unknown> | null;
   warehouse_code?: string | null;
 };
 
@@ -555,6 +556,17 @@ export function DeliveryReturnDetailV2() {
             notes: deliveryReturn.note ?? deliveryReturn.notes,
             delivery_order_id: deliveryReturn.delivery_order_id,
             sales_invoice_id: null,
+            /* Feed the DO-clone address block (migration 0102) into the PDF's
+               unified BILL TO — the fields have always been on the DR record
+               but the printout ignored them, so a DR left the building with
+               no customer address on it (owner UI audit Item #9). */
+            address1: deliveryReturn.address1,
+            address2: deliveryReturn.address2,
+            city: deliveryReturn.city,
+            state: deliveryReturn.customer_state,
+            postcode: deliveryReturn.postcode,
+            phone: deliveryReturn.phone,
+            email: deliveryReturn.email,
           },
           items.map((it) => ({
             item_code: it.item_code,
@@ -632,17 +644,17 @@ export function DeliveryReturnDetailV2() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.item_code,
-      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+      /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
          (vendor/shared/line-identity.ts). Converged onto the helper from this
          page's own #647 copy: same behaviour, one source. The variant and the
          warehouse pill stay — this row shows them nowhere else — and their row
          is kept when only the pill is present. The code still BINDS via
          getValue above. */
       render: (l) => {
-        const { primary, secondary } = lineIdentity({
+        const { primary, secondary } = orderLineIdentity({
           code: l.item_code,
           description: l.description,
-          variant: l.description2,
+          variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),
         });
         return (
         <div className="min-w-0">

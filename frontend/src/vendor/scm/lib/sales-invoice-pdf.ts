@@ -14,6 +14,7 @@
 // ship_to/bill_to/install_to trio — see the SiHeader note.
 import { formatPhone } from '@2990s/shared/phone';
 import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
+import { billToBlock } from './pdf-party-blocks';
 import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
 
 type SiHeader = {
@@ -95,21 +96,18 @@ export async function renderSalesInvoiceInto(
     .filter(Boolean)
     .join(', ');
   const statusText = header.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  /* An invoice with no address is not a document that stands alone — it cannot
+     be posted, filed or matched to a customer record on its own. Row order +
+     labels mirror the SO/DO BILL TO block via the shared billToBlock. */
   y = drawInfoColumns(doc, y,
-    {
-      title: 'BILL TO',
-      rows: [
-        ['Company', header.debtor_name],
-        ['Code', header.debtor_code],
-        /* An invoice with no address is not a document that stands alone — it
-           cannot be posted, filed or matched to a customer record on its own.
-           Row order + labels mirror the SO/DO BILL TO block. */
-        ['Address', addressValue],
-        ['Tel', header.phone ? formatPhone(header.phone) : null],
-        ['Email', header.email],
-        ['Note', header.notes],
-      ],
-    },
+    billToBlock({
+      name: header.debtor_name,
+      code: header.debtor_code,
+      address: addressValue,
+      phone: header.phone ? formatPhone(header.phone) : null,
+      email: header.email,
+      note: header.notes,
+    }),
     {
       title: 'INVOICE DETAILS',
       rows: [

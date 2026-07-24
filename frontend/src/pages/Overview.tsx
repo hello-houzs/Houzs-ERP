@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { RefreshCw, ArrowRight } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { api } from "../api/client";
 import { useQuery } from "../hooks/useQuery";
 import { useAuth } from "../auth/AuthContext";
@@ -132,17 +132,13 @@ export function Overview() {
               <b className="font-semibold text-sidebar-ink">{review}</b> pending review
             </p>
           </div>
+          {/* "Sync AutoCount" placeholder removed (owner 2026-07-23) — it sat
+              disabled/"coming soon" since launch; if a manual sync control
+              returns it belongs next to a real endpoint, not here. */}
           <div className="flex shrink-0 items-center gap-2">
             <Button variant="primary" icon={<ArrowRight size={14} />} onClick={() => navigate("/assr?view=cases")}>
               View tasks
             </Button>
-            <button
-              disabled
-              title="AutoCount sync coming soon"
-              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-sidebar-border bg-white/5 px-4 text-[13px] font-semibold text-sidebar-ink/80 disabled:opacity-60"
-            >
-              <RefreshCw size={14} /> Sync AutoCount
-            </button>
           </div>
         </div>
       </div>

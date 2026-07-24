@@ -132,6 +132,7 @@ const NewFabricDialog = ({ onClose }: { onClose: () => void }) => {
   const notify = useNotify();
   const [form, setForm] = useState({
     fabricCode: '',
+    supplierCode: '',
     fabricDescription: '',
     series: '',
     colours: '',
@@ -151,10 +152,11 @@ const NewFabricDialog = ({ onClose }: { onClose: () => void }) => {
     create.mutate({
       fabricCode: form.fabricCode.trim(),
       fabricDescription: form.fabricDescription.trim() || undefined,
-      // Owner 2026-06-22 — supplier code IS our code; default it to the fabric
-      // code so the column stays populated for CSV round-trip / legacy lookups
-      // without asking the user for a separate value.
-      supplierCode: form.fabricCode.trim() || undefined,
+      // Owner 2026-07-24 — supplier code is the supplier's OWN code (e.g.
+      // PC151-01), a separate field from our fabric_code (BF-01). Left blank
+      // when not entered — no longer defaulted to the fabric code (that made
+      // every fabric look like its supplier code == our code).
+      supplierCode: form.supplierCode.trim() || undefined,
       series: form.series.trim() || undefined,
       sofaPriceTier: form.sofaPriceTier,
       bedframePriceTier: form.bedframePriceTier,
@@ -197,6 +199,13 @@ const NewFabricDialog = ({ onClose }: { onClose: () => void }) => {
             <input className={FIELD}
               value={form.fabricDescription} placeholder="e.g. IVORY / FABRIC"
               onChange={(e) => set('fabricDescription', e.target.value)} />
+          </label>
+
+          <label className="mb-3 block">
+            <div className={FIELD_LABEL}>Supplier Code (the supplier's own code, e.g. PC151-01)</div>
+            <input className={FIELD}
+              value={form.supplierCode} placeholder="e.g. PC151-01"
+              onChange={(e) => set('supplierCode', e.target.value)} />
           </label>
 
           <label className="mb-3 block">

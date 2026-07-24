@@ -19,6 +19,7 @@ import { useState } from 'react';
 import { Check, X, Trash2 } from 'lucide-react';
 import {
   useUpdateFabricTier,
+  useUpdateFabricSupplierCode,
   useUpdateFabricDescription,
   useUpdateFabricSeries,
   useUpdateFabricActive,
@@ -148,9 +149,11 @@ const FABRIC_COLUMNS: DataGridColumn<FabricTrackingRow>[] = [
     label: 'Code',
     width: 150,
     accessor: (r) => <span className={styles.codeChip}>{r.fabric_code}</span>,
-    // Owner 2026-06-22 — supplier code IS our code; no separate internal/
-    // external code. The dedicated "Supplier Code" column is dropped, but its
-    // value stays searchable here so legacy supplier-code lookups still resolve.
+    // fabric_code is OUR internal code (e.g. BF-01); the supplier's EXTERNAL
+    // code (e.g. PC151-01) has its own "Supplier Code" column below. Owner
+    // 2026-07-24 restored that column once the two codes were confirmed to be
+    // different things. Both stay searchable from here so a lookup by either
+    // code resolves.
     searchValue: (r) => `${r.fabric_code} ${r.supplier_code ?? ''}`,
     filterValue: (r) => r.fabric_code,
     sortFn: (a, b) => (a.fabric_code ?? '').localeCompare(b.fabric_code ?? ''),
@@ -172,6 +175,18 @@ const FABRIC_COLUMNS: DataGridColumn<FabricTrackingRow>[] = [
     searchValue: (r) => r.fabric_description ?? '',
     filterValue: (r) => r.fabric_description ?? '',
     sortFn: (a, b) => (a.fabric_description ?? '').localeCompare(b.fabric_description ?? ''),
+  },
+  {
+    // Owner 2026-07-24 — restored. The supplier's own code for this fabric
+    // (e.g. PC151-01), distinct from our internal fabric_code (BF-01). Shown so
+    // POs tell the supplier which fabric we mean; editable inline.
+    key: 'supplierCode',
+    label: 'Supplier Code',
+    width: 160,
+    accessor: (r) => <SupplierCodeCell id={r.id} value={r.supplier_code ?? ''} />,
+    searchValue: (r) => r.supplier_code ?? '',
+    filterValue: (r) => r.supplier_code ?? '',
+    sortFn: (a, b) => (a.supplier_code ?? '').localeCompare(b.supplier_code ?? ''),
   },
   {
     key: 'sofaTier',
@@ -351,6 +366,64 @@ const SeriesCell = ({ id, value }: { id: string; value: string }) => {
         }}
         onBlur={cancel}
         style={{ minWidth: 180 }}
+      />
+      <button type="button" className={styles.iconBtn} onMouseDown={(e) => e.preventDefault()} onClick={commit} title="Save">
+        <Check size={14} strokeWidth={1.75} />
+      </button>
+      <button type="button" className={styles.iconBtn} onMouseDown={(e) => e.preventDefault()} onClick={cancel} title="Cancel">
+        <X size={14} strokeWidth={1.75} />
+      </button>
+    </span>
+  );
+};
+
+/* Owner 2026-07-24 — Click-to-edit Supplier Code cell, restored after the
+   2026-06-22 removal. supplier_code is the supplier's OWN code for this fabric
+   (e.g. PC151-01), distinct from our internal fabric_code (BF-01). Same UX as
+   Description / Series: click chip → input → Enter saves, Esc cancels. */
+const SupplierCodeCell = ({ id, value }: { id: string; value: string }) => {
+  const update = useUpdateFabricSupplierCode();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (trimmed === value.trim()) { setEditing(false); return; }
+    update.mutate(
+      { id, supplierCode: trimmed.length ? trimmed : null },
+      { onSettled: () => setEditing(false) },
+    );
+  };
+
+  const cancel = () => { setDraft(value); setEditing(false); };
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        className={value ? styles.supplierCodeChip : styles.supplierCodeEmpty}
+        onClick={() => { setDraft(value); setEditing(true); }}
+        title="Click to edit the supplier's code for this fabric"
+        style={{ width: '100%', textAlign: 'left' }}
+      >
+        {value || '+ Add supplier code'}
+      </button>
+    );
+  }
+
+  return (
+    <span className={styles.supplierCodeEditor}>
+      <input
+        autoFocus
+        className={styles.supplierCodeInput}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit();
+          else if (e.key === 'Escape') cancel();
+        }}
+        onBlur={cancel}
+        style={{ minWidth: 160 }}
       />
       <button type="button" className={styles.iconBtn} onMouseDown={(e) => e.preventDefault()} onClick={commit} title="Save">
         <Check size={14} strokeWidth={1.75} />

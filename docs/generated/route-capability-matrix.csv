@@ -202,6 +202,8 @@ GET,/api/portal/case/attachments/:attId,AUTHENTICATED_MIDDLEWARE,NO_GLOBAL_COMPA
 POST,/api/portal/case/attachments/:attId/archive,AUTHENTICATED_MIDDLEWARE,NO_GLOBAL_COMPANY_CONTEXT,caseTrack,,,,YES,MUTATION_INHERITED_ONLY,backend/src/routes/portal.ts
 POST,/api/portal/case/comments,AUTHENTICATED_MIDDLEWARE,NO_GLOBAL_COMPANY_CONTEXT,caseTrack,,,,YES,MUTATION_INHERITED_ONLY,backend/src/routes/portal.ts
 POST,/api/portal/case/comments/:actId/archive,AUTHENTICATED_MIDDLEWARE,NO_GLOBAL_COMPANY_CONTEXT,caseTrack,,,,YES,MUTATION_INHERITED_ONLY,backend/src/routes/portal.ts
+POST,/api/pos/admin-reset-pin/:userId,AUTHENTICATED_MIDDLEWARE,NO_GLOBAL_COMPANY_CONTEXT,,,"auth + requirePermission(""users.manage"")",,YES,DECLARED_GATE,backend/src/routes/pos.ts
+POST,/api/pos/admin-set-pin/:userId,AUTHENTICATED_MIDDLEWARE,NO_GLOBAL_COMPANY_CONTEXT,,,"auth + requirePermission(""users.manage"")",,YES,DECLARED_GATE,backend/src/routes/pos.ts
 POST,/api/pos/exchange-web-session,AUTHENTICATED_MIDDLEWARE,NO_GLOBAL_COMPANY_CONTEXT,,,auth,,YES,MUTATION_INHERITED_ONLY,backend/src/routes/pos.ts
 POST,/api/pos/pin-login,HANDLER_CREDENTIAL_REVIEW,NO_GLOBAL_COMPANY_CONTEXT,,,,verifyPassword,YES,HANDLER_GUARD_REVIEW,backend/src/routes/pos.ts
 GET,/api/pos/sales-staff,NO_STATIC_AUTH_GATE,NO_GLOBAL_COMPANY_CONTEXT,,,,,NO,INHERITED_ONLY,backend/src/routes/pos.ts
@@ -572,6 +574,8 @@ DELETE,/api/scm/mfg-products/:id,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth 
 GET,/api/scm/mfg-products/:id,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.procurement.products"", { openRead: true })",supabaseAuth,,,NO,DECLARED_GATE,backend/src/scm/routes/mfg-products.ts
 PATCH,/api/scm/mfg-products/:id,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.procurement.products"", { openRead: true })",supabaseAuth,,,YES,DECLARED_GATE,backend/src/scm/routes/mfg-products.ts
 POST,/api/scm/mfg-products/:id/activate-one-shot,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.procurement.products"", { openRead: true })",supabaseAuth,,,YES,DECLARED_GATE,backend/src/scm/routes/mfg-products.ts
+GET,/api/scm/mfg-products/:id/price-changes,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.procurement.products"", { openRead: true })",supabaseAuth,,,NO,DECLARED_GATE,backend/src/scm/routes/mfg-products.ts
+POST,/api/scm/mfg-products/:id/price-changes,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.procurement.products"", { openRead: true })",supabaseAuth,,,YES,DECLARED_GATE,backend/src/scm/routes/mfg-products.ts
 GET,/api/scm/mfg-products/:id/price-history,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.procurement.products"", { openRead: true })",supabaseAuth,,,NO,DECLARED_GATE,backend/src/scm/routes/mfg-products.ts
 GET,/api/scm/mfg-products/:id/suppliers,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.procurement.products"", { openRead: true })",supabaseAuth,,,NO,DECLARED_GATE,backend/src/scm/routes/mfg-products.ts
 POST,/api/scm/mfg-products/batch-import,AUTHENTICATED_MIDDLEWARE,COMPANY_CONTEXT,"auth + requireScmAccess + scmAreaGuard(""scm.procurement.products"", { openRead: true })",supabaseAuth,,,YES,DECLARED_GATE,backend/src/scm/routes/mfg-products.ts

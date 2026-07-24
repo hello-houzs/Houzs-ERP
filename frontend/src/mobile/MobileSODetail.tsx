@@ -21,7 +21,7 @@ import {
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
 import { formatPhone } from "../vendor/shared/phone";
-import { lineIdentity } from "@2990s/shared";
+import { orderLineIdentity } from "@2990s/shared";
 import {
   CANCELLABLE_STATUSES,
   isLocked as isSoLocked,
@@ -924,20 +924,20 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                    WRAPS (overflowWrap) rather than being squeezed into one
                    ellipsised line. The problem the code-swap worked around is
                    gone, so the code-swap goes with it and this row reads the same
-                   rule as every other surface (`lineIdentity`, the ONE home).
+                   rule as every other surface (`orderLineIdentity`, the ONE home).
                    Do NOT re-swap the code back in without first checking that
                    wrapping actually failed — restoring it costs the readable name
                    AND the desktop parity, to fix a truncation that no longer
                    happens. The code still binds (dual-read camelCase ?? snake_case
-                   feeds `lineIdentity`, and is the fallback for a codeless row). */
+                   feeds `orderLineIdentity`, and is the fallback for a codeless row). */
                 const code = (((it as unknown as { itemCode?: string | null }).itemCode ?? it.item_code) ?? "").trim();
                 /* Variant = the category-aware spec (sofa Fabric·config / bedframe
                    size·Headboard·Storage / mattress size·firmness·height) built
                    from the variants JSON, falling back to the server's stamped
                    description2 for older rows. It is the ONLY display of that spec
-                   on the row, so `lineIdentity` keeps it as `secondary` and drops
+                   on the row, so `orderLineIdentity` keeps it as `secondary` and drops
                    only the redundant code. */
-                const { primary, secondary } = lineIdentity({
+                const { primary, secondary } = orderLineIdentity({
                   code,
                   description: it.description,
                   variant: buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),

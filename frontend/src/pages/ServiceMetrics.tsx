@@ -41,7 +41,7 @@ const STAGE_FUNNEL_LABEL: Record<string, string> = {
   under_verification: "Verification",
   pending_solution: "Solution",
   pending_supplier_pickup: "Supplier Pickup / Return",
-  pending_item_ready: "Item Ready",
+  pending_item_ready: "Pending Item Ready",
   pending_delivery_service: "Delivery / Service",
   completed: "Completed",
 };

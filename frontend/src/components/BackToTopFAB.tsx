@@ -55,21 +55,21 @@ export function BackToTopFAB() {
       aria-label="Back to top"
       title="Back to top"
       className={cn(
-        "fixed z-40 inline-flex items-center justify-center rounded-full",
-        "bg-surface text-ink-secondary border border-border shadow-slab",
-        "transition-all duration-200 hover:scale-105 hover:text-primary hover:border-primary/40 active:scale-95",
-        // Nick 2026-07-09 — "放在 + 的上方". Parks directly ABOVE the "+"
-        // FAB, sharing its right offset so both buttons stack vertically.
-        //   Mobile "+":   h-12 w-12 (48) · right-4 (16) · bottom = 96 + safe
-        //   Desktop "+":  h-14 w-14 (56) · right-5 (20) · bottom = 20
-        // Above-offsets = "+" bottom + "+" height + 8 px gap:
+        // Owner 2026-07-23 "回到顶部轻量化": an unobtrusive 36px translucent
+        // square floating ABOVE the corner cluster — utility chrome, not a
+        // peer of the primary pill, so it whispers until hovered.
+        "fixed z-40 inline-flex h-9 w-9 items-center justify-center rounded-lg",
+        "border border-border/70 bg-surface/70 text-ink-muted backdrop-blur-sm",
+        "transition-all duration-200 hover:bg-surface hover:text-primary hover:border-primary/40 active:scale-95",
+        // Parks directly ABOVE the "New Case" pill, sharing its right offset.
+        // Above-offsets = pill bottom + pill height (48) + 8 px gap:
         //   Mobile:  96 + 48 + 8 = 152 px  (+ safe-area-inset)
-        //   Desktop: 20 + 56 + 8 = 84 px
-        "h-12 w-12 right-4 bottom-[calc(9.5rem+env(safe-area-inset-bottom))]",
-        "lg:h-14 lg:w-14 lg:right-5 lg:bottom-[84px]",
+        //   Desktop: 20 + 48 + 8 = 76 px
+        "right-4 bottom-[calc(9.5rem+env(safe-area-inset-bottom))]",
+        "lg:right-5 lg:bottom-[76px]",
       )}
     >
-      <ArrowUp size={20} strokeWidth={2.4} />
+      <ArrowUp size={16} strokeWidth={2.4} />
     </button>
   );
 

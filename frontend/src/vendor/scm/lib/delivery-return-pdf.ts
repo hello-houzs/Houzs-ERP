@@ -14,7 +14,9 @@ import {
   orderSofaModuleRowsWithinBuilds,
   sortSoLinesByGroupRank,
 } from '@2990s/shared/so-line-display';
+import { formatPhone } from '@2990s/shared/phone';
 import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
+import { billToBlock } from './pdf-party-blocks';
 import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
 
 type DrHeader = {
@@ -22,6 +24,21 @@ type DrHeader = {
   debtor_code: string | null; debtor_name: string;
   reason: string | null; refund_centi: number; notes: string | null;
   delivery_order_id: string | null; sales_invoice_id: string | null;
+  /* Address / contact fields — the DR route (delivery-returns.ts HEADER) has
+     always SELECTed these, but the PDF ignored them, so a return document
+     printed with no customer address on it. Every SO / DO / SI beside it
+     printed the full block; the DR was the odd one out (owner UI audit
+     Item #9). Optional so older call sites (consignment returns pass this
+     through `as never`) keep compiling; drawInfoColumns skips a blank row
+     so a record with no address prints exactly as it did before. */
+  address1?: string | null; address2?: string | null;
+  city?: string | null; state?: string | null; postcode?: string | null;
+  phone?: string | null; email?: string | null;
+  /* Consignment Returns spread their header (which stores the state as
+     `customer_state`, not `state`) through this generator via `as never`, so
+     accept either — the DR path passes `state`, the CR path passes
+     `customer_state`, and the address composition reads whichever is set. */
+  customer_state?: string | null;
 };
 type DrItem = {
   item_code: string; description: string | null;
@@ -64,16 +81,34 @@ export async function renderDeliveryReturnInto(
   });
 
   const statusText = header.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  /* Same composition as the DO / SI so the three customer-facing docs render
+     one address the same way. Every field is nullable — a legacy DR without
+     the DO-clone address columns (migration 0102) prints an empty row that
+     drawInfoColumns drops silently, matching pre-refactor output. */
+  const addressValue = [
+    header.address1,
+    header.address2,
+    [header.postcode, header.city, header.state ?? header.customer_state]
+      .map((s) => (typeof s === 'string' ? s.trim() : ''))
+      .filter(Boolean)
+      .join(' '),
+  ]
+    .map((s) => (typeof s === 'string' ? s.trim() : ''))
+    .filter(Boolean)
+    .join(', ');
   y = drawInfoColumns(doc, y,
-    {
-      title: 'FROM CUSTOMER',
-      rows: [
-        ['Company', header.debtor_name],
-        ['Code', header.debtor_code],
-        ['Reason', header.reason],
-        ['Note', header.notes],
-      ],
-    },
+    /* A returning customer is still the party being billed on the refund —
+       same canonical bill-to shape as SO / SI, with Reason slotted in as an
+       extras row so it sits with the party lines (matches the audit spec). */
+    billToBlock({
+      name: header.debtor_name,
+      code: header.debtor_code,
+      address: addressValue,
+      phone: header.phone ? formatPhone(header.phone) : null,
+      email: header.email,
+      extras: [['Reason', header.reason]],
+      note: header.notes,
+    }, { title: 'FROM CUSTOMER' }),
     {
       title: 'RETURN DETAILS',
       rows: [

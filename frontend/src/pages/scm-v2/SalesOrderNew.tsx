@@ -2050,6 +2050,7 @@ export const SalesOrderNew = () => {
               <span className={styles.fieldLabel}>State</span>
               <StatePicker
                 value={state}
+                selectClassName={styles.fieldSelect}
                 onChange={(next) => { setState(next); setCity(''); setPostcode(''); }}
               />
             </label>

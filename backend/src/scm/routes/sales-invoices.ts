@@ -41,6 +41,7 @@ import type { Env, Variables } from '../env';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   isCrossCompanySource, crossCompanyConversionBlocked,
   requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
 import { postSiRevenue, reverseSiRevenue, resyncSiRevenue } from '../lib/post-si-revenue';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
@@ -790,6 +791,9 @@ salesInvoices.get('/:id', async (c) => {
       for (const k of SO_ITEM_FINANCE_KEYS) delete it[k];
     }
   }
+  // Stamp each line's supplier fabric code so the on-screen line reads
+  // "BF-01 (PC151-01)" (owner 2026-07-24). ONE batched query; fail-soft.
+  await enrichLinesWithFabricSupplierCode(sb, c, items);
   return c.json({ salesInvoice: h.data, items });
 });
 

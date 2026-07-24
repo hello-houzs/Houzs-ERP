@@ -28,7 +28,8 @@ import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { bindingToProductPatch } from '../lib/cost-anchor-sync';
 import { scopeToCompany, activeCompanyId, stampCompany,
-  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY } from '../lib/companyScope';
+  requireActiveCompanyId, scopeToCompanyId, NOT_THIS_COMPANY,
+  detailMissResponse } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 /* Task #91 — small helper: normalize a body field to E.164 phone storage,
@@ -359,7 +360,12 @@ suppliers.get('/:id', async (c) => {
   ]);
 
   if (supplierRes.error) return c.json({ error: 'load_failed', reason: supplierRes.error.message }, 500);
-  if (!supplierRes.data) return c.json({ error: 'not_found' }, 404);
+  if (!supplierRes.data) {
+    // Not in the ACTIVE company — say whether it lives in another company the
+    // caller may see (calm "switch to view") vs is genuinely gone. See
+    // detailMissResponse: the alarming supplier-404 owner ask, 2026-07-24.
+    return c.json(await detailMissResponse(c, supabase.from('suppliers').select('company_id').eq('id', id), 'supplier'), 404);
+  }
   if (bindingsRes.error) return c.json({ error: 'load_failed', reason: bindingsRes.error.message }, 500);
 
   return c.json({ supplier: supplierRes.data, bindings: bindingsRes.data ?? [] });
@@ -849,7 +855,9 @@ suppliers.get('/:id/scorecard', async (c) => {
     supabase.from('suppliers').select('id').eq('id', id),
     c,
   ).maybeSingle();
-  if (!supplierRow) return c.json({ error: 'not_found' }, 404);
+  if (!supplierRow) {
+    return c.json(await detailMissResponse(c, supabase.from('suppliers').select('company_id').eq('id', id), 'supplier'), 404);
+  }
 
   const { data: pos, error: posErr } = await scopeToCompany(
     supabase

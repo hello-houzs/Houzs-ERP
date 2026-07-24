@@ -244,6 +244,23 @@ Two things happen here that are easy to miss:
    N/A'd, or submitted-for-review task drops its row server-side the
    moment it changes state; nothing "done" ever lingers in My Pending.
 
+### Setup & Dismantle crew editor — outsourced providers
+
+`PhaseCrewEditor` (`Projects.tsx`, around `:8994`) edits the `setup_crew` /
+`dismantle_crew` / `service_crew` JSON blobs (stored verbatim in TEXT columns;
+the backend never reshapes them). Below the per-lorry crew grid, an **Outsourced
+trips** row (owner 2026-07-23) offers three provider buttons on Setup &
+Dismantle: **Outsource** and **Lalamove** both open a name·phone·plate box;
+**Grab** opens a Helper 1 / Helper 2 picker drawn from the full staff helper
+list (`/api/fleet/staff`, role/type `helper`). Each add appends an
+`OutsourcedEntry` to `outsourced.entries` carrying a `provider`
+(`outsource` | `lalamove` | `grab`); Grab entries store `helper1` / `helper2`
+instead of name/phone/plate (a legacy Grab row with name/phone/plate still
+renders — the chip falls back). Service / Exchange keeps the older single
+**Outsourced** checkbox (it has its own per-lorry Grab/Lalamove `provider`
+dropdown). Because the picked helper names land in the crew JSON, a Grab-assigned
+helper still matches the `assigned_to_me` / calendar `setup_crew` name arm.
+
 ### The calendar handler
 
 `:3756`. `seeAll` is the whole rule (`:3795-3798`):

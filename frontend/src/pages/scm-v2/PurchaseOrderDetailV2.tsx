@@ -11,7 +11,7 @@
 
 import { Suspense, lazy, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, orderLineIdentity } from "@2990s/shared";
 import { formatPhone } from "@2990s/shared/phone";
 import {
   ArrowLeft,
@@ -548,7 +548,7 @@ function PurchaseOrderDetailV2ReadOnly() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.material_code,
-      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+      /* Item CODE first, then the variant subtitle; description dropped (owner 2026-07-24) — the shared order-line rule
          (vendor/shared/line-identity.ts). JUDGEMENT CALL, stated rather than
          silently taken: this is PURCHASE vocabulary (material_code), and every
          owner precedent for the rule is sales-side, so it is not covered by the
@@ -563,10 +563,10 @@ function PurchaseOrderDetailV2ReadOnly() {
          summary. The code still BINDS: getValue above keeps it the sort /
          search / export value. */
       render: (l) => {
-        const { primary, secondary } = lineIdentity({
+        const { primary, secondary } = orderLineIdentity({
           code: l.material_code,
           description: l.description || l.material_name,
-          variant: l.description2,
+          variant: buildVariantSummary(l.item_group ?? "others", l.variants) || (l.description2 ?? ""),
         });
         return (
           <div className="min-w-0">
@@ -623,6 +623,33 @@ function PurchaseOrderDetailV2ReadOnly() {
         return (
           <span className="font-money text-[13px] font-semibold text-accent-bright">
             {bal}
+          </span>
+        );
+      },
+    },
+    {
+      key: "eta",
+      label: "ETA",
+      width: "96px",
+      align: "right",
+      getValue: (l) => l.delivery_date ?? "",
+      render: (l) => (
+        <span className="font-mono text-[12px] text-ink-secondary">
+          {l.delivery_date ? fmtDate(l.delivery_date) : "—"}
+        </span>
+      ),
+    },
+    {
+      key: "transferTo",
+      label: "Transfer to",
+      width: "132px",
+      getValue: (l) => (l.warehouse_id ? warehouseNameById.get(l.warehouse_id) ?? "" : ""),
+      render: (l) => {
+        const label = l.warehouse_id ? warehouseNameById.get(l.warehouse_id) : null;
+        if (!label) return <span className="text-ink-muted">—</span>;
+        return (
+          <span className="inline-flex items-center gap-0.5 rounded bg-primary-soft px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-primary-ink">
+            {label}
           </span>
         );
       },

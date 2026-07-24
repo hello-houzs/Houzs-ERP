@@ -307,6 +307,68 @@ export function scopeToAllowedCompanies<Q>(query: Q, c: CompanyScopeCtx): Q {
   return (query as unknown as { in(col: string, vals: number[]): Q }).in("company_id", ids);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   CROSS-COMPANY DETAIL MISS — turn a per-company by-id miss into an HONEST answer.
+   ═══════════════════════════════════════════════════════════════════════════
+
+   A PER-COMPANY detail route (scopeToCompany + .maybeSingle) returns nothing for
+   BOTH "no such row anywhere" AND "the row is in another company". Those are two
+   very different facts, and conflating them is the supplier-404 the owner kept
+   hitting (2026-07-24): a multi-company user reaches a detail by a bookmark, a
+   second window, or a link that carries the id but not the company, and the bare
+   `{ error: 'not_found' }` renders as the alarming "That item could no longer be
+   found — it may have been changed or removed." The record is right there; it is
+   simply in the company they are not currently switched to.
+
+   detailMissResponse re-looks-up the id WIDENED to the caller's ALLOWED companies
+   (via scopeToAllowedCompanies — never beyond, so a company-1-only user still gets
+   a plain not_found for a company-2 row and NOTHING leaks). When it resolves in
+   another allowed company, it returns an `in_other_company` body naming that
+   company so the UI can offer to switch, instead of implying the record is gone.
+
+   Deliberately NOT registered in the SCM client's ERROR_CODE_MESSAGES: that map is
+   consulted first and REPLACES the server message (authed-fetch humanApiError),
+   which would throw away the company name. Falling through to the plain-sentence
+   `message` below keeps it. The message is kept < 200 chars, no leading `{`, and
+   free of the internals the plain-sentence filter rejects. */
+export const IN_OTHER_COMPANY = "in_other_company";
+
+export type DetailMiss =
+  | { error: "not_found" }
+  | { error: "in_other_company"; companyId: number; companyCode: string | null; message: string };
+
+/**
+ * Resolve a per-company detail miss into either a plain not_found or a calm
+ * cross-company hint. `probe` MUST be a FRESH supabase-js builder that selects
+ * `company_id` for the SAME row the scoped lookup just missed, e.g.
+ * `supabase.from('suppliers').select('company_id').eq('id', id)` — this helper
+ * widens it to the allowed set and reads company_id. `noun` names the record in
+ * the operator-facing sentence ('supplier', 'purchase order', ...).
+ */
+export async function detailMissResponse<Q>(
+  c: CompanyScopeCtx,
+  probe: Q,
+  noun = "record",
+): Promise<DetailMiss> {
+  const widened = scopeToAllowedCompanies(probe, c) as unknown as {
+    maybeSingle(): Promise<{ data: { company_id?: number | null } | null }>;
+  };
+  const { data } = await widened.maybeSingle();
+  const cid = data?.company_id != null ? Number(data.company_id) : null;
+  const active = activeCompanyId(c);
+  if (cid != null && Number.isInteger(cid) && active != null && cid !== Number(active)) {
+    const code = companyCodeMap(c).get(cid) ?? null;
+    const where = code ?? "another company";
+    return {
+      error: IN_OTHER_COMPANY,
+      companyId: cid,
+      companyCode: code,
+      message: `This ${noun} belongs to ${where}. Switch to ${where} using the company selector at the top to open it.`,
+    };
+  }
+  return { error: "not_found" };
+}
+
 /**
  * Stamp the active company on rows about to be INSERTed. Every row gets
  * `company_id = <active>` unless it already carries one (explicit wins). No-op

@@ -42,6 +42,8 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { scopeToCompany } from '../lib/companyScope';
+import { enrichLinesWithFabricSupplierCode } from '../lib/fabric-supplier-code';
+import { deriveDisplayBrandingByDoc } from '../lib/so-display-branding';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { salesJdDenial } from '../../services/salesJdAccess';
 import { resolveSalesScopeIds } from '../lib/salesScope';
@@ -673,7 +675,9 @@ async function fetchFairSos(
     if (filters.project != null) q = q.eq('project_id', filters.project);
     if (filters.venue)       q = q.eq('venue_id', filters.venue);
     if (filters.state)       q = q.eq('customer_state', filters.state);
-    if (filters.branding)    q = q.eq('branding', filters.branding);
+    /* NO branding predicate here: header branding is blank on nearly every SO
+       (the create form has no branding field), so an eq matched nothing. The
+       handler derives display branding after this fetch and filters there. */
     if (filters.salesperson) q = q.eq('salesperson_id', filters.salesperson);
     if (from) q = q.gte('so_date', from);
     if (to)   q = q.lte('so_date', to);
@@ -801,10 +805,33 @@ export const fairReportHandler = async (c: FairCtx) => {
   if (!access.allowed) return c.json({ error: access.error }, 403);
 
   const filters = readFairFilters(c);
-  const { rows: soRows, error: soErr } = await fetchFairSos(c, filters);
+  const { rows: soRowsAll, error: soErr } = await fetchFairSos(c, filters);
   if (soErr) return c.json({ error: 'load_failed', reason: soErr }, 500);
 
   const sb = c.get('supabase');
+
+  /* Header `branding` is blank on essentially every SO (the create form has
+     never had a branding field — see lib/derive-line-branding.ts), so the raw
+     column rendered a dash on every report row. Derive the display branding
+     the SO LIST shows (first MAIN line's brand -> catalog mattress fallback ->
+     bedframe-only "BEDFRAME"), and apply the branding FILTER against the
+     derived value — the old SQL eq on the raw header column matched nothing. */
+  {
+    const blank = soRowsAll.filter((r) => !r.branding || !String(r.branding).trim()).map((r) => r.doc_no);
+    if (blank.length > 0) {
+      const derived = await deriveDisplayBrandingByDoc(sb, c, blank);
+      for (const r of soRowsAll) {
+        if ((!r.branding || !String(r.branding).trim()) && derived.has(r.doc_no)) {
+          r.branding = derived.get(r.doc_no)!;
+        }
+      }
+    }
+  }
+  const wantBrand = (filters.branding ?? '').trim();
+  const soRows = wantBrand
+    ? soRowsAll.filter((r) => (r.branding ?? '').trim() === wantBrand)
+    : soRowsAll;
+
   const staffNames = await resolveStaffNames(c, soRows.map((r) => r.salesperson_id ?? '').filter(Boolean));
   const projects = await resolveProjects(c, soRows.map((r) => r.project_id).filter((v): v is number => v != null));
   const soByDoc = new Map(soRows.map((r) => [r.doc_no, r] as const));
@@ -1028,6 +1055,9 @@ export const fairReportHandler = async (c: FairCtx) => {
         so_no: d.so_doc_no,
         status: d.status,
         qty: doCost.qty,
+        // The linked SO's amount (product + service) — same value the SO tab
+        // shows in its Amount column, so the two stages reconcile per SO.
+        so_amount_centi: h ? fairSoMoney(h).amount_centi : null,
         total_so_cost_centi: totalSoCost,
         total_do_cost_centi: doCost.total_do_cost_centi,
         do_cost_is_legacy: doCost.is_legacy,
@@ -1132,22 +1162,37 @@ export const fairReportDetailHandler = async (c: FairCtx) => {
   if (!headerData) return c.json({ error: 'Sales Order not found.' }, 404);
   const h = headerData as unknown as FairSoHeader;
 
+  /* Same display-branding derivation as the list handler above, so the
+     quick-view drawer agrees with the row it was opened from. */
+  if (!h.branding || !String(h.branding).trim()) {
+    const derived = await deriveDisplayBrandingByDoc(sb, c, [h.doc_no]);
+    h.branding = derived.get(h.doc_no) ?? h.branding;
+  }
+
   const staffNames = await resolveStaffNames(c, h.salesperson_id ? [h.salesperson_id] : []);
   const projects = await resolveProjects(c, h.project_id != null ? [h.project_id] : []);
 
   // Order lines — item, qty, unit sell, amount, unit cost, line cost.
   const { data: itemData, error: iErr } = await paginateAll((pFrom: number, pTo: number) => scopeToCompany(sb
     .from('mfg_sales_order_items')
-    .select('item_code, description, qty, unit_price_centi, total_centi, unit_cost_centi, line_cost_centi, cancelled')
+    // item_group + variants + description2 carry the VARIANT summary so the
+    // Fair Report's "Order lines · selling & cost" line reads the same
+    // "code / SEAT / LEG / fabric" subtitle every other order-line surface shows
+    // (owner 2026-07-24: the variant must appear consistently system-wide).
+    .select('item_group, item_code, description, description2, variants, qty, unit_price_centi, total_centi, unit_cost_centi, line_cost_centi, cancelled')
     .eq('doc_no', docNo), c)
     .range(pFrom, pTo));
   if (iErr) return c.json({ error: 'load_failed', reason: iErr.message }, 500);
   const lines = ((itemData ?? []) as Array<Record<string, unknown>>).map((r) => ({
-    item_code: r.item_code, description: r.description, qty: r.qty,
+    item_group: r.item_group, item_code: r.item_code, description: r.description,
+    description2: r.description2, variants: r.variants, qty: r.qty,
     unit_price_centi: r.unit_price_centi, amount_centi: r.total_centi,
     unit_cost_centi: r.unit_cost_centi, line_cost_centi: r.line_cost_centi,
     cancelled: r.cancelled,
   }));
+  // Stamp each line's supplier fabric code so the Fair Report line reads
+  // "BF-01 (PC151-01)" too — same enrichment the SO/PO/DO/SI detail endpoints do.
+  await enrichLinesWithFabricSupplierCode(sb, c, lines);
 
   // Deposit-by-tender + merchant bank / plan.
   const { data: payData, error: pErr } = await paginateAll((pFrom: number, pTo: number) => scopeToCompany(sb

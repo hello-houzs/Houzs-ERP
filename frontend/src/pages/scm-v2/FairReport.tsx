@@ -28,6 +28,7 @@ import { Download, Columns3, X, ChevronRight, LayoutList, Table2 } from 'lucide-
 import { PageHeader } from '../../components/Layout';
 import { StatCard } from '../../components/StatCard';
 import { formatDate } from '../../lib/utils';
+import { buildVariantSummary, orderLineIdentity } from '@2990s/shared';
 import { useAuth } from '../../auth/AuthContext';
 import { fairAllowedStages } from '../../auth/salesAccess';
 import {
@@ -476,7 +477,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
     const rows = (data?.stage === 'so' ? data.rows : []) as FairSoRow[];
     const showCat = !hidden.has('catcost');
     const showTender = !hidden.has('tender');
-    const cols = 6 + 3 + (showCat ? 5 : 0) + 3 + (showTender ? 4 : 0) + 2;
+    const cols = 7 + 3 + (showCat ? 5 : 0) + 3 + (showTender ? 4 : 0) + 2;
     const sum = data?.stage === 'so' ? data.summary : null;
     return (
       <div className="overflow-x-auto">
@@ -484,7 +485,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
           <thead className="bg-primary-soft/30">
             <tr>
               <th className={th}>Date</th><th className={th}>Venue</th><th className={th}>Project / Fair</th>
-              <th className={th}>SO No</th><th className={th}>Order Form</th><th className={th}>Salesperson</th>
+              <th className={th}>SO No</th><th className={th}>Order Form</th><th className={th}>Salesperson</th><th className={th}>Branding</th>
               <th className={thR}>Amount</th><th className={thR}>Selling</th><th className={thR}>Service Rev.</th>
               {showCat && <><th className={thR}>Mattress / Sofa</th><th className={thR}>Bedframe</th><th className={thR}>Accessories</th><th className={thR}>Others</th><th className={thR}>Service</th></>}
               <th className={thR}>Total SO Cost</th><th className={thR}>Margin %</th><th className={thR}>Balance</th>
@@ -502,6 +503,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
                 <td className={td}><span className={`${mono} text-primary-ink`}>{r.so_no}</span></td>
                 <td className={td}><span className={`${mono} text-ink-secondary`}>{r.order_form ?? '—'}</span></td>
                 <td className={td}>{r.salesperson ?? '—'}</td>
+                <td className={td}>{r.branding ?? '—'}</td>
                 <td className={tdR}>{cell(r.amount_centi)}</td>
                 <td className={tdR}>{cell(r.selling_centi)}</td>
                 <td className={tdR}>{cell(r.service_rev_centi)}</td>
@@ -531,7 +533,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
           {sum && rows.length > 0 && (
             <tfoot>
               <tr className="border-t-2 border-border bg-surface-2 font-semibold">
-                <td className={`${td} uppercase text-[10px] tracking-brand text-ink-muted`} colSpan={6}>Filtered totals · {sum.orders} orders</td>
+                <td className={`${td} uppercase text-[10px] tracking-brand text-ink-muted`} colSpan={7}>Filtered totals · {sum.orders} orders</td>
                 <td className={tdR}>{cell(sum.total_amount_centi)}</td>
                 <td className={tdR}>{cell(sum.total_selling_centi)}</td>
                 <td className={tdR}>{cell(sum.total_service_rev_centi)}</td>
@@ -560,14 +562,14 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
     const rows = (data?.stage === 'do' ? data.rows : []) as FairDoRow[];
     const showDrift = !hidden.has('drift');
     const sum = data?.stage === 'do' ? data.summary : null;
-    const cols = 6 + 4 + (showDrift ? 1 : 0) + 1;
+    const cols = 7 + 5 + (showDrift ? 1 : 0) + 1;
     return (
       <div className="overflow-x-auto">
         <table className="w-full border-collapse">
           <thead className="bg-primary-soft/30">
             <tr>
-              <th className={th}>Delivery Date</th><th className={th}>Venue</th><th className={th}>Project / Fair</th>
-              <th className={th}>DO No</th><th className={th}>Linked SO</th><th className={thR}>Qty</th>
+              <th className={th}>Delivery Date</th><th className={th}>Venue</th><th className={th}>Project / Fair</th><th className={th}>Branding</th>
+              <th className={th}>DO No</th><th className={th}>Linked SO</th><th className={thR}>Qty</th><th className={thR}>SO Amount</th>
               <th className={thR}>Total SO Cost</th><th className={thR}>Total DO Cost</th><th className={thR}>Cost Δ</th><th className={thR}>DO Margin %</th>
               {showDrift && <th className={thR}>Margin drift</th>}
               <th className={thR} aria-label="open" />
@@ -579,9 +581,11 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
                 <td className={`${td} tabular-nums`}>{formatDate(r.delivery_date)}</td>
                 <td className={td}>{r.venue ?? '—'}</td>
                 <td className={td}>{r.project ?? '—'}</td>
+                <td className={td}>{r.branding ?? '—'}</td>
                 <td className={td}><span className={`${mono} text-primary-ink`}>{r.do_no}</span>{r.do_cost_is_legacy && <span className="ml-1 rounded bg-ink-muted/15 px-1 py-0.5 text-[9px] font-semibold uppercase text-ink-muted">Legacy</span>}</td>
                 <td className={td}><span className={`${mono} text-ink-secondary`}>{r.so_no ?? '—'}</span></td>
                 <td className={tdR}>{r.qty}</td>
+                <td className={tdR}>{cell(r.so_amount_centi)}</td>
                 <td className={tdR}>{cell(r.total_so_cost_centi)}</td>
                 <td className={`${tdR} font-semibold`}>{cell(r.total_do_cost_centi)}</td>
                 <td className={`${tdR} ${r.cost_delta_centi > 0 ? 'text-err' : r.cost_delta_centi < 0 ? 'text-synced' : ''} font-medium`}>{signedMoney(r.cost_delta_centi)}</td>
@@ -595,7 +599,8 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
           {sum && rows.length > 0 && (
             <tfoot>
               <tr className="border-t-2 border-border bg-surface-2 font-semibold">
-                <td className={`${td} uppercase text-[10px] tracking-brand text-ink-muted`} colSpan={5}>Delivered · {sum.deliveries} orders</td>
+                <td className={`${td} uppercase text-[10px] tracking-brand text-ink-muted`} colSpan={6}>Delivered · {sum.deliveries} orders</td>
+                <td className={tdR} />
                 <td className={tdR} />
                 <td className={tdR}>{cell(sum.total_so_cost_centi)}</td>
                 <td className={tdR}>{cell(sum.total_do_cost_centi)}</td>
@@ -623,7 +628,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
     const rows = (pnl?.rows ?? []) as FairPnlRow[];
     const sum = pnl?.summary ?? null;
     const showThree = !hidden.has('threeway');
-    const cols = 4 + 1 + (showThree ? 3 : 0) + 3;
+    const cols = 5 + 1 + (showThree ? 3 : 0) + 3;
     return (
       <div className="overflow-x-auto">
         {pnl && !pnl.meta.rate_present && (
@@ -634,7 +639,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
         <table className="w-full border-collapse">
           <thead className="bg-primary-soft/30">
             <tr>
-              <th className={th}>Date</th><th className={th}>Venue</th><th className={th}>SO No</th><th className={th}>Salesperson</th>
+              <th className={th}>Date</th><th className={th}>Venue</th><th className={th}>SO No</th><th className={th}>Salesperson</th><th className={th}>Branding</th>
               <th className={thR}>Revenue</th>
               {showThree && <><th className={thR}>SO Cost</th><th className={thR}>DO Cost</th><th className={thR}>SI Cost</th></>}
               <th className={thR}>COGS</th><th className={thR}>Gross Profit</th><th className={thR}>Margin %</th>
@@ -647,6 +652,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
                 <td className={td}>{r.venue ?? '—'}</td>
                 <td className={td}><span className={`${mono} text-primary-ink`}>{r.so_no}</span></td>
                 <td className={td}>{r.salesperson ?? '—'}</td>
+                <td className={td}>{r.branding ?? '—'}</td>
                 <td className={tdR}>{cell(r.revenue_centi)}</td>
                 {showThree && <>
                   <td className={`${tdR} bg-surface-2`}>{cell(r.so_cost_centi)}</td>
@@ -663,7 +669,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
           {sum && rows.length > 0 && (
             <tfoot>
               <tr className="border-t-2 border-border bg-surface-2 font-semibold">
-                <td className={`${td} uppercase text-[10px] tracking-brand text-ink-muted`} colSpan={4}>Fair totals · {sum.orders} orders</td>
+                <td className={`${td} uppercase text-[10px] tracking-brand text-ink-muted`} colSpan={5}>Fair totals · {sum.orders} orders</td>
                 <td className={tdR}>{cell(sum.total_revenue_centi)}</td>
                 {showThree && <><td className={tdR}>{cell(sum.total_so_cost_centi)}</td><td className={tdR}>{cell(sum.total_do_cost_centi)}</td><td className={tdR}>{cell(sum.total_si_cost_centi)}</td></>}
                 <td className={tdR}>{cell(sum.total_cogs_centi)}</td>
@@ -681,13 +687,13 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
   const rows = (data?.stage === 'invoice' ? data.rows : []) as FairInvoiceRow[];
   const showProg = !hidden.has('progression');
   const sum = data?.stage === 'invoice' ? data.summary : null;
-  const cols = 5 + 1 + (showProg ? 2 : 0) + 1 + 1 + 1;
+  const cols = 6 + 1 + (showProg ? 2 : 0) + 1 + 1 + 1;
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse">
         <thead className="bg-primary-soft/30">
           <tr>
-            <th className={th}>Invoice Date</th><th className={th}>Venue</th><th className={th}>Project / Fair</th>
+            <th className={th}>Invoice Date</th><th className={th}>Venue</th><th className={th}>Project / Fair</th><th className={th}>Branding</th>
             <th className={th}>Invoice No</th><th className={th}>Linked SO</th><th className={thR}>Invoiced</th>
             {showProg && <><th className={thR}>SO Cost</th><th className={thR}>DO Cost</th></>}
             <th className={thR}>Landed (SI) Cost</th><th className={thR}>Margin %</th>
@@ -700,6 +706,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
               <td className={`${td} tabular-nums`}>{formatDate(r.invoice_date)}</td>
               <td className={td}>{r.venue ?? '—'}</td>
               <td className={td}>{r.project ?? '—'}</td>
+              <td className={td}>{r.branding ?? '—'}</td>
               <td className={td}><span className={`${mono} text-primary-ink`}>{r.inv_no}</span></td>
               <td className={td}><span className={`${mono} text-ink-secondary`}>{r.so_no ?? '—'}</span></td>
               <td className={tdR}>{cell(r.invoiced_centi)}</td>
@@ -714,7 +721,7 @@ function StageTable({ data, stage, hidden, loading, onOpen }: {
         {sum && rows.length > 0 && (
           <tfoot>
             <tr className="border-t-2 border-border bg-surface-2 font-semibold">
-              <td className={`${td} uppercase text-[10px] tracking-brand text-ink-muted`} colSpan={5}>Invoiced · {sum.invoices} orders</td>
+              <td className={`${td} uppercase text-[10px] tracking-brand text-ink-muted`} colSpan={6}>Invoiced · {sum.invoices} orders</td>
               <td className={tdR}>{cell(sum.total_invoiced_centi)}</td>
               {showProg && <><td className={tdR}>{cell(sum.total_so_cost_centi)}</td><td className={tdR}>{cell(sum.total_do_cost_centi)}</td></>}
               <td className={tdR}>{cell(sum.total_si_cost_centi)}</td>
@@ -773,6 +780,7 @@ function StageCards({ data, stage, loading, onOpen }: {
         {rows.map((r) => (
           <div key={r.do_no} className={card} onClick={() => r.so_no && onOpen(r.so_no)}>
             <div className="flex items-center gap-2">
+              {r.branding && <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[9.5px] font-bold uppercase text-accent">{r.branding}</span>}
               <span className={`${mono} text-primary-ink`}>{r.do_no}</span>
               <span className="ml-auto text-[13px] font-bold tabular-nums text-ink">{pct(r.do_margin_pct)}</span>
             </div>
@@ -796,6 +804,7 @@ function StageCards({ data, stage, loading, onOpen }: {
         {rows.map((r) => (
           <div key={r.so_no} className={card} onClick={() => onOpen(r.so_no)}>
             <div className="flex items-center gap-2">
+              {r.branding && <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[9.5px] font-bold uppercase text-accent">{r.branding}</span>}
               <span className={`${mono} text-primary-ink`}>{r.so_no}</span>
               <span className={`ml-auto text-[13px] font-bold tabular-nums ${(r.margin_pct ?? 0) >= 0 ? 'text-synced' : 'text-err'}`}>{pct(r.margin_pct)}</span>
             </div>
@@ -815,6 +824,7 @@ function StageCards({ data, stage, loading, onOpen }: {
       {rows.map((r) => (
         <div key={r.inv_no} className={card} onClick={() => r.so_no && onOpen(r.so_no)}>
           <div className="flex items-center gap-2">
+            {r.branding && <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[9.5px] font-bold uppercase text-accent">{r.branding}</span>}
             <span className={`${mono} text-primary-ink`}>{r.inv_no}</span>
             <span className={`ml-auto text-[13px] font-bold tabular-nums ${(r.margin_pct ?? 0) >= 0 ? 'text-synced' : 'text-err'}`}>{pct(r.margin_pct)}</span>
           </div>
@@ -908,16 +918,36 @@ function FairDrawer({ docNo, onClose }: { docNo: string | null; onClose: () => v
                     <th className={th}>Item</th><th className={thR}>Qty</th><th className={thR}>Unit sell</th><th className={thR}>Amount</th><th className={thR}>Unit cost</th><th className={thR}>Line cost</th>
                   </tr></thead>
                   <tbody>
-                    {d.lines.map((l, i) => (
+                    {d.lines.map((l, i) => {
+                      /* Item CODE + variant, exactly like every other order-line
+                         surface (owner 2026-07-24, shared order-line rule). Was
+                         "code · description" — which printed the code twice when
+                         the description already contained it ("XAMMAR-1A(LHF) ·
+                         SOFA XAMMAR 1A(LHF)") and dropped the variant entirely.
+                         orderLineIdentity leads with the code and keeps the
+                         variant summary (supplier code folded in) as the
+                         subtitle; the description is dropped. */
+                      const { primary, secondary } = orderLineIdentity({
+                        code: l.item_code,
+                        description: l.description,
+                        variant:
+                          buildVariantSummary(l.item_group ?? '', l.variants ?? null) ||
+                          (l.description2 ?? ''),
+                      });
+                      return (
                       <tr key={i} className={`border-t border-border/60 ${l.cancelled ? 'opacity-50 line-through' : ''}`}>
-                        <td className={`${td} whitespace-normal`}>{l.item_code ?? '—'}{l.description ? <span className="text-ink-muted"> · {l.description}</span> : ''}</td>
+                        <td className={`${td} whitespace-normal`}>
+                          <div>{primary || '—'}</div>
+                          {secondary && <div className="text-ink-muted">{secondary}</div>}
+                        </td>
                         <td className={tdR}>{l.qty ?? '—'}</td>
                         <td className={tdR}>{cell(l.unit_price_centi)}</td>
                         <td className={tdR}>{cell(l.amount_centi)}</td>
                         <td className={`${tdR} text-ink-muted`}>{cell(l.unit_cost_centi)}</td>
                         <td className={`${tdR} text-ink-muted`}>{cell(l.line_cost_centi)}</td>
                       </tr>
-                    ))}
+                      );
+                    })}
                     {d.lines.length === 0 && <tr><td className={`${td} text-ink-muted`} colSpan={6}>No lines.</td></tr>}
                   </tbody>
                 </table>
@@ -998,9 +1028,9 @@ function buildExport(data: NonNullable<FairReportData>): { headers: string[]; bo
   if (data.stage === 'so') {
     return {
       name: 'fair-report-sales-orders.csv',
-      headers: ['Date', 'Venue', 'Project', 'SO No', 'Order Form', 'Salesperson', 'Amount', 'Selling', 'Service Rev', 'Mattress/Sofa Cost', 'Bedframe Cost', 'Accessories Cost', 'Others Cost', 'Service Cost', 'Total SO Cost', 'Margin %', 'Balance', 'Payment', 'Cash', 'Merchant', 'Installment', 'Online', 'Below Deposit'],
+      headers: ['Date', 'Venue', 'Project', 'SO No', 'Order Form', 'Salesperson', 'Branding', 'Amount', 'Selling', 'Service Rev', 'Mattress/Sofa Cost', 'Bedframe Cost', 'Accessories Cost', 'Others Cost', 'Service Cost', 'Total SO Cost', 'Margin %', 'Balance', 'Payment', 'Cash', 'Merchant', 'Installment', 'Online', 'Below Deposit'],
       body: data.rows.map((r) => [
-        formatDate(r.so_date), r.venue, r.project, r.so_no, r.order_form, r.salesperson,
+        formatDate(r.so_date), r.venue, r.project, r.so_no, r.order_form, r.salesperson, r.branding,
         c(r.amount_centi), c(r.selling_centi), c(r.service_rev_centi),
         c(r.cost_by_category.mattress_sofa_cost_centi), c(r.cost_by_category.bedframe_cost_centi), c(r.cost_by_category.accessories_cost_centi), c(r.cost_by_category.others_cost_centi), c(r.cost_by_category.service_cost_centi),
         c(r.total_so_cost_centi), r.margin_pct == null ? '' : r.margin_pct.toFixed(1), c(r.balance_centi), r.payment_methods.join(' + '),
@@ -1011,9 +1041,10 @@ function buildExport(data: NonNullable<FairReportData>): { headers: string[]; bo
   if (data.stage === 'do') {
     return {
       name: 'fair-report-delivery-orders.csv',
-      headers: ['Delivery Date', 'Venue', 'Project', 'DO No', 'Linked SO', 'Qty', 'Total SO Cost', 'Total DO Cost', 'Cost Delta', 'SO Margin %', 'DO Margin %', 'Legacy'],
+      headers: ['Delivery Date', 'Venue', 'Project', 'Branding', 'DO No', 'Linked SO', 'Qty', 'SO Amount', 'Total SO Cost', 'Total DO Cost', 'Cost Delta', 'SO Margin %', 'DO Margin %', 'Legacy'],
       body: data.rows.map((r) => [
-        formatDate(r.delivery_date), r.venue, r.project, r.do_no, r.so_no, r.qty,
+        formatDate(r.delivery_date), r.venue, r.project, r.branding, r.do_no, r.so_no, r.qty,
+        r.so_amount_centi == null ? '' : c(r.so_amount_centi),
         c(r.total_so_cost_centi), c(r.total_do_cost_centi), c(r.cost_delta_centi),
         r.so_margin_pct == null ? '' : r.so_margin_pct.toFixed(1), r.do_margin_pct == null ? '' : r.do_margin_pct.toFixed(1), r.do_cost_is_legacy ? 'Yes' : '',
       ]),
@@ -1022,9 +1053,9 @@ function buildExport(data: NonNullable<FairReportData>): { headers: string[]; bo
   if (data.stage === 'pnl') {
     return {
       name: 'fair-report-pnl.csv',
-      headers: ['Date', 'Venue', 'Project', 'SO No', 'Salesperson', 'Revenue', 'SO Cost', 'DO Cost', 'SI Cost', 'COGS', 'Cost Stage', 'Gross Profit', 'Margin %'],
+      headers: ['Date', 'Venue', 'Project', 'SO No', 'Salesperson', 'Branding', 'Revenue', 'SO Cost', 'DO Cost', 'SI Cost', 'COGS', 'Cost Stage', 'Gross Profit', 'Margin %'],
       body: data.rows.map((r) => [
-        formatDate(r.so_date), r.venue, r.project, r.so_no, r.salesperson,
+        formatDate(r.so_date), r.venue, r.project, r.so_no, r.salesperson, r.branding,
         c(r.revenue_centi), c(r.so_cost_centi), r.do_cost_centi == null ? '' : c(r.do_cost_centi), r.si_cost_centi == null ? '' : c(r.si_cost_centi),
         c(r.effective_cost_centi), r.effective_cost_stage, c(r.gross_profit_centi), r.margin_pct == null ? '' : r.margin_pct.toFixed(1),
       ]),
@@ -1032,9 +1063,9 @@ function buildExport(data: NonNullable<FairReportData>): { headers: string[]; bo
   }
   return {
     name: 'fair-report-invoices.csv',
-    headers: ['Invoice Date', 'Venue', 'Project', 'Invoice No', 'Linked SO', 'Invoiced', 'SO Cost', 'DO Cost', 'Landed (SI) Cost', 'Margin %'],
+    headers: ['Invoice Date', 'Venue', 'Project', 'Branding', 'Invoice No', 'Linked SO', 'Invoiced', 'SO Cost', 'DO Cost', 'Landed (SI) Cost', 'Margin %'],
     body: data.rows.map((r) => [
-      formatDate(r.invoice_date), r.venue, r.project, r.inv_no, r.so_no,
+      formatDate(r.invoice_date), r.venue, r.project, r.branding, r.inv_no, r.so_no,
       c(r.invoiced_centi), c(r.so_cost_centi), c(r.do_cost_centi), c(r.si_cost_centi), r.margin_pct == null ? '' : r.margin_pct.toFixed(1),
     ]),
   };
