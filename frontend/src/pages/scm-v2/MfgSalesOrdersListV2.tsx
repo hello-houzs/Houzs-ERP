@@ -889,9 +889,13 @@ type DrillItem = {
 /* 2990-parity stock cell (MfgSalesOrdersList.tsx stockLabelOf + the SO full
    page's coverage render): fully shipped → DELIVERED; on-hand → READY;
    partially covered → PARTIAL; else PENDING. SERVICE lines are skipped by the
-   allocator, so their stored PENDING default would be noise — show a dash. */
+   allocator (they create no purchase demand), but a service is inherently
+   available — so show READY, not a blank cell (owner Q2, 2026-07-24). The SO
+   read path now also stamps stock_state='stock' for them, so any consumer
+   reading stock_state agrees. */
 function drillStock(l: DrillItem): { label: string; cls: string } | null {
-  if ((l.item_group ?? "").toUpperCase().includes("SERVICE")) return null;
+  if ((l.item_group ?? "").toUpperCase().includes("SERVICE"))
+    return { label: "READY", cls: "bg-synced-bg text-synced" };
   const shipped =
     (l.delivered_qty ?? 0) > 0 && (l.remaining_qty ?? null) === 0;
   if (shipped) return { label: "DELIVERED", cls: "bg-surface-dim text-ink-muted" };
