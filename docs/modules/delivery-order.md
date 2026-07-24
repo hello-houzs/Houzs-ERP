@@ -128,6 +128,11 @@ still need `edit` on `scm.sales.delivery`.
    `sales_invoices` by `delivery_order_id`, and `computeDoLifecycle` (`:1999`).
    The first two collapse into `has_children`; the third gives
    `lifecycle_state` (`'shipped' | 'invoiced' | 'returned'`, `:1998`).
+   A fourth, sequential batched read then pulls
+   `mfg_sales_orders.internal_expected_dd` for the distinct `so_doc_no` set and
+   stamps it on each row as **`so_internal_expected_dd`** — the linked SO's
+   "Processing date" shown in the DO quick-view drawer (desktop
+   `MfgDeliveryOrdersListV2` + mobile `MobileModuleList`).
 4. **Finance gate** (`:2322-2333`) — `canViewScmFinance(c)`; when false every
    `DO_FINANCE_KEYS` column (`:317-321`) is deleted from every row. Note
    `local_total_centi` is deliberately NOT in that list: the DO total is visible

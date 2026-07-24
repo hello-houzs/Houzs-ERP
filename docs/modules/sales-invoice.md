@@ -116,9 +116,13 @@ posting.
      so_doc_no, debtor_name, debtor_code, ref, branding, sales_location` plus
      normalized phone parts (`:706-710`); `from`/`to` on `invoice_date`.
    - `statusCounts` = five `head:true count:'exact'` in one `Promise.all` (`:728-734`).
-3. **Enrichment — NONE.** This is the only one of the four sibling modules whose
-   list makes no per-row follow-up read at all: the response goes straight from
-   the main query to `gateSiFinance` and out (`:743-744`). There is no
+3. **Enrichment — one batched read** (`stampSoDates`, defined above the list
+   handler). Pulls `mfg_sales_orders.internal_expected_dd` +
+   `customer_delivery_date` for the distinct `so_doc_no` set and stamps
+   **`so_internal_expected_dd`** (the linked SO's "Processing date") and
+   **`so_customer_delivery_date`** (delivery-date fallback for pre-snapshot SIs)
+   on each row — both list paths. Feeds the SI quick-view drawer (desktop
+   `SalesInvoicesListV2` + mobile `MobileModuleList`). There is still no
    `has_children` on an SI because nothing hangs off it.
 4. **Finance gate** — `gateSiFinance(rows, canViewScmFinance(c))` (`:213-220`)
    deletes every `SI_FINANCE_KEYS` column (`:205-209`) from every row. Applied on
