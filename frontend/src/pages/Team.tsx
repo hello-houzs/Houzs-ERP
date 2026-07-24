@@ -791,15 +791,6 @@ function MembersTab({
       toast.error(e?.message || "Failed to set PIN");
     }
   }
-  async function clearPosPin(u: TeamMember) {
-    if (!(await dialog.confirm(`Clear ${u.name || u.email}'s POS PIN?\n\nThey will need to set a new one before using the POS.`))) return;
-    try {
-      await api.post(`/api/pos/admin-reset-pin/${u.id}`);
-      toast.success(`POS PIN cleared for ${u.name || u.email}`);
-    } catch (e: any) {
-      toast.error(e?.message || "Failed to clear PIN");
-    }
-  }
 
   // Re-send the invite email to a member who hasn't joined yet, keyed by
   // user id (the member row). Reuses the existing invite token — only the
@@ -1432,7 +1423,6 @@ function MembersTab({
           onEdit={() => setEditing(viewing)}
           onSendReset={() => sendReset(viewing)}
           onSetPin={() => setPosPin(viewing)}
-          onClearPin={() => clearPosPin(viewing)}
           onResendInvite={() => resendInviteForUser(viewing)}
           onToggleStatus={async () => {
             await toggleStatus(viewing);
@@ -2108,7 +2098,6 @@ function MemberDetail({
   onEdit,
   onSendReset,
   onSetPin,
-  onClearPin,
   onResendInvite,
   onToggleStatus,
   onRemove,
@@ -2126,7 +2115,6 @@ function MemberDetail({
   onEdit: () => void;
   onSendReset: () => void;
   onSetPin?: () => void;
-  onClearPin?: () => void;
   onResendInvite: () => void;
   onToggleStatus: () => void | Promise<void>;
   onRemove: () => void | Promise<void>;
@@ -2347,11 +2335,6 @@ function MemberDetail({
               {canManage && onSetPin && (
                 <button type="button" onClick={onSetPin} className={actionCls}>
                   <KeyRound size={13} /> Set POS PIN
-                </button>
-              )}
-              {canManage && onClearPin && (
-                <button type="button" onClick={onClearPin} className={actionCls}>
-                  <KeyRound size={13} /> Clear POS PIN
                 </button>
               )}
               {canManage && user.status === "invited" && (
