@@ -455,7 +455,9 @@ function PurchaseOrderDetailV2ReadOnly() {
     );
     const headerForPdf = {
       ...purchaseOrder,
-      purchase_location_name: wh ? `${wh.code} · ${wh.name}` : null,
+      // Owner 2026-07-24: DELIVER TO shows the warehouse CODE only (was the
+      // dual "code · name", which read as a duplicated warehouse name).
+      purchase_location_name: wh ? wh.code : null,
       delivery_address: wh?.location ?? null,
       your_ref_no:
         (purchaseOrder as unknown as { your_ref_no?: string | null })
@@ -515,7 +517,9 @@ function PurchaseOrderDetailV2ReadOnly() {
       const wh = (warehousesQ.data ?? []).find((w) => w.id === purchaseOrder.purchase_location_id);
       const headerForPdf = {
         ...purchaseOrder,
-        purchase_location_name: wh ? `${wh.code} · ${wh.name}` : null,
+        // Owner 2026-07-24: DELIVER TO shows the warehouse CODE only (was the
+      // dual "code · name", which read as a duplicated warehouse name).
+      purchase_location_name: wh ? wh.code : null,
         delivery_address: wh?.location ?? null,
         your_ref_no: (purchaseOrder as unknown as { your_ref_no?: string | null }).your_ref_no ?? null,
         source_so_doc_no: (purchaseOrder as unknown as { source_so_doc_no?: string | null }).source_so_doc_no ?? null,

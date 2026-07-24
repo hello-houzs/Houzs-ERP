@@ -599,7 +599,9 @@ export const PurchaseOrderDetail = () => {
     const wh = (warehousesQTop.data ?? []).find((w) => w.id === po.purchase_location_id);
     const headerForPdf = {
       ...po,
-      purchase_location_name: wh ? `${wh.code} · ${wh.name}` : null,
+      // Owner 2026-07-24: DELIVER TO shows the warehouse CODE only (was the
+      // dual "code · name", which read as a duplicated warehouse name).
+      purchase_location_name: wh ? wh.code : null,
       // #1 (Commander 2026-06-18) — deliver-to address = the bound warehouse's
       // location text, so the supplier knows where to ship.
       delivery_address: wh?.location ?? null,

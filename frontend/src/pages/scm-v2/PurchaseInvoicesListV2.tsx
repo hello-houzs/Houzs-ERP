@@ -25,6 +25,11 @@ import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
 import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
+import {
+  DocumentLinesExpansion,
+  type DocumentDrillLine,
+  type DrillItemFields,
+} from "../../components/DocumentLinesExpansion";
 import { ListPager } from "../../components/ListPager";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { Badge } from "../../components/Badge";
@@ -530,6 +535,37 @@ const SORT_COL_MAP: Record<string, string> = {
   total: "total_centi",
 };
 
+// ─── Row drill-down (DataTable `expandable`) ──────────────────────────────────
+// Inline per-line breakdown for one PI, lazy-fetched via the SAME
+// usePurchaseInvoiceDetail hook the drawer uses (TanStack-cached). Group + item
+// code/variant + Qty + Amount (line value), via the shared
+// DocumentLinesExpansion. A purchase invoice is a purchase-side money doc with
+// no MRP coverage on its lines, so the SO/DO-only Stock + Incoming PO columns
+// are absent.
+function PiLinesExpansion({ id }: { id: string }) {
+  const detailQ = usePurchaseInvoiceDetail(id);
+  const items =
+    ((detailQ.data as { items?: DrillItemFields[] } | undefined)?.items ?? []);
+  const lines: DocumentDrillLine[] = items.map((l) => ({
+    itemGroup: l.item_group ?? null,
+    code: l.material_code || l.item_code || null,
+    description: l.description ?? null,
+    description2: l.description2 ?? null,
+    variants: l.variants ?? null,
+    qty: Number(l.qty ?? 0),
+    amountCenti: l.line_total_centi ?? 0,
+  }));
+  return (
+    <DocumentLinesExpansion
+      isLoading={detailQ.isLoading}
+      isError={Boolean(detailQ.error)}
+      errorMessage={detailQ.error instanceof Error ? detailQ.error.message : null}
+      lines={lines}
+      emptyLabel="No lines on this purchase invoice."
+    />
+  );
+}
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function PurchaseInvoicesListV2() {
@@ -1000,6 +1036,10 @@ export function PurchaseInvoicesListV2() {
                 columns={columns}
                 getRowKey={(r) => r.id}
                 onRowClick={(r) => setSelected(r)}
+                expandable={{
+                  render: (r) => <PiLinesExpansion id={r.id} />,
+                  rowKey: (r) => r.id,
+                }}
                 selection={{
                   selectedIds,
                   onToggle: toggleSelect,
