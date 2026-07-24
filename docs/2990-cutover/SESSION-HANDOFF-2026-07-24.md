@@ -1,5 +1,22 @@
 # Session handoff — 2990 → Houzs go-live hardening (2026-07-24)
 
+> **SESSION 2 CLOSE (2026-07-24, later):** 13 PRs merged and DEPLOYED (verified
+> success): #1182 SO drill stock/incoming-PO columns, #1184 supplier code/name
+> split, #1185 delivered-DO backfill tool (APPLIED: 12 DOs+SOs -> DELIVERED,
+> 19/19 verify), #1186+#1194 fabric supplier-code format (final: `CG-001 Pearl
+> (KN390-1)` - parens LAST), #1187 StatePicker combobox, #1191 processing_date
+> column retired (NOTE: its 0189 migration failed on a dependent VIEW; partner
+> session fixed via #1203 drop-view-first - LESSON: check dependent views before
+> DROP COLUMN), #1192+#1196 system font everywhere (plain zero, owner), #1195
+> combo-pricing selling-map display, #1199 full status tabs, #1200 DataTable
+> sort/filter/clip. Owner rulings recorded: DO/In-Transit backend belongs to the
+> PARTNER's session - hands off; SO/PO Amendment redesign approved but queued
+> LAST after: Sales Director POS = exact 2990 parity, Org Chart by company,
+> Sales Venue save bug, global allocation sweep for migrated SOs, MRP coverage
+> snapshot-to-DB. Diagnostics added to Actions: amendment-apply check,
+> 2990-delivered-chain check, delivered-DO backfill (DRY-RUN gated). Price
+> baseline APPLY still HELD (dup/RM0 rows).
+
 > **STATUS UPDATE (same day, later session — this list is CLEARED unless noted):**
 > - **#1174 MERGED** (order lines CODE + variant; conflict with #1175 resolved keeping both).
 >   **#1179 MERGED** (processing_date read fix). **#1165 MERGED** (mig 0188; SQL reviewed:
