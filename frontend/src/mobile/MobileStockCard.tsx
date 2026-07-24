@@ -60,12 +60,11 @@ export function MobileStockCard({
   const lotsQ = useInventoryLots(productCode, { warehouseId, includeClosed });
 
   const warehouses = warehousesQ.data ?? [];
-  // Movements carry only warehouse_id; map it to the SHORT code-name ("KL
-  // WAREHOUSE") the desktop Warehouse column now shows — the ONE canonical
-  // warehouse label (owner 2026-07-24), not a code+name concat.
+  // Movements carry only warehouse_id; map it to the "CODE · Name" label the
+  // desktop Warehouse column shows.
   const whName = (id: string) => {
     const w = warehouses.find((x) => x.id === id);
-    return w ? w.code : "—";
+    return w ? `${w.code} · ${w.name}` : "—";
   };
   const selectedWh = warehouseId ? warehouses.find((w) => w.id === warehouseId) ?? null : null;
 
@@ -121,7 +120,7 @@ export function MobileStockCard({
 
       <div className="hz-scroll" style={{ flex: 1, overflowY: "auto", padding: 14, paddingBottom: 40, display: "flex", flexDirection: "column", gap: 12 }}>
         <div className="sc-hero">
-          <div className="l">On hand · {selectedWh ? selectedWh.code : "all warehouses"}</div>
+          <div className="l">On hand · {selectedWh ? selectedWh.name : "all warehouses"}</div>
           <div className="v tnum">{onHand} <span className="u">units</span></div>
           <div
             style={{
@@ -153,7 +152,7 @@ export function MobileStockCard({
                 className={`chip${warehouseId === w.id ? " on" : ""}`}
                 onClick={() => setWarehouseId(w.id)}
               >
-                {w.code}
+                {w.code} · {w.name}
               </button>
             ))}
           </div>
@@ -174,7 +173,7 @@ export function MobileStockCard({
                   <div key={`${b.warehouse_id}|${b.variant_key ?? ""}`}>
                     <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
                       <span className="wn" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {b.warehouse_code || b.warehouse_name || "—"}
+                        {b.warehouse_name || b.warehouse_code || "—"}
                       </span>
                       {attrs && (
                         <span
