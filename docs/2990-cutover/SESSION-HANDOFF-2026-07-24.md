@@ -1,5 +1,27 @@
 # Session handoff — 2990 → Houzs go-live hardening (2026-07-24)
 
+> **STATUS UPDATE (same day, later session — this list is CLEARED unless noted):**
+> - **#1174 MERGED** (order lines CODE + variant; conflict with #1175 resolved keeping both).
+>   **#1179 MERGED** (processing_date read fix). **#1165 MERGED** (mig 0188; SQL reviewed:
+>   idempotent, NOT VALID FKs, no runtime `ON CONFLICT` on any changed key — verified by grep).
+>   Diags **#1105 / #1092 MERGED**. Every merge verified with `gh pr view --json state`, per
+>   the lesson below.
+> - **Price baseline backfill: DRY-RUN done, APPLY deliberately HELD.** 2990 plans 109
+>   products / 186 rows, but the sample shows SAME-DAY DUPLICATE rows and RM0.00 rows
+>   (AKKA-FIRM MATT (S): 883.00 + 0.00 + 0.00 all effective 2026-06-01). Do NOT apply until
+>   the reconstruction filters zero/duplicate rows — phase 3 would price off this table.
+>   HOUZS plans 0 products (no live catalog prices there — worth a look, may be expected).
+> - **Amendment mystery SOLVED** (new read-only diag: Actions → "Amendment apply check").
+>   SO-2607-015/A1 was NEVER approved — status REQUESTED, `so_approved_at` NULL, zero
+>   snapshots. The owner could not find the approve button (hidden behind supplier-confirm).
+>   Owner has approved a redesign: 2-step SO amendment, PO dual-track, auto PO revision —
+>   see the mockup artifact + chat; build starts AFTER this handoff's items.
+> - **Worktrees at `Desktop/hz-baseline-worktrees/` all removed** (all 7 PRs merged, all clean).
+> - Still open for the OWNER: the 4 decisions below (12 DELIVERED SOs, COD?, POS roles,
+>   #103 screenshot), Resend delivery test (#101), supplier-404 entry page when it recurs.
+> - Still open (engineering): processing_date column retirement, #98 members filter,
+>   pricing phase 3, PI/PR/GRN fabric-supplier-code read enrichment (deferred in #1174).
+
 Working clone: `Desktop/hz-baseline` = `hello-houzs/Houzs-ERP`. Multi-company:
 HOUZS = `company_id 1`, 2990 = `company_id 2` (migrated from `wenwei4046/2990s`).
 The owner is **live-testing 2990 data inside Houzs** and deciding whether to
