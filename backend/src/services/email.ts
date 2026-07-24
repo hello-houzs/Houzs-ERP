@@ -60,9 +60,9 @@ export interface SendOptions {
   // Optional From override. When set, the outbound From is this address (wrapped
   // with the Branding company name as the display name) INSTEAD of the default
   // no-reply@<domain> / EMAIL_FROM. Used by the Mail Center so a reply/compose
-  // goes out FROM the chosen mailbox (e.g. hello@houzscentury.com). The address
-  // must be on the verified Resend domain to deliver. Bare address (no "<>") —
-  // the company display name is added here.
+  // goes out FROM the chosen mailbox (e.g. hello@houzscentury.com or
+  // hello@2990shome.com). The address must be on a Resend-VERIFIED domain to
+  // deliver. Bare address (no "<>") — the company display name is added here.
   from?: string | null;
   // Optional attachments forwarded to the provider on the IMMEDIATE send (Mail
   // Center reply/compose). `content` is base64. NOT persisted to the outbox row
@@ -212,7 +212,8 @@ async function deliverViaResend(
   // EXCEPTION: an explicit per-message `from` (Mail Center reply/compose) wins
   // over both — the operator's chosen mailbox becomes the visible sender. We
   // wrap the bare address with the company's Branding display name. The address
-  // must be on the verified Resend domain (houzscentury.com) to deliver.
+  // must be on a Resend-VERIFIED domain (houzscentury.com; 2990shome.com once
+  // the owner verifies it) to deliver.
   let from: string | undefined;
   const explicitFrom = (m.from ?? "").trim();
   if (explicitFrom) {

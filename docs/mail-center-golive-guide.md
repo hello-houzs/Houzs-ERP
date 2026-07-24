@@ -70,6 +70,29 @@ mailboxes (e.g. on Google Workspace / Hostinger), or not yet? -> picks 2A vs 2B.
 
 ---
 
+## Adding 2990's mailbox (hello@2990shome.com)
+
+The code side shipped 2026-07-24 (`feat/mail-center-2990-domain`): inbound mail to
+`@2990shome.com` is tagged company 2990, the mailbox-create domain check follows the
+ACTIVE company's Branding, and reply/compose from a 2990 mailbox goes out as
+"2990's Home". What remains is owner ops, in this order:
+
+1. **Resend: verify `2990shome.com`** — Resend dashboard -> Domains -> Add
+   `2990shome.com`, add the SPF/DKIM/return-path records to the 2990shome.com DNS,
+   wait for **Verified**. Until this is done, sends FROM `hello@2990shome.com` fail.
+2. **Google Workspace: the mailbox** — create/confirm `hello@2990shome.com`, enable
+   2-Step Verification, create an App Password, enable IMAP (same steps as the
+   Houzs mailboxes — see `mail-sync/README.md`).
+3. **GitHub secret `IMAP_ACCOUNTS`** — append
+   `{"user":"hello@2990shome.com","password":"<app password>"}` to the JSON array.
+   The next mail-sync run starts pulling it.
+4. **ERP, with 2990 active in the company switcher:**
+   - Settings -> Branding -> set **Email** to `hello@2990shome.com` (this defines
+     the mailbox domain — mailbox creation is blocked until it is set).
+   - Mail Center -> Mailboxes -> add `hello@2990shome.com` and assign access.
+5. **Test** — compose from `hello@2990shome.com` to an external address; send a
+   reply back and confirm it lands in the Mail Center tagged 2990.
+
 ## Owner action checklist
 - [ ] Tell me: existing `@houzscentury.com` mailboxes? (picks 2A vs 2B)
 - [ ] Tell me: which addresses feed the Mail Center (hello@/support@/sales@…)
