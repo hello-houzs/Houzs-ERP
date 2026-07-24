@@ -676,6 +676,29 @@ purchaseInvoices.get('/:id', async (c) => {
     ),
   );
 
+  /* Supplier SKU — purchase_invoice_items has no code column of its own, but a
+     goods line points at its source GRN line (grn_item_id), which snapshotted
+     the supplier's own code at receipt (grn_items.supplier_sku). Surface it so
+     the PI shows the supplier's code even when no live supplier↔material binding
+     exists; PI-native service lines (grn_item_id NULL) simply carry none. The
+     frontend still falls back to the binding when a line has no snapshot. */
+  try {
+    const grnItemIds = uniq((items as Array<{ grn_item_id?: string | null }>).map((r) => r.grn_item_id));
+    if (grnItemIds.length) {
+      const { data: gis } = await sb.from('grn_items').select('id, supplier_sku').in('id', grnItemIds);
+      const skuByGrnItem = new Map<string, string>();
+      for (const g of (gis ?? []) as Array<{ id: string; supplier_sku: string | null }>) {
+        if (g.supplier_sku) skuByGrnItem.set(g.id, g.supplier_sku);
+      }
+      for (const it of items as Array<Record<string, unknown> & { grn_item_id?: string | null }>) {
+        it.supplier_sku = it.grn_item_id ? skuByGrnItem.get(it.grn_item_id) ?? null : null;
+      }
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error('[pi detail] supplier-sku resolve failed', { id, error: e });
+  }
+
   /* Customer DO(s) — owner 2026-07-23 ("要的", following "PI need show Do
      number"): which of OUR deliveries this purchase covers. Chain: PI line →
      grn_item → purchase_order_item → so_item → delivery_order_item →
