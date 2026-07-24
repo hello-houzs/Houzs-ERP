@@ -73,9 +73,12 @@ Repo **Settings -> Secrets and variables -> Actions**:
 > Gmail accepts the password with or without them. Keep the whole value on one
 > line when you paste it into the GitHub secret.
 
-**Back-compat (single mailbox):** if you only run one mailbox, you may skip
-`IMAP_ACCOUNTS` and instead set `IMAP_USER` (the Gmail address) + `IMAP_PASSWORD`
-(its App Password). These are used **only** when `IMAP_ACCOUNTS` is absent.
+**Single mailbox / merge semantics:** `IMAP_USER` (the Gmail address) +
+`IMAP_PASSWORD` (its App Password) always work on their own, and they **MERGE**
+with `IMAP_ACCOUNTS` (de-duplicated by address). So to add another company's
+mailbox — e.g. `hello@2990shome.com` — set `IMAP_ACCOUNTS` to a one-entry array
+with just the new account and leave the existing `IMAP_USER`/`IMAP_PASSWORD`
+untouched.
 
 Optional repo **Variable** (not a secret) — only if you want a non-default URL:
 

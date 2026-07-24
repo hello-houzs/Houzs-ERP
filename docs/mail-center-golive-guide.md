@@ -83,15 +83,19 @@ ACTIVE company's Branding, and reply/compose from a 2990 mailbox goes out as
 2. **Google Workspace: the mailbox** — create/confirm `hello@2990shome.com`, enable
    2-Step Verification, create an App Password, enable IMAP (same steps as the
    Houzs mailboxes — see `mail-sync/README.md`).
-3. **GitHub secret `IMAP_ACCOUNTS`** — append
-   `{"user":"hello@2990shome.com","password":"<app password>"}` to the JSON array.
-   The next mail-sync run starts pulling it.
-4. **ERP, with 2990 active in the company switcher:**
-   - Settings -> Branding -> set **Email** to `hello@2990shome.com` (this defines
-     the mailbox domain — mailbox creation is blocked until it is set).
-   - Mail Center -> Mailboxes -> add `hello@2990shome.com` and assign access.
+3. **GitHub secret `IMAP_ACCOUNTS`** — set it to a ONE-entry array with just the
+   new account: `[{"user":"hello@2990shome.com","password":"<app password>"}]`.
+   The sync MERGES it with the existing `IMAP_USER`/`IMAP_PASSWORD` pair (which
+   keeps pulling hello@houzscentury.com untouched). The next run starts pulling.
+4. **ERP** — migration 0192 seeds both the 2990 Branding email and the
+   `hello@2990shome.com` mailbox row on deploy. What remains manual: Mail Center
+   -> Mailboxes (2990 active) -> assign who can read/send from it.
 5. **Test** — compose from `hello@2990shome.com` to an external address; send a
    reply back and confirm it lands in the Mail Center tagged 2990.
+
+Already true today (verified 2026-07-24): `2990shome.com`'s DNS is on Cloudflare
+and its MX already points at Google (aspmx.l.google.com), so Google-side mail
+for the domain exists — steps 1-3 are the only credential work.
 
 ## Owner action checklist
 - [ ] Tell me: existing `@houzscentury.com` mailboxes? (picks 2A vs 2B)
